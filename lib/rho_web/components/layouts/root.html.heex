@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <title>Rho</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Fragment+Mono:wght@400&display=swap" rel="stylesheet" />
+    <style>
+      <%= Phoenix.HTML.raw(RhoWeb.InlineCSS.css()) %>
+    </style>
+  </head>
+  <body class="rho-body">
+    <%= @inner_content %>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+    <script><%= Phoenix.HTML.raw(RhoWeb.InlineJS.js()) %></script>
+    <script src={"/assets/phoenix/phoenix.js"}></script>
+    <script src={"/assets/phoenix_live_view/phoenix_live_view.js"}></script>
+    <script>
+      (function() {
+        var csrfToken = document.querySelector("meta[name='csrf-token']");
+        var token = csrfToken ? csrfToken.getAttribute("content") : "";
+        var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
+          params: { _csrf_token: token },
+          hooks: window.RhoHooks || {}
+        });
+        liveSocket.connect();
+        window.liveSocket = liveSocket;
+      })();
+    </script>
+  </body>
+</html>
