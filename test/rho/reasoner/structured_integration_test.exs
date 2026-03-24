@@ -1,0 +1,292 @@
+defmodule Rho.Reasoner.StructuredIntegrationTest do
+  @moduledoc """
+  End-to-end integration tests for the structured reasoner through AgentLoop.
+  Uses Mimic to mock the LLM layer and verify the full cycle:
+  prompt injection → stream → parse → tool execution → result fed back → final answer.
+  """
+
+  use ExUnit.Case
+  use Mimic
+
+  alias Rho.Tape.{Service, Store}
+
+  @test_tape "test_structured_#{System.os_time(:nanosecond)}"
+
+  setup :verify_on_exit!
+
+  setup do
+    on_exit(fn -> Store.clear(@test_tape) end)
+    :ok
+  end
+
+  # -- Helpers --
+
+  # Stubs ReqLLM.stream_text to return a fake stream_response,
+  # then stubs tokens/1 and usage/1 on that fake.
+  # `json_text` is the full structured JSON the LLM would produce.
+  defp stub_structured_stream(json_text, opts \\ []) do
+    usage = Keyword.get(opts, :usage, %{input_tokens: 50, output_tokens: 30})
+    fake = :fake_structured_stream
+
+    stub(ReqLLM, :stream_text, fn _model, _ctx, _opts ->
+      {:ok, fake}
+    end)
+
+    # tokens/1 returns a stream of single-character chunks (simulating token-by-token)
+    stub(ReqLLM.StreamResponse, :tokens, fn ^fake ->
+      json_text |> String.graphemes()
+    end)
+
+    stub(ReqLLM.StreamResponse, :usage, fn ^fake -> usage end)
+  end
+
+  # Returns a sequence of structured stream responses for multi-turn tests.
+  defp expect_structured_sequence(json_texts, opts \\ []) do
+    usage = Keyword.get(opts, :usage, %{input_tokens: 50, output_tokens: 30})
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    expect(ReqLLM, :stream_text, length(json_texts), fn _model, _ctx, _opts ->
+      i = Agent.get(counter, & &1)
+      {:ok, {:fake_structured_stream, i}}
+    end)
+
+    expect(ReqLLM.StreamResponse, :tokens, length(json_texts), fn {:fake_structured_stream, _i} ->
+      i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
+      json_texts |> Enum.at(i) |> String.graphemes()
+    end)
+
+    stub(ReqLLM.StreamResponse, :usage, fn {:fake_structured_stream, _i} -> usage end)
+
+    counter
+  end
+
+  defp echo_tool do
+    %{
+      tool: ReqLLM.tool(
+        name: "echo",
+        description: "Echoes a message back",
+        parameter_schema: [msg: [type: :string, required: true, doc: "Message to echo"]],
+        callback: fn _args -> :ok end
+      ),
+      execute: fn %{"msg" => msg} -> {:ok, "echoed: #{msg}"} end
+    }
+  end
+
+  defp collect_events(fun) do
+    {:ok, agent} = Agent.start_link(fn -> [] end)
+
+    on_event = fn event ->
+      Agent.update(agent, fn events -> [event | events] end)
+      :ok
+    end
+
+    result = fun.(on_event)
+
+    events = Agent.get(agent, &Enum.reverse/1)
+    Agent.stop(agent)
+    {result, events}
+  end
+
+  # -- Tests --
+
+  describe "single-turn: final_answer" do
+    test "structured reasoner returns final answer directly" do
+      json = Jason.encode!(%{
+        "thinking" => "User said hi, I should greet them.",
+        "action" => "final_answer",
+        "action_input" => %{"answer" => "Hello there!"}
+      })
+
+      stub_structured_stream(json)
+
+      {result, events} = collect_events(fn on_event ->
+        Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("Hi")],
+          reasoner: Rho.Reasoner.Structured,
+          emit: on_event,
+          max_steps: 5
+        )
+      end)
+
+      assert {:ok, "Hello there!"} = result
+
+      # Verify streaming events were emitted
+      assert Enum.any?(events, &match?(%{type: :text_delta}, &1))
+      assert Enum.any?(events, &match?(%{type: :structured_partial}, &1))
+      assert Enum.any?(events, &match?(%{type: :llm_usage}, &1))
+
+      # Verify usage was captured (not empty)
+      usage_event = Enum.find(events, &match?(%{type: :llm_usage}, &1))
+      assert usage_event.usage == %{input_tokens: 50, output_tokens: 30}
+    end
+  end
+
+  describe "multi-turn: tool call → result → final answer" do
+    test "executes tool, feeds result back, then returns final answer" do
+      tool_json = Jason.encode!(%{
+        "thinking" => "I need to echo the message.",
+        "action" => "echo",
+        "action_input" => %{"msg" => "ping"}
+      })
+
+      final_json = Jason.encode!(%{
+        "thinking" => "Got the echo result, return it.",
+        "action" => "final_answer",
+        "action_input" => %{"answer" => "The echo returned: echoed: ping"}
+      })
+
+      _counter = expect_structured_sequence([tool_json, final_json])
+
+      {result, events} = collect_events(fn on_event ->
+        Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("echo ping")],
+          tools: [echo_tool()],
+          reasoner: Rho.Reasoner.Structured,
+          emit: on_event,
+          max_steps: 5
+        )
+      end)
+
+      assert {:ok, "The echo returned: echoed: ping"} = result
+
+      # Verify tool lifecycle events
+      assert Enum.any?(events, &match?(%{type: :tool_start, name: "echo"}, &1))
+      assert Enum.any?(events, &match?(%{type: :tool_result, name: "echo", status: :ok}, &1))
+
+      # Verify 2 step_start events (two LLM calls)
+      step_starts = Enum.filter(events, &match?(%{type: :step_start}, &1))
+      assert length(step_starts) == 2
+    end
+  end
+
+
+  describe "tape recording" do
+    test "structured tool steps are recorded to tape correctly" do
+      Service.ensure_bootstrap_anchor(@test_tape)
+
+      tool_json = Jason.encode!(%{
+        "thinking" => "Let me echo.",
+        "action" => "echo",
+        "action_input" => %{"msg" => "tape_test"}
+      })
+
+      final_json = Jason.encode!(%{
+        "thinking" => "Done.",
+        "action" => "final_answer",
+        "action_input" => %{"answer" => "Tape recorded"}
+      })
+
+      _counter = expect_structured_sequence([tool_json, final_json])
+
+      {result, _events} = collect_events(fn on_event ->
+        Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("echo for tape")],
+          tools: [echo_tool()],
+          reasoner: Rho.Reasoner.Structured,
+          emit: on_event,
+          tape_name: @test_tape,
+          max_steps: 5
+        )
+      end)
+
+      assert {:ok, "Tape recorded"} = result
+
+      # Verify tape has entries — rebuild_context should produce a non-empty list
+      context = Rho.Memory.Tape.build_context(@test_tape)
+      assert length(context) > 0
+
+      # Should contain the user input, the structured assistant JSON, the tool result, and the final assistant text
+      roles = Enum.map(context, & &1.role)
+      assert :user in roles
+      assert :assistant in roles
+    end
+  end
+
+  describe "unknown tool handling" do
+    test "returns error message for unknown tool and continues" do
+      bad_json = Jason.encode!(%{
+        "thinking" => "Using nonexistent tool.",
+        "action" => "nonexistent_tool",
+        "action_input" => %{}
+      })
+
+      final_json = Jason.encode!(%{
+        "thinking" => "OK, let me answer directly.",
+        "action" => "final_answer",
+        "action_input" => %{"answer" => "Recovered from error"}
+      })
+
+      _counter = expect_structured_sequence([bad_json, final_json])
+
+      {result, _events} = collect_events(fn on_event ->
+        Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("do something")],
+          tools: [echo_tool()],
+          reasoner: Rho.Reasoner.Structured,
+          emit: on_event,
+          max_steps: 5
+        )
+      end)
+
+      assert {:ok, "Recovered from error"} = result
+    end
+  end
+
+  describe "unparseable output" do
+    test "treats unparseable LLM output as final answer" do
+      stub_structured_stream("I'm just going to answer directly without JSON.")
+
+      {result, _events} = collect_events(fn on_event ->
+        Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("Hi")],
+          reasoner: Rho.Reasoner.Structured,
+          emit: on_event,
+          max_steps: 5
+        )
+      end)
+
+      assert {:ok, "I'm just going to answer directly without JSON."} = result
+    end
+  end
+
+  describe "tool prompt injection" do
+    test "system prompt includes tool descriptions when structured reasoner is active" do
+      pid = self()
+
+      expect(ReqLLM, :stream_text, fn _model, ctx, _opts ->
+        send(pid, {:context, ctx})
+        {:ok, :fake_prompt_check}
+      end)
+
+      stub(ReqLLM.StreamResponse, :tokens, fn :fake_prompt_check ->
+        Jason.encode!(%{"action" => "final_answer", "action_input" => %{"answer" => "ok"}})
+        |> String.graphemes()
+      end)
+
+      stub(ReqLLM.StreamResponse, :usage, fn :fake_prompt_check -> %{} end)
+
+      Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("test")],
+        tools: [echo_tool()],
+        reasoner: Rho.Reasoner.Structured,
+        emit: fn _event -> :ok end,
+        max_steps: 1
+      )
+
+      assert_received {:context, context}
+      system_msg = hd(context)
+      system_text = extract_system_text(system_msg)
+
+      assert system_text =~ "OUTPUT FORMAT"
+      assert system_text =~ "echo"
+      assert system_text =~ "Action variants"
+      assert system_text =~ "final_answer"
+      assert system_text =~ "Tool Reference"
+    end
+  end
+
+  # -- Helpers --
+
+  defp extract_system_text(%{content: content}) when is_binary(content), do: content
+  defp extract_system_text(%{content: parts}) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %{text: t} -> t
+      %{"text" => t} -> t
+      _ -> ""
+    end)
+  end
+end
