@@ -1377,9 +1377,9 @@ defmodule RhoWeb.InlineCSS do
     /* Candidate tooltip on scoreboard */
     .obs-cand-name-hover { border-bottom: 1px dashed var(--border); cursor: pointer; position: relative; }
     .obs-cand-name-hover:hover { color: var(--teal); border-bottom-color: var(--teal); }
-    .obs-cand-tooltip { display: none; position: absolute; right: 100%; top: -10px; margin-right: 8px;
-      width: 250px; background: var(--bg-surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); z-index: 40;
+    .obs-cand-tooltip { display: none; position: absolute; left: 0; top: 100%; margin-top: 4px;
+      width: 260px; background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); z-index: 50;
       text-align: left; font-weight: normal; }
     .obs-cand-name-hover:hover .obs-cand-tooltip { display: block; }
     .obs-cand-tooltip-name { font-weight: 700; font-size: 14px; color: var(--text-primary); margin-bottom: 2px; }

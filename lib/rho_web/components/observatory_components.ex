@@ -183,7 +183,7 @@ defmodule RhoWeb.ObservatoryComponents do
               <span class={"obs-timeline-tag obs-timeline-tag-#{role_css_key(entry.agent_role)}"}><%= format_role_short(entry.agent_role) %></span>
               <div>
                 <div class="obs-timeline-debate-to">
-                  → <%= if entry.target == :all, do: "ALL", else: format_agent_name(entry.target) %>
+                  → <span class={"obs-role-#{role_css_key(entry.target)}"}><%= if entry.target == :all, do: "ALL", else: format_agent_name(entry.target) %></span>
                 </div>
                 <div class="obs-timeline-debate-text"><%= entry.text %></div>
               </div>
