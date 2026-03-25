@@ -20,7 +20,11 @@ defmodule Rho.Demos.Hiring.Simulation do
     evaluator_tools: %{},
     scores: %{},
     status: :not_started,
-    max_rounds: 2
+    max_rounds: 2,
+    chairman_agent_id: nil,
+    chairman_tools: nil,
+    round_started_at: nil,
+    round_timer_ref: nil
   ]
 
   # --- Public API ---
@@ -57,6 +61,16 @@ defmodule Rho.Demos.Hiring.Simulation do
       session_id: state.session_id
     }, source: "/session/#{state.session_id}")
 
+    state = spawn_chairman(state)
+
+    # Publish hardcoded opening message (no LLM call)
+    Comms.publish("rho.hiring.chairman.message", %{
+      session_id: state.session_id,
+      agent_id: state.chairman_agent_id,
+      agent_role: :chairman,
+      text: "I've convened this committee to evaluate 5 candidates for Senior Backend Engineer. Budget: $160K–$190K. Maximum 3 offers. Let's begin with Round 1 — evaluators, please score all candidates."
+    }, source: "/session/#{state.session_id}")
+
     state = spawn_evaluators(state)
     state = start_round(state, 1)
     {:reply, :ok, %{state | status: :running}}
@@ -75,6 +89,42 @@ defmodule Rho.Demos.Hiring.Simulation do
       {:noreply, state}
     end
   end
+
+  @impl true
+  def handle_info({:check_round_timeout, round_num}, %{status: :running, round: current_round} = state)
+      when round_num == current_round do
+    submitted_roles =
+      state.scores
+      |> Map.keys()
+      |> Enum.filter(fn {_role, r} -> r == state.round end)
+      |> Enum.map(fn {role, _r} -> role end)
+
+    missing = Map.keys(state.evaluators) -- submitted_roles
+
+    if missing != [] do
+      Logger.warning("[Hiring] Round #{state.round} timeout — nudging #{length(missing)} evaluators: #{inspect(missing)}")
+
+      chairman_pid = Worker.whereis(state.chairman_agent_id)
+      config = Rho.Config.agent(:chairman)
+
+      if chairman_pid do
+        missing_names = Enum.map_join(missing, ", ", &Atom.to_string/1)
+        Worker.submit(chairman_pid,
+          "The following evaluators have not submitted scores for round #{state.round}: #{missing_names}. Please send each of them a message asking them to submit their scores now using submit_scores.",
+          tools: state.chairman_tools,
+          model: config.model
+        )
+      end
+
+      ref = Process.send_after(self(), {:check_round_timeout, round_num}, 60_000)
+      {:noreply, %{state | round_timer_ref: ref}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  # Stale timer from previous round or non-running state — ignore
+  def handle_info({:check_round_timeout, _}, state), do: {:noreply, state}
 
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -140,8 +190,56 @@ defmodule Rho.Demos.Hiring.Simulation do
     %{state | evaluators: evaluator_map, evaluator_tools: tools_map}
   end
 
+  defp spawn_chairman(state) do
+    agent_id = Rho.Session.new_agent_id()
+    config = Rho.Config.agent(:chairman)
+
+    tool_context = %{
+      tape_name: "agent_#{agent_id}",
+      workspace: File.cwd!(),
+      agent_name: :chairman,
+      agent_id: agent_id,
+      session_id: state.session_id,
+      depth: 1,
+      sandbox: nil
+    }
+
+    allowed_tools = ~w(send_message list_agents)
+    mount_tools =
+      Rho.MountRegistry.collect_tools(tool_context)
+      |> Enum.filter(fn t -> t.tool.name in allowed_tools end)
+
+    finish_tool = Rho.Tools.Finish.tool_def()
+    all_tools = mount_tools ++ [finish_tool]
+
+    memory_mod = Rho.Config.memory_module()
+    tape = "agent_#{agent_id}"
+    memory_mod.bootstrap(tape)
+
+    {:ok, _pid} =
+      Supervisor.start_worker(
+        agent_id: agent_id,
+        session_id: state.session_id,
+        workspace: File.cwd!(),
+        agent_name: :chairman,
+        role: :chairman,
+        depth: 1,
+        memory_ref: tape,
+        max_steps: config.max_steps,
+        system_prompt: config.system_prompt,
+        tools: all_tools,
+        model: config.model
+      )
+
+    Logger.info("[Hiring] Spawned chairman as #{agent_id}")
+    %{state | chairman_agent_id: agent_id, chairman_tools: all_tools}
+  end
+
   defp start_round(state, round_num) do
     prompt = round_prompt(round_num, state)
+
+    # Cancel previous round timer if exists
+    if state.round_timer_ref, do: Process.cancel_timer(state.round_timer_ref)
 
     Comms.publish("rho.hiring.round.started", %{
       session_id: state.session_id,
@@ -167,7 +265,10 @@ defmodule Rho.Demos.Hiring.Simulation do
       end
     end)
 
-    %{state | round: round_num}
+    # Schedule round timeout check (with round number to prevent stale timer issues)
+    ref = Process.send_after(self(), {:check_round_timeout, round_num}, 90_000)
+
+    %{state | round: round_num, round_started_at: System.monotonic_time(:millisecond), round_timer_ref: ref}
   end
 
   defp round_prompt(1, _state) do
@@ -212,7 +313,47 @@ defmodule Rho.Demos.Hiring.Simulation do
 
     if submitted >= expected do
       if state.round >= state.max_rounds do
+        # Cancel round timer
+        if state.round_timer_ref, do: Process.cancel_timer(state.round_timer_ref)
+
         final = compute_final_shortlist(state)
+
+        # Stop all evaluator agents to prevent further debate
+        for {_role, agent_id} <- state.evaluators do
+          pid = Worker.whereis(agent_id)
+          if pid do
+            try do
+              GenServer.stop(pid, :normal, 5_000)
+            catch
+              :exit, _ -> :ok
+            end
+          end
+        end
+
+        Logger.info("[Hiring] Evaluators stopped. Sending closing prompt to chairman.")
+
+        # Build and send closing prompt to chairman
+        closing_prompt = build_closing_prompt(state, final)
+        chairman_pid = Worker.whereis(state.chairman_agent_id)
+        config = Rho.Config.agent(:chairman)
+
+        if chairman_pid do
+          Worker.submit(chairman_pid, closing_prompt,
+            tools: state.chairman_tools,
+            model: config.model
+          )
+        else
+          Logger.warning("[Hiring] Chairman agent not available for closing summary")
+        end
+
+        # Publish structured summary (deterministic, immediate)
+        Comms.publish("rho.hiring.chairman.summary", %{
+          session_id: state.session_id,
+          agent_id: state.chairman_agent_id,
+          agent_role: :chairman,
+          shortlist: final,
+          text: format_shortlist_text(final)
+        }, source: "/session/#{state.session_id}")
 
         Comms.publish("rho.hiring.simulation.completed", %{
           session_id: state.session_id,
@@ -220,7 +361,7 @@ defmodule Rho.Demos.Hiring.Simulation do
         }, source: "/session/#{state.session_id}")
 
         Logger.info("[Hiring] Simulation complete. Shortlist: #{inspect(final)}")
-        %{state | status: :completed}
+        %{state | status: :completed, round_timer_ref: nil}
       else
         start_round(state, state.round + 1)
       end
@@ -291,6 +432,54 @@ defmodule Rho.Demos.Hiring.Simulation do
       candidate = Enum.find(Candidates.all(), &(&1.id == id))
       name = if candidate, do: candidate.name, else: id
       %{id: id, name: name, avg_score: avg}
+    end)
+  end
+
+  defp build_closing_prompt(state, shortlist) do
+    score_table =
+      state.scores
+      |> Enum.filter(fn {{_role, round}, _} -> round == state.max_rounds end)
+      |> Enum.flat_map(fn {{role, _round}, scores} ->
+        Enum.map(scores, fn entry ->
+          candidate = Enum.find(Candidates.all(), &(&1.id == entry["id"]))
+          name = if candidate, do: candidate.name, else: entry["id"]
+          "#{name}: #{role} scored #{entry["score"]} — #{entry["rationale"] || ""}"
+        end)
+      end)
+      |> Enum.join("\n")
+
+    shortlist_text =
+      shortlist
+      |> Enum.map_join("\n", fn s ->
+        candidate = Enum.find(Candidates.all(), &(&1.id == s.id))
+        salary = if candidate, do: "$#{candidate.salary_expectation}", else: "N/A"
+        "- #{s.name} (avg: #{s.avg_score}, salary: #{salary})"
+      end)
+
+    disagreement = build_disagreement_summary(state)
+
+    """
+    The committee has completed #{state.max_rounds} rounds of evaluation. Here are the final scores:
+
+    #{score_table}
+
+    Shortlist (top 3 by average):
+    #{shortlist_text}
+
+    Key disagreements from the debate:
+    #{disagreement}
+
+    Please produce the committee's final recommendation report. Use the `finish` tool with your summary when done.
+    """
+  end
+
+  defp format_shortlist_text(shortlist) do
+    shortlist
+    |> Enum.with_index(1)
+    |> Enum.map_join("\n", fn {s, i} ->
+      candidate = Enum.find(Candidates.all(), &(&1.id == s.id))
+      salary = if candidate, do: "$#{candidate.salary_expectation}", else: "N/A"
+      "#{i}. **#{s.name}** — avg score #{s.avg_score}, recommended at #{salary}"
     end)
   end
 
