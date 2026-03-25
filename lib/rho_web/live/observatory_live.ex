@@ -303,6 +303,19 @@ defmodule RhoWeb.ObservatoryLive do
   defp generate_insights(agents) do
     busy_count = agents |> Map.values() |> Enum.count(&(&1.status == :busy))
 
+    dead_agents =
+      agents
+      |> Map.values()
+      |> Enum.filter(&(&1[:alive] == false))
+      |> Enum.map(&format_name(&1.agent_name))
+
+    dead_insight =
+      if dead_agents != [] do
+        [%{text: "#{Enum.join(dead_agents, ", ")} #{if length(dead_agents) == 1, do: "process is", else: "processes are"} down", severity: :highlight}]
+      else
+        []
+      end
+
     agent_insights =
       agents
       |> Map.values()
@@ -317,10 +330,7 @@ defmodule RhoWeb.ObservatoryLive do
               }
             ]
 
-          agent[:alive] == false ->
-            [%{text: "#{format_name(agent.agent_name)} process is down", severity: :highlight}]
-
-          agent[:heap_size] && agent.heap_size > 100_000 ->
+          agent[:heap_size] && agent.heap_size > 100_000 && agent[:alive] != false ->
             [
               %{
                 text:
@@ -358,7 +368,7 @@ defmodule RhoWeb.ObservatoryLive do
           []
       end
 
-    (global_insights ++ agent_insights) |> Enum.take(3)
+    (global_insights ++ dead_insight ++ agent_insights) |> Enum.take(4)
   end
 
   defp format_name(name) when is_atom(name) do
