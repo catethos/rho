@@ -213,32 +213,35 @@ defmodule RhoWeb.ObservatoryProjection do
 
   defp maybe_update_convergence(socket) do
     scores = socket.assigns.scores
+    current_round = socket.assigns[:round] || 0
+    history = socket.assigns.convergence_history
 
-    # Collect candidates that have all 3 evaluator scores
-    complete =
-      scores
-      |> Map.values()
-      |> Enum.filter(fn row ->
+    # Only record one convergence value per round
+    # history length = number of rounds already recorded
+    if length(history) >= current_round do
+      socket
+    else
+      # Check if ALL candidates have ALL 3 evaluator scores
+      all_candidates = Map.values(scores)
+      complete = Enum.filter(all_candidates, fn row ->
         row[:technical] != nil and row[:culture] != nil and row[:compensation] != nil
       end)
 
-    if complete == [] do
-      socket
-    else
-      # Convergence = 1 - (average spread / 100)
-      # Spread = max - min across evaluators for each candidate
-      avg_spread =
-        complete
-        |> Enum.map(fn row ->
-          vals = [row.technical, row.culture, row.compensation]
-          Enum.max(vals) - Enum.min(vals)
-        end)
-        |> then(fn spreads -> Enum.sum(spreads) / length(spreads) end)
+      # Only record when every candidate has been scored by all 3
+      if length(complete) == length(all_candidates) and complete != [] do
+        avg_spread =
+          complete
+          |> Enum.map(fn row ->
+            vals = [row.technical, row.culture, row.compensation]
+            Enum.max(vals) - Enum.min(vals)
+          end)
+          |> then(fn spreads -> Enum.sum(spreads) / length(spreads) end)
 
-      convergence = max(0.0, 1.0 - avg_spread / 100.0)
-
-      history = socket.assigns.convergence_history ++ [convergence]
-      assign(socket, :convergence_history, history)
+        convergence = max(0.0, 1.0 - avg_spread / 100.0)
+        assign(socket, :convergence_history, history ++ [convergence])
+      else
+        socket
+      end
     end
   end
 
@@ -251,11 +254,17 @@ defmodule RhoWeb.ObservatoryProjection do
         _ -> from
       end
 
+    to_role =
+      case socket.assigns[:agents][to] do
+        %{role: role} -> role
+        _ -> to
+      end
+
     entry = %{
       type: :debate,
       agent_role: from_role,
       agent_id: agent_id || from,
-      target: to,
+      target: to_role,
       text: to_string(message || ""),
       candidate_id: nil,
       candidate_name: nil,

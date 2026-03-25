@@ -100,7 +100,7 @@ defmodule RhoWeb.ObservatoryComponents do
   attr :convergence_history, :list, required: true
 
   def convergence_chart(assigns) do
-    max_rounds = 4
+    max_rounds = 2
 
     coords =
       assigns.convergence_history
