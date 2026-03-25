@@ -95,67 +95,6 @@ defmodule RhoWeb.ObservatoryComponents do
     """
   end
 
-  # --- Signal flow timeline ---
-
-  attr :signals, :list, required: true
-
-  def signal_flow(assigns) do
-    ~H"""
-    <div class="obs-signal-flow" id="signal-flow" phx-hook="AutoScroll">
-      <h3 class="obs-section-title">Signal Flow</h3>
-      <div :for={signal <- Enum.take(@signals, 50)} class="obs-signal-row">
-        <span class="obs-signal-time"><%= format_time(signal.timestamp) %></span>
-        <span class={"obs-signal-from obs-role-#{signal.from_agent}"}><%= format_agent_name(signal.from_agent) %></span>
-        <span class="obs-signal-arrow">
-          <%= if signal.to_agent == :all, do: "=> ALL", else: "=>" %>
-        </span>
-        <span :if={signal.to_agent != :all} class="obs-signal-to">
-          <%= format_agent_name(signal.to_agent) %>
-        </span>
-        <span class="obs-signal-preview"><%= signal.preview %></span>
-      </div>
-      <div :if={@signals == []} class="obs-signal-empty">
-        Waiting for agent communication...
-      </div>
-    </div>
-    """
-  end
-
-  # --- Activity feed ---
-
-  attr :activity, :map, required: true
-  attr :agents, :map, required: true
-
-  def activity_feed(assigns) do
-    ~H"""
-    <div class="obs-activity-feed" id="activity-feed" phx-hook="AutoScroll">
-      <h3 class="obs-section-title">Agent Activity</h3>
-      <div class="obs-activity-columns">
-        <div :for={{agent_id, agent} <- @agents} class="obs-activity-column">
-          <div class={"obs-activity-agent-label obs-role-#{agent.agent_name}"}>
-            <%= format_role(agent.agent_name) %>
-          </div>
-          <div class="obs-activity-content">
-            <% agent_activity = Map.get(@activity, agent_id, %{text: "", entries: []}) %>
-            <div :if={agent_activity.text != ""} class="obs-activity-text">
-              <%= agent_activity.text %>
-            </div>
-            <div :for={entry <- Enum.take(agent_activity.entries, 5)} class={"obs-activity-entry obs-activity-#{entry.type}"}>
-              <%= entry.content %>
-            </div>
-            <div :if={agent_activity.text == "" and agent_activity.entries == []} class="obs-activity-waiting">
-              Waiting...
-            </div>
-          </div>
-        </div>
-      </div>
-      <div :if={@agents == %{}} class="obs-activity-waiting">
-        No agents spawned yet.
-      </div>
-    </div>
-    """
-  end
-
   # --- Convergence chart ---
 
   attr :convergence_history, :list, required: true
@@ -425,14 +364,6 @@ defmodule RhoWeb.ObservatoryComponents do
 
   defp format_avg(nil), do: "—"
   defp format_avg(avg), do: Float.round(avg, 1)
-
-  defp format_time(timestamp) do
-    # Show relative seconds from start (monotonic time)
-    secs = div(timestamp, 1000)
-    mins = div(secs, 60)
-    remaining_secs = rem(abs(secs), 60)
-    "#{mins}:#{String.pad_leading(Integer.to_string(remaining_secs), 2, "0")}"
-  end
 
   defp format_agent_name(name) when is_atom(name), do: format_role(name)
   defp format_agent_name(name) when is_binary(name) do

@@ -16,7 +16,7 @@ defmodule RhoWeb.ObservatoryLive do
        session_id: nil,
        simulation_status: :not_started,
        agents: %{},
-       signals: [],
+       timeline: [],
        scores: %{},
        round: 0,
        convergence_history: [],
@@ -34,7 +34,7 @@ defmodule RhoWeb.ObservatoryLive do
         session_id: sid,
         simulation_status: :not_started,
         agents: %{},
-        signals: [],
+        timeline: [],
         scores: seed_scoreboard(),
         round: 0,
         convergence_history: [],
@@ -108,6 +108,10 @@ defmodule RhoWeb.ObservatoryLive do
     {:noreply, assign(socket, selected_agent: agent_id)}
   end
 
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign(socket, selected_agent: nil)}
+  end
+
   # --- Tick: poll BEAM process internals ---
 
   @impl true
@@ -120,7 +124,7 @@ defmodule RhoWeb.ObservatoryLive do
 
   # --- Signal handling ---
 
-  def handle_info({:signal, %Jido.Signal{type: type, data: data} = sig}, socket) do
+  def handle_info({:signal, %Jido.Signal{type: type, data: data}}, socket) do
     require Logger
     # Debug: log events to see what's arriving
     cond do
@@ -145,23 +149,44 @@ defmodule RhoWeb.ObservatoryLive do
   # Landing page
   @impl true
   def render(%{session_id: nil} = assigns) do
+    candidates = Candidates.all()
+    assigns = Phoenix.Component.assign(assigns, :candidates, candidates)
+
     ~H"""
     <div class="obs-landing">
-      <h1>Hiring Committee Observatory</h1>
-      <p>Watch 3 AI agents evaluate 10 candidates and debate to consensus — in real-time.</p>
-      <p class="obs-landing-subtitle">
-        Every agent is a BEAM process. You'll see mailbox depth, heap size, and
-        CPU reductions updating live — process-level introspection with zero external tooling.
-      </p>
+      <div class="obs-landing-header">
+        <h1>Hiring Committee Observatory</h1>
+        <p>Watch 3 AI agents evaluate candidates, debate each other, and converge on a hiring decision — in real-time. Every agent is a BEAM process.</p>
+      </div>
+
+      <div class="obs-landing-section">
+        <div class="obs-landing-section-title">The Evaluators</div>
+        <.evaluator_cards />
+      </div>
+
+      <div class="obs-landing-section">
+        <div class="obs-landing-section-title">The Candidates — Senior Backend Engineer · $160K–$190K · Max 3 offers</div>
+        <.candidate_cards candidates={@candidates} />
+      </div>
+
+      <div class="obs-landing-section">
+        <div class="obs-landing-section-title">How It Works</div>
+        <.how_it_works />
+      </div>
+
       <button class="obs-start-btn-large" phx-click="start_simulation">
         Start Simulation
       </button>
+      <div class="obs-start-meta">~2–3 min · 3 agents × 2 rounds · 5 candidates · Uses Claude Haiku</div>
     </div>
     """
   end
 
   # Active observatory
   def render(assigns) do
+    candidates = Candidates.all()
+    assigns = Phoenix.Component.assign(assigns, :candidates, candidates)
+
     ~H"""
     <div class="obs-layout">
       <header class="obs-header">
@@ -169,7 +194,7 @@ defmodule RhoWeb.ObservatoryLive do
         <div class="obs-header-stats">
           <span>Round <%= @round %></span>
           <span><%= map_size(@agents) %> agents</span>
-          <span><%= length(@signals) %> signals</span>
+          <span><%= length(@timeline) %> events</span>
           <span class={"obs-status-badge obs-status-#{@simulation_status}"}>
             <%= @simulation_status %>
           </span>
@@ -187,14 +212,19 @@ defmodule RhoWeb.ObservatoryLive do
           <div class="obs-agents-grid">
             <.agent_card :for={{_id, agent} <- @agents} agent={agent} />
           </div>
-          <.activity_feed activity={@activity} agents={@agents} />
+          <.unified_timeline timeline={@timeline} />
         </div>
 
         <div class="obs-right">
-          <.scoreboard scores={@scores} />
-          <.signal_flow signals={@signals} />
+          <.scoreboard scores={@scores} candidates={@candidates} />
           <.convergence_chart convergence_history={@convergence_history} />
         </div>
+
+        <.agent_drawer
+          :if={@selected_agent && @agents[@selected_agent]}
+          agent={@agents[@selected_agent]}
+          activity={Map.get(@activity, @selected_agent, %{text: "", entries: []})}
+        />
       </div>
     </div>
     """
@@ -229,7 +259,8 @@ defmodule RhoWeb.ObservatoryLive do
 
   defp seed_scoreboard do
     Map.new(Candidates.all(), fn c ->
-      {c.id, %{name: c.name, technical: nil, culture: nil, compensation: nil, avg: nil}}
+      {c.id, %{name: c.name, technical: nil, culture: nil, compensation: nil, avg: nil,
+               prev_technical: nil, prev_culture: nil, prev_compensation: nil}}
     end)
   end
 
