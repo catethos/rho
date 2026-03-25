@@ -164,7 +164,7 @@ defmodule Rho.Demos.Hiring.Simulation do
 
         # Only include multi-agent tools (send_message, broadcast, list_agents)
         # Filter out unrelated tools like present_ui, bash, file tools, etc.
-        allowed_tools = ~w(send_message broadcast_message list_agents)
+        allowed_tools = ~w(send_message list_agents)
         mount_tools =
           Rho.MountRegistry.collect_tools(tool_context)
           |> Enum.filter(fn t -> t.tool.name in allowed_tools end)

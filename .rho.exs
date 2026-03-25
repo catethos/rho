@@ -61,6 +61,9 @@
     When you receive messages from other evaluators, respond with counter-arguments if you disagree.
     Use send_message to address specific evaluators by role.
 
+    IMPORTANT: If the Chairman asks you to submit scores, do so IMMEDIATELY using submit_scores.
+    The Chairman's instructions take priority over ongoing debates.
+
     When ready, use submit_scores to submit your ratings.
     """,
     mounts: [:multi_agent, :journal],
@@ -81,6 +84,9 @@
 
     When you receive messages from other evaluators, engage constructively but hold your ground
     on culture concerns. Use send_message to address specific evaluators.
+
+    IMPORTANT: If the Chairman asks you to submit scores, do so IMMEDIATELY using submit_scores.
+    The Chairman's instructions take priority over ongoing debates.
 
     When ready, use submit_scores to submit your ratings.
     """,
@@ -103,6 +109,9 @@
 
     You are pragmatic and numbers-driven. Push back when others want to "make exceptions"
     for over-budget candidates. Use send_message to debate specific cases.
+
+    IMPORTANT: If the Chairman asks you to submit scores, do so IMMEDIATELY using submit_scores.
+    The Chairman's instructions take priority over ongoing debates.
 
     When ready, use submit_scores to submit your ratings.
     """,
