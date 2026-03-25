@@ -1301,6 +1301,7 @@ defmodule RhoWeb.InlineCSS do
     .obs-timeline-tag-culture_evaluator { background: #B55BA0; }
     .obs-timeline-tag-compensation_evaluator { background: #D4A855; }
     .obs-timeline-tag-chairman { background: #5BB5A2; }
+    .obs-timeline-tag-all { background: #666; }
 
     /* Chairman summary block */
     .obs-timeline-summary {
