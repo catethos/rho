@@ -120,6 +120,46 @@ defmodule RhoWeb.ObservatoryProjection do
     assign(socket, :simulation_status, :completed)
   end
 
+  def project(socket, "rho.hiring.chairman.message", data) do
+    timeline = socket.assigns[:timeline] || []
+
+    entry = %{
+      type: :chairman,
+      agent_role: :chairman,
+      agent_id: data[:agent_id],
+      target: nil,
+      text: data[:text] || "",
+      candidate_id: nil,
+      candidate_name: nil,
+      score: nil,
+      delta: nil,
+      round: socket.assigns[:round] || 0,
+      timestamp: System.monotonic_time(:millisecond)
+    }
+
+    assign(socket, :timeline, timeline ++ [entry])
+  end
+
+  def project(socket, "rho.hiring.chairman.summary", data) do
+    timeline = socket.assigns[:timeline] || []
+
+    entry = %{
+      type: :chairman_summary,
+      agent_role: :chairman,
+      agent_id: data[:agent_id],
+      target: nil,
+      text: data[:text] || "",
+      candidate_id: nil,
+      candidate_name: nil,
+      score: nil,
+      delta: nil,
+      round: socket.assigns[:round] || 0,
+      timestamp: System.monotonic_time(:millisecond)
+    }
+
+    assign(socket, :timeline, timeline ++ [entry])
+  end
+
   def project(socket, "rho.session." <> _ = type, data) when is_map(data) do
     cond do
       String.contains?(type, "broadcast") ->
