@@ -41,29 +41,79 @@ defmodule RhoWeb.ObservatoryProjection do
     require Logger
     role = data[:role] || data["role"]
     role_key = score_column(role)
-    Logger.info("[Projection] scores.submitted role=#{inspect(role)} role_key=#{role_key} scores=#{inspect(data[:scores] || data["scores"])}")
+    Logger.info("[Projection] scores.submitted role=#{inspect(role)} role_key=#{role_key}")
 
     scores_data = data[:scores] || data["scores"] || []
 
+    # Update scores with prev_* tracking
     scores =
       Enum.reduce(scores_data, socket.assigns.scores, fn entry, acc ->
         id = entry["id"] || entry[:id]
         score = entry["score"] || entry[:score]
+        prev_key = :"prev_#{role_key}"
 
-        Map.update(acc, id, %{name: id, technical: nil, culture: nil, compensation: nil, avg: nil}, fn row ->
+        Map.update(acc, id, %{name: id, technical: nil, culture: nil, compensation: nil, avg: nil,
+                               prev_technical: nil, prev_culture: nil, prev_compensation: nil}, fn row ->
           row
+          |> Map.put(prev_key, row[role_key])
           |> Map.put(role_key, score)
           |> recompute_avg()
         end)
       end)
 
-    assign(socket, :scores, scores)
+    # Build timeline entries from the updated scores
+    timeline_entries =
+      Enum.map(scores_data, fn entry ->
+        id = entry["id"] || entry[:id]
+        score = entry["score"] || entry[:score]
+        prev = scores[id][:"prev_#{role_key}"]
+        delta = if is_integer(prev), do: score - prev, else: nil
+        rationale = entry["rationale"] || entry[:rationale] || ""
+
+        %{
+          type: :score,
+          agent_role: role,
+          agent_id: data[:agent_id],
+          target: nil,
+          text: String.slice(rationale, 0, 150),
+          candidate_id: id,
+          candidate_name: scores[id][:name] || id,
+          score: score,
+          delta: delta,
+          round: socket.assigns[:round] || 0,
+          timestamp: System.monotonic_time(:millisecond)
+        }
+      end)
+
+    timeline = socket.assigns[:timeline] || []
+
+    socket
+    |> assign(:scores, scores)
+    |> assign(:timeline, timeline ++ timeline_entries)
+    |> maybe_update_convergence()
   end
 
   def project(socket, "rho.hiring.round.started", data) do
+    timeline = socket.assigns[:timeline] || []
+
+    entry = %{
+      type: :round_start,
+      agent_role: nil,
+      agent_id: nil,
+      target: nil,
+      text: "Round #{data.round}",
+      candidate_id: nil,
+      candidate_name: nil,
+      score: nil,
+      delta: nil,
+      round: data.round,
+      timestamp: System.monotonic_time(:millisecond)
+    }
+
     socket
     |> assign(:round, data.round)
     |> assign(:simulation_status, :running)
+    |> assign(:timeline, timeline ++ [entry])
   end
 
   def project(socket, "rho.hiring.simulation.completed", _data) do
@@ -73,10 +123,10 @@ defmodule RhoWeb.ObservatoryProjection do
   def project(socket, "rho.session." <> _ = type, data) when is_map(data) do
     cond do
       String.contains?(type, "broadcast") ->
-        add_signal(socket, data[:from], :all, data[:message])
+        add_debate_to_timeline(socket, data[:from], :all, data[:message], data[:agent_id])
 
       String.contains?(type, "message_sent") ->
-        add_signal(socket, data[:from], data[:to], data[:message])
+        add_debate_to_timeline(socket, data[:from], data[:to], data[:message], data[:agent_id])
 
       String.contains?(type, "text_delta") ->
         append_activity_text(socket, data[:agent_id], data[:text] || data[:delta] || "")
@@ -161,17 +211,60 @@ defmodule RhoWeb.ObservatoryProjection do
     assign(socket, :activity, Map.put(activity, agent_id, updated))
   end
 
-  defp add_signal(socket, from, to, message) do
-    signal = %{
-      id: System.unique_integer([:positive]) |> to_string(),
-      timestamp: System.monotonic_time(:millisecond),
-      from_agent: from,
-      to_agent: to,
-      type: if(to == :all, do: "broadcast", else: "direct"),
-      preview: String.slice(to_string(message || ""), 0, 120)
+  defp maybe_update_convergence(socket) do
+    scores = socket.assigns.scores
+
+    # Collect candidates that have all 3 evaluator scores
+    complete =
+      scores
+      |> Map.values()
+      |> Enum.filter(fn row ->
+        row[:technical] != nil and row[:culture] != nil and row[:compensation] != nil
+      end)
+
+    if complete == [] do
+      socket
+    else
+      # Convergence = 1 - (average spread / 100)
+      # Spread = max - min across evaluators for each candidate
+      avg_spread =
+        complete
+        |> Enum.map(fn row ->
+          vals = [row.technical, row.culture, row.compensation]
+          Enum.max(vals) - Enum.min(vals)
+        end)
+        |> then(fn spreads -> Enum.sum(spreads) / length(spreads) end)
+
+      convergence = max(0.0, 1.0 - avg_spread / 100.0)
+
+      history = socket.assigns.convergence_history ++ [convergence]
+      assign(socket, :convergence_history, history)
+    end
+  end
+
+  defp add_debate_to_timeline(socket, from, to, message, agent_id) do
+    timeline = socket.assigns[:timeline] || []
+
+    from_role =
+      case socket.assigns[:agents][from] do
+        %{role: role} -> role
+        _ -> from
+      end
+
+    entry = %{
+      type: :debate,
+      agent_role: from_role,
+      agent_id: agent_id || from,
+      target: to,
+      text: to_string(message || ""),
+      candidate_id: nil,
+      candidate_name: nil,
+      score: nil,
+      delta: nil,
+      round: socket.assigns[:round] || 0,
+      timestamp: System.monotonic_time(:millisecond)
     }
 
-    signals = [signal | socket.assigns.signals] |> Enum.take(100)
-    assign(socket, :signals, signals)
+    assign(socket, :timeline, timeline ++ [entry])
   end
 end
