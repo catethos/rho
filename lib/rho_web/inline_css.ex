@@ -1292,36 +1292,52 @@ defmodule RhoWeb.InlineCSS do
       background: var(--teal); margin-right: 4px; animation: pulse 1s infinite; }
     .obs-agent-step { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
-    /* Activity feed */
-    .obs-activity-feed { flex: 1; overflow-y: auto; padding: 12px 16px; min-height: 200px; }
-    .obs-activity-columns { display: flex; gap: 12px; height: 100%; }
-    .obs-activity-column { flex: 1; display: flex; flex-direction: column;
-      border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-    .obs-activity-agent-label { padding: 6px 10px; font-weight: 600; font-size: 12px;
-      text-transform: uppercase; letter-spacing: 0.5px;
-      border-bottom: 1px solid var(--border); background: var(--bg-hover); }
-    .obs-activity-content { flex: 1; overflow-y: auto; padding: 8px 10px;
-      font-family: 'Fragment Mono', monospace; font-size: 11px; line-height: 1.5; }
-    .obs-activity-text { color: var(--text-primary); white-space: pre-wrap; word-break: break-word;
-      margin-bottom: 6px; }
-    .obs-activity-entry { padding: 3px 0; border-top: 1px solid var(--border); }
-    .obs-activity-tool_start { color: var(--teal); font-weight: 500; }
-    .obs-activity-tool_result { color: var(--text-secondary); font-size: 10px; }
-    .obs-activity-step { color: var(--text-muted); font-size: 10px; font-style: italic; }
-    .obs-activity-waiting { color: var(--text-muted); font-style: italic; padding: 12px 0; }
+    /* Unified timeline */
+    .obs-timeline { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    .obs-timeline-entry { margin-bottom: 8px; }
+    .obs-timeline-row { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-primary); }
+    .obs-timeline-tag { padding: 1px 7px; border-radius: 4px; font-size: 10px; white-space: nowrap; color: #fff; font-weight: 500; flex-shrink: 0; margin-top: 1px; }
+    .obs-timeline-tag-technical_evaluator { background: #5B8ABA; }
+    .obs-timeline-tag-culture_evaluator { background: #B55BA0; }
+    .obs-timeline-tag-compensation_evaluator { background: #D4A855; }
+    .obs-timeline-rationale { color: var(--text-secondary); font-size: 11px; }
+    .obs-timeline-round-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: 10px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; }
+    .obs-timeline-round-line { flex: 1; height: 1px; background: var(--border); }
+    .obs-timeline-empty { color: var(--text-muted); font-style: italic; padding: 12px 0; }
 
-    /* Signal flow */
-    .obs-signal-flow { flex: 1; overflow-y: auto; padding: 12px 16px;
-      font-family: 'Fragment Mono', monospace; font-size: 12px; }
-    .obs-signal-row { display: flex; gap: 8px; padding: 4px 0;
-      border-bottom: 1px solid var(--border); align-items: baseline; }
-    .obs-signal-time { color: var(--text-muted); min-width: 40px; }
-    .obs-signal-from { font-weight: 600; min-width: 80px; }
-    .obs-signal-arrow { color: var(--text-muted); }
-    .obs-signal-to { min-width: 80px; }
-    .obs-signal-preview { color: var(--text-secondary); overflow: hidden;
-      text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-    .obs-signal-empty { color: var(--text-muted); font-style: italic; padding: 12px 0; }
+    /* Debate messages in timeline */
+    .obs-timeline-debate { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; padding: 8px 10px; border-radius: 8px; }
+    .obs-timeline-debate-technical_evaluator { background: rgba(91, 138, 186, 0.06); border-left: 3px solid #5B8ABA; }
+    .obs-timeline-debate-culture_evaluator { background: rgba(181, 91, 160, 0.06); border-left: 3px solid #B55BA0; }
+    .obs-timeline-debate-compensation_evaluator { background: rgba(212, 168, 85, 0.06); border-left: 3px solid #D4A855; }
+    .obs-timeline-debate-to { font-size: 10px; color: var(--text-muted); margin-bottom: 3px; }
+    .obs-timeline-debate-text { color: var(--text-primary); font-style: italic; line-height: 1.5; }
+
+    /* Score deltas */
+    .obs-delta-up { color: #27ae60; font-size: 10px; font-weight: 600; margin-left: 2px; }
+    .obs-delta-down { color: #e74c3c; font-size: 10px; font-weight: 600; margin-left: 2px; }
+
+    /* Agent drawer */
+    .obs-drawer { position: absolute; right: 0; top: 0; bottom: 0; width: 380px; z-index: 30;
+      background: var(--bg-surface); border-left: 1px solid var(--border);
+      transform: translateX(100%); transition: transform 200ms ease-out;
+      display: flex; flex-direction: column; overflow: hidden; }
+    .obs-drawer.open { transform: translateX(0); box-shadow: -4px 0 12px rgba(0,0,0,0.06); }
+    .obs-main { position: relative; }
+    .obs-drawer-header { display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .obs-drawer-name { display: flex; align-items: center; gap: 8px; }
+    .obs-drawer-step { font-size: 11px; color: var(--text-muted); }
+    .obs-drawer-close { cursor: pointer; color: var(--text-muted); font-size: 18px; padding: 4px; }
+    .obs-drawer-close:hover { color: var(--text-primary); }
+    .obs-drawer-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+    .obs-drawer-text { background: var(--bg-shelf); border-radius: 8px; padding: 10px 12px;
+      margin-bottom: 10px; font-size: 12px; line-height: 1.6; color: var(--text-primary);
+      white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
+    .obs-drawer-tool-pill { display: inline-block; background: rgba(91,181,162,0.1); color: var(--teal);
+      padding: 2px 8px; border-radius: 12px; font-size: 10px; margin: 4px 2px; }
+    .obs-drawer-tool-result { font-size: 10px; color: var(--text-secondary); padding: 2px 0; }
+    .obs-drawer-waiting { color: var(--text-muted); font-style: italic; padding: 12px 0; }
 
     /* Scoreboard */
     .obs-scoreboard { margin-bottom: 24px; }
@@ -1358,12 +1374,62 @@ defmodule RhoWeb.InlineCSS do
     .obs-role-culture_evaluator { color: #B55BA0; }
     .obs-role-compensation_evaluator { color: #D4A855; }
 
+    /* Candidate tooltip on scoreboard */
+    .obs-cand-name-hover { border-bottom: 1px dashed var(--border); cursor: pointer; position: relative; }
+    .obs-cand-name-hover:hover { color: var(--teal); border-bottom-color: var(--teal); }
+    .obs-cand-tooltip { display: none; position: absolute; right: 100%; top: -10px; margin-right: 8px;
+      width: 250px; background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); z-index: 40;
+      text-align: left; font-weight: normal; }
+    .obs-cand-name-hover:hover .obs-cand-tooltip { display: block; }
+    .obs-cand-tooltip-name { font-weight: 700; font-size: 14px; color: var(--text-primary); margin-bottom: 2px; }
+    .obs-cand-tooltip-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+    .obs-cand-tooltip-row { display: flex; justify-content: space-between; font-size: 11px;
+      padding: 3px 0; border-bottom: 1px solid var(--bg-shelf); color: var(--text-primary); }
+    .obs-cand-tooltip-row:last-of-type { border-bottom: none; }
+    .obs-cand-tooltip-label { color: var(--text-muted); font-size: 10px; }
+    .obs-cand-tooltip-strength { font-size: 11px; color: var(--text-secondary); margin-top: 8px; line-height: 1.5; }
+
     /* Landing page */
     .obs-landing { display: flex; flex-direction: column; align-items: center;
-      justify-content: center; height: 100vh; text-align: center; padding: 40px; }
-    .obs-landing h1 { font-size: 2rem; margin-bottom: 12px; font-weight: 700; }
-    .obs-landing p { color: var(--text-secondary); max-width: 540px; line-height: 1.6; }
-    .obs-landing-subtitle { margin: 8px 0 24px; font-size: 14px; }
+      padding: 48px 32px; min-height: 100vh; text-align: center; }
+    .obs-landing-header { text-align: center; margin-bottom: 36px; max-width: 560px; }
+    .obs-landing-header h1 { font-size: 1.8rem; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+    .obs-landing-header p { color: var(--text-secondary); line-height: 1.6; font-size: 15px; }
+    .obs-landing-section { margin-bottom: 32px; width: 100%; max-width: 720px; }
+    .obs-landing-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+      color: var(--text-muted); margin-bottom: 10px; font-weight: 600; text-align: left; }
+    .obs-start-meta { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+
+    /* Evaluator cards */
+    .obs-eval-cards { display: flex; gap: 12px; }
+    .obs-eval-card { flex: 1; border-radius: 10px; padding: 14px; background: var(--bg-shelf);
+      border: 1px solid var(--border); text-align: left; }
+    .obs-eval-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .obs-eval-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .obs-eval-card-name { font-weight: 600; font-size: 14px; }
+    .obs-eval-card-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px; }
+    .obs-eval-tag { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+
+    /* Candidate cards */
+    .obs-cand-cards { display: flex; gap: 10px; flex-wrap: wrap; }
+    .obs-cand-card { flex: 1; min-width: 130px; border-radius: 8px; padding: 10px 12px;
+      background: var(--bg-shelf); border: 1px solid var(--border); text-align: left; }
+    .obs-cand-card .obs-cand-name { font-weight: 600; font-size: 13px; color: var(--text-primary); margin-bottom: 2px; }
+    .obs-cand-meta { font-size: 10px; color: var(--text-muted); margin-bottom: 6px; }
+    .obs-cand-strength { font-size: 11px; color: var(--text-primary); line-height: 1.4; margin-bottom: 4px; }
+    .obs-cand-tension { display: inline-block; font-size: 9px; padding: 2px 6px; border-radius: 8px;
+      font-weight: 500; background: rgba(229,83,75,0.08); color: #e74c3c; }
+
+    /* How it works */
+    .obs-how { display: flex; gap: 16px; align-items: flex-start; justify-content: center; }
+    .obs-how-step { text-align: center; flex: 1; max-width: 160px; }
+    .obs-how-num { width: 28px; height: 28px; border-radius: 50%; background: var(--teal); color: #fff;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 600; margin: 0 auto 6px; }
+    .obs-how-title { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+    .obs-how-desc { font-size: 11px; color: var(--text-secondary); }
+    .obs-how-arrow { color: var(--text-muted); font-size: 18px; padding-top: 4px; }
     .obs-start-btn-large { background: var(--teal); color: white; border: none;
       padding: 14px 32px; border-radius: 8px; font-size: 16px; cursor: pointer;
       font-family: 'Outfit', sans-serif; font-weight: 500; margin-top: 24px; }
