@@ -126,6 +126,19 @@ defmodule Rho.Demos.Hiring.Simulation do
   # Stale timer from previous round or non-running state — ignore
   def handle_info({:check_round_timeout, _}, state), do: {:noreply, state}
 
+  def handle_info(:stop_chairman, state) do
+    pid = Worker.whereis(state.chairman_agent_id)
+    if pid do
+      try do
+        GenServer.stop(pid, :normal, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+      Logger.info("[Hiring] Chairman agent stopped.")
+    end
+    {:noreply, state}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   # --- Private ---
@@ -359,6 +372,9 @@ defmodule Rho.Demos.Hiring.Simulation do
           session_id: state.session_id,
           shortlist: final
         }, source: "/session/#{state.session_id}")
+
+        # Schedule chairman shutdown (give it time to produce summary)
+        Process.send_after(self(), :stop_chairman, 30_000)
 
         Logger.info("[Hiring] Simulation complete. Shortlist: #{inspect(final)}")
         %{state | status: :completed, round_timer_ref: nil}
