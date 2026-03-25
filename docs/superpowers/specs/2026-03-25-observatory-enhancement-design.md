@@ -84,7 +84,48 @@ defp score_delta(current, prev) when is_integer(current) and is_integer(prev), d
 defp score_delta(_, _), do: nil
 ```
 
-`seed_scoreboard/0` initializes all `prev_*` fields to `nil`. The `recompute_avg/1` helper uses the current (non-prev) values only.
+`seed_scoreboard/0` must be updated to include `prev_*` fields:
+
+```elixir
+defp seed_scoreboard do
+  Map.new(Candidates.all(), fn c ->
+    {c.id, %{name: c.name,
+             technical: nil, culture: nil, compensation: nil, avg: nil,
+             prev_technical: nil, prev_culture: nil, prev_compensation: nil}}
+  end)
+end
+```
+
+The `recompute_avg/1` helper uses the current (non-prev) values only.
+
+**Score projection logic** — updated reducer in `project/3` for `rho.hiring.scores.submitted`:
+
+```elixir
+fn row ->
+  prev_key = :"prev_#{role_key}"
+  row
+  |> Map.put(prev_key, row[role_key])   # move current → prev (nil on first round)
+  |> Map.put(role_key, score)            # set new score
+  |> recompute_avg()
+end
+```
+
+**Timeline entry creation** — happens after the score map is updated (so `prev_*` is available):
+
+```elixir
+# After updating scores map, build timeline entries:
+Enum.map(scores_data, fn entry ->
+  id = entry["id"]
+  score = entry["score"]
+  prev = updated_scores[id][:"prev_#{role_key}"]
+  delta = if prev, do: score - prev, else: nil
+  %{type: :score, agent_role: role, text: entry["rationale"], candidate_id: id,
+    score: score, delta: delta, round: socket.assigns.round,
+    timestamp: System.monotonic_time(:millisecond)}
+end)
+```
+
+The `tension` field is UI-only — it does not need to appear in `format_all/0` (which formats candidate data for LLM prompts).
 
 **File:** `lib/rho_web/components/observatory_components.ex`
 
@@ -155,6 +196,8 @@ Add `timeline: []` to both `mount/3` clauses (landing page and session mounts).
 Remove `signals: []` from both `mount/3` clauses.
 
 Update render: replace `<.activity_feed>` with `<.unified_timeline timeline={@timeline} />`. Move timeline to `obs-left`. Remove `<.signal_flow>` from `obs-right`. Keep scoreboard + convergence in `obs-right`.
+
+Update header stats bar: remove `<span><%= length(@signals) %> signals</span>` (signals assign is removed). Replace with `<span><%= length(@timeline) %> events</span>` or remove entirely.
 
 Layout:
 ```
