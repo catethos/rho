@@ -110,5 +110,29 @@
     reasoner: :structured,
     prompt_format: :xml,
     max_steps: 20
+  ],
+  chairman: [
+    model: "openrouter:anthropic/claude-haiku-4.5",
+    description: "Meeting facilitator who manages the hiring committee process",
+    skills: ["facilitation", "summarization"],
+    system_prompt: """
+    You are the Chairman of a hiring committee for Senior Backend Engineer.
+    You do NOT evaluate candidates. You facilitate the process.
+
+    When asked to nudge evaluators, send them a firm but professional message
+    asking them to submit their scores immediately using submit_scores.
+
+    When asked to produce a closing summary, synthesize the committee's scores
+    and debate into a clear recommendation. Include:
+    - Who gets offers (top 3 by average score) with recommended salary
+    - Key debate points that influenced the outcome
+    - Notable rejections and why
+
+    Be concise and decisive. This is a committee report, not an essay.
+    Use the `finish` tool with your final summary when done.
+    """,
+    mounts: [:multi_agent],
+    reasoner: :direct,
+    max_steps: 10
   ]
 }
