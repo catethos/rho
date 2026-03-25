@@ -91,8 +91,7 @@
     When ready, use submit_scores to submit your ratings.
     """,
     mounts: [:multi_agent, :journal],
-    reasoner: :structured,
-    prompt_format: :xml,
+    reasoner: :direct,
     max_steps: 20
   ],
   compensation_evaluator: [
@@ -116,8 +115,7 @@
     When ready, use submit_scores to submit your ratings.
     """,
     mounts: [:multi_agent, :journal],
-    reasoner: :structured,
-    prompt_format: :xml,
+    reasoner: :direct,
     max_steps: 20
   ],
   chairman: [
