@@ -365,7 +365,7 @@ defmodule Rho.Demos.Hiring.Simulation do
           agent_id: state.chairman_agent_id,
           agent_role: :chairman,
           shortlist: final,
-          text: format_shortlist_text(final)
+          text: format_shortlist_text(final, state)
         }, source: "/session/#{state.session_id}")
 
         Comms.publish("rho.hiring.simulation.completed", %{
@@ -489,14 +489,47 @@ defmodule Rho.Demos.Hiring.Simulation do
     """
   end
 
-  defp format_shortlist_text(shortlist) do
-    shortlist
-    |> Enum.with_index(1)
-    |> Enum.map_join("\n", fn {s, i} ->
-      candidate = Enum.find(Candidates.all(), &(&1.id == s.id))
-      salary = if candidate, do: "$#{candidate.salary_expectation}", else: "N/A"
-      "#{i}. **#{s.name}** — avg score #{s.avg_score}, recommended at #{salary}"
-    end)
+  defp format_shortlist_text(shortlist, state) do
+    offers =
+      shortlist
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {s, i} ->
+        candidate = Enum.find(Candidates.all(), &(&1.id == s.id))
+        salary = if candidate, do: "$#{candidate.salary_expectation}", else: "N/A"
+        strengths = if candidate, do: candidate.strengths, else: ""
+        "#{i}. **#{s.name}** — avg score #{s.avg_score}, offer at #{salary}\n   #{strengths}"
+      end)
+
+    # Find rejected candidates
+    all_ids = Enum.map(Candidates.all(), & &1.id)
+    shortlist_ids = Enum.map(shortlist, & &1.id)
+    rejected_ids = all_ids -- shortlist_ids
+
+    rejections =
+      rejected_ids
+      |> Enum.map_join("\n", fn id ->
+        candidate = Enum.find(Candidates.all(), &(&1.id == id))
+        name = if candidate, do: candidate.name, else: id
+        concerns = if candidate, do: candidate.concerns, else: ""
+        "- **#{name}**: #{concerns}"
+      end)
+
+    disagreement = build_disagreement_summary(state)
+
+    """
+    ## Committee Recommendation
+
+    **Offers (Top 3):**
+    #{offers}
+
+    **Not Recommended:**
+    #{rejections}
+
+    **Key Disagreements:**
+    #{disagreement}
+
+    **Budget:** Total offer package: $#{shortlist |> Enum.map(fn s -> Enum.find(Candidates.all(), &(&1.id == s.id)) end) |> Enum.reject(&is_nil/1) |> Enum.map(& &1.salary_expectation) |> Enum.sum() |> Integer.to_string()} within $570K ceiling (3 × $190K)
+    """
   end
 
   defp via(session_id), do: {:via, Registry, {Rho.AgentRegistry, "sim_#{session_id}"}}
