@@ -390,16 +390,6 @@ defmodule RhoWeb.ObservatoryComponents do
   defp format_avg(nil), do: "—"
   defp format_avg(avg), do: Float.round(avg, 1)
 
-  defp format_agent_name(name) when is_atom(name), do: format_role(name)
-  defp format_agent_name(name) when is_binary(name) do
-    if String.contains?(name, "_evaluator") do
-      name |> String.replace("_evaluator", "") |> String.capitalize()
-    else
-      String.slice(name, -8, 8)
-    end
-  end
-  defp format_agent_name(name), do: to_string(name)
-
   defp render_delta(current, prev) when is_integer(current) and is_integer(prev) do
     delta = current - prev
     cond do
