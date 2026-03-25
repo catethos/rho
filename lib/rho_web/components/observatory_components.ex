@@ -48,8 +48,12 @@ defmodule RhoWeb.ObservatoryComponents do
   # --- Candidate scoreboard ---
 
   attr :scores, :map, required: true
+  attr :candidates, :list, default: []
 
   def scoreboard(assigns) do
+    cand_map = Map.new(assigns.candidates, &{&1.id, &1})
+    assigns = Phoenix.Component.assign(assigns, :cand_map, cand_map)
+
     ~H"""
     <div class="obs-scoreboard">
       <h3 class="obs-section-title">Candidate Scores</h3>
@@ -64,11 +68,25 @@ defmodule RhoWeb.ObservatoryComponents do
           </tr>
         </thead>
         <tbody>
-          <tr :for={{_id, scores} <- sorted_scores(@scores)}>
-            <td class="obs-candidate-name"><%= scores.name %></td>
-            <td class={score_class(scores.technical)}><%= scores.technical || "—" %></td>
-            <td class={score_class(scores.culture)}><%= scores.culture || "—" %></td>
-            <td class={score_class(scores.compensation)}><%= scores.compensation || "—" %></td>
+          <tr :for={{id, scores} <- sorted_scores(@scores)}>
+            <td class="obs-candidate-name">
+              <span class="obs-cand-name-hover">
+                <%= scores.name %>
+                <.candidate_tooltip :if={@cand_map[id]} candidate={@cand_map[id]} />
+              </span>
+            </td>
+            <td class={score_class(scores.technical)}>
+              <%= scores.technical || "—" %>
+              <%= render_delta(scores.technical, scores[:prev_technical]) %>
+            </td>
+            <td class={score_class(scores.culture)}>
+              <%= scores.culture || "—" %>
+              <%= render_delta(scores.culture, scores[:prev_culture]) %>
+            </td>
+            <td class={score_class(scores.compensation)}>
+              <%= scores.compensation || "—" %>
+              <%= render_delta(scores.compensation, scores[:prev_compensation]) %>
+            </td>
             <td class="obs-score-avg"><%= format_avg(scores.avg) %></td>
           </tr>
         </tbody>
@@ -192,6 +210,161 @@ defmodule RhoWeb.ObservatoryComponents do
     """
   end
 
+  # --- Unified timeline ---
+
+  attr :timeline, :list, required: true
+
+  def unified_timeline(assigns) do
+    ~H"""
+    <div class="obs-timeline" id="timeline" phx-hook="AutoScroll">
+      <h3 class="obs-section-title">Timeline</h3>
+      <div :for={entry <- @timeline} class={"obs-timeline-entry obs-timeline-#{entry.type}"}>
+        <%= case entry.type do %>
+          <% :round_start -> %>
+            <div class="obs-timeline-round-divider">
+              <div class="obs-timeline-round-line"></div>
+              <span><%= entry.text %></span>
+              <div class="obs-timeline-round-line"></div>
+            </div>
+
+          <% :score -> %>
+            <div class="obs-timeline-row">
+              <span class={"obs-timeline-tag obs-timeline-tag-#{role_css_key(entry.agent_role)}"}><%= format_role_short(entry.agent_role) %></span>
+              <div>
+                <span>Scored <strong><%= entry.candidate_name %> <%= entry.score %></strong></span>
+                <span :if={entry.delta} class={delta_class(entry.delta)}>
+                  <%= if entry.delta > 0, do: "↑#{entry.delta}", else: "↓#{abs(entry.delta)}" %>
+                </span>
+                <span :if={entry.text != ""} class="obs-timeline-rationale">— "<%= String.slice(entry.text, 0, 100) %>"</span>
+              </div>
+            </div>
+
+          <% :debate -> %>
+            <div class={"obs-timeline-debate obs-timeline-debate-#{role_css_key(entry.agent_role)}"}>
+              <span class={"obs-timeline-tag obs-timeline-tag-#{role_css_key(entry.agent_role)}"}><%= format_role_short(entry.agent_role) %></span>
+              <div>
+                <div class="obs-timeline-debate-to">
+                  → <%= if entry.target == :all, do: "ALL", else: format_agent_name(entry.target) %>
+                </div>
+                <div class="obs-timeline-debate-text"><%= entry.text %></div>
+              </div>
+            </div>
+
+          <% _ -> %>
+            <div></div>
+        <% end %>
+      </div>
+      <div :if={@timeline == []} class="obs-timeline-empty">
+        Waiting for agent activity...
+      </div>
+    </div>
+    """
+  end
+
+  # --- Agent detail drawer ---
+
+  attr :agent, :map, required: true
+  attr :activity, :map, required: true
+
+  def agent_drawer(assigns) do
+    ~H"""
+    <div class={"obs-drawer #{if @agent, do: "open", else: ""}"}>
+      <div class="obs-drawer-header">
+        <div class="obs-drawer-name">
+          <span class={"obs-status-dot #{status_class(@agent.status)}"}></span>
+          <span class={"obs-agent-role obs-role-#{@agent.agent_name}"}><%= format_role(@agent.agent_name) %></span>
+          <span :if={@agent.current_step} class="obs-drawer-step">step <%= @agent.current_step %></span>
+        </div>
+        <span class="obs-drawer-close" phx-click="close_drawer">✕</span>
+      </div>
+
+      <div class="obs-drawer-body">
+        <div :if={@activity.text != ""} class="obs-drawer-text">
+          <%= @activity.text %>
+        </div>
+
+        <div :for={entry <- Enum.take(@activity.entries, 15)} class={"obs-drawer-entry obs-drawer-#{entry.type}"}>
+          <%= case entry.type do %>
+            <% :tool_start -> %>
+              <span class="obs-drawer-tool-pill"><%= entry.content %></span>
+            <% :tool_result -> %>
+              <div class="obs-drawer-tool-result"><%= String.slice(entry.content, 0, 100) %></div>
+            <% _ -> %>
+              <span class="obs-drawer-misc"><%= entry.content %></span>
+          <% end %>
+        </div>
+
+        <div :if={@activity.text == "" and @activity.entries == []} class="obs-drawer-waiting">
+          Waiting for activity...
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # --- Landing page components ---
+
+  attr :candidates, :list, required: true
+
+  def candidate_cards(assigns) do
+    ~H"""
+    <div class="obs-cand-cards">
+      <div :for={c <- @candidates} class="obs-cand-card">
+        <div class="obs-cand-name"><%= c.name %></div>
+        <div class="obs-cand-meta"><%= c.years_experience %>yr · <%= c.current_company %> · $<%= format_salary(c.salary_expectation) %></div>
+        <div class="obs-cand-strength"><%= String.slice(c.strengths, 0, 80) %></div>
+        <span class="obs-cand-tension"><%= c.tension %></span>
+      </div>
+    </div>
+    """
+  end
+
+  def evaluator_cards(assigns) do
+    evaluators = [
+      %{name: "Technical", color: "#5B8ABA", desc: "System design, coding depth, OSS contributions", tag: "Defends technical stars"},
+      %{name: "Culture", color: "#B55BA0", desc: "Communication, teamwork, mentoring, long-term fit", tag: "Flags brilliant jerks"},
+      %{name: "Compensation", color: "#D4A855", desc: "Salary vs budget band, total comp, hire count limits", tag: "Guards the budget"}
+    ]
+    assigns = Phoenix.Component.assign(assigns, :evaluators, evaluators)
+
+    ~H"""
+    <div class="obs-eval-cards">
+      <div :for={e <- @evaluators} class="obs-eval-card" style={"border-left: 3px solid #{e.color}"}>
+        <div class="obs-eval-card-header">
+          <span class="obs-eval-dot" style={"background: #{e.color}"}></span>
+          <span class="obs-eval-card-name" style={"color: #{e.color}"}><%= e.name %></span>
+        </div>
+        <div class="obs-eval-card-desc"><%= e.desc %></div>
+        <span class="obs-eval-tag" style={"background: #{e.color}1a; color: #{e.color}"}><%= e.tag %></span>
+      </div>
+    </div>
+    """
+  end
+
+  def how_it_works(assigns) do
+    ~H"""
+    <div class="obs-how">
+      <div class="obs-how-step">
+        <div class="obs-how-num">1</div>
+        <div class="obs-how-title">Round 1</div>
+        <div class="obs-how-desc">Each agent independently scores all candidates</div>
+      </div>
+      <div class="obs-how-arrow">→</div>
+      <div class="obs-how-step">
+        <div class="obs-how-num">2</div>
+        <div class="obs-how-title">Debate</div>
+        <div class="obs-how-desc">Agents see disagreements and argue via messages</div>
+      </div>
+      <div class="obs-how-arrow">→</div>
+      <div class="obs-how-step">
+        <div class="obs-how-num">3</div>
+        <div class="obs-how-title">Round 2</div>
+        <div class="obs-how-desc">Revised scores after debate. Top 3 get offers.</div>
+      </div>
+    </div>
+    """
+  end
+
   # --- BEAM insights bar ---
 
   attr :insights, :list, required: true
@@ -270,4 +443,66 @@ defmodule RhoWeb.ObservatoryComponents do
     end
   end
   defp format_agent_name(name), do: to_string(name)
+
+  defp render_delta(current, prev) when is_integer(current) and is_integer(prev) do
+    delta = current - prev
+    cond do
+      delta > 0 -> Phoenix.HTML.raw(~s(<span class="obs-delta-up">↑#{delta}</span>))
+      delta < 0 -> Phoenix.HTML.raw(~s(<span class="obs-delta-down">↓#{abs(delta)}</span>))
+      true -> ""
+    end
+  end
+  defp render_delta(_, _), do: ""
+
+  defp candidate_tooltip(assigns) do
+    ~H"""
+    <div class="obs-cand-tooltip">
+      <div class="obs-cand-tooltip-name"><%= @candidate.name %></div>
+      <div class="obs-cand-tooltip-meta">
+        <%= @candidate.years_experience %>yr · <%= @candidate.current_company %> · <%= @candidate.education %>
+      </div>
+      <div class="obs-cand-tooltip-row">
+        <span class="obs-cand-tooltip-label">Skills</span>
+        <span><%= Enum.join(@candidate.skills, ", ") %></span>
+      </div>
+      <div class="obs-cand-tooltip-row">
+        <span class="obs-cand-tooltip-label">Salary</span>
+        <span>$<%= format_salary(@candidate.salary_expectation) %></span>
+      </div>
+      <div class="obs-cand-tooltip-row">
+        <span class="obs-cand-tooltip-label">Work style</span>
+        <span><%= @candidate.work_style %></span>
+      </div>
+      <div class="obs-cand-tooltip-strength"><%= @candidate.strengths %></div>
+      <span class="obs-cand-tension"><%= @candidate.tension %></span>
+    </div>
+    """
+  end
+
+  defp format_salary(amount) when is_integer(amount) do
+    amount |> Integer.to_string() |> String.graphemes() |> Enum.reverse()
+    |> Enum.chunk_every(3) |> Enum.join(",") |> String.reverse()
+  end
+  defp format_salary(amount), do: to_string(amount)
+
+  defp format_role_short(role) when is_atom(role) do
+    role
+    |> Atom.to_string()
+    |> String.replace("_evaluator", "")
+    |> String.split("_")
+    |> Enum.map(&String.capitalize/1)
+    |> Enum.join(" ")
+  end
+  defp format_role_short(role) when is_binary(role) do
+    role |> String.replace("_evaluator", "") |> String.capitalize()
+  end
+  defp format_role_short(role), do: to_string(role)
+
+  defp role_css_key(role) when is_atom(role), do: Atom.to_string(role)
+  defp role_css_key(role) when is_binary(role), do: role
+  defp role_css_key(_), do: "unknown"
+
+  defp delta_class(d) when d > 0, do: "obs-delta-up"
+  defp delta_class(d) when d < 0, do: "obs-delta-down"
+  defp delta_class(_), do: ""
 end
