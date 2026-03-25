@@ -110,7 +110,7 @@ defmodule Rho.Demos.Hiring.Simulation do
       if chairman_pid do
         missing_names = Enum.map_join(missing, ", ", &Atom.to_string/1)
         Worker.submit(chairman_pid,
-          "The following evaluators have not submitted scores for round #{state.round}: #{missing_names}. Please send each of them a message asking them to submit their scores now using submit_scores.",
+          "Send a message to each of these evaluators asking them to submit their round #{state.round} scores immediately: #{missing_names}. After sending the messages, call `finish`. Do not do anything else.",
           tools: state.chairman_tools,
           model: config.model
         )
@@ -217,7 +217,7 @@ defmodule Rho.Demos.Hiring.Simulation do
       sandbox: nil
     }
 
-    allowed_tools = ~w(send_message list_agents)
+    allowed_tools = ~w(send_message)
     mount_tools =
       Rho.MountRegistry.collect_tools(tool_context)
       |> Enum.filter(fn t -> t.tool.name in allowed_tools end)
