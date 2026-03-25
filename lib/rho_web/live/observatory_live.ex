@@ -53,7 +53,8 @@ defmodule RhoWeb.ObservatoryLive do
           "rho.task.*",
           "rho.hiring.scores.*",
           "rho.hiring.round.*",
-          "rho.hiring.simulation.*"
+          "rho.hiring.simulation.*",
+          "rho.hiring.chairman.*"
         ]
         |> Enum.flat_map(fn pattern ->
           case Rho.Comms.subscribe(pattern) do

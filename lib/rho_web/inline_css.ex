@@ -1300,6 +1300,18 @@ defmodule RhoWeb.InlineCSS do
     .obs-timeline-tag-technical_evaluator { background: #5B8ABA; }
     .obs-timeline-tag-culture_evaluator { background: #B55BA0; }
     .obs-timeline-tag-compensation_evaluator { background: #D4A855; }
+    .obs-timeline-tag-chairman { background: #5BB5A2; }
+
+    /* Chairman summary block */
+    .obs-timeline-summary {
+      background: rgba(91, 181, 162, 0.06);
+      border-left: 3px solid #5BB5A2;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 12px 0;
+      font-size: 13px;
+    }
+    .obs-timeline-summary-body { line-height: 1.6; margin-top: 8px; }
     .obs-timeline-rationale { color: var(--text-secondary); font-size: 11px; }
     .obs-timeline-round-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: 10px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; }
     .obs-timeline-round-line { flex: 1; height: 1px; background: var(--border); }
