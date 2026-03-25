@@ -183,10 +183,31 @@ defmodule RhoWeb.ObservatoryComponents do
               <span class={"obs-timeline-tag obs-timeline-tag-#{role_css_key(entry.agent_role)}"}><%= format_role_short(entry.agent_role) %></span>
               <div>
                 <div class="obs-timeline-debate-to">
-                  → <span class={"obs-role-#{role_css_key(entry.target)}"}><%= if entry.target == :all, do: "ALL", else: format_agent_name(entry.target) %></span>
+                  → <span class={"obs-timeline-tag obs-timeline-tag-#{role_css_key(entry.target)}"}><%= if entry.target == :all, do: "ALL", else: format_role_short(entry.target) %></span>
                 </div>
-                <div class="obs-timeline-debate-text"><%= entry.text %></div>
+                <div class="obs-timeline-debate-text markdown-body"
+                     id={"timeline-debate-#{entry.timestamp}-#{System.unique_integer([:positive])}"}
+                     phx-hook="Markdown"
+                     data-md={entry.text}></div>
               </div>
+            </div>
+
+          <% :chairman -> %>
+            <div class="obs-timeline-row">
+              <span class="obs-timeline-tag obs-timeline-tag-chairman">Chairman</span>
+              <div class="markdown-body"
+                   id={"timeline-chairman-#{entry.timestamp}-#{System.unique_integer([:positive])}"}
+                   phx-hook="Markdown"
+                   data-md={entry.text}></div>
+            </div>
+
+          <% :chairman_summary -> %>
+            <div class="obs-timeline-summary">
+              <span class="obs-timeline-tag obs-timeline-tag-chairman">Chairman — Final Recommendation</span>
+              <div class="obs-timeline-summary-body markdown-body"
+                   id={"timeline-summary-#{entry.timestamp}-#{System.unique_integer([:positive])}"}
+                   phx-hook="Markdown"
+                   data-md={entry.text}></div>
             </div>
 
           <% _ -> %>
