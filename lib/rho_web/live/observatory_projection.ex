@@ -257,20 +257,27 @@ defmodule RhoWeb.ObservatoryProjection do
     history = socket.assigns.convergence_history
 
     # Only record one convergence value per round
-    # history length = number of rounds already recorded
     if length(history) >= current_round do
       socket
     else
-      # Check if ALL candidates have ALL 3 evaluator scores
       all_candidates = Map.values(scores)
-      complete = Enum.filter(all_candidates, fn row ->
-        row[:technical] != nil and row[:culture] != nil and row[:compensation] != nil
-      end)
 
-      # Only record when every candidate has been scored by all 3
-      if length(complete) == length(all_candidates) and complete != [] do
+      # For round 1: all 3 scores must be non-nil
+      # For round 2+: all 3 prev_* must be non-nil (meaning all roles re-submitted)
+      all_submitted =
+        if current_round <= 1 do
+          Enum.all?(all_candidates, fn row ->
+            row[:technical] != nil and row[:culture] != nil and row[:compensation] != nil
+          end)
+        else
+          Enum.all?(all_candidates, fn row ->
+            row[:prev_technical] != nil and row[:prev_culture] != nil and row[:prev_compensation] != nil
+          end)
+        end
+
+      if all_submitted and all_candidates != [] do
         avg_spread =
-          complete
+          all_candidates
           |> Enum.map(fn row ->
             vals = [row.technical, row.culture, row.compensation]
             Enum.max(vals) - Enum.min(vals)

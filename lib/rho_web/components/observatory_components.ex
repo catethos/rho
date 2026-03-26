@@ -102,41 +102,47 @@ defmodule RhoWeb.ObservatoryComponents do
   def convergence_chart(assigns) do
     max_rounds = 2
 
-    coords =
+    labeled_coords =
       assigns.convergence_history
       |> Enum.with_index()
       |> Enum.map(fn {value, i} ->
-        x = (i + 1) / max_rounds * 280 + 20
-        y = 80 - value * 70
-        {x, y}
+        x = (i + 1) / max_rounds * 220 + 40
+        y = 75 - value * 60
+        label = "#{round(value * 100)}%"
+        {x, y, label}
       end)
 
-    polyline = coords |> Enum.map(fn {x, y} -> "#{x},#{y}" end) |> Enum.join(" ")
+    polyline = labeled_coords |> Enum.map(fn {x, y, _} -> "#{x},#{y}" end) |> Enum.join(" ")
 
     assigns =
       assigns
       |> assign(:polyline, polyline)
-      |> assign(:coords, coords)
+      |> assign(:labeled_coords, labeled_coords)
       |> assign(:max_rounds, max_rounds)
 
     ~H"""
     <div class="obs-convergence">
       <h3 class="obs-section-title">Convergence</h3>
-      <svg viewBox="0 0 300 90" class="obs-convergence-svg">
-        <line x1="20" y1="10" x2="20" y2="80" stroke="var(--border)" stroke-width="0.5" />
-        <line x1="20" y1="80" x2="290" y2="80" stroke="var(--border)" stroke-width="0.5" />
-        <text x="5" y="15" fill="var(--text-muted)" font-size="8">100%</text>
-        <text x="5" y="82" fill="var(--text-muted)" font-size="8">0%</text>
+      <svg viewBox="0 0 320 100" class="obs-convergence-svg">
+        <line x1="35" y1="10" x2="35" y2="80" stroke="var(--border)" stroke-width="0.5" />
+        <line x1="35" y1="80" x2="290" y2="80" stroke="var(--border)" stroke-width="0.5" />
+        <text x="5" y="17" fill="var(--text-muted)" font-size="8">100%</text>
+        <text x="15" y="82" fill="var(--text-muted)" font-size="8">0%</text>
         <text :for={r <- 1..@max_rounds}
-          x={r / @max_rounds * 280 + 20} y="90"
-          fill="var(--text-muted)" font-size="7" text-anchor="middle">
+          x={r / @max_rounds * 220 + 40} y="95"
+          fill="var(--text-muted)" font-size="8" text-anchor="middle">
           R<%= r %>
         </text>
         <polyline :if={@polyline != ""}
           points={@polyline}
           fill="none" stroke="var(--teal)" stroke-width="2" />
-        <circle :for={{x, y} <- @coords}
-          cx={x} cy={y} r="3" fill="var(--teal)" />
+        <circle :for={{x, y, _} <- @labeled_coords}
+          cx={x} cy={y} r="4" fill="var(--teal)" />
+        <text :for={{x, y, label} <- @labeled_coords}
+          x={x} y={y - 8}
+          fill="var(--teal)" font-size="9" font-weight="600" text-anchor="middle">
+          <%= label %>
+        </text>
       </svg>
       <div class="obs-convergence-current">
         Round <%= length(@convergence_history) %> —
