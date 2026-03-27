@@ -35,6 +35,22 @@ defmodule Rho.Sim.Test.ErrorDomain do
   end
 end
 
+defmodule Rho.Sim.Test.ErrorAtStepDomain do
+  use Rho.Sim.Domain
+
+  def init(opts), do: {:ok, %{count: 0, error_at: Keyword.get(opts, :error_at, 3)}}
+
+  def transition(state, _actions, _rolls, _derived, _ctx, rng) do
+    if state.count >= state.error_at - 1 do
+      {:error, :planned_failure}
+    else
+      {:ok, %{state | count: state.count + 1}, [], rng}
+    end
+  end
+
+  def metrics(state, _derived, _ctx), do: %{count: state.count}
+end
+
 defmodule Rho.Sim.EngineTest do
   use ExUnit.Case, async: true
 
@@ -337,6 +353,57 @@ defmodule Rho.Sim.EngineTest do
       {:ok, {run2, _acc2}} = Engine.step({run, acc})
       # RNG should be different (or same if passthrough, but at least not crash)
       assert run2.rng != nil
+    end
+  end
+
+  describe "Engine.run/2" do
+    test "run CounterDomain from 0 — halts at 10 with 10 step_metrics entries" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 0],
+          max_steps: 100,
+          seed: 42
+        )
+
+      assert {:halted, {%Run{} = final_run, %Accumulator{} = final_acc}} =
+               Engine.run(run, acc)
+
+      assert final_run.domain_state.count == 10
+      assert length(final_acc.step_metrics) == 10
+    end
+
+    test "run with max_steps: 5 — returns {:ok, _} is never returned; halted at step 5 with 5 entries" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 0],
+          max_steps: 5,
+          seed: 42
+        )
+
+      assert {:halted, {%Run{} = final_run, %Accumulator{} = final_acc}} =
+               Engine.run(run, acc)
+
+      assert final_run.step == 5
+      assert final_run.domain_state.count == 5
+      assert length(final_acc.step_metrics) == 5
+    end
+
+    test "run with domain that errors at step 3 — returns {:error, ...} with partial accumulator" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.ErrorAtStepDomain,
+          domain_opts: [error_at: 3],
+          max_steps: 100,
+          seed: 42
+        )
+
+      assert {:error, {step_num, %StepError{} = err, %Run{}, %Accumulator{} = partial_acc}} =
+               Engine.run(run, acc)
+
+      assert step_num == 2
+      assert err.phase == :transition
+      assert err.reason == :planned_failure
+      # 2 successful steps before the error (steps 0 and 1)
+      assert length(partial_acc.step_metrics) == 2
     end
   end
 end

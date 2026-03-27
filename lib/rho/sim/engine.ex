@@ -59,6 +59,21 @@ defmodule Rho.Sim.Engine do
   end
 
   @doc """
+  Run the simulation to completion by looping `step/2` until halted or an error occurs.
+
+  Returns `{:halted, result()}` when the simulation halts (domain halt condition or max_steps
+  reached), or `{:error, {step, StepError, Run, Acc}}` if any phase errors.
+  """
+  @spec run(Run.t(), Accumulator.t()) :: {:halted, result()} | {:error, {non_neg_integer(), StepError.t(), Run.t(), Accumulator.t()}}
+  def run(%Run{} = run, %Accumulator{} = acc) do
+    case step({run, acc}) do
+      {:ok, {next_run, next_acc}} -> run(next_run, next_acc)
+      {:halted, _} = result -> result
+      {:error, _} = result -> result
+    end
+  end
+
+  @doc """
   Execute one step of the simulation.
 
   Follows the 13-step algorithm: build context, apply interventions, derive,
