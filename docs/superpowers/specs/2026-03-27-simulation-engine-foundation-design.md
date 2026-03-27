@@ -46,9 +46,10 @@ defmodule Rho.Sim.Run do
     :max_steps,       # hard stop
     interventions: %{},  # %{pos_integer() => [term()]}
     params: %{},         # immutable user-supplied config → Context
-    step: 0,
-    status: :ready       # :ready | :running | :halted | :done | :error
+    step: 0
   ]
+  # No `status` field — the return tags from step/2 and run/2 encode status.
+  # {:ok, _} = running/done, {:halted, _} = halted, {:error, _} = error.
 end
 ```
 
@@ -62,9 +63,7 @@ defmodule Rho.Sim.Accumulator do
 
   defstruct [
     trace: [],          # [{step, trace_entry}] — prepend order, reverse on read
-    step_metrics: [],   # [{step, metrics_map}] — prepend order, reverse on read
-    on_step: nil,       # optional fn(step_data, t()) -> t() — custom hook
-    meta: %{}           # arbitrary output metadata (domain can store summaries here via on_step)
+    step_metrics: []    # [{step, metrics_map}] — prepend order, reverse on read
   ]
 
   @doc "Returns trace in chronological order."
@@ -76,8 +75,7 @@ end
 ```
 
 - `trace` and `step_metrics` prepend for O(1) append during the run. Read via accessor functions that reverse.
-- `on_step` supplements default behaviour. Engine always prepends metrics, then calls `on_step` if set. Signature: `fn(%{step: n, metrics: m, events: e}, %Accumulator{}) -> %Accumulator{}`
-- `on_step` MAY have side effects (e.g. streaming to LiveView via Comms). The engine remains pure in the sense that `on_step` does not affect simulation state.
+- No `on_step` hook or `meta` field — streaming and custom accumulation are external concerns. Whoever calls `step/2` can stream/accumulate as needed. Add these when a real use case demands them (Mount/Observatory integration).
 
 ### `Rho.Sim.Context`
 
@@ -88,15 +86,11 @@ defmodule Rho.Sim.Context do
   @type t :: %__MODULE__{}
 
   @enforce_keys [:run_id, :step, :max_steps, :seed]
-  defstruct [:run_id, :step, :max_steps, :seed, :rng, params: %{}]
+  defstruct [:run_id, :step, :max_steps, :seed, params: %{}]
 end
 ```
 
-The engine builds two contexts per step:
-- `pre_ctx` — step = current, rng = pre-sample. Used for: derive, actors, sample, observe, decide, resolve_actions.
-- `post_ctx` — step = current + 1, rng = post-transition. Used for: metrics, halt?.
-
-This avoids the off-by-one where metrics/halt see the wrong step number.
+Context is **pure metadata** — no mutable state. No `:rng` field (RNG is passed explicitly to `sample/3` and threaded through `Run.rng`). One context per step: step N's context has `step: N`. Metrics computed at step N describe the state after step N's transition.
 
 ### `Rho.Sim.StepError`
 
@@ -141,7 +135,8 @@ defmodule Rho.Sim.Domain do
               actions :: term(),
               rolls(),
               derived(),
-              Rho.Sim.Context.t()
+              Rho.Sim.Context.t(),
+              :rand.state()
             ) :: {:ok, state(), [event()], :rand.state()} | {:error, term()}
 
   # --- Optional (defaults provided by `use Rho.Sim.Domain`) ---
@@ -256,7 +251,7 @@ defmodule Rho.Sim.Engine do
 
   @spec new(module(), keyword()) :: {:ok, result()} | {:error, term()}
   @spec step(Rho.Sim.Run.t(), Rho.Sim.Accumulator.t()) :: step_result()
-  @spec run(Rho.Sim.Run.t(), Rho.Sim.Accumulator.t()) :: {:ok, result()} | {:error, term()}
+  @spec run(Rho.Sim.Run.t(), Rho.Sim.Accumulator.t()) :: {:ok, result()} | {:halted, result()} | step_result()
 end
 ```
 
@@ -291,30 +286,56 @@ Fails fast with clear error messages if modules are invalid.
 
 ### `step/2` Algorithm
 
+One context per step. RNG passed explicitly, not via context.
+
 ```
-1.  Build pre_ctx from run
+1.  Build ctx from run (step: current_step, params: run.params, etc.)
 2.  Apply interventions: if run.interventions[step] exists,
-    fold each through domain.apply_intervention(state, intervention, pre_ctx)
-3.  derived = domain.derive(state, pre_ctx)
-4.  actors = domain.actors(state, pre_ctx)
-5.  {rolls, rng} = domain.sample(state, pre_ctx, rng)
+    fold each through domain.apply_intervention(state, intervention, ctx)
+3.  derived = domain.derive(state, ctx)
+4.  actors = domain.actors(state, ctx)
+    — Validate each actor exists in run.policies. If not, error with clear message.
+5.  {rolls, rng} = domain.sample(state, ctx, run.rng)
 6.  For each actor (in order from step 4):
-    a. obs = domain.observe(actor, state, derived, pre_ctx)
-    b. {:ok, proposal, new_policy_state} = policy.decide(actor, obs, pre_ctx, policy_state)
-7.  actions = domain.resolve_actions(proposals_map, state, derived, rolls, pre_ctx)
-8.  Update pre_ctx with post-sample rng
-9.  {:ok, next_state, events, rng} = domain.transition(state, actions, rolls, derived, pre_ctx)
-10. Build post_ctx (step + 1, post-transition rng)
-11. next_derived = domain.derive(next_state, post_ctx)
-12. metrics = domain.metrics(next_state, next_derived, post_ctx)
-13. Update accumulator: prepend metrics (and trace if enabled), call on_step hook
-14. Check halt: step + 1 >= max_steps or domain.halt?(next_state, next_derived, post_ctx)
-15. Return updated {Run, Accumulator}
+    a. obs = domain.observe(actor, state, derived, ctx)
+    b. {:ok, proposal, new_policy_state} = policy.decide(actor, obs, ctx, policy_state)
+7.  actions = domain.resolve_actions(proposals_map, state, derived, rolls, ctx)
+8.  {:ok, next_state, events, rng} = domain.transition(state, actions, rolls, derived, ctx)
+    — transition receives rng from step 5 via ctx (engine sets ctx.rng before calling)
+    — transition returns updated rng for action-contingent rolls
+9.  metrics = domain.metrics(next_state, derived, ctx)
+    — Note: derived is from pre-transition state. If domain needs post-transition
+      derived values for metrics, compute them inside metrics/3.
+10. Update accumulator: prepend {step, metrics} to step_metrics.
+    If keep_trace?, also prepend {step, %{events: events, ...}} to trace.
+11. Check halt: step + 1 >= max_steps or domain.halt?(next_state, derived, ctx)
+12. Update run: domain_state = next_state, rng = rng, step = step + 1,
+    policy_states = updated from step 6
+13. Return {Run, Accumulator}
 ```
 
-Each phase is wrapped in error handling that produces a `StepError` tagged with the phase name, actor (if applicable), and module.
+**Simplifications from earlier version:**
+- One context per step (no pre_ctx/post_ctx split)
+- `derive/2` called once per step (not twice)
+- `metrics/3` and `halt?/3` receive pre-transition `derived` — domain computes post-transition projections internally if needed
+- RNG threaded: `run.rng` → `sample/3` → updated rng → set on ctx for `transition/5` → transition returns final rng → stored back on `run.rng`
 
-If `actors/2` returns `[]`, steps 6-7 are skipped. `actions` passed to `transition/5` is `%{}` (empty proposals).
+**Step 8 note on RNG:** The engine sets `ctx.rng` to the post-sample RNG before calling `transition/5`. This is the only mutation of `ctx` during the step. It ensures `transition/5` can do action-contingent rolls from the correct position. Context still has no `:rng` in its struct definition — the engine adds it dynamically for transition only.
+
+Actually, to keep Context truly immutable: pass `rng` as a 6th argument to `transition`. This changes the callback signature:
+
+```elixir
+@callback transition(state(), actions :: term(), rolls(), derived(), Context.t(), :rand.state())
+  :: {:ok, state(), [event()], :rand.state()} | {:error, term()}
+```
+
+This matches `sample/3`'s pattern of explicit RNG and keeps Context as pure metadata.
+
+Each phase is wrapped in error handling that produces a `StepError` tagged with the step number, phase name, actor (if applicable), and module.
+
+If `actors/2` returns `[]`, steps 6-7 are skipped. `actions` passed to `transition` is `%{}` (empty proposals).
+
+**Error handling strategy:** Callbacks returning `{:ok, _} | {:error, _}` (`init`, `transition`, `decide`) — errors detected via pattern matching. Callbacks returning raw values (`derive`, `actors`, `observe`, `sample`, `resolve_actions`, `metrics`, `halt?`) — wrapped in `try/rescue` to catch raises, then tagged with `StepError`.
 
 ### `run/2`
 
@@ -402,6 +423,8 @@ end
 4. **Engine never inspects opaque types.** `domain_state`, `observation`, `proposal`, `action`, `rolls`, `derived` — all `term()`. Engine passes them through.
 5. **Policies are deterministic in v1.** No RNG argument to `decide/4`. LLM-backed policies are inherently non-deterministic — acknowledged, not papered over.
 6. **Fail fast on invalid config.** `new/2` validates modules implement the correct behaviours before any simulation runs.
+7. **Context is pure metadata.** No mutable state on Context. RNG passed explicitly to `sample/3` and `transition/6`.
+8. **One context per step.** Step N's context has `step: N`. No pre/post split. Derive called once per step.
 
 ---
 
@@ -455,8 +478,8 @@ defmodule Rho.Sim.Test.CounterDomain do
   use Rho.Sim.Domain
 
   def init(opts), do: {:ok, %{count: Keyword.get(opts, :start, 0)}}
-  def transition(state, _actions, _rolls, _derived, ctx) do
-    {:ok, %{state | count: state.count + 1}, [%{type: :incremented}], ctx.rng}
+  def transition(state, _actions, _rolls, _derived, _ctx, rng) do
+    {:ok, %{state | count: state.count + 1}, [%{type: :incremented}], rng}
   end
   def metrics(state, _derived, _ctx), do: %{count: state.count}
   def halt?(state, _derived, _ctx), do: state.count >= 10
