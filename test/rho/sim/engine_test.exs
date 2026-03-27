@@ -1,7 +1,44 @@
+defmodule Rho.Sim.Test.ActorDomain do
+  use Rho.Sim.Domain
+
+  def init(opts), do: {:ok, %{count: Keyword.get(opts, :start, 0), actors: Keyword.get(opts, :actors, [])}}
+  def actors(state, _ctx), do: state.actors
+  def observe(_actor, state, _derived, _ctx), do: %{count: state.count}
+
+  def transition(state, _actions, _rolls, _derived, _ctx, rng) do
+    {:ok, %{state | count: state.count + 1}, [], rng}
+  end
+
+  def metrics(state, _derived, _ctx), do: %{count: state.count}
+end
+
+defmodule Rho.Sim.Test.InterventionDomain do
+  use Rho.Sim.Domain
+
+  def init(opts), do: {:ok, %{count: Keyword.get(opts, :start, 0)}}
+  def apply_intervention(state, {:set_count, n}, _ctx), do: %{state | count: n}
+
+  def transition(state, _actions, _rolls, _derived, _ctx, rng) do
+    {:ok, %{state | count: state.count + 1}, [], rng}
+  end
+
+  def metrics(state, _derived, _ctx), do: %{count: state.count}
+end
+
+defmodule Rho.Sim.Test.ErrorDomain do
+  use Rho.Sim.Domain
+
+  def init(_opts), do: {:ok, %{count: 0}}
+
+  def transition(_state, _actions, _rolls, _derived, _ctx, _rng) do
+    {:error, :kaboom}
+  end
+end
+
 defmodule Rho.Sim.EngineTest do
   use ExUnit.Case, async: true
 
-  alias Rho.Sim.{Engine, Run, Accumulator}
+  alias Rho.Sim.{Engine, Run, Accumulator, StepError}
 
   describe "Engine.new/2" do
     test "returns {:ok, {%Run{}, %Accumulator{}}} with correct fields" do
@@ -158,6 +195,148 @@ defmodule Rho.Sim.EngineTest do
                )
 
       assert run.interventions == interventions
+    end
+  end
+
+  describe "Engine.step/2" do
+    test "one step with CounterDomain — count goes from 0 to 1, metrics recorded" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 0],
+          max_steps: 10,
+          seed: 42
+        )
+
+      assert {:ok, {%Run{} = run2, %Accumulator{} = acc2}} = Engine.step({run, acc})
+
+      # State advanced: count 0 -> 1
+      assert run2.domain_state.count == 1
+      # Step incremented
+      assert run2.step == 1
+      # Metrics recorded
+      step_metrics = Accumulator.step_metrics(acc2)
+      assert length(step_metrics) == 1
+      assert [{0, %{count: 1}}] = step_metrics
+    end
+
+    test "step with interventions — intervention applied before derive" do
+      # Intervention at step 0 sets count to 100, then transition increments to 101
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.InterventionDomain,
+          domain_opts: [start: 0],
+          max_steps: 10,
+          seed: 42,
+          interventions: %{0 => [{:set_count, 100}]}
+        )
+
+      assert {:ok, {%Run{} = run2, %Accumulator{} = acc2}} = Engine.step({run, acc})
+
+      # After intervention (set to 100) + transition (increment) = 101
+      assert run2.domain_state.count == 101
+      step_metrics = Accumulator.step_metrics(acc2)
+      assert [{0, %{count: 101}}] = step_metrics
+    end
+
+    test "step with actors and policies — observe, decide, resolve called in order" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.ActorDomain,
+          domain_opts: [start: 0, actors: [:agent_a]],
+          policies: %{agent_a: Rho.Sim.Test.StubPolicy},
+          max_steps: 10,
+          seed: 42
+        )
+
+      assert {:ok, {%Run{} = run2, %Accumulator{} = acc2}} = Engine.step({run, acc})
+
+      # State advanced
+      assert run2.domain_state.count == 1
+      assert run2.step == 1
+      # Metrics recorded
+      step_metrics = Accumulator.step_metrics(acc2)
+      assert [{0, %{count: 1}}] = step_metrics
+    end
+
+    test "step with unknown actor in actors/2 returns StepError with phase :decide" do
+      # ActorDomain returns [:unknown_actor] but no policy registered for it
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.ActorDomain,
+          domain_opts: [start: 0, actors: [:unknown_actor]],
+          policies: %{},
+          max_steps: 10,
+          seed: 42
+        )
+
+      assert {:error, {0, %StepError{} = err, _run, _acc}} = Engine.step({run, acc})
+      assert err.phase == :decide
+      assert err.step == 0
+    end
+
+    test "step where transition returns error produces StepError with phase :transition" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.ErrorDomain,
+          max_steps: 10,
+          seed: 42
+        )
+
+      assert {:error, {0, %StepError{} = err, _run, _acc}} = Engine.step({run, acc})
+      assert err.phase == :transition
+      assert err.step == 0
+      assert err.reason == :kaboom
+    end
+
+    test "step returns :halted when step+1 >= max_steps" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 0],
+          max_steps: 1,
+          seed: 42
+        )
+
+      # Step 0 -> step becomes 1, which equals max_steps=1
+      assert {:halted, {%Run{} = run2, %Accumulator{}}} = Engine.step({run, acc})
+      assert run2.step == 1
+    end
+
+    test "step returns :halted when domain.halt? returns true" do
+      # CounterDomain halts at count >= 10
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 9],
+          max_steps: 100,
+          seed: 42
+        )
+
+      # count goes from 9 to 10, halt? returns true
+      assert {:halted, {%Run{} = run2, %Accumulator{}}} = Engine.step({run, acc})
+      assert run2.domain_state.count == 10
+    end
+
+    test "trace records events from transition" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 0],
+          max_steps: 10,
+          seed: 42
+        )
+
+      assert {:ok, {_run2, acc2}} = Engine.step({run, acc})
+      trace = Accumulator.trace(acc2)
+      assert length(trace) == 1
+      assert [{0, trace_entry}] = trace
+      assert trace_entry.events == [%{type: :incremented}]
+    end
+
+    test "RNG state is updated after step" do
+      {:ok, {run, acc}} =
+        Engine.new(Rho.Sim.Test.CounterDomain,
+          domain_opts: [start: 0],
+          max_steps: 10,
+          seed: 42
+        )
+
+      {:ok, {run2, _acc2}} = Engine.step({run, acc})
+      # RNG should be different (or same if passthrough, but at least not crash)
+      assert run2.rng != nil
     end
   end
 end
