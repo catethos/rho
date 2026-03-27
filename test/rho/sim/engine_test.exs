@@ -81,7 +81,7 @@ end
 defmodule Rho.Sim.EngineTest do
   use ExUnit.Case, async: true
 
-  alias Rho.Sim.{Engine, Run, Accumulator, StepError}
+  alias Rho.Sim.{Engine, Run, Accumulator, StepError, Testing}
 
   describe "Engine.new/2" do
     test "returns {:ok, {%Run{}, %Accumulator{}}} with correct fields" do
@@ -436,27 +436,19 @@ defmodule Rho.Sim.EngineTest do
 
   describe "reproducibility" do
     test "same seed + CounterDomain produces identical step_metrics across two runs" do
-      opts = [domain_opts: [start: 0], max_steps: 100, seed: 42]
-
-      {:ok, {run1, acc1}} = Engine.new(Rho.Sim.Test.CounterDomain, opts)
-      {:halted, {_final_run1, final_acc1}} = Engine.run(run1, acc1)
-
-      {:ok, {run2, acc2}} = Engine.new(Rho.Sim.Test.CounterDomain, opts)
-      {:halted, {_final_run2, final_acc2}} = Engine.run(run2, acc2)
-
-      assert Accumulator.step_metrics(final_acc1) == Accumulator.step_metrics(final_acc2)
+      Testing.assert_deterministic(Rho.Sim.Test.CounterDomain,
+        domain_opts: [start: 0],
+        max_steps: 100,
+        seed: 42
+      )
     end
 
     test "same seed + StochasticDomain produces identical step_metrics across two runs" do
-      opts = [domain_opts: [start: 0.0], max_steps: 100, seed: 42]
-
-      {:ok, {run1, acc1}} = Engine.new(Rho.Sim.Test.StochasticDomain, opts)
-      {:halted, {_final_run1, final_acc1}} = Engine.run(run1, acc1)
-
-      {:ok, {run2, acc2}} = Engine.new(Rho.Sim.Test.StochasticDomain, opts)
-      {:halted, {_final_run2, final_acc2}} = Engine.run(run2, acc2)
-
-      assert Accumulator.step_metrics(final_acc1) == Accumulator.step_metrics(final_acc2)
+      Testing.assert_deterministic(Rho.Sim.Test.StochasticDomain,
+        domain_opts: [start: 0.0],
+        max_steps: 100,
+        seed: 42
+      )
     end
 
     test "different seed + StochasticDomain produces different step_metrics" do
