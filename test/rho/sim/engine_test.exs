@@ -51,6 +51,33 @@ defmodule Rho.Sim.Test.ErrorAtStepDomain do
   def metrics(state, _derived, _ctx), do: %{count: state.count}
 end
 
+defmodule Rho.Sim.Test.StochasticDomain do
+  use Rho.Sim.Domain
+
+  def init(opts), do: {:ok, %{value: Keyword.get(opts, :start, 0.0), step_count: 0}}
+
+  # Exogenous randomness: sample produces a random "shock" value
+  def sample(_state, _ctx, rng) do
+    {shock, rng} = :rand.uniform_s(rng)
+    {%{shock: shock}, rng}
+  end
+
+  # Action-contingent randomness: transition does its own RNG draws
+  def transition(state, _actions, rolls, _derived, _ctx, rng) do
+    # Use the exogenous shock from sample
+    shock = rolls.shock
+
+    # Action-contingent roll inside transition
+    {action_roll, rng} = :rand.uniform_s(rng)
+
+    new_value = state.value + shock + action_roll
+    {:ok, %{state | value: new_value, step_count: state.step_count + 1}, [], rng}
+  end
+
+  def metrics(state, _derived, _ctx), do: %{value: state.value, step_count: state.step_count}
+  def halt?(state, _derived, _ctx), do: state.step_count >= 20
+end
+
 defmodule Rho.Sim.EngineTest do
   use ExUnit.Case, async: true
 
@@ -404,6 +431,45 @@ defmodule Rho.Sim.EngineTest do
       assert err.reason == :planned_failure
       # 2 successful steps before the error (steps 0 and 1)
       assert length(partial_acc.step_metrics) == 2
+    end
+  end
+
+  describe "reproducibility" do
+    test "same seed + CounterDomain produces identical step_metrics across two runs" do
+      opts = [domain_opts: [start: 0], max_steps: 100, seed: 42]
+
+      {:ok, {run1, acc1}} = Engine.new(Rho.Sim.Test.CounterDomain, opts)
+      {:halted, {_final_run1, final_acc1}} = Engine.run(run1, acc1)
+
+      {:ok, {run2, acc2}} = Engine.new(Rho.Sim.Test.CounterDomain, opts)
+      {:halted, {_final_run2, final_acc2}} = Engine.run(run2, acc2)
+
+      assert Accumulator.step_metrics(final_acc1) == Accumulator.step_metrics(final_acc2)
+    end
+
+    test "same seed + StochasticDomain produces identical step_metrics across two runs" do
+      opts = [domain_opts: [start: 0.0], max_steps: 100, seed: 42]
+
+      {:ok, {run1, acc1}} = Engine.new(Rho.Sim.Test.StochasticDomain, opts)
+      {:halted, {_final_run1, final_acc1}} = Engine.run(run1, acc1)
+
+      {:ok, {run2, acc2}} = Engine.new(Rho.Sim.Test.StochasticDomain, opts)
+      {:halted, {_final_run2, final_acc2}} = Engine.run(run2, acc2)
+
+      assert Accumulator.step_metrics(final_acc1) == Accumulator.step_metrics(final_acc2)
+    end
+
+    test "different seed + StochasticDomain produces different step_metrics" do
+      opts_42 = [domain_opts: [start: 0.0], max_steps: 100, seed: 42]
+      opts_99 = [domain_opts: [start: 0.0], max_steps: 100, seed: 99]
+
+      {:ok, {run_42, acc_42}} = Engine.new(Rho.Sim.Test.StochasticDomain, opts_42)
+      {:halted, {_run_42, final_acc_42}} = Engine.run(run_42, acc_42)
+
+      {:ok, {run_99, acc_99}} = Engine.new(Rho.Sim.Test.StochasticDomain, opts_99)
+      {:halted, {_run_99, final_acc_99}} = Engine.run(run_99, acc_99)
+
+      refute Accumulator.step_metrics(final_acc_42) == Accumulator.step_metrics(final_acc_99)
     end
   end
 end
