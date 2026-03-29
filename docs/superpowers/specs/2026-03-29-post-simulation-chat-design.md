@@ -106,7 +106,7 @@ def handle_cast({:ask, _question}, state), do: {:noreply, state}
 Note: `cast` instead of `call` because the response comes async via the signal bus. The Worker queues multiple submissions naturally, so rapid user questions are handled in order. The LiveView should check if the coordinator process is alive before casting — if dead, show a "Session expired" message in the timeline instead of silently dropping the question.
 
 **Add** `build_chat_prompt/2`:
-- Reads evaluator tapes via `Rho.Memory.Tape.history("agent_#{agent_id}")` for each evaluator in `state.evaluators`
+- Reads evaluator tapes via `Rho.Memory.Tape.history("agent_#{agent_id}")` for each evaluator in `state.evaluators`. Note: evaluator processes are dead by this point, but tapes persist in the Store (ETS/file) — they outlive the process.
 - Reads `state.scores` for structured score data
 - Extracts timestamps from tape entries to answer timing questions
 - Extracts debate messages (tool calls to `send_message`) for disagreement context
@@ -235,6 +235,8 @@ end
 
 ### 3. `lib/rho_web/live/observatory_projection.ex`
 
+**Modify** the existing `rho.hiring.chairman.summary` projection to also set `chairman_ready: true` on the socket, enabling the chat input.
+
 **Add** projection for `rho.hiring.chairman.reply` — identical to `chairman.summary` but with type `:chairman_reply`:
 
 ```elixir
@@ -265,6 +267,7 @@ end
 
 - `:user_question` — styled as a right-aligned chat bubble (user message)
 - `:chairman_reply` — styled same as `:chairman` entries (left-aligned, with Chairman avatar)
+- `:system_notice` — centered, muted text (for "Session expired" etc.)
 
 ### 5. Chairman system prompt (`.rho.exs`)
 
@@ -289,7 +292,7 @@ The user sees an agent that was orchestrated during the simulation, then becomes
 
 ## Session Lifecycle
 
-- Simulation completes → phase becomes `:chat` → Chairman stays alive
+- Simulation completes → `status: :completed`, `summary_delivered` flips after first Chairman response → Chairman stays alive
 - User navigates away → LiveView unmounts → no immediate cleanup (Chairman idles cheaply)
 - Optional: add an idle timeout (e.g., 5 minutes of no questions) that sends `:stop_chairman` — but not required for MVP
 - `Session.stop/1` or explicit cleanup will terminate all agents including Chairman
