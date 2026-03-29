@@ -77,32 +77,33 @@ No new architectural patterns. No new signal types beyond one `rho.hiring.chairm
 - Delete `Process.send_after(self(), :stop_chairman, 30_000)` (line 394)
 - Keep the `handle_info(:stop_chairman, state)` handler for safety, but it won't fire automatically
 
-**Add** a `:chat` phase to the struct:
-- Add `phase: :not_started` to the struct (values: `:not_started`, `:running`, `:chat`)
-- Set `phase: :chat` when simulation completes (alongside `status: :completed`)
+**Add** `summary_delivered: false` to the struct. Set to `true` when the Chairman's first `rho.task.completed` fires (the closing summary). This distinguishes the initial summary from subsequent chat replies — no new state machine needed.
 
-**Add** public API function:
+**Add** public API function (cast, not call — fire-and-forget, response comes back via signal bus):
 ```elixir
 def ask(session_id, question) do
-  GenServer.call(via(session_id), {:ask, question}, 30_000)
+  GenServer.cast(via(session_id), {:ask, question})
 end
 ```
 
 **Add** handler:
 ```elixir
-def handle_call({:ask, question}, _from, %{phase: :chat} = state) do
+def handle_cast({:ask, question}, %{status: :completed} = state) do
   chairman_pid = Worker.whereis(state.chairman_agent_id)
 
   if chairman_pid do
     prompt = build_chat_prompt(state, question)
     config = Rho.Config.agent(:chairman)
     Worker.submit(chairman_pid, prompt, tools: state.chairman_tools, model: config.model)
-    {:reply, :ok, state}
-  else
-    {:reply, {:error, :chairman_not_available}, state}
   end
+
+  {:noreply, state}
 end
+
+def handle_cast({:ask, _question}, state), do: {:noreply, state}
 ```
+
+Note: `cast` instead of `call` because the response comes async via the signal bus. The Worker queues multiple submissions naturally, so rapid user questions are handled in order. The LiveView should check if the coordinator process is alive before casting — if dead, show a "Session expired" message in the timeline instead of silently dropping the question.
 
 **Add** `build_chat_prompt/2`:
 - Reads evaluator tapes via `Rho.Memory.Tape.history("agent_#{agent_id}")` for each evaluator in `state.evaluators`
@@ -150,16 +151,17 @@ end
 ```
 
 **Modify** the `rho.task.completed` handler (lines 95-110):
-- In `:chat` phase, publish `rho.hiring.chairman.reply` instead of `rho.hiring.chairman.summary`
+- Use `summary_delivered` to distinguish closing summary from chat replies
 
 ```elixir
-def handle_info({:signal, %Jido.Signal{type: "rho.task.completed", data: data}}, state)
-    when state.phase in [:completed, :chat] do
+def handle_info({:signal, %Jido.Signal{type: "rho.task.completed", data: data}}, %{status: :completed} = state) do
   if data.agent_id == state.chairman_agent_id do
-    signal_type =
-      if state.phase == :chat,
-        do: "rho.hiring.chairman.reply",
-        else: "rho.hiring.chairman.summary"
+    {signal_type, state} =
+      if state.summary_delivered do
+        {"rho.hiring.chairman.reply", state}
+      else
+        {"rho.hiring.chairman.summary", %{state | summary_delivered: true}}
+      end
 
     Comms.publish(signal_type, %{
       session_id: state.session_id,
@@ -174,8 +176,6 @@ def handle_info({:signal, %Jido.Signal{type: "rho.task.completed", data: data}},
   end
 end
 ```
-
-**Note on phase vs status:** `status: :completed` already means "simulation rounds are done." Adding `phase` separately tracks the coordinator's mode (running rounds vs accepting chat). When the simulation completes, both `status: :completed` and `phase: :chat` are set together.
 
 ### 2. `lib/rho_web/live/observatory_live.ex`
 
@@ -194,29 +194,39 @@ In the `render/1` for the active observatory, after `<.unified_timeline>`:
 
 **Add** user question to timeline immediately (so they see their own message):
 ```elixir
-def handle_event("ask_chairman", %{"question" => question}, socket) when question != "" do
-  sid = socket.assigns.session_id
+def handle_event("ask_chairman", %{"question" => question}, socket) do
+  question = String.trim(question)
+  if question == "" do
+    {:noreply, socket}
+  else
+    sid = socket.assigns.session_id
 
-  # Add user question to timeline immediately
-  entry = %{
-    type: :user_question,
-    agent_role: nil,
-    agent_id: nil,
-    target: nil,
-    text: question,
-    candidate_id: nil,
-    candidate_name: nil,
-    score: nil,
-    delta: nil,
-    round: socket.assigns.round,
-    timestamp: System.monotonic_time(:millisecond)
-  }
+    # Add user question to timeline immediately
+    entry = %{
+      type: :user_question,
+      agent_role: nil,
+      agent_id: nil,
+      target: nil,
+      text: question,
+      candidate_id: nil,
+      candidate_name: nil,
+      score: nil,
+      delta: nil,
+      round: socket.assigns.round,
+      timestamp: System.monotonic_time(:millisecond)
+    }
 
-  timeline = socket.assigns.timeline ++ [entry]
+    timeline = socket.assigns.timeline ++ [entry]
 
-  case Simulation.ask(sid, question) do
-    :ok -> {:noreply, assign(socket, timeline: timeline)}
-    {:error, _} -> {:noreply, socket}
+    # Check coordinator is alive before sending (note: via/1 needs to be made public, or add Simulation.alive?/1)
+    case GenServer.whereis(Simulation.via(sid)) do
+      nil ->
+        expired = %{entry | type: :system_notice, text: "Session expired. Please start a new simulation."}
+        {:noreply, assign(socket, timeline: timeline ++ [expired])}
+      _pid ->
+        Simulation.ask(sid, question)
+        {:noreply, assign(socket, timeline: timeline)}
+    end
   end
 end
 ```
