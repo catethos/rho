@@ -24,7 +24,11 @@ defmodule Rho.Demos.Hiring.Simulation do
     chairman_agent_id: nil,
     chairman_tools: nil,
     round_started_at: nil,
-    round_timer_ref: nil
+    round_timer_ref: nil,
+    summary_delivered: false,
+    pending_replies: 0,
+    last_question: nil,
+    retry_count: 0
   ]
 
   # --- Public API ---
@@ -40,6 +44,10 @@ defmodule Rho.Demos.Hiring.Simulation do
 
   def begin_simulation(session_id) do
     GenServer.call(via(session_id), :begin, 30_000)
+  end
+
+  def ask(session_id, question) do
+    GenServer.cast(via(session_id), {:ask, question})
   end
 
   # --- GenServer callbacks ---
@@ -80,7 +88,39 @@ defmodule Rho.Demos.Hiring.Simulation do
   def handle_call(:begin, _from, state), do: {:reply, {:error, :already_started}, state}
 
   @impl true
-  def handle_info({:signal, %Jido.Signal{type: "rho.hiring.scores.submitted", data: data}}, state) do
+  @chat_model "openrouter:anthropic/claude-sonnet-4.6"
+
+  def handle_cast({:ask, question}, %{status: :completed} = state) do
+    chairman_pid = Worker.whereis(state.chairman_agent_id)
+
+    if chairman_pid do
+      prompt = build_chat_prompt(state, question)
+      Worker.submit(chairman_pid, prompt, tools: state.chairman_tools, model: @chat_model)
+      {:noreply, %{state | pending_replies: state.pending_replies + 1, last_question: question, retry_count: 0}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_cast({:ask, _question}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info({:retry_ask, question}, %{status: :completed} = state) when is_binary(question) do
+    chairman_pid = Worker.whereis(state.chairman_agent_id)
+
+    if chairman_pid do
+      Logger.info("[Hiring] Retrying question for chairman.")
+      prompt = build_chat_prompt(state, question)
+      Worker.submit(chairman_pid, prompt, tools: state.chairman_tools, model: @chat_model)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:retry_ask, _}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info({:signal, %Jido.Signal{type: "rho.hiring.scores.submitted", data: data}}, %{status: :running} = state) do
     if data.session_id == state.session_id do
       # Use the coordinator's current round, not the LLM's claimed round
       state = record_scores(state, data.role, state.round, data.scores)
@@ -91,19 +131,65 @@ defmodule Rho.Demos.Hiring.Simulation do
     end
   end
 
+  # Ignore late scores after simulation is completed
+  def handle_info({:signal, %Jido.Signal{type: "rho.hiring.scores.submitted"}}, state) do
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:signal, %Jido.Signal{type: "rho.task.completed", data: data}}, %{status: :completed} = state) do
     if data.agent_id == state.chairman_agent_id do
-      Logger.info("[Hiring] Chairman produced summary. Publishing to timeline.")
+      cond do
+        # First completion = the closing summary
+        not state.summary_delivered ->
+          Logger.info("[Hiring] Chairman produced summary. Publishing to timeline.")
 
-      Comms.publish("rho.hiring.chairman.summary", %{
-        session_id: state.session_id,
-        agent_id: state.chairman_agent_id,
-        agent_role: :chairman,
-        text: data.result
-      }, source: "/session/#{state.session_id}")
+          Comms.publish("rho.hiring.chairman.summary", %{
+            session_id: state.session_id,
+            agent_id: state.chairman_agent_id,
+            agent_role: :chairman,
+            text: data.result
+          }, source: "/session/#{state.session_id}")
 
-      {:noreply, state}
+          {:noreply, %{state | summary_delivered: true}}
+
+        # User asked a question but chairman errored — retry up to 3 times
+        state.pending_replies > 0 and String.starts_with?(data.result, "error:") and state.retry_count < 3 ->
+          Logger.warning("[Hiring] Chairman failed (attempt #{state.retry_count + 1}/3), retrying: #{String.slice(data.result, 0, 100)}")
+          Process.send_after(self(), {:retry_ask, state.last_question}, 2_000)
+          {:noreply, %{state | retry_count: state.retry_count + 1}}
+
+        # Max retries exhausted — show user-friendly error
+        state.pending_replies > 0 and String.starts_with?(data.result, "error:") ->
+          Logger.error("[Hiring] Chairman failed after 3 retries. Giving up.")
+
+          Comms.publish("rho.hiring.chairman.reply", %{
+            session_id: state.session_id,
+            agent_id: state.chairman_agent_id,
+            agent_role: :chairman,
+            text: "I'm having trouble responding right now. Please wait a moment and try again."
+          }, source: "/session/#{state.session_id}")
+
+          {:noreply, %{state | pending_replies: state.pending_replies - 1, retry_count: 0}}
+
+        # Successful reply
+        state.pending_replies > 0 ->
+          Logger.info("[Hiring] Chairman replied to user question. Publishing to timeline.")
+
+          Comms.publish("rho.hiring.chairman.reply", %{
+            session_id: state.session_id,
+            agent_id: state.chairman_agent_id,
+            agent_role: :chairman,
+            text: data.result
+          }, source: "/session/#{state.session_id}")
+
+          {:noreply, %{state | pending_replies: state.pending_replies - 1}}
+
+        # Stale completion from mailbox signals — ignore
+        true ->
+          Logger.debug("[Hiring] Ignoring stale chairman task completion (no pending replies)")
+          {:noreply, state}
+      end
     else
       {:noreply, state}
     end
@@ -390,9 +476,6 @@ defmodule Rho.Demos.Hiring.Simulation do
           shortlist: final
         }, source: "/session/#{state.session_id}")
 
-        # Schedule chairman shutdown (give it time to produce summary)
-        Process.send_after(self(), :stop_chairman, 30_000)
-
         Logger.info("[Hiring] Simulation complete. Shortlist: #{inspect(final)}")
         %{state | status: :completed, round_timer_ref: nil}
       else
@@ -506,5 +589,103 @@ defmodule Rho.Demos.Hiring.Simulation do
     """
   end
 
-  defp via(session_id), do: {:via, Registry, {Rho.AgentRegistry, "sim_#{session_id}"}}
+  defp build_chat_prompt(state, question) do
+    memory_mod = Rho.Config.memory_module()
+
+    # Gather evaluator tape histories (tapes persist after process death)
+    evaluator_context =
+      state.evaluators
+      |> Enum.map(fn {role, agent_id} ->
+        history = memory_mod.history("agent_#{agent_id}")
+        {role, summarize_evaluator_history(history)}
+      end)
+      |> Enum.map_join("\n\n", fn {role, summary} ->
+        "## #{format_role(role)}\n#{summary}"
+      end)
+
+    score_summary = format_all_scores(state)
+
+    """
+    You are the Chairman answering a follow-up question from a user who watched the hiring simulation.
+
+    Here is the full context from the simulation:
+
+    ### Final Scores
+    #{score_summary}
+
+    ### Evaluator Activity
+    #{evaluator_context}
+
+    ### User Question
+    #{question}
+
+    Answer conversationally and concisely. Reference specific evaluator opinions and scores when relevant.
+    When done, call `finish` with your complete response written directly to the user. The finish argument IS what the user will read — write it as a direct conversation, not a summary or description of what you said.
+    """
+  end
+
+  defp summarize_evaluator_history(history) do
+    history
+    |> Enum.map(fn entry ->
+      case entry do
+        %{type: "message", role: "assistant", content: content} ->
+          "Assistant: #{String.slice(to_string(content), 0, 300)}"
+
+        %{type: "tool_call", name: "submit_scores", args: args} ->
+          args = parse_args(args)
+          scores = parse_args(args["scores"] || [])
+          scores = if is_list(scores), do: scores, else: []
+          formatted = Enum.map_join(scores, ", ", fn s ->
+            "#{s["id"]}: #{s["score"]}"
+          end)
+          "Submitted scores: #{formatted} (at #{entry[:ts] || "?"})"
+
+        %{type: "tool_call", name: "send_message", args: args} ->
+          args = parse_args(args)
+          "Sent message to #{parse_args(args["to"])}: #{String.slice(to_string(args["message"]), 0, 200)}"
+
+        %{type: "tool_call", name: name} ->
+          "Called #{name}"
+
+        _ ->
+          nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  # Tape stores tool args as raw JSON strings; parse if needed
+  defp parse_args(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, parsed} -> parsed
+      _ -> args
+    end
+  end
+
+  defp parse_args(args), do: args
+
+  defp format_all_scores(state) do
+    latest_round = state.max_rounds
+
+    state.scores
+    |> Enum.filter(fn {{_role, round}, _} -> round == latest_round end)
+    |> Enum.flat_map(fn {{role, _round}, scores} ->
+      Enum.map(scores, fn entry ->
+        candidate = Enum.find(Candidates.all(), &(&1.id == entry["id"]))
+        name = if candidate, do: candidate.name, else: entry["id"]
+        "#{name}: #{format_role(role)} scored #{entry["score"]}"
+      end)
+    end)
+    |> Enum.sort()
+    |> Enum.join("\n")
+  end
+
+  defp format_role(role) when is_atom(role) do
+    role |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+  end
+
+  defp format_role(role), do: to_string(role)
+
+  def via(session_id), do: {:via, Registry, {Rho.AgentRegistry, "sim_#{session_id}"}}
 end

@@ -220,6 +220,23 @@ defmodule RhoWeb.ObservatoryComponents do
                    data-md={entry.text}></div>
             </div>
 
+          <% :chairman_reply -> %>
+            <div class="obs-timeline-reply">
+              <span class="obs-timeline-tag obs-timeline-tag-chairman">Chairman</span>
+              <div class="obs-timeline-reply-body markdown-body"
+                   id={"timeline-reply-#{entry.timestamp}-#{System.unique_integer([:positive])}"}
+                   phx-hook="Markdown"
+                   data-md={entry.text}></div>
+            </div>
+
+          <% :user_question -> %>
+            <div class="obs-timeline-user-question">
+              <div class="obs-timeline-user-bubble"><%= entry.text %></div>
+            </div>
+
+          <% :system_notice -> %>
+            <div class="obs-timeline-system-notice"><%= entry.text %></div>
+
           <% _ -> %>
             <div></div>
         <% end %>

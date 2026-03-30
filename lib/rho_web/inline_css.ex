@@ -1313,6 +1313,51 @@ defmodule RhoWeb.InlineCSS do
       font-size: 13px;
     }
     .obs-timeline-summary-body { line-height: 1.6; margin-top: 8px; }
+
+    /* Post-simulation chat */
+    .obs-chat-input {
+      display: flex; gap: 8px; padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-secondary, #1a1a2e);
+    }
+    .obs-chat-input input {
+      flex: 1; padding: 8px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: rgba(255, 255, 255, 0.08);
+      color: #e0e0e0; font-size: 13px; font-family: inherit;
+      outline: none;
+    }
+    .obs-chat-input input:focus { border-color: #5BB5A2; }
+    .obs-chat-input button {
+      padding: 8px 16px; border-radius: 8px; border: none;
+      background: #5BB5A2; color: #fff; font-size: 13px; font-weight: 500;
+      cursor: pointer;
+    }
+    .obs-chat-input button:hover { background: #4da392; }
+
+    /* User question bubble */
+    .obs-timeline-user-question {
+      display: flex; justify-content: flex-end; margin: 8px 0;
+    }
+    .obs-timeline-user-bubble {
+      background: rgba(91, 181, 162, 0.15); color: var(--text-primary);
+      padding: 8px 14px; border-radius: 14px 14px 4px 14px;
+      font-size: 13px; max-width: 75%; line-height: 1.5;
+    }
+
+    /* Chairman reply */
+    .obs-timeline-reply {
+      background: rgba(91, 181, 162, 0.04);
+      border-left: 2px solid #5BB5A2;
+      border-radius: 6px; padding: 10px 14px; margin: 8px 0;
+      font-size: 13px;
+    }
+    .obs-timeline-reply-body { line-height: 1.6; margin-top: 6px; }
+
+    /* System notice */
+    .obs-timeline-system-notice {
+      text-align: center; color: var(--text-muted);
+      font-size: 11px; font-style: italic; padding: 8px 0;
+    }
     .obs-timeline-rationale { color: var(--text-secondary); font-size: 11px; }
     .obs-timeline-round-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: 10px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; }
     .obs-timeline-round-line { flex: 1; height: 1px; background: var(--border); }

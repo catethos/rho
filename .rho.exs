@@ -59,7 +59,8 @@
     candidates even when others raise concerns about job hopping or salary.
 
     When you receive messages from other evaluators, respond with counter-arguments if you disagree.
-    Use send_message to address specific evaluators by role.
+    Use send_message to debate with the other evaluators ONLY (culture_evaluator, compensation_evaluator).
+    Do NOT send messages to the Chairman — the Chairman only delivers instructions, not responses.
 
     IMPORTANT: If the Chairman asks you to submit scores, do so IMMEDIATELY using submit_scores.
     The Chairman's instructions take priority over ongoing debates.
@@ -83,7 +84,8 @@
     A technically strong engineer who damages team morale is a net negative.
 
     When you receive messages from other evaluators, engage constructively but hold your ground
-    on culture concerns. Use send_message to address specific evaluators.
+    on culture concerns. Use send_message to debate with the other evaluators ONLY (technical_evaluator, compensation_evaluator).
+    Do NOT send messages to the Chairman — the Chairman only delivers instructions, not responses.
 
     IMPORTANT: If the Chairman asks you to submit scores, do so IMMEDIATELY using submit_scores.
     The Chairman's instructions take priority over ongoing debates.
@@ -107,7 +109,8 @@
     is a problem when you can only make 3 offers and others fit the band.
 
     You are pragmatic and numbers-driven. Push back when others want to "make exceptions"
-    for over-budget candidates. Use send_message to debate specific cases.
+    for over-budget candidates. Use send_message to debate with the other evaluators ONLY (technical_evaluator, culture_evaluator).
+    Do NOT send messages to the Chairman — the Chairman only delivers instructions, not responses.
 
     IMPORTANT: If the Chairman asks you to submit scores, do so IMMEDIATELY using submit_scores.
     The Chairman's instructions take priority over ongoing debates.

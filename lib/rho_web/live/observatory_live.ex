@@ -23,6 +23,7 @@ defmodule RhoWeb.ObservatoryLive do
        insights: [],
        activity: %{},
        selected_agent: nil,
+       chairman_ready: false,
        bus_subs: []
      ), layout: {RhoWeb.Layouts, :app}}
   end
@@ -41,6 +42,7 @@ defmodule RhoWeb.ObservatoryLive do
         insights: [],
         activity: %{},
         selected_agent: nil,
+        chairman_ready: false,
         bus_subs: []
       )
 
@@ -111,6 +113,42 @@ defmodule RhoWeb.ObservatoryLive do
 
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, selected_agent: nil)}
+  end
+
+  def handle_event("ask_chairman", %{"question" => question}, socket) do
+    question = String.trim(question)
+
+    if question == "" do
+      {:noreply, socket}
+    else
+      sid = socket.assigns.session_id
+
+      entry = %{
+        type: :user_question,
+        agent_role: nil,
+        agent_id: nil,
+        target: nil,
+        text: question,
+        candidate_id: nil,
+        candidate_name: nil,
+        score: nil,
+        delta: nil,
+        round: socket.assigns.round,
+        timestamp: System.monotonic_time(:millisecond)
+      }
+
+      timeline = socket.assigns.timeline ++ [entry]
+
+      case GenServer.whereis(Simulation.via(sid)) do
+        nil ->
+          notice = %{entry | type: :system_notice, text: "Session expired. Please start a new simulation."}
+          {:noreply, assign(socket, timeline: timeline ++ [notice])}
+
+        _pid ->
+          Simulation.ask(sid, question)
+          {:noreply, assign(socket, timeline: timeline)}
+      end
+    end
   end
 
   # --- Tick: poll BEAM process internals ---
@@ -214,6 +252,11 @@ defmodule RhoWeb.ObservatoryLive do
             <.agent_card :for={{_id, agent} <- @agents} agent={agent} />
           </div>
           <.unified_timeline timeline={@timeline} />
+          <form :if={@chairman_ready} phx-submit="ask_chairman" class="obs-chat-input">
+            <input type="text" name="question" placeholder="Ask the Chairman anything about the simulation..."
+                   autocomplete="off" />
+            <button type="submit">Ask</button>
+          </form>
         </div>
 
         <div class="obs-right">
