@@ -86,7 +86,8 @@ defmodule RhoWeb.InlineJS do
         render() {
           var raw = this.el.getAttribute("data-md");
           if (raw && window.marked) {
-            this.el.innerHTML = window.marked.parse(raw, { breaks: true });
+            var html = window.marked.parse(raw, { breaks: true });
+            this.el.innerHTML = window.DOMPurify ? DOMPurify.sanitize(html) : html;
           }
         }
       },
@@ -107,6 +108,20 @@ defmodule RhoWeb.InlineJS do
           } catch(e) {
             this.el.textContent = raw;
           }
+        }
+      },
+
+      InteractionGraph: {
+        mounted() {
+          // Re-trigger particle animations on updates by resetting SVG animation elements
+          this.handleEvent("new-edge", function() {});
+        },
+        updated() {
+          // Force restart animations on SVG animateMotion elements
+          var motions = this.el.querySelectorAll("animateMotion");
+          motions.forEach(function(m) {
+            if (m.beginElement) m.beginElement();
+          });
         }
       },
 

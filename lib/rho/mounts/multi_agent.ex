@@ -25,11 +25,12 @@ defmodule Rho.Mounts.MultiAgent do
   @max_agents_per_session 10
   @default_max_steps 30
   @await_timeout 300_000
+  @known_roles_cache Rho.Config.agent_names() |> Enum.map(&Atom.to_string/1)
 
   # --- Mount callbacks ---
 
   @impl Rho.Mount
-  def tools(_mount_opts, %{depth: depth} = ctx) when depth < @max_depth do
+  def tools(mount_opts, %{depth: depth} = ctx) when depth < @max_depth do
     session_id = ctx[:session_id] || ctx[:tape_name]
     agent_id = ctx[:agent_id]
     workspace = ctx[:workspace]
@@ -39,24 +40,37 @@ defmodule Rho.Mounts.MultiAgent do
     [
       delegate_task_tool(session_id, agent_id, workspace, depth, memory_mod, parent_emit),
       await_task_tool(session_id),
+      spawn_agent_tool(session_id, agent_id, workspace, depth, memory_mod, parent_emit),
+      collect_results_tool(session_id),
+      stop_agent_tool(session_id),
       send_message_tool(session_id, agent_id),
       broadcast_message_tool(session_id, agent_id),
       list_agents_tool(session_id),
-      get_agent_card_tool(session_id)
+      get_agent_card_tool(session_id),
+      Rho.Tools.Finish.tool_def()
     ]
+    |> filter_tools(mount_opts)
   end
 
-  def tools(_mount_opts, %{depth: depth} = ctx) when depth >= @max_depth do
+  def tools(mount_opts, %{depth: depth} = ctx) when depth >= @max_depth do
     session_id = ctx[:session_id] || ctx[:tape_name]
     # At max depth, only provide discovery (no delegation)
     [list_agents_tool(session_id), get_agent_card_tool(session_id)]
+    |> filter_tools(mount_opts)
   end
 
   def tools(_mount_opts, _context), do: []
 
   # --- Tool definitions ---
 
-  defp delegate_task_tool(session_id, parent_agent_id, workspace, parent_depth, memory_mod, parent_emit) do
+  defp delegate_task_tool(
+         session_id,
+         parent_agent_id,
+         workspace,
+         parent_depth,
+         memory_mod,
+         parent_emit
+       ) do
     %{
       tool:
         ReqLLM.tool(
@@ -66,15 +80,34 @@ defmodule Rho.Mounts.MultiAgent do
               "Use await_task to get the result later. The new agent runs in parallel with full tool access.",
           parameter_schema: [
             task: [type: :string, required: true, doc: "The task prompt for the delegated agent"],
-            role: [type: :string, doc: "Role for the agent (e.g., 'researcher', 'coder'). Uses role-specific config if available."],
+            role: [
+              type: :string,
+              doc:
+                "Role for the agent (e.g., 'researcher', 'coder'). Uses role-specific config if available."
+            ],
             context_summary: [type: :string, doc: "Brief context about why this task is needed"],
-            inherit_context: [type: :boolean, doc: "If true, fork the parent tape so the child sees conversation history (default: false)"],
-            max_steps: [type: :integer, doc: "Max steps for the agent (default: #{@default_max_steps})"]
+            inherit_context: [
+              type: :boolean,
+              doc:
+                "If true, fork the parent tape so the child sees conversation history (default: false)"
+            ],
+            max_steps: [
+              type: :integer,
+              doc: "Max steps for the agent (default: #{@default_max_steps})"
+            ]
           ],
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
-        execute_delegate(args, session_id, parent_agent_id, workspace, parent_depth, memory_mod, parent_emit)
+        execute_delegate(
+          args,
+          session_id,
+          parent_agent_id,
+          workspace,
+          parent_depth,
+          memory_mod,
+          parent_emit
+        )
       end
     }
   end
@@ -88,7 +121,11 @@ defmodule Rho.Mounts.MultiAgent do
             "Wait for a delegated agent to complete and return its result. " <>
               "Blocks until the agent finishes or times out (5 min default).",
           parameter_schema: [
-            agent_id: [type: :string, required: true, doc: "The agent_id returned by delegate_task"],
+            agent_id: [
+              type: :string,
+              required: true,
+              doc: "The agent_id returned by delegate_task"
+            ],
             timeout: [type: :integer, doc: "Timeout in seconds (default: 300)"]
           ],
           callback: fn _args -> :ok end
@@ -141,7 +178,8 @@ defmodule Rho.Mounts.MultiAgent do
       tool:
         ReqLLM.tool(
           name: "list_agents",
-          description: "List all active agents in this session with their roles, status, and id cards.",
+          description:
+            "List all active agents in this session with their roles, status, and id cards.",
           parameter_schema: [],
           callback: fn _args -> :ok end
         ),
@@ -156,10 +194,13 @@ defmodule Rho.Mounts.MultiAgent do
       tool:
         ReqLLM.tool(
           name: "get_agent_card",
-          description:
-            "Get the detailed id card of a specific agent by agent_id or role.",
+          description: "Get the detailed id card of a specific agent by agent_id or role.",
           parameter_schema: [
-            target: [type: :string, required: true, doc: "agent_id or role of the agent to look up"]
+            target: [
+              type: :string,
+              required: true,
+              doc: "agent_id or role of the agent to look up"
+            ]
           ],
           callback: fn _args -> :ok end
         ),
@@ -169,138 +210,198 @@ defmodule Rho.Mounts.MultiAgent do
     }
   end
 
+  defp spawn_agent_tool(
+         session_id,
+         parent_agent_id,
+         workspace,
+         parent_depth,
+         memory_mod,
+         parent_emit
+       ) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "spawn_agent",
+          description:
+            "Spawn an agent that starts idle, ready to receive messages. " <>
+              "Unlike delegate_task, this does NOT give the agent an initial task. " <>
+              "Use send_message to start a conversation with it. " <>
+              "Use collect_results to read its conversation history. " <>
+              "Use stop_agent to shut it down when done.",
+          parameter_schema: [
+            role: [
+              type: :string,
+              required: true,
+              doc:
+                "Role for the agent (e.g., 'researcher', 'technical_evaluator'). Uses role-specific config."
+            ],
+            system_prompt_extra: [
+              type: :string,
+              doc: "Additional instructions appended to the role's system prompt"
+            ],
+            max_steps: [
+              type: :integer,
+              doc: "Max steps per turn (default: #{@default_max_steps})"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        execute_spawn(
+          args,
+          session_id,
+          parent_agent_id,
+          workspace,
+          parent_depth,
+          memory_mod,
+          parent_emit
+        )
+      end
+    }
+  end
+
+  defp collect_results_tool(session_id) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "collect_results",
+          description:
+            "Read an agent's conversation history without stopping it. " <>
+              "Returns the agent's tape entries (messages exchanged). " <>
+              "The agent stays alive and can continue receiving messages.",
+          parameter_schema: [
+            agent_id: [type: :string, required: true, doc: "The agent_id to observe"],
+            limit: [type: :integer, doc: "Max number of recent entries to return (default: 20)"]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        execute_collect_results(args, session_id)
+      end
+    }
+  end
+
+  defp stop_agent_tool(session_id) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "stop_agent",
+          description:
+            "Stop a spawned agent. Use after the simulation or discussion is complete.",
+          parameter_schema: [
+            agent_id: [type: :string, required: true, doc: "The agent_id to stop"]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        execute_stop_agent(args, session_id)
+      end
+    }
+  end
+
   # --- Delegate implementation ---
 
-  defp execute_delegate(args, session_id, parent_agent_id, workspace, parent_depth, memory_mod, parent_emit) do
-    task_prompt = args["task"] || args[:task]
-    role_str = args["role"] || args[:role] || "worker"
-    known_roles = Rho.Config.agent_names() |> Enum.map(&Atom.to_string/1)
-    context_summary = args["context_summary"] || args[:context_summary]
-    inherit_context = args["inherit_context"] || args[:inherit_context] || false
-    max_steps = args["max_steps"] || args[:max_steps] || @default_max_steps
+  defp execute_delegate(
+         args,
+         session_id,
+         parent_agent_id,
+         workspace,
+         parent_depth,
+         memory_mod,
+         parent_emit
+       ) do
+    task_prompt = arg(args, :task)
+    role_str = arg(args, :role) || "worker"
+    context_summary = arg(args, :context_summary)
+    inherit_context = arg(args, :inherit_context) || false
+    max_steps = arg(args, :max_steps) || @default_max_steps
 
     unless task_prompt do
       {:error, "task parameter is required"}
     else
-      agent_count = Registry.count(session_id)
+      role_atom =
+        if role_str in @known_roles_cache, do: String.to_existing_atom(role_str), else: :worker
 
-      if agent_count >= @max_agents_per_session do
-        {:error, "agent limit reached (#{@max_agents_per_session} per session). Await some tasks before delegating more."}
-      else
-        # Validate role to avoid atom leak from user-supplied strings
-        role_atom =
-          if role_str in known_roles do
-            String.to_existing_atom(role_str)
-          else
-            :worker
-          end
-
-        do_delegate(task_prompt, %{
-          session_id: session_id,
-          parent_agent_id: parent_agent_id,
-          workspace: workspace,
-          parent_depth: parent_depth,
-          memory_mod: memory_mod,
-          parent_emit: parent_emit,
-          role: role_atom,
-          context_summary: context_summary,
-          inherit_context: inherit_context,
-          max_steps: max_steps
-        })
-      end
+      do_delegate(task_prompt, %{
+        session_id: session_id,
+        parent_agent_id: parent_agent_id,
+        workspace: workspace,
+        parent_depth: parent_depth,
+        memory_mod: memory_mod,
+        parent_emit: parent_emit,
+        role: role_atom,
+        context_summary: context_summary,
+        inherit_context: inherit_context,
+        max_steps: max_steps
+      })
     end
   end
 
   defp do_delegate(task_prompt, params) do
-    child_depth = params.parent_depth + 1
-    agent_id = Rho.Session.new_agent_id()
-    task_id = "task_#{:erlang.unique_integer([:positive])}"
+    role_str = Atom.to_string(params.role)
 
-    # Determine agent config profile
-    agent_name =
-      if params.role in Rho.Config.agent_names() do
-        params.role
-      else
-        :default
-      end
+    with {:ok, prepared} <-
+           prepare_child_agent(role_str, %{
+             session_id: params.session_id,
+             parent_agent_id: params.parent_agent_id,
+             workspace: params.workspace,
+             parent_depth: params.parent_depth,
+             memory_mod: params.memory_mod,
+             max_steps: params.max_steps,
+             inherit_context: params.inherit_context
+           }) do
+      task_id = "task_#{:erlang.unique_integer([:positive])}"
+      config = prepared.config
 
-    config = Rho.Config.agent(agent_name)
+      system_prompt =
+        delegate_system_prompt(
+          task_prompt,
+          params.context_summary,
+          prepared.child_depth,
+          @max_depth,
+          config.system_prompt
+        )
 
-    # Memory strategy
-    memory_mod = params.memory_mod
+      {:ok, _pid} =
+        Supervisor.start_worker(
+          agent_id: prepared.agent_id,
+          session_id: params.session_id,
+          workspace: params.workspace,
+          agent_name: prepared.agent_name,
+          role: params.role,
+          depth: prepared.child_depth,
+          parent_agent_id: params.parent_agent_id,
+          memory_ref: prepared.tape_name,
+          initial_task: task_prompt,
+          task_id: task_id,
+          max_steps: params.max_steps,
+          system_prompt: system_prompt,
+          tools: prepared.tools,
+          model: config.model
+        )
 
-    tape_name =
-      if params.inherit_context && function_exported?(memory_mod, :fork, 2) do
-        parent_tape = "primary_#{params.session_id}"
-        case memory_mod.fork(parent_tape, []) do
-          {:ok, fork_ref} -> fork_ref
-          {:error, _} ->
-            fresh = "agent_#{agent_id}"
-            memory_mod.bootstrap(fresh)
-            fresh
-        end
-      else
-        fresh = "agent_#{agent_id}"
-        memory_mod.bootstrap(fresh)
-        fresh
-      end
+      Comms.publish(
+        "rho.task.requested",
+        %{
+          task_id: task_id,
+          session_id: params.session_id,
+          from_agent: params.parent_agent_id,
+          to_agent: prepared.agent_id,
+          task: task_prompt,
+          context_summary: params.context_summary,
+          max_steps: params.max_steps
+        }, source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}")
 
-    # Build system prompt
-    system_prompt = delegate_system_prompt(task_prompt, params.context_summary, child_depth, @max_depth, config.system_prompt)
-
-    # Resolve tools via MountRegistry for the child's context
-    tool_context = %{
-      tape_name: tape_name,
-      workspace: params.workspace,
-      memory_mod: memory_mod,
-      agent_name: agent_name,
-      agent_id: agent_id,
-      session_id: params.session_id,
-      depth: child_depth,
-      sandbox: nil
-    }
-    mount_tools = Rho.MountRegistry.collect_tools(tool_context)
-    finish_tool = Rho.Tools.Finish.tool_def()
-    all_tools = mount_tools ++ [finish_tool]
-
-    # Start the worker
-    {:ok, _pid} =
-      Supervisor.start_worker(
-        agent_id: agent_id,
-        session_id: params.session_id,
-        workspace: params.workspace,
-        agent_name: agent_name,
-        role: params.role,
-        depth: child_depth,
-        parent_agent_id: params.parent_agent_id,
-        memory_ref: tape_name,
-        initial_task: task_prompt,
-        task_id: task_id,
-        max_steps: params.max_steps,
-        system_prompt: system_prompt,
-        tools: all_tools,
-        model: config.model
-      )
-
-    # Publish task requested signal
-    Comms.publish("rho.task.requested", %{
-      task_id: task_id,
-      session_id: params.session_id,
-      from_agent: params.parent_agent_id,
-      to_agent: agent_id,
-      task: task_prompt,
-      context_summary: params.context_summary,
-      max_steps: params.max_steps
-    }, source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}")
-
-    {:ok, "Delegated #{task_id} to #{agent_id} (role: #{params.role}). Use await_task(agent_id: \"#{agent_id}\") to get the result."}
+      {:ok,
+       "Delegated #{task_id} to #{prepared.agent_id} (role: #{params.role}). Use await_task(agent_id: \"#{prepared.agent_id}\") to get the result."}
+    end
   end
 
   # --- Await implementation ---
 
   defp execute_await(args, _session_id) do
-    agent_id = args["agent_id"] || args[:agent_id]
-    timeout_secs = args["timeout"] || args[:timeout] || 300
+    agent_id = arg(args, :agent_id)
+    timeout_secs = arg(args, :timeout) || 300
     timeout_ms = min(timeout_secs * 1000, @await_timeout)
 
     unless agent_id do
@@ -328,7 +429,8 @@ defmodule Rho.Mounts.MultiAgent do
           end
         catch
           :exit, {:timeout, _} ->
-            {:error, "agent #{agent_id} timed out after #{timeout_secs}s (still running in background)"}
+            {:error,
+             "agent #{agent_id} timed out after #{timeout_secs}s (still running in background)"}
 
           :exit, reason ->
             {:error, "agent #{agent_id} exited: #{inspect(reason)}"}
@@ -339,9 +441,137 @@ defmodule Rho.Mounts.MultiAgent do
 
   # --- Send message implementation ---
 
+  # --- Spawn implementation ---
+
+  defp execute_spawn(
+         args,
+         session_id,
+         parent_agent_id,
+         workspace,
+         parent_depth,
+         memory_mod,
+         _parent_emit
+       ) do
+    role_str = arg(args, :role) || "worker"
+    system_prompt_extra = arg(args, :system_prompt_extra)
+    max_steps = arg(args, :max_steps) || @default_max_steps
+
+    with {:ok, prepared} <-
+           prepare_child_agent(role_str, %{
+             session_id: session_id,
+             parent_agent_id: parent_agent_id,
+             workspace: workspace,
+             parent_depth: parent_depth,
+             memory_mod: memory_mod,
+             max_steps: max_steps
+           }) do
+      config = prepared.config
+      base_prompt = config.system_prompt
+
+      spawn_prompt = """
+      #{base_prompt}
+
+      You are agent #{prepared.agent_id} (role: #{role_str}) in a multi-agent simulation.
+      You will receive messages from other agents. Read them, reason about them, and reply using send_message.
+      You can also use broadcast_message to address all agents, or list_agents to see who else is active.
+      When you have nothing more to contribute, simply call end_turn.
+      #{if system_prompt_extra, do: "\n#{system_prompt_extra}", else: ""}
+      """
+
+      {:ok, _pid} =
+        Supervisor.start_worker(
+          agent_id: prepared.agent_id,
+          session_id: session_id,
+          workspace: workspace,
+          agent_name: prepared.agent_name,
+          role: prepared.role_atom,
+          depth: prepared.child_depth,
+          parent_agent_id: parent_agent_id,
+          memory_ref: prepared.tape_name,
+          max_steps: max_steps,
+          system_prompt: spawn_prompt,
+          tools: prepared.tools,
+          model: config.model
+        )
+
+      Comms.publish(
+        "rho.agent.spawned",
+        %{
+          session_id: session_id,
+          agent_id: prepared.agent_id,
+          role: role_str,
+          spawned_by: parent_agent_id
+        }, source: "/session/#{session_id}/agent/#{parent_agent_id}")
+
+      {:ok,
+       "Spawned #{prepared.agent_id} (role: #{role_str}). Agent is idle and ready for messages. Use send_message(target: \"#{prepared.agent_id}\", message: \"...\") to start a conversation."}
+    end
+  end
+
+  # --- Collect results implementation ---
+
+  defp execute_collect_results(args, session_id) do
+    limit = arg(args, :limit) || 20
+
+    with_validated_agent(args, session_id, fn agent ->
+      memory_mod = Rho.Config.memory_module()
+      history = memory_mod.history(agent.memory_ref)
+      entries = Enum.take(history, -limit)
+
+      formatted =
+        entries
+        |> Enum.map(&format_tape_entry/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join("\n---\n")
+
+      {:ok, "Agent #{agent.agent_id} (#{agent.role}, status: #{agent.status}):\n\n#{formatted}"}
+    end)
+  end
+
+  defp format_tape_entry(entry) when is_map(entry) do
+    role = entry[:role] || entry["role"] || entry[:kind] || entry["kind"] || "unknown"
+    content = entry[:content] || entry["content"] || entry[:payload] || entry["payload"]
+
+    case content do
+      nil ->
+        nil
+
+      c when is_binary(c) and byte_size(c) > 1000 ->
+        "[#{role}] #{String.slice(c, 0, 1000)}... [truncated]"
+
+      c when is_binary(c) ->
+        "[#{role}] #{c}"
+
+      c ->
+        "[#{role}] #{inspect(c)}"
+    end
+  end
+
+  defp format_tape_entry(_), do: nil
+
+  # --- Stop agent implementation ---
+
+  defp execute_stop_agent(args, session_id) do
+    with_validated_agent(args, session_id, fn agent ->
+      pid = Worker.whereis(agent.agent_id)
+
+      if pid do
+        try do
+          GenServer.stop(pid, :normal, 5_000)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
+      {:ok, "Stopped agent #{agent.agent_id}"}
+    end)
+  end
+
+  # --- Send message implementation ---
+
   defp execute_send_message(args, session_id, self_agent_id) do
-    target = args["target"] || args[:target]
-    message = args["message"] || args[:message]
+    target = arg(args, :target)
+    message = arg(args, :message)
 
     unless target && message do
       {:error, "target and message parameters are required"}
@@ -358,11 +588,13 @@ defmodule Rho.Mounts.MultiAgent do
         })
 
         # Publish observable event for signal timeline
-        Comms.publish("rho.session.#{session_id}.events.message_sent", %{
-          from: self_agent_id,
-          to: target,
-          message: message
-        }, source: "/session/#{session_id}/agent/#{self_agent_id}")
+        Comms.publish(
+          "rho.session.#{session_id}.events.message_sent",
+          %{
+            from: self_agent_id,
+            to: target,
+            message: message
+          }, source: "/session/#{session_id}/agent/#{self_agent_id}")
 
         {:ok, "Message sent to #{target}"}
       end
@@ -372,7 +604,7 @@ defmodule Rho.Mounts.MultiAgent do
   # --- Broadcast message implementation ---
 
   defp execute_broadcast_message(args, session_id, self_agent_id) do
-    message = args["message"] || args[:message]
+    message = arg(args, :message)
 
     unless message do
       {:error, "message parameter is required"}
@@ -385,11 +617,13 @@ defmodule Rho.Mounts.MultiAgent do
       end
 
       # Publish observable event for signal timeline
-      Comms.publish("rho.session.#{session_id}.events.broadcast", %{
-        from: self_agent_id,
-        message: message,
-        target_count: length(targets)
-      }, source: "/session/#{session_id}/agent/#{self_agent_id}")
+      Comms.publish(
+        "rho.session.#{session_id}.events.broadcast",
+        %{
+          from: self_agent_id,
+          message: message,
+          target_count: length(targets)
+        }, source: "/session/#{session_id}/agent/#{self_agent_id}")
 
       {:ok, "Broadcast sent to #{length(targets)} agents"}
     end
@@ -412,7 +646,12 @@ defmodule Rho.Mounts.MultiAgent do
 
           card_line = "- #{agent.agent_id} (#{role_str}, #{status_str}, depth: #{agent.depth})"
           card_line = if desc, do: card_line <> "\n  #{desc}", else: card_line
-          card_line = if skills != [], do: card_line <> "\n  skills: #{Enum.join(skills, ", ")}", else: card_line
+
+          card_line =
+            if skills != [],
+              do: card_line <> "\n  skills: #{Enum.join(skills, ", ")}",
+              else: card_line
+
           card_line
         end)
 
@@ -423,7 +662,7 @@ defmodule Rho.Mounts.MultiAgent do
   # --- Get agent card implementation ---
 
   defp execute_get_agent_card(args, session_id) do
-    target = args["target"] || args[:target]
+    target = arg(args, :target)
 
     unless target do
       {:error, "target parameter is required"}
@@ -452,12 +691,126 @@ defmodule Rho.Mounts.MultiAgent do
     end
   end
 
+  # --- Tool filtering ---
+
+  defp filter_tools(tools, mount_opts) do
+    only = Keyword.get(mount_opts, :only)
+    except = Keyword.get(mount_opts, :except)
+
+    cond do
+      is_list(only) ->
+        allowed = MapSet.new(only, &to_string/1)
+        Enum.filter(tools, fn %{tool: t} -> MapSet.member?(allowed, t.name) end)
+
+      is_list(except) ->
+        blocked = MapSet.new(except, &to_string/1)
+        Enum.reject(tools, fn %{tool: t} -> MapSet.member?(blocked, t.name) end)
+
+      true ->
+        tools
+    end
+  end
+
+  # --- Shared child agent setup ---
+
+  defp prepare_child_agent(role_str, params) do
+    session_id = params.session_id
+    agent_count = Registry.count(session_id)
+
+    if agent_count >= @max_agents_per_session do
+      {:error, "agent limit reached (#{@max_agents_per_session} per session)."}
+    else
+      role_atom =
+        if role_str in @known_roles_cache, do: String.to_existing_atom(role_str), else: :worker
+
+      agent_name = if role_atom in Rho.Config.agent_names(), do: role_atom, else: :default
+      config = Rho.Config.agent(agent_name)
+      child_depth = params.parent_depth + 1
+      agent_id = Rho.Session.new_agent_id()
+      memory_mod = params.memory_mod
+
+      tape_name =
+        if params[:inherit_context] && function_exported?(memory_mod, :fork, 2) do
+          parent_tape = "primary_#{session_id}"
+
+          case memory_mod.fork(parent_tape, []) do
+            {:ok, fork_ref} ->
+              fork_ref
+
+            {:error, _} ->
+              fresh = "agent_#{agent_id}"
+              memory_mod.bootstrap(fresh)
+              fresh
+          end
+        else
+          fresh = "agent_#{agent_id}"
+          memory_mod.bootstrap(fresh)
+          fresh
+        end
+
+      tool_context = %{
+        tape_name: tape_name,
+        workspace: params.workspace,
+        memory_mod: memory_mod,
+        agent_name: agent_name,
+        agent_id: agent_id,
+        session_id: session_id,
+        depth: child_depth,
+        sandbox: nil
+      }
+
+      mount_tools = Rho.MountRegistry.collect_tools(tool_context)
+      all_tools = mount_tools ++ [Rho.Tools.Finish.tool_def()]
+
+      {:ok,
+       %{
+         agent_id: agent_id,
+         agent_name: agent_name,
+         role_atom: role_atom,
+         config: config,
+         child_depth: child_depth,
+         tape_name: tape_name,
+         tools: all_tools
+       }}
+    end
+  end
+
   # --- Helpers ---
+
+  defp arg(args, key) when is_atom(key) do
+    args[Atom.to_string(key)] || args[key]
+  end
+
+  defp with_validated_agent(args, session_id, fun) do
+    agent_id = arg(args, :agent_id)
+
+    unless agent_id do
+      {:error, "agent_id parameter is required"}
+    else
+      agent = Registry.get(agent_id)
+
+      cond do
+        agent == nil ->
+          {:error, "unknown agent: #{agent_id}"}
+
+        agent.session_id != session_id ->
+          {:error, "agent #{agent_id} is not in this session"}
+
+        true ->
+          fun.(agent)
+      end
+    end
+  end
 
   defp resolve_agent_entry(target, session_id) do
     case Registry.get(target) do
       nil ->
-        role = String.to_atom(target)
+        role =
+          try do
+            String.to_existing_atom(target)
+          rescue
+            ArgumentError -> :worker
+          end
 
         case Registry.find_by_role(session_id, role) do
           [agent | _] -> agent

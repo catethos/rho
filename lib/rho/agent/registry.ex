@@ -28,7 +28,8 @@ defmodule Rho.Agent.Registry do
       parent_agent_id: attrs[:parent_agent_id],
       depth: attrs[:depth] || 0,
       description: attrs[:description],
-      skills: attrs[:skills] || []
+      skills: attrs[:skills] || [],
+      memory_ref: attrs[:memory_ref]
     }
 
     :ets.insert(@table, {agent_id, entry})
@@ -65,12 +66,16 @@ defmodule Rho.Agent.Registry do
     :ok
   end
 
-  @doc "Find agents by role within a session."
+  # Guard clause fragment: filter out stopped agents
+  defp live_guard, do: {:"=/=", {:map_get, :status, :"$2"}, :stopped}
+
+  defp session_guard(session_id), do: {:==, {:map_get, :session_id, :"$2"}, session_id}
+
+  @doc "Find live agents by role within a session."
   def find_by_role(session_id, role) do
     spec = [
       {{:"$1", :"$2"},
-       [{:andalso, {:==, {:map_get, :session_id, :"$2"}, session_id},
-         {:==, {:map_get, :role, :"$2"}, role}}],
+       [{:andalso, {:andalso, session_guard(session_id), {:==, {:map_get, :role, :"$2"}, role}}, live_guard()}],
        [:"$2"]}
     ]
 
@@ -85,23 +90,33 @@ defmodule Rho.Agent.Registry do
     end)
   end
 
-  @doc "List all agents in a session."
+  @doc "List all live agents in a session."
   def list(session_id) do
     spec = [
       {{:"$1", :"$2"},
-       [{:==, {:map_get, :session_id, :"$2"}, session_id}],
+       [{:andalso, session_guard(session_id), live_guard()}],
        [:"$2"]}
     ]
 
     :ets.select(@table, spec)
   end
 
-  @doc "List all agents in a session except the given agent_id."
+  @doc "List all agents in a session (including stopped)."
+  def list_all(session_id) do
+    spec = [
+      {{:"$1", :"$2"},
+       [session_guard(session_id)],
+       [:"$2"]}
+    ]
+
+    :ets.select(@table, spec)
+  end
+
+  @doc "List all live agents in a session except the given agent_id."
   def list_except(session_id, exclude_agent_id) do
     spec = [
       {{:"$1", :"$2"},
-       [{:andalso, {:==, {:map_get, :session_id, :"$2"}, session_id},
-         {:"=/=", :"$1", exclude_agent_id}}],
+       [{:andalso, {:andalso, session_guard(session_id), {:"=/=", :"$1", exclude_agent_id}}, live_guard()}],
        [:"$2"]}
     ]
 
@@ -116,11 +131,11 @@ defmodule Rho.Agent.Registry do
     end
   end
 
-  @doc "Count agents in a session."
+  @doc "Count live agents in a session."
   def count(session_id) do
     spec = [
       {{:"$1", :"$2"},
-       [{:==, {:map_get, :session_id, :"$2"}, session_id}],
+       [{:andalso, session_guard(session_id), live_guard()}],
        [true]}
     ]
 

@@ -57,6 +57,8 @@ defmodule Rho.Mounts.LiveRender do
           body: """
           Use `present_ui` to render structured UI in the browser. Prefer it over plain text for tables, metrics, lists, summaries, and checklists.
 
+          IMPORTANT: After calling `present_ui`, do NOT repeat or summarize the UI content in text. The user can already see the rendered UI. Just confirm briefly or move on.
+
           Components: #{component_docs}
 
           Spec: JSON with "root" (element ID) and "elements" (map of ID → {type, props, children}).\

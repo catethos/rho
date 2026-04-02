@@ -46,10 +46,13 @@ defmodule Rho.Application do
         {Task.Supervisor, name: Rho.TaskSupervisor},
         {DynamicSupervisor, name: Rho.Tools.Python.Supervisor, strategy: :one_for_one},
         Rho.MountRegistry,
-        Rho.Comms.SignalBus
+        Rho.Comms.SignalBus,
+        Rho.Observatory
       ] ++ memory_children ++ [
         Rho.Plugins.Subagent.Supervisor,
         Rho.Agent.Supervisor,
+        {Registry, keys: :unique, name: Rho.EventLogRegistry},
+        {DynamicSupervisor, name: Rho.Session.EventLog.Supervisor, strategy: :one_for_one},
         Rho.CLI
       ] ++ web_children()
 
@@ -58,6 +61,9 @@ defmodule Rho.Application do
 
     # Initialize Python interpreter if any agent uses the :python tool
     maybe_init_python()
+
+    # Initialize erlang_python if any agent uses :py_agent mount
+    maybe_init_erlang_python()
 
     # Register built-in mounts
     register_builtin_mounts()
@@ -113,6 +119,48 @@ defmodule Rho.Application do
 
       Logger.info("Initializing Pythonx with deps: #{inspect(deps)}")
       Pythonx.uv_init(pyproject)
+    end
+  end
+
+  defp maybe_init_erlang_python do
+    all_mounts =
+      Rho.Config.agent_names()
+      |> Enum.flat_map(fn name -> Rho.Config.agent(name).mounts end)
+      |> Enum.map(fn
+        {name, _opts} when is_atom(name) -> name
+        name when is_atom(name) -> name
+      end)
+
+    if :py_agent in all_mounts do
+      {:ok, _} = Application.ensure_all_started(:erlang_python)
+
+      # Add priv/py_agents to Python's sys.path so agent modules are importable
+      py_agents_dir = Path.join(:code.priv_dir(:rho) |> to_string(), "py_agents")
+
+      :py.exec("""
+      import sys, os
+      if '#{py_agents_dir}' not in sys.path:
+          sys.path.insert(0, '#{py_agents_dir}')
+      """)
+
+      # Forward relevant env vars to Python (Dotenvy loads into Elixir but not OS env)
+      for key <- ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] do
+        case System.get_env(key) do
+          nil -> :ok
+          val ->
+            escaped = String.replace(val, "\\", "\\\\") |> String.replace("'", "\\'")
+            :py.exec("os.environ['#{key}'] = '#{escaped}'")
+        end
+      end
+
+      # Activate venv if configured
+      venv_path = System.get_env("RHO_PY_AGENT_VENV")
+
+      if venv_path do
+        :py.activate_venv(String.to_charlist(venv_path))
+      end
+
+      Logger.info("erlang_python initialized, py_agents path: #{py_agents_dir}")
     end
   end
 

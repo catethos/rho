@@ -70,26 +70,43 @@ defmodule Rho.Reasoner.Structured do
   # Try to extract a structured JSON action from the text.
   defp parse_json_action(text) do
     case StructuredOutput.parse(text) do
-      {:ok, %{"action" => action} = parsed} when is_binary(action) ->
-        args = normalize_args(parsed["action_input"])
-        thinking = parsed["thinking"]
-        {:ok, {action, args, thinking}}
-
-      {:ok, _non_action} ->
-        :miss
+      {:ok, parsed} when is_map(parsed) ->
+        case extract_action_fields(parsed) do
+          {:ok, action, args, thinking} -> {:ok, {action, args, thinking}}
+          :miss -> :miss
+        end
 
       {:error, _} ->
         :miss
     end
   end
 
+  # Extract action/args/thinking from parsed JSON, handling alternative field names.
+  # Supports: "action"/"action_input", "tool"/"tool_input", "tool_name"/"parameters"
+  defp extract_action_fields(parsed) do
+    action = parsed["action"] || parsed["tool"] || parsed["tool_name"] || parsed["name"]
+    thinking = parsed["thinking"] || parsed["thought"] || parsed["reasoning"]
+
+    if is_binary(action) do
+      args_raw = parsed["action_input"] || parsed["tool_input"] || parsed["parameters"] || parsed["args"] || parsed["input"]
+      args = normalize_args(args_raw)
+      {:ok, action, args, thinking}
+    else
+      :miss
+    end
+  end
+
   # Classify a parsed {action, args, thinking} into the union type.
   defp resolve_action({"final_answer", args, thinking}, _tool_map) do
-    answer = args["answer"] || inspect(args)
+    answer = args["answer"] || args["_raw"] || inspect(args)
     {:final, answer, thinking}
   end
 
   defp resolve_action({name, args, thinking}, tool_map) do
+    # For tool calls, if args came from a bare string, try to match
+    # the tool's first required parameter
+    args = resolve_tool_args(name, args, tool_map)
+
     if Map.has_key?(tool_map, name) do
       {:tool, name, args, thinking}
     else
@@ -97,6 +114,23 @@ defmodule Rho.Reasoner.Structured do
       {:unknown_tool, name, args, thinking}
     end
   end
+
+  # When action_input was a bare string (stored as %{"_raw" => s}),
+  # try to map it to the tool's expected parameter name.
+  defp resolve_tool_args(name, %{"_raw" => raw}, tool_map) do
+    case Map.get(tool_map, name) do
+      %{tool: tool} ->
+        case tool.parameter_schema do
+          [{param_name, _opts} | _] -> %{to_string(param_name) => raw}
+          _ -> %{"input" => raw}
+        end
+
+      nil ->
+        %{"input" => raw}
+    end
+  end
+
+  defp resolve_tool_args(_name, args, _tool_map), do: args
 
   # Fallback: check for fenced code blocks, otherwise treat as raw response.
   defp parse_fallback(text, tool_map) do
@@ -147,8 +181,24 @@ defmodule Rho.Reasoner.Structured do
     {:continue, build_tool_step(raw_text, error_msg)}
   end
 
-  defp execute_action({:raw_response, text}, _raw_text, _tool_map, _runtime) do
-    {:done, %{type: :response, text: text}}
+  defp execute_action({:raw_response, text}, _raw_text, tool_map, _runtime) do
+    # If there are tools available, the LLM should be using the structured format.
+    # Re-prompt with a correction message instead of accepting plain text as final answer.
+    if map_size(tool_map) > 0 do
+      Logger.info("[reasoner.structured] re-prompting: LLM did not use required JSON format")
+
+      correction = """
+      [System] Your response was not in the required JSON format. You MUST respond with a JSON object like:
+      {"thinking": "your reasoning", "action": "tool_name_or_final_answer", "action_input": {...}}
+
+      If you want to respond to the user, use: {"thinking": "...", "action": "final_answer", "action_input": {"answer": "your response"}}
+      """
+
+      {:continue, build_tool_step(text, correction)}
+    else
+      # No tools available — plain text is fine
+      {:done, %{type: :response, text: text}}
+    end
   end
 
   # -- Tool execution --
@@ -354,7 +404,7 @@ defmodule Rho.Reasoner.Structured do
   defp normalize_args(s) when is_binary(s) do
     case Jason.decode(s) do
       {:ok, map} when is_map(map) -> map
-      _ -> %{"answer" => s}
+      _ -> %{"_raw" => s}
     end
   end
   defp normalize_args(map) when is_map(map), do: map

@@ -44,8 +44,17 @@ defmodule RhoWeb.SessionLive do
       |> assign(:agent_avatar, load_agent_avatar())
       |> assign(:debug_mode, false)
       |> assign(:debug_projections, %{})
-      |> allow_upload(:images, accept: ~w(.jpg .jpeg .png .gif .webp), max_entries: 5, max_file_size: 10_000_000)
-      |> allow_upload(:avatar, accept: ~w(.jpg .jpeg .png .gif .webp), max_entries: 1, max_file_size: 2_000_000, auto_upload: true)
+      |> allow_upload(:images,
+        accept: ~w(.jpg .jpeg .png .gif .webp),
+        max_entries: 5,
+        max_file_size: 10_000_000
+      )
+      |> allow_upload(:avatar,
+        accept: ~w(.jpg .jpeg .png .gif .webp),
+        max_entries: 1,
+        max_file_size: 2_000_000,
+        auto_upload: true
+      )
 
     socket =
       if connected?(socket) && session_id do
@@ -154,6 +163,7 @@ defmodule RhoWeb.SessionLive do
           pending_id = target_id || primary_agent_id(sid)
           pending = MapSet.put(socket.assigns.pending_response, pending_id)
           {:noreply, assign(socket, :pending_response, pending)}
+
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Failed to send: #{inspect(reason)}")}
       end
@@ -199,7 +209,13 @@ defmodule RhoWeb.SessionLive do
       end
 
     agent_id = Rho.Session.new_agent_id()
-    role_atom = String.to_atom(role)
+
+    role_atom =
+      try do
+        String.to_existing_atom(role)
+      rescue
+        ArgumentError -> :worker
+      end
 
     # Give each UI-created agent its own tape so conversations are independent
     memory_mod = Rho.Config.memory_module()
@@ -419,18 +435,18 @@ defmodule RhoWeb.SessionLive do
 
   # --- Header component ---
 
-  attr :session_id, :string, default: nil
-  attr :agents, :map, required: true
-  attr :total_input_tokens, :integer, required: true
-  attr :total_output_tokens, :integer, required: true
-  attr :total_cost, :float, required: true
-  attr :total_cached_tokens, :integer, required: true
-  attr :total_reasoning_tokens, :integer, required: true
-  attr :step_input_tokens, :integer, required: true
-  attr :step_output_tokens, :integer, required: true
-  attr :user_avatar, :string, default: nil
-  attr :uploads, :any, required: true
-  attr :debug_mode, :boolean, default: false
+  attr(:session_id, :string, default: nil)
+  attr(:agents, :map, required: true)
+  attr(:total_input_tokens, :integer, required: true)
+  attr(:total_output_tokens, :integer, required: true)
+  attr(:total_cost, :float, required: true)
+  attr(:total_cached_tokens, :integer, required: true)
+  attr(:total_reasoning_tokens, :integer, required: true)
+  attr(:step_input_tokens, :integer, required: true)
+  attr(:step_output_tokens, :integer, required: true)
+  attr(:user_avatar, :string, default: nil)
+  attr(:uploads, :any, required: true)
+  attr(:debug_mode, :boolean, default: false)
 
   defp session_header(assigns) do
     ~H"""
@@ -488,10 +504,10 @@ defmodule RhoWeb.SessionLive do
 
   # --- Tab bar ---
 
-  attr :tab_order, :list, required: true
-  attr :agents, :map, required: true
-  attr :active_tab, :string, default: nil
-  attr :inflight, :map, required: true
+  attr(:tab_order, :list, required: true)
+  attr(:agents, :map, required: true)
+  attr(:active_tab, :string, default: nil)
+  attr(:inflight, :map, required: true)
 
   defp tab_bar(assigns) do
     ~H"""
@@ -512,10 +528,10 @@ defmodule RhoWeb.SessionLive do
 
   # --- Chat input with image upload ---
 
-  attr :session_id, :string, required: true
-  attr :disabled, :boolean, default: false
-  attr :uploads, :any, required: true
-  attr :active_agent, :map, default: nil
+  attr(:session_id, :string, required: true)
+  attr(:disabled, :boolean, default: false)
+  attr(:uploads, :any, required: true)
+  attr(:active_agent, :map, default: nil)
 
   defp chat_input_with_upload(assigns) do
     ~H"""
@@ -576,9 +592,9 @@ defmodule RhoWeb.SessionLive do
 
   # --- Debug panel ---
 
-  attr :projections, :map, required: true
-  attr :active_tab, :string, default: nil
-  attr :session_id, :string, default: nil
+  attr(:projections, :map, required: true)
+  attr(:active_tab, :string, default: nil)
+  attr(:session_id, :string, default: nil)
 
   defp debug_panel(assigns) do
     active_tab = assigns.active_tab || primary_agent_id(assigns.session_id)
@@ -648,26 +664,27 @@ defmodule RhoWeb.SessionLive do
 
     # Hydrate agent list
     agents =
-      Rho.Agent.Registry.list(session_id)
+      Rho.Agent.Registry.list_all(session_id)
       |> Enum.map(fn info ->
-        {info.agent_id, %{
-          agent_id: info.agent_id,
-          session_id: info.session_id,
-          role: info.role,
-          status: info.status,
-          depth: info.depth,
-          parent_id: info.parent_agent_id,
-          capabilities: info.capabilities,
-          model: nil,
-          step: nil,
-          max_steps: nil
-        }}
+        {info.agent_id,
+         %{
+           agent_id: info.agent_id,
+           session_id: info.session_id,
+           role: info.role,
+           status: info.status,
+           depth: info.depth,
+           parent_id: info.parent_agent_id,
+           capabilities: info.capabilities,
+           model: nil,
+           step: nil,
+           max_steps: nil
+         }}
       end)
       |> Map.new()
 
     primary_id = primary_agent_id(session_id)
     agent_ids = Map.keys(agents)
-    tab_order = [primary_id | (agent_ids -- [primary_id])]
+    tab_order = [primary_id | agent_ids -- [primary_id]]
     agent_messages = Map.new(agent_ids, fn id -> {id, []} end)
 
     socket
@@ -700,7 +717,9 @@ defmodule RhoWeb.SessionLive do
 
   defp load_avatar do
     case find_avatar_file() do
-      nil -> nil
+      nil ->
+        nil
+
       path ->
         binary = File.read!(path)
         ext = Path.extname(path) |> String.trim_leading(".")
@@ -721,16 +740,18 @@ defmodule RhoWeb.SessionLive do
 
   defp find_avatar_file do
     Path.wildcard(Path.join(@avatar_dir, "avatar.*"))
-    |> Enum.find(& Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp))
+    |> Enum.find(&(Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp)))
   end
 
   defp load_agent_avatar do
     path =
       Path.wildcard(Path.join(@avatar_dir, "agent_avatar.*"))
-      |> Enum.find(& Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp))
+      |> Enum.find(&(Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp)))
 
     case path do
-      nil -> nil
+      nil ->
+        nil
+
       path ->
         binary = File.read!(path)
         ext = Path.extname(path) |> String.trim_leading(".")
@@ -781,7 +802,7 @@ defmodule RhoWeb.SessionLive do
     agent_id = msg[:agent_id] || primary_agent_id(socket.assigns.session_id)
     agent_messages = socket.assigns.agent_messages
     current = Map.get(agent_messages, agent_id, [])
-    updated = Map.put(agent_messages, agent_id, current ++ [msg])
+    updated = Map.put(agent_messages, agent_id, Enum.take(current ++ [msg], -200))
     assign(socket, :agent_messages, updated)
   end
 
@@ -790,13 +811,14 @@ defmodule RhoWeb.SessionLive do
 
     updated =
       Map.new(agent_messages, fn {agent_id, msgs} ->
-        {agent_id, Enum.map(msgs, fn msg ->
-          if msg.id == msg_id do
-            %{msg | spec: spec, streaming: streaming?}
-          else
-            msg
-          end
-        end)}
+        {agent_id,
+         Enum.map(msgs, fn msg ->
+           if msg.id == msg_id do
+             %{msg | spec: spec, streaming: streaming?}
+           else
+             msg
+           end
+         end)}
       end)
 
     assign(socket, :agent_messages, updated)

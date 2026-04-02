@@ -15,7 +15,7 @@ defmodule Rho.Tools.Finish do
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
-        {:ok, args["result"] || args[:result] || "done"}
+        {:final, args["result"] || args[:result] || "done"}
       end
     }
   end

@@ -12,6 +12,17 @@ defmodule RhoWeb.Router do
     plug :put_secure_browser_headers
   end
 
+  pipeline :api do
+    plug :accepts, ["json"]
+    plug Plug.Parsers, parsers: [:json], json_decoder: Jason
+  end
+
+  scope "/api", RhoWeb do
+    pipe_through :api
+
+    forward "/", ObservatoryAPI
+  end
+
   scope "/", RhoWeb do
     pipe_through :browser
 

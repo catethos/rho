@@ -163,7 +163,8 @@ defmodule Rho.Agent.Worker do
       parent_agent_id: parent_agent_id,
       depth: depth,
       description: Keyword.get(opts, :description) || config.description,
-      skills: Keyword.get(opts, :skills) || config.skills
+      skills: Keyword.get(opts, :skills) || config.skills,
+      memory_ref: memory_ref
     })
 
     # Subscribe to inbox on the signal bus
@@ -323,6 +324,10 @@ defmodule Rho.Agent.Worker do
   # --- Signal delivery ---
 
   @impl true
+  def handle_cast({:set_persistent_tools, tools}, state) do
+    {:noreply, %{state | persistent_tools: tools}}
+  end
+
   def handle_cast({:deliver_signal, signal}, %{status: :idle} = state) do
     # Process signal immediately
     state = process_signal(signal, state)
@@ -350,19 +355,38 @@ defmodule Rho.Agent.Worker do
 
   # --- Task result handling ---
 
-  def handle_info({ref, result}, %{task_ref: ref} = state) do
+  def handle_info({ref, {:final, value}}, %{task_ref: ref} = state) do
+    # Final result (from `finish` tool) — reply to waiters and publish completion
     Process.demonitor(ref, [:flush])
 
-    # Reply to any waiters
-    reply_to_waiters(state, result)
-
-    # Publish task completion if this was a delegated task
-    maybe_publish_task_completed(state, result)
+    reply_to_waiters(state, {:ok, value})
+    maybe_publish_task_completed(state, {:ok, value})
 
     state = %{state | status: :idle, task_ref: nil, task_pid: nil, current_turn_id: nil, waiters: []}
     AgentRegistry.update_status(state.agent_id, :idle)
 
     state = process_queue(state)
+    {:noreply, state}
+  end
+
+  def handle_info({ref, result}, %{task_ref: ref} = state) do
+    # Regular turn end (end_turn, max_steps, text response) — do NOT reply to waiters
+    # The agent may receive more messages and do more turns before finishing
+    Process.demonitor(ref, [:flush])
+
+    maybe_publish_task_completed(state, result)
+
+    state = %{state | status: :idle, task_ref: nil, task_pid: nil, current_turn_id: nil}
+    AgentRegistry.update_status(state.agent_id, :idle)
+
+    state = process_queue(state)
+
+    # If still idle after processing queue (no pending messages), broadcast idle event
+    # so `await: :finish` callers can detect implicit completion
+    if state.status == :idle do
+      broadcast(state, %{type: :agent_idle, result: result, agent_id: state.agent_id})
+    end
+
     {:noreply, state}
   end
 
@@ -422,8 +446,8 @@ defmodule Rho.Agent.Worker do
 
   @impl true
   def terminate(reason, state) do
-    # Unregister from agent registry
-    AgentRegistry.unregister(state.agent_id)
+    # Mark stopped in agent registry (preserve entry for tape lookup)
+    AgentRegistry.update(state.agent_id, %{status: :stopped, pid: nil})
 
     # Unsubscribe from bus
     for sub_id <- state.bus_subscriptions do
@@ -573,24 +597,32 @@ defmodule Rho.Agent.Worker do
 
     if message do
       content =
-        if from do
-          {from_role, from_id} =
-            case AgentRegistry.get(from) do
-              %{role: role} -> {role, from}
-              _ -> {:unknown, from}
-            end
+        cond do
+          from == "external" ->
+            """
+            [External message]
+            #{message}
+            """
 
-          """
-          [Inter-agent message from #{from_role} (#{from_id})]
-          #{message}
+          from ->
+            {from_role, from_id} =
+              case AgentRegistry.get(from) do
+                %{role: role} -> {role, from}
+                _ -> {:unknown, from}
+              end
 
-          ---
-          This message is from another agent, not a human user. \
-          To reply, use send_message with target: "#{from_id}". \
-          Do not use end_turn to reply — that only works for human conversations.\
-          """
-        else
-          message
+            """
+            [Inter-agent message from #{from_role} (#{from_id})]
+            #{message}
+
+            ---
+            This message is from another agent, not a human user. \
+            To reply, use send_message with target: "#{from_id}". \
+            Do not use end_turn to reply — that only works for human conversations.\
+            """
+
+          true ->
+            message
         end
 
       # Ensure tools are resolved and persisted so subsequent message turns

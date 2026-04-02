@@ -29,7 +29,8 @@ defmodule Rho.Config do
     sandbox: Rho.Tools.Sandbox,
     journal: Rho.Mounts.JournalTools,
     step_budget: Rho.Plugins.StepBudget,
-    live_render: Rho.Mounts.LiveRender
+    live_render: Rho.Mounts.LiveRender,
+    py_agent: Rho.Mounts.PyAgent
   }
 
   @doc """

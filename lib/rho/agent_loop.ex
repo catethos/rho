@@ -276,7 +276,7 @@ defmodule Rho.AgentLoop do
   end
 
   defp handle_reasoner_result({:final, value, _entries}, _ctx, _opts, _step, _max),
-    do: {:ok, value}
+    do: {:final, value}
 
   defp handle_reasoner_result({:error, reason}, _ctx, _opts, _step, _max),
     do: {:error, reason}

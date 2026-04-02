@@ -89,11 +89,16 @@ defmodule Rho.StructuredOutput do
          :error <- try_decode(normalized),
          escaped = escape_control_chars(normalized),
          :error <- try_decode(escaped),
+         stripped = strip_trailing_commas(escaped),
+         :error <- try_if_different(stripped, escaped),
          extracted = extract_from_markdown(text),
          :error <- try_if_different(extracted, text),
          :error <- try_if_different(extracted |> normalize_quotes() |> escape_control_chars(), text),
+         :error <- try_if_different(extracted |> normalize_quotes() |> escape_control_chars() |> strip_trailing_commas(), text),
          :error <- try_merge_objects(escaped),
-         :error <- try_brace_scan(escaped) do
+         :error <- try_brace_scan(escaped),
+         single_to_double = convert_single_quotes(text),
+         :error <- try_if_different(single_to_double, text) do
       :error
     end
   end
@@ -102,6 +107,27 @@ defmodule Rho.StructuredOutput do
     case Jason.decode(text) do
       {:ok, result} when is_map(result) or is_list(result) -> {:ok, result}
       _ -> :error
+    end
+  end
+
+  # Strip trailing commas before } or ] (common LLM JSON mistake).
+  # Uses regex to remove commas followed by optional whitespace then } or ].
+  defp strip_trailing_commas(text) do
+    Regex.replace(~r/,(\s*[}\]])/, text, "\\1")
+  end
+
+  # Convert Python-style single-quoted JSON to double-quoted JSON.
+  # Only converts when the text looks like it's using single quotes as JSON delimiters
+  # (starts with { or [ and uses ' for keys/values).
+  defp convert_single_quotes(text) do
+    trimmed = String.trim(text)
+
+    if (String.starts_with?(trimmed, "{") or String.starts_with?(trimmed, "[")) and
+       String.contains?(trimmed, "'") and not String.contains?(trimmed, "\"") do
+      # Simple heuristic: if no double quotes present, convert all single quotes to double
+      String.replace(trimmed, "'", "\"")
+    else
+      text
     end
   end
 

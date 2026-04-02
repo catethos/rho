@@ -36,7 +36,8 @@ defmodule Rho.MixProject do
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.2"},
       {:live_render, "~> 0.5"},
-      {:nimble_options, "~> 1.0"}
+      {:nimble_options, "~> 1.0"},
+      {:erlang_python, "~> 2.3"}
     ]
   end
 end

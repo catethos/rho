@@ -12,26 +12,39 @@ defmodule Rho.Session do
 
   @doc "Find or start a session. Returns {:ok, primary_agent_pid}."
   def ensure_started(session_id, opts \\ []) do
-    case whereis(session_id) do
-      nil ->
-        agent_id = primary_agent_id(session_id)
+    workspace = opts[:workspace] || File.cwd!()
 
-        worker_opts = [
-          agent_id: agent_id,
-          session_id: session_id,
-          workspace: opts[:workspace] || File.cwd!(),
-          agent_name: opts[:agent_name] || :default,
-          role: :primary,
-          depth: 0
-        ]
+    result =
+      case whereis(session_id) do
+        nil ->
+          agent_id = primary_agent_id(session_id)
 
-        case Rho.Agent.Supervisor.start_worker(worker_opts) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-        end
+          worker_opts = [
+            agent_id: agent_id,
+            session_id: session_id,
+            workspace: workspace,
+            agent_name: opts[:agent_name] || :default,
+            role: :primary,
+            depth: 0
+          ]
 
-      pid ->
-        {:ok, pid}
+          case Rho.Agent.Supervisor.start_worker(worker_opts) do
+            {:ok, pid} -> {:ok, pid}
+            {:error, {:already_started, pid}} -> {:ok, pid}
+          end
+
+        pid ->
+          {:ok, pid}
+      end
+
+    # Start EventLog for this session (idempotent)
+    case result do
+      {:ok, _pid} ->
+        ensure_event_log(session_id, workspace)
+        result
+
+      error ->
+        error
     end
   end
 
@@ -97,14 +110,55 @@ defmodule Rho.Session do
     end)
   end
 
-  @doc "Synchronous submit — subscribe, submit, collect events until turn_finished."
+  @doc """
+  Synchronous submit — subscribe, submit, collect events until done.
+
+  Options:
+    - `await: :finish` — wait until the agent calls `finish` (for multi-turn simulations).
+      Default: return after the first turn completes.
+  """
   def ask(session, content, opts \\ []) do
     pid = resolve_pid!(session)
     Worker.subscribe(pid)
     {:ok, turn_id} = Worker.submit(pid, content, opts)
-    result = receive_until_done(turn_id)
+    await_mode = Keyword.get(opts, :await, :turn)
+    result = receive_until_done(turn_id, await_mode)
     Worker.unsubscribe(pid)
     result
+  end
+
+  @doc """
+  Inject a message into a session, optionally targeting a specific agent.
+
+  If `target_agent_id` is nil or "primary", delegates to `submit/3`.
+  Otherwise delivers a signal directly to the target agent.
+  """
+  def inject(session_id, target_agent_id, message, opts \\ []) do
+    cond do
+      target_agent_id in [nil, "primary"] ->
+        submit(session_id, message, opts)
+
+      true ->
+        case Worker.whereis(target_agent_id) do
+          nil ->
+            {:error, :agent_not_found}
+
+          pid ->
+            from = opts[:from] || "external"
+
+            Worker.deliver_signal(pid, %{
+              type: "rho.message.sent",
+              data: %{message: message, from: from}
+            })
+
+            {:ok, :injected}
+        end
+    end
+  end
+
+  @doc "Returns the JSONL event log file path for a session."
+  def event_log_path(session_id) do
+    Rho.Session.EventLog.path(session_id)
   end
 
   @doc "List all agents in a session."
@@ -132,10 +186,16 @@ defmodule Rho.Session do
 
   @doc "Stop all agents in a session."
   def stop(session_id) do
-    for agent <- Rho.Agent.Registry.list(session_id) do
+    # Stop EventLog first
+    Rho.Session.EventLog.stop(session_id)
+
+    for agent <- Rho.Agent.Registry.list_all(session_id) do
       if pid = Worker.whereis(agent.agent_id) do
         GenServer.stop(pid, :shutdown, 5_000)
       end
+
+      # Clean up registry entry (including already-stopped agents)
+      Rho.Agent.Registry.unregister(agent.agent_id)
     end
 
     :ok
@@ -163,10 +223,57 @@ defmodule Rho.Session do
     end
   end
 
-  defp receive_until_done(turn_id) do
+  defp ensure_event_log(session_id, workspace) do
+    case Registry.lookup(Rho.EventLogRegistry, session_id) do
+      [{_pid, _}] ->
+        :ok
+
+      [] ->
+        try do
+          DynamicSupervisor.start_child(
+            Rho.Session.EventLog.Supervisor,
+            {Rho.Session.EventLog, session_id: session_id, workspace: workspace}
+          )
+        catch
+          :exit, _ -> :ok
+        end
+    end
+  end
+
+  # Default: return after first turn completes (backwards compatible)
+  defp receive_until_done(turn_id, :turn) do
     receive do
+      {:session_event, _sid, ^turn_id, %{type: :turn_finished, result: {:final, value}}} ->
+        {:ok, value}
+
       {:session_event, _sid, ^turn_id, %{type: :turn_finished, result: result}} ->
         result
+    end
+  end
+
+  # Simulation mode: wait until the agent calls `finish` or goes idle with no pending work.
+  # After each regular turn end, waits up to 30s for more activity before treating as done.
+  defp receive_until_done(_turn_id, :finish), do: receive_until_finish(nil)
+
+  defp receive_until_finish(last_result) do
+    # Wait for events. After a regular turn ends, use a 30s timeout — if no new turn
+    # starts within 30s, the agent is done (either waiting for messages that won't come,
+    # or the model forgot to call finish).
+    timeout = if last_result, do: 30_000, else: :infinity
+
+    receive do
+      {:session_event, _sid, _tid, %{type: :turn_finished, result: {:final, value}}} ->
+        {:ok, value}
+
+      {:session_event, _sid, _tid, %{type: :turn_finished, result: {:ok, _text} = ok}} ->
+        receive_until_finish(ok)
+
+      {:session_event, _sid, _tid, %{type: :turn_finished, result: {:error, _} = err}} ->
+        err
+    after
+      timeout ->
+        # No new activity — return the last result we saw
+        last_result || {:ok, "completed"}
     end
   end
 end

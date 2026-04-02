@@ -34,7 +34,8 @@ defmodule Mix.Tasks.Rho.Run do
           depth: 0,
           sandbox: nil
         }),
-        max_steps: opts[:max_steps] || config.max_steps
+        max_steps: opts[:max_steps] || config.max_steps,
+        reasoner: config.reasoner
       ]
       |> then(fn o -> if config.provider, do: Keyword.put(o, :provider, config.provider), else: o end)
 

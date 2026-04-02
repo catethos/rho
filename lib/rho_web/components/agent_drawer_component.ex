@@ -76,25 +76,40 @@ defmodule RhoWeb.AgentDrawerComponent do
 
 
   defp load_tape(socket, agent) do
-    tape_entries =
+    memory_mod = Rho.Config.memory_module()
+
+    tape_name =
       case Rho.Agent.Worker.whereis(agent.agent_id) do
         nil ->
-          []
+          # Worker stopped (e.g. after await_task) — get tape_name from registry
+          case Rho.Agent.Registry.get(agent.agent_id) do
+            %{memory_ref: ref} when is_binary(ref) -> ref
+            _ -> nil
+          end
 
         pid ->
           info = Rho.Agent.Worker.info(pid)
-          memory_mod = Rho.Config.memory_module()
-          history = memory_mod.history(info.tape_name)
-          Enum.map(history, fn entry ->
-            %{type: entry[:role] || :unknown, content: entry[:content] || inspect(entry)}
-          end)
+          info.tape_name
+      end
+
+    tape_entries =
+      if tape_name do
+        memory_mod.history(tape_name)
+        |> Enum.map(fn entry ->
+          %{type: entry[:role] || :unknown, content: entry[:content] || inspect(entry)}
+        end)
+      else
+        []
       end
 
     socket
     |> assign(:tape_entries, tape_entries)
     |> assign(:tape_loaded_for, agent.agent_id)
   rescue
-    _ ->
+    e ->
+      require Logger
+      Logger.warning("Failed to load tape for #{agent.agent_id}: #{inspect(e)}")
+
       socket
       |> assign(:tape_entries, [])
       |> assign(:tape_loaded_for, agent.agent_id)

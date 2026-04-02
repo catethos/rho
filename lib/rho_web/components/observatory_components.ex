@@ -1,209 +1,338 @@
 defmodule RhoWeb.ObservatoryComponents do
   @moduledoc """
-  UI components for the Hiring Committee Observatory.
-  All server-rendered HTML + CSS. LiveView push_event + JS hooks only for auto-scroll.
+  UI components for the multi-agent Observatory.
+  Discussion-centric view: chat bubbles, tool annotations, timeline markers.
   """
 
   use Phoenix.Component
 
-  # --- Agent card ---
+  # --- Discussion timeline ---
 
-  attr :agent, :map, required: true
-
-  def agent_card(assigns) do
-    ~H"""
-    <div class={"obs-agent-card #{status_class(@agent.status)} #{if !@agent.alive, do: "dead"}"}
-         phx-click="select_agent" phx-value-agent-id={@agent.agent_id}>
-      <div class="obs-agent-header">
-        <span class={"obs-status-dot #{status_class(@agent.status)}"}></span>
-        <span class="obs-agent-role"><%= format_role(@agent.agent_name) %></span>
-      </div>
-      <div class="obs-agent-stats">
-        <div class="obs-stat">
-          <span class="obs-stat-label">mailbox</span>
-          <span class={"obs-stat-value #{if @agent.message_queue_len > 3, do: "hot"}"}>
-            <%= @agent.message_queue_len || 0 %>
-          </span>
-        </div>
-        <div class="obs-stat">
-          <span class="obs-stat-label">heap</span>
-          <span class="obs-stat-value"><%= format_heap(@agent.heap_size) %></span>
-        </div>
-        <div class="obs-stat">
-          <span class="obs-stat-label">work</span>
-          <span class="obs-stat-value"><%= format_reductions(@agent[:reductions_per_sec]) %></span>
-        </div>
-      </div>
-      <div :if={@agent.current_tool} class="obs-agent-tool">
-        <span class="obs-tool-indicator"></span>
-        <%= @agent.current_tool %>
-      </div>
-      <div :if={@agent.current_step} class="obs-agent-step">
-        step <%= @agent.current_step %>
-      </div>
-    </div>
-    """
-  end
-
-  # --- Candidate scoreboard ---
-
-  attr :scores, :map, required: true
-
-  def scoreboard(assigns) do
-    ~H"""
-    <div class="obs-scoreboard">
-      <h3 class="obs-section-title">Candidate Scores</h3>
-      <table class="obs-score-table">
-        <thead>
-          <tr>
-            <th>Candidate</th>
-            <th title="Technical">T</th>
-            <th title="Culture">C</th>
-            <th title="Compensation">$</th>
-            <th>Avg</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr :for={{_id, scores} <- sorted_scores(@scores)}>
-            <td class="obs-candidate-name"><%= scores.name %></td>
-            <td class={score_class(scores.technical)}><%= scores.technical || "—" %></td>
-            <td class={score_class(scores.culture)}><%= scores.culture || "—" %></td>
-            <td class={score_class(scores.compensation)}><%= scores.compensation || "—" %></td>
-            <td class="obs-score-avg"><%= format_avg(scores.avg) %></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    """
-  end
-
-  # --- Signal flow timeline ---
-
-  attr :signals, :list, required: true
-
-  def signal_flow(assigns) do
-    ~H"""
-    <div class="obs-signal-flow" id="signal-flow" phx-hook="AutoScroll">
-      <h3 class="obs-section-title">Signal Flow</h3>
-      <div :for={signal <- Enum.take(@signals, 50)} class="obs-signal-row">
-        <span class="obs-signal-time"><%= format_time(signal.timestamp) %></span>
-        <span class={"obs-signal-from obs-role-#{signal.from_agent}"}><%= format_agent_name(signal.from_agent) %></span>
-        <span class="obs-signal-arrow">
-          <%= if signal.to_agent == :all, do: "=> ALL", else: "=>" %>
-        </span>
-        <span :if={signal.to_agent != :all} class="obs-signal-to">
-          <%= format_agent_name(signal.to_agent) %>
-        </span>
-        <span class="obs-signal-preview"><%= signal.preview %></span>
-      </div>
-      <div :if={@signals == []} class="obs-signal-empty">
-        Waiting for agent communication...
-      </div>
-    </div>
-    """
-  end
-
-  # --- Activity feed ---
-
-  attr :activity, :map, required: true
+  attr :discussion, :list, required: true
   attr :agents, :map, required: true
 
-  def activity_feed(assigns) do
+  def discussion_timeline(assigns) do
     ~H"""
-    <div class="obs-activity-feed" id="activity-feed" phx-hook="AutoScroll">
-      <h3 class="obs-section-title">Agent Activity</h3>
-      <div class="obs-activity-columns">
-        <div :for={{agent_id, agent} <- @agents} class="obs-activity-column">
-          <div class={"obs-activity-agent-label obs-role-#{agent.agent_name}"}>
-            <%= format_role(agent.agent_name) %>
-          </div>
-          <div class="obs-activity-content">
-            <% agent_activity = Map.get(@activity, agent_id, %{text: "", entries: []}) %>
-            <div :if={agent_activity.text != ""} class="obs-activity-text">
-              <%= agent_activity.text %>
-            </div>
-            <div :for={entry <- Enum.take(agent_activity.entries, 5)} class={"obs-activity-entry obs-activity-#{entry.type}"}>
-              <%= entry.content %>
-            </div>
-            <div :if={agent_activity.text == "" and agent_activity.entries == []} class="obs-activity-waiting">
-              Waiting...
-            </div>
-          </div>
-        </div>
+    <div class="disc-timeline">
+      <div :if={@discussion == []} class="disc-empty">
+        Waiting for agent activity...
       </div>
-      <div :if={@agents == %{}} class="obs-activity-waiting">
-        No agents spawned yet.
+      <div :for={entry <- Enum.reverse(@discussion)} class="disc-entry-wrap">
+        <.disc_entry entry={entry} />
       </div>
     </div>
     """
   end
 
-  # --- Convergence chart ---
+  defp disc_entry(%{entry: %{type: :message}} = assigns) do
+    ~H"""
+    <div class={"disc-message disc-role-#{role_slug(@entry.agent_name)}"}>
+      <div class="disc-message-header">
+        <span class={"disc-avatar disc-avatar-#{role_slug(@entry.agent_name)}"}><%= avatar(@entry.agent_name) %></span>
+        <span class="disc-author"><%= format_name(@entry.agent_name) %></span>
+        <span :if={@entry.meta[:to] && @entry.meta[:to] != :all} class="disc-target">
+          &rarr; <%= format_name(@entry.meta[:to]) %>
+        </span>
+        <span :if={@entry.meta[:to] == :all} class="disc-target disc-broadcast">&rarr; all</span>
+      </div>
+      <div class="disc-message-body" phx-hook="Markdown" id={"msg-#{@entry.id}"} data-md={@entry.content}>
+      </div>
+    </div>
+    """
+  end
 
-  attr :convergence_history, :list, required: true
+  defp disc_entry(%{entry: %{type: :thinking}} = assigns) do
+    ~H"""
+    <div class={"disc-thinking disc-role-#{role_slug(@entry.agent_name)}"}>
+      <div class="disc-thinking-header">
+        <span class={"disc-avatar disc-avatar-#{role_slug(@entry.agent_name)} disc-avatar-dim"}><%= avatar(@entry.agent_name) %></span>
+        <span class="disc-author-dim"><%= format_name(@entry.agent_name) %></span>
+        <span class="disc-thinking-label">thinking</span>
+      </div>
+      <div class="disc-thinking-body">
+        <%= truncate(@entry.content, 400) %>
+      </div>
+    </div>
+    """
+  end
 
-  def convergence_chart(assigns) do
-    max_rounds = 4
+  defp disc_entry(%{entry: %{type: :tool_use}} = assigns) do
+    ~H"""
+    <div class={"disc-tool disc-role-#{role_slug(@entry.agent_name)}"}>
+      <span class="disc-tool-icon">&#9881;</span>
+      <span class="disc-tool-agent"><%= format_name(@entry.agent_name) %></span>
+      <span class="disc-tool-name"><%= @entry.content %></span>
+      <span :if={@entry.meta[:args]} class="disc-tool-args"><%= @entry.meta[:args] %></span>
+    </div>
+    """
+  end
 
-    coords =
-      assigns.convergence_history
+  defp disc_entry(%{entry: %{type: :tool_result}} = assigns) do
+    ~H"""
+    <div class={"disc-tool-result #{if @entry.meta[:status] != :ok, do: "disc-tool-error"}"}>
+      <span class="disc-tool-result-status"><%= if @entry.meta[:status] == :ok, do: "✓", else: "✗" %></span>
+      <span class="disc-tool-result-text"><%= truncate(@entry.content, 200) %></span>
+    </div>
+    """
+  end
+
+  defp disc_entry(%{entry: %{type: :agent_event}} = assigns) do
+    ~H"""
+    <div class="disc-event">
+      <span class={"disc-event-dot disc-avatar-#{role_slug(@entry.agent_name)}"}></span>
+      <span class="disc-event-text">
+        <strong><%= format_name(@entry.agent_name) %></strong> <%= @entry.content %>
+      </span>
+    </div>
+    """
+  end
+
+  defp disc_entry(%{entry: %{type: :marker}} = assigns) do
+    ~H"""
+    <div class={"disc-marker #{if @entry.meta[:kind] == :complete, do: "disc-marker-complete"}"}>
+      <span class="disc-marker-line"></span>
+      <span class="disc-marker-text"><%= @entry.content %></span>
+      <span class="disc-marker-line"></span>
+    </div>
+    """
+  end
+
+  defp disc_entry(%{entry: %{type: :turn_end}} = assigns) do
+    ~H"""
+    <div class={"disc-message disc-role-#{role_slug(@entry.agent_name)}"}>
+      <div class="disc-message-header">
+        <span class={"disc-avatar disc-avatar-#{role_slug(@entry.agent_name)}"}><%= avatar(@entry.agent_name) %></span>
+        <span class="disc-author"><%= format_name(@entry.agent_name) %></span>
+        <span class="disc-thinking-label">final response</span>
+      </div>
+      <div class="disc-message-body" phx-hook="Markdown" id={"turn-end-#{@entry.id}"} data-md={truncate(@entry.content, 2000)}>
+      </div>
+    </div>
+    """
+  end
+
+  # Fallback
+  defp disc_entry(assigns) do
+    ~H"""
+    <div class="disc-event">
+      <span class="disc-event-text disc-muted"><%= @entry.type %>: <%= truncate(to_string(@entry.content), 100) %></span>
+    </div>
+    """
+  end
+
+  # --- Interaction graph (sidebar) ---
+
+  attr :agents, :map, required: true
+  attr :edges, :map, required: true
+  attr :recent_edges, :list, required: true
+
+  def interaction_graph(assigns) do
+    agent_list =
+      assigns.agents
+      |> Enum.filter(fn {_id, a} -> a[:agent_name] end)
+      |> Enum.sort_by(fn {id, _} -> id end)
+
+    n = length(agent_list)
+    cx = 120
+    cy = 110
+    r = if n <= 3, do: 60, else: 75
+
+    # Position agents in a circle
+    positions =
+      agent_list
       |> Enum.with_index()
-      |> Enum.map(fn {value, i} ->
-        x = (i + 1) / max_rounds * 280 + 20
-        y = 80 - value * 70
-        {x, y}
+      |> Enum.map(fn {{id, agent}, i} ->
+        angle = -:math.pi() / 2 + 2 * :math.pi() * i / max(n, 1)
+        x = cx + r * :math.cos(angle)
+        y = cy + r * :math.sin(angle)
+        {id, agent, x, y}
       end)
 
-    polyline = coords |> Enum.map(fn {x, y} -> "#{x},#{y}" end) |> Enum.join(" ")
+    pos_map = Map.new(positions, fn {id, _a, x, y} -> {id, {x, y}} end)
+
+    # Build edge data with positions
+    max_count = assigns.edges |> Map.values() |> Enum.max(fn -> 1 end)
+
+    edge_data =
+      assigns.edges
+      |> Enum.filter(fn {{from, to}, _} -> Map.has_key?(pos_map, from) and Map.has_key?(pos_map, to) end)
+      |> Enum.with_index()
+      |> Enum.map(fn {{{from, to}, count}, idx} ->
+        {fx, fy} = pos_map[from]
+        {tx, ty} = pos_map[to]
+        thickness = 1.5 + 3 * count / max(max_count, 1)
+        from_agent = assigns.agents[from]
+        # Pre-compute line endpoints offset by node radius
+        dx = tx - fx
+        dy = ty - fy
+        len = :math.sqrt(dx * dx + dy * dy)
+        nx = dx / max(len, 1)
+        ny = dy / max(len, 1)
+        %{
+          x1: fx + nx * 18, y1: fy + ny * 18,
+          x2: tx - nx * 18, y2: ty - ny * 18,
+          fx: fx, fy: fy, tx: tx, ty: ty,
+          count: count, thickness: thickness, idx: idx,
+          role: role_slug((from_agent || %{})[:agent_name])
+        }
+      end)
+
+    # Recent edges for live particle animation
+    now = System.monotonic_time(:millisecond)
+    recent =
+      assigns.recent_edges
+      |> Enum.filter(fn {from, to, _t} -> Map.has_key?(pos_map, from) and Map.has_key?(pos_map, to) end)
+      |> Enum.filter(fn {_, _, t} -> now - t < 3000 end)
+      |> Enum.with_index()
+      |> Enum.map(fn {{from, to, _t}, idx} ->
+        {fx, fy} = pos_map[from]
+        {tx, ty} = pos_map[to]
+        from_agent = assigns.agents[from]
+        %{fx: fx, fy: fy, tx: tx, ty: ty, idx: idx, role: role_slug((from_agent || %{})[:agent_name])}
+      end)
+
+    # For historical sessions with no recent edges, use looping ambient particles on all edges
+    has_live_particles = recent != []
 
     assigns =
       assigns
-      |> assign(:polyline, polyline)
-      |> assign(:coords, coords)
-      |> assign(:max_rounds, max_rounds)
+      |> Phoenix.Component.assign(:positions, positions)
+      |> Phoenix.Component.assign(:edge_data, edge_data)
+      |> Phoenix.Component.assign(:recent, recent)
+      |> Phoenix.Component.assign(:has_live_particles, has_live_particles)
 
     ~H"""
-    <div class="obs-convergence">
-      <h3 class="obs-section-title">Convergence</h3>
-      <svg viewBox="0 0 300 90" class="obs-convergence-svg">
-        <line x1="20" y1="10" x2="20" y2="80" stroke="var(--border)" stroke-width="0.5" />
-        <line x1="20" y1="80" x2="290" y2="80" stroke="var(--border)" stroke-width="0.5" />
-        <text x="5" y="15" fill="var(--text-muted)" font-size="8">100%</text>
-        <text x="5" y="82" fill="var(--text-muted)" font-size="8">0%</text>
-        <text :for={r <- 1..@max_rounds}
-          x={r / @max_rounds * 280 + 20} y="90"
-          fill="var(--text-muted)" font-size="7" text-anchor="middle">
-          R<%= r %>
-        </text>
-        <polyline :if={@polyline != ""}
-          points={@polyline}
-          fill="none" stroke="var(--teal)" stroke-width="2" />
-        <circle :for={{x, y} <- @coords}
-          cx={x} cy={y} r="3" fill="var(--teal)" />
+    <div class="igraph-wrap" id="interaction-graph" phx-hook="InteractionGraph">
+      <svg viewBox="0 0 240 220" class="igraph-svg">
+        <defs>
+          <marker id="arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+            <path d="M0,0 L6,2 L0,4" fill="var(--text-muted)" opacity="0.6" />
+          </marker>
+        </defs>
+
+        <!-- Edges with animated dash for flow direction -->
+        <%= for e <- @edge_data do %>
+          <line
+            x1={e.x1} y1={e.y1}
+            x2={e.x2} y2={e.y2}
+            class={"igraph-edge igraph-edge-#{e.role}"}
+            stroke-width={e.thickness}
+            marker-end="url(#arrow)"
+          />
+        <% end %>
+
+        <!-- Ambient looping particles on edges (shown when no live particles) -->
+        <%= if !@has_live_particles do %>
+          <%= for e <- @edge_data do %>
+            <circle r="2.5" class={"igraph-particle igraph-ambient igraph-particle-#{e.role}"}>
+              <animateMotion
+                dur={"#{2.5 + rem(e.idx, 3)}s"}
+                repeatCount="indefinite"
+                path={"M#{e.fx},#{e.fy} L#{e.tx},#{e.ty}"}
+                begin={"#{rem(e.idx * 700, 2500) / 1000}s"}
+              />
+            </circle>
+          <% end %>
+        <% end %>
+
+        <!-- Live burst particles on recent messages -->
+        <%= for p <- @recent do %>
+          <circle r="3.5" class={"igraph-particle igraph-burst igraph-particle-#{p.role}"}>
+            <animateMotion
+              dur="0.7s"
+              repeatCount="1"
+              fill="freeze"
+              path={"M#{p.fx},#{p.fy} L#{p.tx},#{p.ty}"}
+            />
+            <animate attributeName="opacity" values="1;0.9;0" dur="0.7s" fill="freeze" />
+            <animate attributeName="r" values="3.5;5;2" dur="0.7s" fill="freeze" />
+          </circle>
+        <% end %>
+
+        <!-- Agent nodes -->
+        <%= for {_id, agent, x, y} <- @positions do %>
+          <% slug = role_slug(agent[:agent_name]) %>
+          <% busy = agent[:status] == :busy %>
+          <!-- Pulse ring for busy agents -->
+          <%= if busy do %>
+            <circle cx={x} cy={y} r="20" class={"igraph-pulse-ring igraph-ring-#{slug}"} />
+          <% end %>
+          <!-- Outer glow ring -->
+          <circle cx={x} cy={y} r="18" class={"igraph-node-glow igraph-node-#{slug}"} opacity="0.15" />
+          <circle cx={x} cy={y} r="16" class={"igraph-node igraph-node-#{slug}"} />
+          <text x={x} y={y} class="igraph-label"><%= avatar(agent[:agent_name]) %></text>
+          <text x={x} y={Float.round(y + 26, 1)} class="igraph-name"><%= format_name(agent[:agent_name]) %></text>
+        <% end %>
       </svg>
-      <div class="obs-convergence-current">
-        Round <%= length(@convergence_history) %> —
-        <%= case List.last(@convergence_history) do
-          nil -> "waiting..."
-          v -> "#{round(v * 100)}% agreement"
-        end %>
-      </div>
     </div>
     """
   end
 
-  # --- BEAM insights bar ---
+  # --- Agent pill (sidebar) ---
 
-  attr :insights, :list, required: true
+  attr :agent, :map, required: true
 
-  def insights_bar(assigns) do
+  def agent_pill(assigns) do
     ~H"""
-    <div :if={@insights != []} class="obs-insights">
-      <div :for={insight <- @insights} class={"obs-insight obs-insight-#{insight.severity}"}>
-        <span class="obs-insight-icon">
-          <%= if insight.severity == :highlight, do: "!", else: "i" %>
+    <div class={"obs-agent-pill #{if @agent.status == :busy, do: "busy"} #{if !@agent.alive, do: "dead"}"}>
+      <span class={"disc-avatar disc-avatar-#{role_slug(@agent.agent_name)} disc-avatar-sm"}><%= avatar(@agent.agent_name) %></span>
+      <div class="obs-agent-pill-info">
+        <span class="obs-agent-pill-name"><%= format_name(@agent.agent_name) %></span>
+        <span class="obs-agent-pill-meta">
+          <%= if @agent.current_tool, do: @agent.current_tool, else: @agent.status %>
+          · step <%= @agent.current_step || 0 %>
         </span>
-        <%= insight.text %>
+      </div>
+      <span class={"obs-status-dot #{if @agent.status == :busy, do: "busy"}"}></span>
+    </div>
+    """
+  end
+
+  # --- Score table (sidebar) ---
+
+  attr :scores, :map, required: true
+
+  def score_table(assigns) do
+    ~H"""
+    <table class="obs-score-tbl">
+      <thead>
+        <tr><th>Candidate</th><th>T</th><th>C</th><th>$</th><th>Avg</th></tr>
+      </thead>
+      <tbody>
+        <tr :for={{_id, s} <- sorted_scores(@scores)}>
+          <td class="obs-score-name"><%= s.name %></td>
+          <td class={score_cls(s.technical)}><%= s.technical || "—" %></td>
+          <td class={score_cls(s.culture)}><%= s.culture || "—" %></td>
+          <td class={score_cls(s.compensation)}><%= s.compensation || "—" %></td>
+          <td class="obs-score-avg"><%= if s.avg, do: Float.round(s.avg, 1), else: "—" %></td>
+        </tr>
+      </tbody>
+    </table>
+    """
+  end
+
+  # --- Token summary (sidebar) ---
+
+  attr :agents, :map, required: true
+
+  def token_summary(assigns) do
+    total_in = assigns.agents |> Map.values() |> Enum.map(& &1[:token_usage][:input] || 0) |> Enum.sum()
+    total_out = assigns.agents |> Map.values() |> Enum.map(& &1[:token_usage][:output] || 0) |> Enum.sum()
+    assigns = assign(assigns, :total_in, total_in) |> assign(:total_out, total_out)
+
+    ~H"""
+    <div class="obs-token-summary">
+      <div class="obs-token-row">
+        <span class="obs-token-label">Input</span>
+        <span class="obs-token-value"><%= format_tokens(@total_in) %></span>
+      </div>
+      <div class="obs-token-row">
+        <span class="obs-token-label">Output</span>
+        <span class="obs-token-value"><%= format_tokens(@total_out) %></span>
+      </div>
+      <div class="obs-token-row obs-token-total">
+        <span class="obs-token-label">Total</span>
+        <span class="obs-token-value"><%= format_tokens(@total_in + @total_out) %></span>
       </div>
     </div>
     """
@@ -211,8 +340,38 @@ defmodule RhoWeb.ObservatoryComponents do
 
   # --- Helpers ---
 
-  defp format_role(role) when is_atom(role) do
-    role
+  # Role colors: each role gets a consistent letter + color via CSS
+  @role_avatars %{
+    default: "C",
+    primary: "C",
+    technical_evaluator: "T",
+    culture_evaluator: "U",
+    compensation_evaluator: "$",
+    coder: "⌥",
+    researcher: "R"
+  }
+
+  defp avatar(name) when is_atom(name), do: Map.get(@role_avatars, name, String.first(Atom.to_string(name)) |> String.upcase())
+  defp avatar(name) when is_binary(name) do
+    cond do
+      String.contains?(name, "technical") -> "T"
+      String.contains?(name, "culture") -> "U"
+      String.contains?(name, "compensation") -> "$"
+      true -> String.first(name) |> String.upcase()
+    end
+  end
+  defp avatar(_), do: "?"
+
+  defp role_slug(name) when is_atom(name) do
+    name |> Atom.to_string() |> String.replace("_", "-")
+  end
+  defp role_slug(name) when is_binary(name) do
+    name |> String.replace("_", "-")
+  end
+  defp role_slug(_), do: "unknown"
+
+  defp format_name(name) when is_atom(name) do
+    name
     |> Atom.to_string()
     |> String.replace("_evaluator", "")
     |> String.replace("_", " ")
@@ -220,54 +379,30 @@ defmodule RhoWeb.ObservatoryComponents do
     |> Enum.map(&String.capitalize/1)
     |> Enum.join(" ")
   end
-
-  defp format_role(role), do: to_string(role)
-
-  defp format_heap(nil), do: "—"
-  defp format_heap(0), do: "0"
-  defp format_heap(words) when is_integer(words) do
-    kb = div(words * 8, 1024)
-    if kb > 1024, do: "#{div(kb, 1024)}MB", else: "#{kb}KB"
-  end
-
-  defp format_reductions(nil), do: "—"
-  defp format_reductions(r) when r > 1_000_000, do: "#{div(r, 1_000_000)}M/s"
-  defp format_reductions(r) when r > 1_000, do: "#{div(r, 1_000)}K/s"
-  defp format_reductions(r), do: "#{r}/s"
-
-  defp status_class(:busy), do: "busy"
-  defp status_class(:idle), do: "idle"
-  defp status_class(:stopped), do: "dead"
-  defp status_class(_), do: "idle"
-
-  defp sorted_scores(scores) do
-    scores
-    |> Enum.sort_by(fn {_id, s} -> -(s.avg || 0) end)
-  end
-
-  defp score_class(nil), do: "obs-score obs-score-pending"
-  defp score_class(n) when n >= 80, do: "obs-score obs-score-high"
-  defp score_class(n) when n >= 60, do: "obs-score obs-score-mid"
-  defp score_class(_), do: "obs-score obs-score-low"
-
-  defp format_avg(nil), do: "—"
-  defp format_avg(avg), do: Float.round(avg, 1)
-
-  defp format_time(timestamp) do
-    # Show relative seconds from start (monotonic time)
-    secs = div(timestamp, 1000)
-    mins = div(secs, 60)
-    remaining_secs = rem(abs(secs), 60)
-    "#{mins}:#{String.pad_leading(Integer.to_string(remaining_secs), 2, "0")}"
-  end
-
-  defp format_agent_name(name) when is_atom(name), do: format_role(name)
-  defp format_agent_name(name) when is_binary(name) do
+  defp format_name(name) when is_binary(name) do
     if String.contains?(name, "_evaluator") do
       name |> String.replace("_evaluator", "") |> String.capitalize()
     else
-      String.slice(name, -8, 8)
+      if String.length(name) > 12, do: "..." <> String.slice(name, -8, 8), else: name
     end
   end
-  defp format_agent_name(name), do: to_string(name)
+  defp format_name(name), do: to_string(name)
+
+  defp truncate(text, max) when is_binary(text) and byte_size(text) > max do
+    String.slice(text, 0, max) <> "..."
+  end
+  defp truncate(text, _max), do: text
+
+  defp sorted_scores(scores) do
+    Enum.sort_by(scores, fn {_id, s} -> -(s.avg || 0) end)
+  end
+
+  defp score_cls(nil), do: "sc-pending"
+  defp score_cls(n) when n >= 80, do: "sc-high"
+  defp score_cls(n) when n >= 60, do: "sc-mid"
+  defp score_cls(_), do: "sc-low"
+
+  defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}K"
+  defp format_tokens(n), do: "#{n}"
 end

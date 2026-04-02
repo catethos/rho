@@ -218,4 +218,83 @@ defmodule Rho.StructuredOutputTest do
       assert parsed["action_input"]["cmd"] =~ "git st"
     end
   end
+
+  # ── Real-world LLM failure patterns ──
+
+  describe "LLM format deviations" do
+    test "handles JSON wrapped in markdown json fence" do
+      input = "```json\n{\"thinking\": \"need files\", \"action\": \"bash\", \"action_input\": {\"cmd\": \"ls\"}}\n```"
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+    end
+
+    test "handles preamble text before JSON" do
+      input = "Sure, I'll run that command for you:\n{\"thinking\": \"running ls\", \"action\": \"bash\", \"action_input\": {\"cmd\": \"ls\"}}"
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+    end
+
+    test "handles trailing text after JSON" do
+      input = "{\"thinking\": \"done\", \"action\": \"final_answer\", \"action_input\": {\"answer\": \"42\"}}\n\nHope that helps!"
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "final_answer"
+    end
+
+    test "handles single quotes instead of double quotes" do
+      input = "{'thinking': 'need to check', 'action': 'bash', 'action_input': {'cmd': 'ls'}}"
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+    end
+
+    test "handles action_input as string instead of object" do
+      input = ~s({"thinking": "running command", "action": "bash", "action_input": "ls -la"})
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+      assert parsed["action_input"] == "ls -la"
+    end
+
+    test "handles missing thinking field" do
+      input = ~s({"action": "bash", "action_input": {"cmd": "ls"}})
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+    end
+
+    test "handles extra fields gracefully" do
+      input = ~s({"thinking": "ok", "reasoning": "extra", "action": "bash", "action_input": {"cmd": "ls"}, "confidence": 0.9})
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+    end
+
+    test "handles JSON with trailing comma (common LLM mistake)" do
+      input = ~s({"thinking": "ok", "action": "bash", "action_input": {"cmd": "ls"},})
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+    end
+
+    test "handles newlines in action_input string values" do
+      input = ~s[{"thinking": "writing code", "action": "fs_write", "action_input": {"path": "test.py", "content": "def hello:\\n    print hi\\n"}}]
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action_input"]["content"] =~ "hello"
+    end
+
+    test "handles tool output with special JSON chars embedded in next action" do
+      # Simulates when the LLM references a previous tool result containing JSON
+      input = ~s[{"thinking": "The output was {\\"key\\": \\"value\\"}", "action": "final_answer", "action_input": {"answer": "done"}}]
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "final_answer"
+    end
+
+    test "handles multiple JSON objects (LLM splits thinking and action)" do
+      input = ~s[{"thinking": "I need to check"}\n{"action": "bash", "action_input": {"cmd": "ls"}}]
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "bash"
+      assert parsed["thinking"] == "I need to check"
+    end
+
+    test "handles JSON with unicode escape sequences" do
+      input = ~s[{"thinking": "checking \\u0048ello", "action": "final_answer", "action_input": {"answer": "\\u0048i"}}]
+      assert {:ok, parsed} = StructuredOutput.parse(input)
+      assert parsed["action"] == "final_answer"
+    end
+  end
 end

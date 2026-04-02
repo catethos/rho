@@ -365,6 +365,7 @@ All agent events are published to a `jido_signal` bus (`Rho.Comms`). This provid
 - **Event routing** — Signals like `rho.task.completed`, `rho.turn.started`, and `rho.agent.started` flow through a shared bus
 - **Agent discovery** — The `Rho.Agent.Registry` (ETS-backed) tracks running agents by session, role, and capabilities
 - **Causality tracking** — Every signal carries `correlation_id` and `causation_id` for debugging agent interactions
+- **Persistent event log** — Every session writes a JSONL event log to disk (see [Session Event Log](#session-event-log))
 
 ##### Guardrails
 
@@ -378,6 +379,88 @@ All agent events are published to a `jido_signal` bus (`Rho.Comms`). This provid
 ##### Legacy subagent support
 
 The older `Rho.Plugins.Subagent` mount (`:subagent`) is still available for backward compatibility. It provides `spawn_subagent` and `collect_subagent` tools with a simpler fire-and-forget model. New projects should use `:multi_agent` instead.
+
+#### Session Event Log
+
+Every session automatically writes a persistent JSONL event log to disk. The log captures all signal bus events (agent starts/stops, turns, tool calls, inter-agent messages) while filtering out high-frequency streaming events (`text_delta`, `structured_partial`).
+
+**File location**: `{workspace}/_rho/sessions/{session_id}/events.jsonl`
+
+Each line is a JSON object:
+
+```json
+{"seq":1,"ts":"2026-03-25T11:06:14.952Z","type":"rho.session.smoke_test_1.events.turn_started","agent_id":"primary_smoke_test_1","session_id":"smoke_test_1","turn_id":"40","data":{"type":"turn_started"}}
+```
+
+| Field | Description |
+|-------|-------------|
+| `seq` | Monotonically increasing sequence number (per session) |
+| `ts` | ISO 8601 timestamp |
+| `type` | Full signal type (e.g. `rho.turn.started`, `rho.session.*.events.tool_start`) |
+| `agent_id` | Which agent produced this event |
+| `session_id` | Session namespace |
+| `turn_id` | Correlation ID linking events to a specific turn |
+| `data` | Event payload (tool args truncated at 2KB, tool results at 4KB) |
+
+##### Programmatic access
+
+```elixir
+# Read events with cursor-based pagination
+{events, last_seq} = Rho.Session.EventLog.read(session_id, after: 0, limit: 100)
+
+# Get the file path for direct reading
+path = Rho.Session.event_log_path(session_id)
+```
+
+##### HTTP API
+
+```bash
+# Read event log with cursor pagination
+curl "http://localhost:4001/api/sessions/my_session/log?after=0&limit=100"
+# => {"events": [...], "cursor": 100, "has_more": true}
+
+# Page through results
+curl "http://localhost:4001/api/sessions/my_session/log?after=100&limit=100"
+```
+
+##### Message injection
+
+Inject messages into a running session from external tools (e.g. Claude Code observing a simulation):
+
+```elixir
+# Inject to the primary agent
+Rho.Session.inject(session_id, nil, "What's your status?")
+
+# Inject to a specific agent
+Rho.Session.inject(session_id, "agent_42", "Reconsider your evaluation", from: "external")
+```
+
+```bash
+# Via HTTP API
+curl -X POST http://localhost:4001/api/sessions/my_session/inject \
+  -H 'Content-Type: application/json' \
+  -d '{"target": "primary", "message": "What is your status?"}'
+
+curl -X POST http://localhost:4001/api/sessions/my_session/inject \
+  -H 'Content-Type: application/json' \
+  -d '{"target": "agent_42", "message": "Reconsider", "from": "external"}'
+```
+
+External messages are formatted differently from inter-agent messages — they don't include instructions to use `send_message` to reply.
+
+##### Session creation via HTTP
+
+```bash
+# Create a session (starts EventLog automatically)
+curl -X POST http://localhost:4001/api/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id": "my_session"}'
+
+# Create with an initial message
+curl -X POST http://localhost:4001/api/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id": "my_session", "message": "Evaluate these candidates..."}'
+```
 
 #### Storage
 
@@ -830,6 +913,10 @@ Rho.Supervisor (one_for_one)
 │   ├── Rho.Agent.Worker (agent_42)               # delegated researcher
 │   ├── Rho.Agent.Worker (agent_43)               # delegated coder
 │   └── ...
+├── Registry (Rho.EventLogRegistry)     # session_id → EventLog pid
+├── DynamicSupervisor (EventLog.Supervisor)
+│   ├── Rho.Session.EventLog (session_1) # JSONL writer for session
+│   └── ...
 ├── Rho.CLI                             # CLI adapter
 └── [Web children]                      # conditional: RateLimiter, Endpoint
 ```
@@ -893,6 +980,8 @@ lib/rho/
     registry.ex        # ETS-based agent discovery
     supervisor.ex      # DynamicSupervisor for all agents
   session.ex           # Session = namespace for agent group
+  session/
+    event_log.ex       # Per-session JSONL event log (bus subscriber)
   mounts/
     multi_agent.ex     # delegate_task, await_task, send_message, list_agents
     journal_tools.ex   # Journal introspection tools
