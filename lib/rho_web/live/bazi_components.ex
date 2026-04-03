@@ -591,10 +591,12 @@ defmodule RhoWeb.BaziComponents do
 
     cond do
       is_number(current) and is_number(prev) and current > prev ->
-        Phoenix.HTML.raw(~s(<span class="bazi-delta-up">↑#{Float.round(current - prev, 1)}</span>))
+        delta = current - prev
+        Phoenix.HTML.raw(~s(<span class="bazi-delta-up">↑#{delta}</span>))
 
       is_number(current) and is_number(prev) and current < prev ->
-        Phoenix.HTML.raw(~s(<span class="bazi-delta-down">↓#{Float.round(abs(current - prev), 1)}</span>))
+        delta = abs(current - prev)
+        Phoenix.HTML.raw(~s(<span class="bazi-delta-down">↓#{delta}</span>))
 
       true ->
         ""
