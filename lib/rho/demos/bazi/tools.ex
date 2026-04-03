@@ -75,19 +75,18 @@ defmodule Rho.Demos.Bazi.Tools do
       execute: fn args ->
         raw = args["dimensions"] || args[:dimensions]
 
-        # Try JSON first, then fall back to parsing common formats
-        dims = case Jason.decode(raw) do
-          {:ok, dimensions} when is_list(dimensions) -> dimensions
-          _ ->
-            # Fallback: try to parse comma/newline separated, strip quotes/brackets
-            raw
-            |> String.replace(~r/[\[\]"'""「」]/, "")
-            |> String.split(~r/[,，、\n]+/)
-            |> Enum.map(&String.trim/1)
-            |> Enum.reject(&(&1 == ""))
+        # Handle: already a list (framework decoded) or JSON string
+        dims = cond do
+          is_list(raw) -> Enum.map(raw, &to_string/1)
+          is_binary(raw) ->
+            case Jason.decode(raw) do
+              {:ok, d} when is_list(d) -> d
+              _ -> nil
+            end
+          true -> nil
         end
 
-        if dims != [] do
+        if is_list(dims) and dims != [] do
           Comms.publish(
             "rho.bazi.#{session_id}.dimensions.proposed",
             %{
@@ -134,8 +133,18 @@ defmodule Rho.Demos.Bazi.Tools do
         round = args["round"] || args[:round]
         raw_scores = args["scores"] || args[:scores]
 
-        case Jason.decode(raw_scores) do
-          {:ok, scores} when is_map(scores) ->
+        # Handle: already a map, or JSON string
+        scores = cond do
+          is_map(raw_scores) -> raw_scores
+          is_binary(raw_scores) ->
+            case Jason.decode(raw_scores) do
+              {:ok, s} when is_map(s) -> s
+              _ -> nil
+            end
+          true -> nil
+        end
+
+        if scores do
             Comms.publish(
               "rho.bazi.#{session_id}.scores.submitted",
               %{
@@ -148,13 +157,9 @@ defmodule Rho.Demos.Bazi.Tools do
               source: "/session/#{session_id}/agent/#{agent_id}"
             )
 
-            {:ok, "Scores submitted for round #{round}."}
-
-          {:ok, _} ->
-            {:error, "Invalid scores format. Must be a JSON object grouped by option."}
-
-          _ ->
-            {:error, "Invalid scores format. Must be a valid JSON object."}
+            {:ok, "第#{round}轮评分已提交。"}
+        else
+            {:error, "评分格式无效。请提交JSON对象，按选项分组。"}
         end
       end
     }
