@@ -62,12 +62,12 @@ defmodule Rho.Demos.Bazi.Tools do
         ReqLLM.tool(
           name: "submit_dimensions",
           description:
-            "提交你建议的评分维度。请根据用户的问题提出3-5个相关的评分维度。",
+            "提交你建议的3-5个评分维度。参数必须是JSON数组格式，例如: [\"财运\", \"事业发展\", \"健康\"]",
           parameter_schema: [
             dimensions: [
               type: :string,
               required: true,
-              doc: "JSON array of dimension name strings, e.g. [\"财运\", \"事业\", \"健康\"]."
+              doc: ~s|必须是JSON数组格式。例如: ["事业发展", "财运", "五行契合", "时机", "风险"]。不要用其他格式。|
             ]
           ],
           callback: fn _args -> :ok end
