@@ -18,6 +18,7 @@
     - Be concise. Prefer a single well-crafted tool call over multiple redundant ones.
     """,
     mounts: [:bash, :multi_agent, :journal, :skills, :live_render],
+    python_deps: ["lunar-python"],
     provider: %{
       order: [],
      allow_fallbacks: true
