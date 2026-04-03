@@ -1907,6 +1907,21 @@ defmodule RhoWeb.InlineCSS do
       color: var(--text-primary);
       line-height: 1.5;
     }
+    .bazi-score-dims {
+      display: block;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      color: var(--teal);
+      margin-top: 2px;
+    }
+    .bazi-timeline-rationale {
+      display: block;
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      font-style: italic;
+      margin-top: 2px;
+      line-height: 1.4;
+    }
     .bazi-timeline-tag {
       display: inline-block;
       padding: 1px 7px;

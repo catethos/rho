@@ -235,12 +235,9 @@ defmodule RhoWeb.BaziComponents do
             <div class="bazi-timeline-row">
               <span class={"bazi-timeline-tag bazi-tag-#{entry[:advisor] || "unknown"}"}><%= format_advisor(entry[:advisor]) %></span>
               <div>
-                <span>Scored <strong><%= entry[:option] %></strong></span>
-                <span :if={entry[:score]} class="bazi-score-inline"><%= entry.score %></span>
-                <span :if={entry[:delta]} class={delta_class(entry.delta)}>
-                  <%= if entry.delta > 0, do: "↑#{entry.delta}", else: "↓#{abs(entry.delta)}" %>
-                </span>
-                <span :if={entry[:text] && entry.text != ""} class="bazi-timeline-rationale">— "<%= String.slice(entry.text, 0, 100) %>"</span>
+                <strong><%= entry[:option] %></strong>
+                <span :if={entry[:dim_display]} class="bazi-score-dims"><%= entry.dim_display %></span>
+                <div :if={entry[:text] && entry.text != ""} class="bazi-timeline-rationale">"<%= String.slice(entry.text, 0, 150) %>"</div>
               </div>
             </div>
 

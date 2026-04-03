@@ -307,36 +307,22 @@ defmodule RhoWeb.BaziProjection do
       Enum.map(scores_data, fn {option_name, dim_scores} ->
         rationale = dim_scores["rationale"] || dim_scores[:rationale] || ""
 
-        # Compute a composite score for display
-        numeric_scores =
+        # Build per-dimension score display
+        dim_display =
           dim_scores
           |> Enum.reject(fn {k, _v} -> k in ["rationale", :rationale] end)
-          |> Enum.map(fn {_k, v} -> v end)
-          |> Enum.filter(&is_number/1)
-
-        avg =
-          if numeric_scores == [],
-            do: nil,
-            else: Enum.sum(numeric_scores) / max(length(numeric_scores), 1)
-
-        # Compute delta from previous scores
-        prev_scores = scores[option_name][prev_key]
-        prev_avg = compute_avg_from_dim_map(prev_scores)
-        delta =
-          if is_number(avg) && is_number(prev_avg) do
-            safe_round(avg - prev_avg, 1)
-          else
-            nil
-          end
+          |> Enum.filter(fn {_k, v} -> is_number(v) end)
+          |> Enum.sort_by(fn {k, _v} -> k end)
+          |> Enum.map(fn {dim, score} -> "#{dim}: #{score}" end)
+          |> Enum.join(" · ")
 
         %{
           type: :score,
           advisor: advisor_key,
           role: role,
           option: option_name,
-          score: avg && safe_round(avg, 1),
-          delta: delta,
-          text: String.slice(to_string(rationale), 0, 150),
+          dim_display: dim_display,
+          text: String.slice(to_string(rationale), 0, 200),
           round: round_num,
           timestamp: System.monotonic_time(:millisecond)
         }
