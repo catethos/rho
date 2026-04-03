@@ -147,10 +147,14 @@ defmodule Rho.Demos.Bazi.Simulation do
 
     case calculate_chart(info) do
       {:ok, chart_data} ->
+        Logger.info("[BaZi] Chart calculated successfully, spawning agents...")
         state = %{state | chart_data: chart_data}
         state = spawn_chairman(state)
+        Logger.info("[BaZi] Chairman spawned, now spawning advisors...")
         state = spawn_advisors(state)
+        Logger.info("[BaZi] Advisors spawned: #{inspect(Map.keys(state.advisors))}, starting dimension proposal...")
         state = start_dimension_proposal(state)
+        Logger.info("[BaZi] Dimension proposal started, transitioning to :proposing_dimensions")
         {:reply, :ok, %{state | status: :proposing_dimensions}}
 
       {:error, reason} ->
@@ -356,10 +360,10 @@ defmodule Rho.Demos.Bazi.Simulation do
         {:noreply, state}
 
       String.ends_with?(rest, ".user_info.requested") ->
-        role = data.role || data["role"]
-        question = data.question || data["question"]
+        role = data[:from_advisor] || data["from_advisor"] || data[:role] || data["role"]
+        question = data[:question] || data["question"]
 
-        Logger.info("[Bazi] #{role} requested user info: #{String.slice(question, 0, 100)}")
+        Logger.info("[Bazi] #{role} requested user info: #{String.slice(to_string(question), 0, 100)}")
 
         {:noreply, %{state | pending_user_info: %{role: role, question: question}}}
 
@@ -667,7 +671,14 @@ defmodule Rho.Demos.Bazi.Simulation do
       ContentPart.image(image_binary, "image/png")
     ]
 
-    Worker.submit(chairman_pid, content, tools: state.chairman_tools, model: config.model)
+    Logger.info("[BaZi] Sending chart to chairman pid=#{inspect(chairman_pid)} agent_id=#{state.chairman_agent_id}")
+
+    case Worker.submit(chairman_pid, content, tools: state.chairman_tools, model: config.model) do
+      {:ok, turn_id} ->
+        Logger.info("[BaZi] Chairman chart parse turn started: #{turn_id}")
+      other ->
+        Logger.error("[BaZi] Chairman submit failed: #{inspect(other)}")
+    end
 
     %{state | chairman_task: :parse}
   end
@@ -695,7 +706,15 @@ defmodule Rho.Demos.Bazi.Simulation do
 
     请根据以上八字命盘和用户问题，提出3-5个你认为最相关的评分维度（如"财运"、"事业运"、"健康"等）。
     通过 submit_dimensions 工具提交你的维度建议，然后调用 finish。
+    注意：本轮只需要提交维度建议，不要评分，不要分析，不要发消息。
     """
+
+    # Only give dimension + finish tools for this phase (prevent premature scoring)
+    dim_only_tools = fn role_info ->
+      Enum.filter(role_info[:tools] || [], fn tool_def ->
+        tool_def.tool.name in ["submit_dimensions", "finish"]
+      end)
+    end
 
     state.advisors
     |> Enum.with_index()
@@ -707,7 +726,7 @@ defmodule Rho.Demos.Bazi.Simulation do
         role_info = Map.get(state.advisor_tools, role, %{})
 
         Worker.submit(pid, prompt,
-          tools: role_info[:tools],
+          tools: dim_only_tools.(role_info),
           system_prompt: role_info[:config] && role_info.config.system_prompt,
           model: role_info[:config] && role_info.config.model
         )
