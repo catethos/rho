@@ -1867,7 +1867,7 @@ defmodule RhoWeb.InlineCSS do
     .bazi-timeline {
       display: flex;
       flex-direction: column;
-      overflow: hidden;
+      min-height: 0;
       background: var(--bg-mid);
       border-right: 1px solid var(--border);
     }
@@ -2134,6 +2134,7 @@ defmodule RhoWeb.InlineCSS do
       background: var(--bg-surface);
       border-left: 1px solid var(--border);
       overflow-y: auto;
+      min-height: 0;
       padding: 1rem 0.75rem;
     }
     .bazi-scoreboard-empty {
