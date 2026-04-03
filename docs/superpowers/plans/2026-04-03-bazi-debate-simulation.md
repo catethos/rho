@@ -10,6 +10,16 @@
 
 **Reference files:** The hiring demo (`lib/rho/demos/hiring/simulation.ex`, `tools.ex`, `candidates.ex`) is the primary pattern reference. Read these before starting any task.
 
+**Critical implementation notes (verified against codebase):**
+- `MountRegistry.collect_tools/1` requires `%Rho.Mount.Context{}` struct, NOT a plain map
+- Multimodal content uses `ReqLLM.Message.ContentPart.text/1` and `.image/2` (binary, NOT base64)
+- LiveViews use `use Phoenix.LiveView` directly (no `RhoWeb` macro module)
+- Components use `import RhoWeb.BaziComponents` not module-prefixed calls
+- Router routes need action atoms: `live "/bazi/:session_id", BaziLive, :show`
+- `Config.agent/1` returns a map with dot-access: `config.model`, `config.system_prompt`
+- `Rho.Session.new_agent_id/0` exists but `new_session_id/0` does NOT — session IDs come from URL params
+- `Worker.submit/3` accepts both `String.t()` and `[ContentPart.t()]` as content
+
 ---
 
 ## File Structure
@@ -1029,14 +1039,13 @@ Add to `simulation.ex` after the `init/1` callback:
     agent_id = Rho.Session.new_agent_id()
     config = Rho.Config.agent(:bazi_chairman)
 
-    tool_context = %{
+    tool_context = %Rho.Mount.Context{
       tape_name: "agent_#{agent_id}",
       workspace: File.cwd!(),
       agent_name: :bazi_chairman,
       agent_id: agent_id,
       session_id: state.session_id,
-      depth: 1,
-      sandbox: nil
+      depth: 1
     }
 
     allowed_tools = ~w(send_message)
@@ -1077,14 +1086,13 @@ Add to `simulation.ex` after the `init/1` callback:
         agent_id = Rho.Session.new_agent_id()
         config = Rho.Config.agent(role)
 
-        tool_context = %{
+        tool_context = %Rho.Mount.Context{
           tape_name: "agent_#{agent_id}",
           workspace: File.cwd!(),
           agent_name: role,
           agent_id: agent_id,
           session_id: state.session_id,
-          depth: 1,
-          sandbox: nil
+          depth: 1
         }
 
         allowed_tools = ~w(send_message list_agents)
@@ -1131,9 +1139,14 @@ Add to `simulation.ex` after the `init/1` callback:
     chairman_pid = Worker.whereis(state.chairman_agent_id)
     config = Rho.Config.agent(:bazi_chairman)
 
-    # Build multipart content: text instruction + base64 image
+    alias ReqLLM.Message.ContentPart
+
+    # Decode base64 to binary for ContentPart.image/2
+    image_binary = Base.decode64!(state.chart_image_b64)
+
+    # Build multipart content using ReqLLM ContentPart structs
     content = [
-      %{type: "text", text: """
+      ContentPart.text("""
       请仔细分析以下八字命盘图片，提取结构化数据。
 
       需要提取的信息：
@@ -1144,8 +1157,8 @@ Add to `simulation.ex` after the `init/1` callback:
       5. 特殊标记（空亡等）
 
       提取完成后，调用 submit_chart_data 工具提交JSON格式的结构化数据。
-      """},
-      %{type: "image", source: %{type: "base64", media_type: "image/png", data: state.chart_image_b64}}
+      """),
+      ContentPart.image(image_binary, "image/png")
     ]
 
     Worker.submit(chairman_pid, content,
@@ -1881,7 +1894,7 @@ defmodule RhoWeb.BaziProjection do
   Projects BaZi simulation signal bus events onto LiveView socket assigns.
   """
 
-  import Phoenix.Component, only: [assign: 3]
+  import Phoenix.Component, only: [assign: 2, assign: 3]
 
   def project(socket, type, data) do
     normalized = normalize_type(socket.assigns[:session_id], type)
@@ -2109,12 +2122,18 @@ Create `lib/rho_web/live/bazi_live.ex`:
 
 ```elixir
 defmodule RhoWeb.BaziLive do
-  use RhoWeb, :live_view
+  use Phoenix.LiveView
+  import RhoWeb.BaziComponents
 
   alias Rho.Demos.Bazi.Simulation
   alias RhoWeb.BaziProjection
 
   @impl true
+  def mount(_params, _session, %{assigns: %{live_action: :new}} = socket) do
+    sid = "bazi_#{System.unique_integer([:positive])}_#{System.os_time(:millisecond)}"
+    {:ok, push_navigate(socket, to: ~p"/bazi/#{sid}"), layout: {RhoWeb.Layouts, :app}}
+  end
+
   def mount(%{"session_id" => sid}, _session, socket) do
     socket =
       socket
@@ -2156,20 +2175,14 @@ defmodule RhoWeb.BaziLive do
       case GenServer.whereis(Simulation.via(sid)) do
         nil ->
           {:ok, _} = Simulation.start_link(sid)
-          {:ok, socket}
+          {:ok, socket, layout: {RhoWeb.Layouts, :app}}
 
         _pid ->
-          {:ok, socket}
+          {:ok, socket, layout: {RhoWeb.Layouts, :app}}
       end
     else
-      {:ok, socket}
+      {:ok, socket, layout: {RhoWeb.Layouts, :app}}
     end
-  end
-
-  @impl true
-  def mount(_params, _session, socket) do
-    sid = Rho.Session.new_session_id()
-    {:ok, push_navigate(socket, to: ~p"/bazi/#{sid}")}
   end
 
   # --- Event Handlers ---
@@ -2240,15 +2253,15 @@ defmodule RhoWeb.BaziLive do
   def render(assigns) do
     ~H"""
     <div class="bazi-observatory">
-      <RhoWeb.BaziComponents.top_bar phase={@phase} round={@round} />
+      <.top_bar phase={@phase} round={@round} />
 
       <div class="bazi-layout">
         <div class="bazi-agents">
-          <RhoWeb.BaziComponents.agent_panel agents={@agents} advisors={assigns[:advisors] || %{}} />
+          <.agent_panel agents={@agents} advisors={assigns[:advisors] || %{}} />
         </div>
 
         <div class="bazi-timeline">
-          <RhoWeb.BaziComponents.timeline
+          <.timeline
             timeline={@timeline}
             phase={@phase}
             proposed_dimensions={@proposed_dimensions}
@@ -2259,7 +2272,7 @@ defmodule RhoWeb.BaziLive do
         </div>
 
         <div class="bazi-scoreboard">
-          <RhoWeb.BaziComponents.scoreboard
+          <.scoreboard
             scores={@scores}
             dimensions={@dimensions}
             user_options={@user_options}
@@ -2277,8 +2290,8 @@ end
 Add to `lib/rho_web/router.ex` (find the existing live routes section):
 
 ```elixir
-live "/bazi/:session_id", BaziLive
-live "/bazi", BaziLive
+live "/bazi/:session_id", BaziLive, :show
+live "/bazi", BaziLive, :new
 ```
 
 - [ ] **Step 3: Verify compilation**
@@ -2308,6 +2321,9 @@ Create `lib/rho_web/live/bazi_components.ex`:
 
 ```elixir
 defmodule RhoWeb.BaziComponents do
+  @moduledoc """
+  UI components for the BaZi Decision Advisor Observatory.
+  """
   use Phoenix.Component
 
   # --- Top Bar ---
@@ -2727,11 +2743,11 @@ Replace the existing `begin_simulation` handler to consume the uploaded file:
 def handle_event("begin_simulation", %{"options" => options, "question" => question}, socket) do
   sid = socket.assigns.session_id
 
-  # Consume uploaded image
+  # Consume uploaded image — store as base64 for passing to coordinator
   [image_b64] =
     consume_uploaded_entries(socket, :chart_image, fn %{path: path}, _entry ->
-      data = File.read!(path)
-      {:ok, Base.encode64(data)}
+      binary = File.read!(path)
+      {:ok, Base.encode64(binary)}
     end)
 
   parsed_options =
