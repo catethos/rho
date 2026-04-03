@@ -123,7 +123,8 @@ defmodule Rho.Demos.Bazi.Simulation do
 
     Comms.publish("rho.bazi.#{state.session_id}.simulation.started", %{
       session_id: state.session_id,
-      mode: :image_only
+      mode: :image_only,
+      option_ids: state.option_ids
     }, source: "/session/#{state.session_id}")
 
     state = spawn_chairman(state)
@@ -145,7 +146,8 @@ defmodule Rho.Demos.Bazi.Simulation do
 
     Comms.publish("rho.bazi.#{state.session_id}.simulation.started", %{
       session_id: state.session_id,
-      mode: :birth_info_only
+      mode: :birth_info_only,
+      option_ids: state.option_ids
     }, source: "/session/#{state.session_id}")
 
     case calculate_chart(info) do
@@ -180,7 +182,8 @@ defmodule Rho.Demos.Bazi.Simulation do
 
     Comms.publish("rho.bazi.#{state.session_id}.simulation.started", %{
       session_id: state.session_id,
-      mode: :both
+      mode: :both,
+      option_ids: state.option_ids
     }, source: "/session/#{state.session_id}")
 
     case calculate_chart(info) do
@@ -930,8 +933,12 @@ defmodule Rho.Demos.Bazi.Simulation do
     config = Rho.Config.agent(:bazi_chairman)
 
     if chairman_pid do
+      # Only give finish tool for summary — advisors are stopped, send_message would fail
+      summary_tools =
+        Enum.filter(state.chairman_tools, fn t -> t.tool.name == "finish" end)
+
       Worker.submit(chairman_pid, closing_prompt,
-        tools: state.chairman_tools,
+        tools: summary_tools,
         model: config.model
       )
     else

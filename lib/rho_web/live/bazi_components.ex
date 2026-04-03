@@ -187,7 +187,7 @@ defmodule RhoWeb.BaziComponents do
   attr :timeline, :list, required: true
   attr :phase, :atom, required: true
   attr :proposed_dimensions, :list, default: []
-  attr :pending_user_question, :any, default: nil
+  attr :pending_user_questions, :list, default: []
   attr :chairman_ready, :boolean, default: false
 
   def timeline(assigns) do
@@ -237,6 +237,9 @@ defmodule RhoWeb.BaziComponents do
               <div>
                 <span>Scored <strong><%= entry[:option] %></strong></span>
                 <span :if={entry[:score]} class="bazi-score-inline"><%= entry.score %></span>
+                <span :if={entry[:delta]} class={delta_class(entry.delta)}>
+                  <%= if entry.delta > 0, do: "↑#{entry.delta}", else: "↓#{abs(entry.delta)}" %>
+                </span>
                 <span :if={entry[:text] && entry.text != ""} class="bazi-timeline-rationale">— "<%= String.slice(entry.text, 0, 100) %>"</span>
               </div>
             </div>
@@ -244,6 +247,24 @@ defmodule RhoWeb.BaziComponents do
           <% :user_reply -> %>
             <div class="bazi-timeline-user-reply">
               <div class="bazi-timeline-user-bubble"><%= entry.text %></div>
+            </div>
+
+          <% :debate -> %>
+            <div class={"bazi-timeline-debate bazi-timeline-debate-#{advisor_css_key(entry.agent_role)}"}>
+              <span class={"bazi-timeline-tag bazi-tag-#{advisor_css_key(entry.agent_role)}"}><%= format_advisor_short(entry.agent_role) %></span>
+              <div>
+                <div class="bazi-timeline-debate-to">
+                  &rarr; <%= if entry.target == :all do %>
+                    <span class="bazi-timeline-tag bazi-tag-all">ALL</span>
+                  <% else %>
+                    <span class={"bazi-timeline-tag bazi-tag-#{advisor_css_key(entry.target)}"}><%= format_advisor_short(entry.target) %></span>
+                  <% end %>
+                </div>
+                <div class="bazi-timeline-debate-text markdown-body"
+                     id={"bazi-debate-#{entry.timestamp}-#{System.unique_integer([:positive])}"}
+                     phx-hook="Markdown"
+                     data-md={entry.text}></div>
+              </div>
             </div>
 
           <% :chart_validation -> %>
@@ -272,9 +293,12 @@ defmodule RhoWeb.BaziComponents do
       </div>
 
       <!-- Pending user question from advisor -->
-      <div :if={@pending_user_question} class="bazi-user-question-popup">
+      <div :if={@pending_user_questions != []} class="bazi-user-question-popup">
         <div class="bazi-uq-header">An advisor needs more information:</div>
-        <div class="bazi-uq-question"><%= @pending_user_question.question %></div>
+        <div class="bazi-uq-question"><%= hd(@pending_user_questions).question %></div>
+        <div :if={length(@pending_user_questions) > 1} class="bazi-uq-queue-count">
+          + <%= length(@pending_user_questions) - 1 %> more question(s) queued
+        </div>
         <form phx-submit="reply_to_advisor">
           <input type="text" name="answer" placeholder="Your answer..." autocomplete="off" class="bazi-uq-input" />
           <button type="submit" class="bazi-btn bazi-btn-primary">Reply</button>
@@ -323,6 +347,7 @@ defmodule RhoWeb.BaziComponents do
               <td class={"bazi-advisor-name bazi-tag-#{advisor}"}><%= format_advisor(advisor) %></td>
               <td :for={dim <- @dimensions} class={score_cell_class(get_dim_score(advisor_scores, advisor, dim))}>
                 <%= get_dim_score(advisor_scores, advisor, dim) || "—" %>
+                <%= render_score_delta(advisor_scores, advisor, dim) %>
               </td>
               <td class="bazi-score-avg"><%= compute_advisor_avg(advisor_scores, advisor, @dimensions) %></td>
             </tr>
@@ -532,4 +557,47 @@ defmodule RhoWeb.BaziComponents do
   end
   defp format_reductions(n) when is_integer(n), do: "#{n}"
   defp format_reductions(_), do: "—"
+
+  # --- Debate helpers ---
+
+  defp format_advisor_short(:bazi_advisor_qwen), do: "Qwen"
+  defp format_advisor_short(:bazi_advisor_deepseek), do: "DeepSeek"
+  defp format_advisor_short(:bazi_advisor_gpt), do: "GPT-5.4"
+  defp format_advisor_short(:bazi_chairman), do: "Chairman"
+  defp format_advisor_short(:all), do: "ALL"
+  defp format_advisor_short(role) when is_atom(role), do: Atom.to_string(role) |> String.capitalize()
+  defp format_advisor_short(role) when is_binary(role), do: String.capitalize(role)
+  defp format_advisor_short(_), do: "?"
+
+  defp advisor_css_key(:bazi_advisor_qwen), do: "qwen"
+  defp advisor_css_key(:bazi_advisor_deepseek), do: "deepseek"
+  defp advisor_css_key(:bazi_advisor_gpt), do: "gpt"
+  defp advisor_css_key(:bazi_chairman), do: "chairman"
+  defp advisor_css_key(:all), do: "all"
+  defp advisor_css_key(role) when is_atom(role), do: Atom.to_string(role)
+  defp advisor_css_key(role) when is_binary(role), do: role
+  defp advisor_css_key(_), do: "unknown"
+
+  # --- Score delta helpers ---
+
+  defp delta_class(d) when is_number(d) and d > 0, do: "bazi-delta-up"
+  defp delta_class(d) when is_number(d) and d < 0, do: "bazi-delta-down"
+  defp delta_class(_), do: ""
+
+  defp render_score_delta(advisor_scores, advisor, dim) do
+    prev_key = :"prev_#{advisor}"
+    current = get_dim_score(advisor_scores, advisor, dim)
+    prev = get_dim_score(advisor_scores, prev_key, dim)
+
+    cond do
+      is_number(current) and is_number(prev) and current > prev ->
+        Phoenix.HTML.raw(~s(<span class="bazi-delta-up">↑#{Float.round(current - prev, 1)}</span>))
+
+      is_number(current) and is_number(prev) and current < prev ->
+        Phoenix.HTML.raw(~s(<span class="bazi-delta-down">↓#{Float.round(abs(current - prev), 1)}</span>))
+
+      true ->
+        ""
+    end
+  end
 end

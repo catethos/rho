@@ -34,7 +34,8 @@ defmodule RhoWeb.BaziLive do
         user_options: [],
         user_question: "",
         chairman_ready: false,
-        pending_user_question: nil,
+        pending_user_questions: [],
+        option_ids: %{},
         birth_input_mode: "image",
         bus_subs: []
       )
@@ -141,7 +142,9 @@ defmodule RhoWeb.BaziLive do
       {:noreply, socket}
     else
       Simulation.reply_to_advisor(socket.assigns.session_id, answer)
-      {:noreply, assign(socket, :pending_user_question, nil)}
+      pending = socket.assigns[:pending_user_questions] || []
+      remaining = Enum.drop(pending, 1)
+      {:noreply, assign(socket, :pending_user_questions, remaining)}
     end
   end
 
@@ -239,7 +242,7 @@ defmodule RhoWeb.BaziLive do
           timeline={@timeline}
           phase={@phase}
           proposed_dimensions={@proposed_dimensions}
-          pending_user_question={@pending_user_question}
+          pending_user_questions={@pending_user_questions}
           chairman_ready={@chairman_ready}
         />
         <.scoreboard scores={@scores} dimensions={@dimensions} />

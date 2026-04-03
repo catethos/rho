@@ -22,10 +22,13 @@ defmodule RhoWeb.BaziProjection do
   # --- Simulation lifecycle ---
 
   defp do_project(socket, "rho.bazi.simulation.started", data) do
+    option_ids = data[:option_ids] || data["option_ids"] || %{}
+
     socket
     |> assign(:simulation_status, :running)
     |> assign(:user_options, data[:options] || data["options"] || socket.assigns[:user_options] || [])
     |> assign(:user_question, data[:question] || data["question"] || socket.assigns[:user_question] || "")
+    |> assign(:option_ids, option_ids)
   end
 
   defp do_project(socket, "rho.bazi.simulation.completed", _data) do
@@ -164,12 +167,14 @@ defmodule RhoWeb.BaziProjection do
   defp do_project(socket, "rho.bazi.user_info.requested", data) do
     question = data[:question] || data["question"] || ""
     role = data[:from_advisor] || data["from_advisor"] || data[:role] || data["role"]
+    pending = socket.assigns[:pending_user_questions] || []
 
-    assign(socket, :pending_user_question, %{question: question, from: role})
+    assign(socket, :pending_user_questions, pending ++ [%{question: question, from: role}])
   end
 
   defp do_project(socket, "rho.bazi.user_info.replied", data) do
     timeline = socket.assigns[:timeline] || []
+    pending = socket.assigns[:pending_user_questions] || []
 
     entry = %{
       type: :user_reply,
@@ -179,8 +184,11 @@ defmodule RhoWeb.BaziProjection do
       timestamp: System.monotonic_time(:millisecond)
     }
 
+    # Remove the first question from the queue
+    remaining = Enum.drop(pending, 1)
+
     socket
-    |> assign(:pending_user_question, nil)
+    |> assign(:pending_user_questions, remaining)
     |> assign(:timeline, timeline ++ [entry])
   end
 
@@ -217,10 +225,20 @@ defmodule RhoWeb.BaziProjection do
     assign(socket, :agents, agents)
   end
 
-  # --- Session events (activity tracking for drawer) ---
+  # --- Session events (activity tracking + debate messages) ---
 
   defp do_project(socket, "rho.session." <> _ = type, data) when is_map(data) do
+    completed? = socket.assigns[:simulation_status] == :completed
+    replaying? = socket.assigns[:replaying] || false
+    show_debates? = not completed? or replaying?
+
     cond do
+      String.contains?(type, "broadcast") and show_debates? ->
+        add_debate_to_timeline(socket, data[:from], :all, data[:message], data[:agent_id])
+
+      String.contains?(type, "message_sent") and show_debates? ->
+        add_debate_to_timeline(socket, data[:from], data[:to], data[:message], data[:agent_id])
+
       String.contains?(type, "text_delta") ->
         append_activity_text(socket, data[:agent_id], data[:text] || data[:delta] || "")
 
@@ -253,11 +271,17 @@ defmodule RhoWeb.BaziProjection do
   defp do_project_scores(socket, data) do
     role = data[:role] || data["role"]
     advisor_key = advisor_key_for(role)
-    scores_data = data[:scores] || data["scores"] || %{}
+    raw_scores = data[:scores] || data["scores"] || %{}
     round_num = data[:round] || data["round"] || socket.assigns[:round] || 0
 
+    # Resolve option IDs (A, B, C) to full names using stored mapping
+    option_ids = socket.assigns[:option_ids] || %{}
+    scores_data = resolve_option_keys(raw_scores, option_ids)
+
     # scores_data is %{option_name => %{dim => score, "rationale" => "..."}}
-    # We store as %{option_name => %{advisor_key => %{dim => score}}}
+    # We store as %{option_name => %{advisor_key => %{dim => score}, prev_advisor_key => %{dim => score}}}
+    prev_key = :"prev_#{advisor_key}"
+
     scores =
       Enum.reduce(scores_data, socket.assigns.scores, fn {option_name, dim_scores}, acc ->
         dim_map =
@@ -266,7 +290,13 @@ defmodule RhoWeb.BaziProjection do
           |> Map.new()
 
         option_scores = Map.get(acc, option_name, %{})
-        updated_option = Map.put(option_scores, advisor_key, dim_map)
+
+        # Save previous scores before overwriting
+        updated_option =
+          option_scores
+          |> Map.put(prev_key, option_scores[advisor_key])
+          |> Map.put(advisor_key, dim_map)
+
         Map.put(acc, option_name, updated_option)
       end)
 
@@ -289,12 +319,23 @@ defmodule RhoWeb.BaziProjection do
             do: nil,
             else: Enum.sum(numeric_scores) / length(numeric_scores)
 
+        # Compute delta from previous scores
+        prev_scores = scores[option_name][prev_key]
+        prev_avg = compute_avg_from_dim_map(prev_scores)
+        delta =
+          if avg && prev_avg do
+            Float.round(avg - prev_avg, 1)
+          else
+            nil
+          end
+
         %{
           type: :score,
           advisor: advisor_key,
           role: role,
           option: option_name,
           score: avg && Float.round(avg, 1),
+          delta: delta,
           text: String.slice(to_string(rationale), 0, 150),
           round: round_num,
           timestamp: System.monotonic_time(:millisecond)
@@ -304,6 +345,13 @@ defmodule RhoWeb.BaziProjection do
     socket
     |> assign(:scores, scores)
     |> assign(:timeline, timeline ++ timeline_entries)
+  end
+
+  defp compute_avg_from_dim_map(nil), do: nil
+  defp compute_avg_from_dim_map(dim_map) when map_size(dim_map) == 0, do: nil
+  defp compute_avg_from_dim_map(dim_map) do
+    vals = dim_map |> Map.values() |> Enum.filter(&is_number/1)
+    if vals == [], do: nil, else: Enum.sum(vals) / length(vals)
   end
 
   # --- Activity helpers (for agent drawer) ---
@@ -333,6 +381,42 @@ defmodule RhoWeb.BaziProjection do
     end
 
     assign(socket, :activity, Map.put(activity, agent_id, updated))
+  end
+
+  defp add_debate_to_timeline(socket, from, to, message, agent_id) do
+    timeline = socket.assigns[:timeline] || []
+
+    from_role =
+      case socket.assigns[:agents][from] do
+        %{role: role} -> role
+        _ -> from
+      end
+
+    to_role =
+      case socket.assigns[:agents][to] do
+        %{role: role} -> role
+        _ -> to
+      end
+
+    entry = %{
+      type: :debate,
+      agent_role: from_role,
+      agent_id: agent_id || from,
+      target: to_role,
+      text: to_string(message || ""),
+      round: socket.assigns[:round] || 0,
+      timestamp: System.monotonic_time(:millisecond)
+    }
+
+    assign(socket, :timeline, timeline ++ [entry])
+  end
+
+  defp resolve_option_keys(scores, option_ids) when map_size(option_ids) == 0, do: scores
+  defp resolve_option_keys(scores, option_ids) do
+    Map.new(scores, fn {key, val} ->
+      resolved = Map.get(option_ids, key) || Map.get(option_ids, to_string(key)) || key
+      {resolved, val}
+    end)
   end
 
   defp advisor_key_for(:bazi_advisor_qwen), do: :qwen
