@@ -99,10 +99,13 @@ defmodule RhoWeb.BaziComponents do
 
   defp advisor_card(assigns) do
     ~H"""
-    <div class={"bazi-agent-card #{@css_class} #{if @agent, do: status_class(@agent.status), else: "offline"}"}>
+    <div class={"bazi-agent-card #{@css_class} #{if @agent, do: status_class(@agent.status), else: "offline"} #{if @agent && !@agent.alive, do: "dead"}"}
+         phx-click={@agent && "select_agent"}
+         phx-value-agent-id={@agent && @agent.agent_id}>
       <div class="bazi-agent-header">
         <span class={"bazi-status-dot #{if @agent, do: status_class(@agent.status), else: "offline"}"}></span>
         <span class="bazi-agent-label"><%= @label %></span>
+        <span :if={@agent} class="bazi-agent-model"><%= model_label(@role) %></span>
       </div>
       <div :if={@agent} class="bazi-agent-stats">
         <div class="bazi-stat">
@@ -110,16 +113,71 @@ defmodule RhoWeb.BaziComponents do
           <span class="bazi-stat-value"><%= @agent.current_step || "—" %></span>
         </div>
         <div class="bazi-stat">
+          <span class="bazi-stat-label">heap</span>
+          <span class="bazi-stat-value"><%= format_heap(@agent.heap_size) %></span>
+        </div>
+        <div class="bazi-stat">
           <span class="bazi-stat-label">mailbox</span>
           <span class={"bazi-stat-value #{if @agent.message_queue_len > 3, do: "hot"}"}>
             <%= @agent.message_queue_len || 0 %>
           </span>
         </div>
+        <div class="bazi-stat">
+          <span class="bazi-stat-label">work</span>
+          <span class="bazi-stat-value"><%= format_reductions(@agent[:reductions_per_sec]) %></span>
+        </div>
       </div>
       <div :if={@agent && @agent.current_tool} class="bazi-agent-tool">
+        <span class="bazi-tool-indicator"></span>
         <%= @agent.current_tool %>
       </div>
       <div :if={!@agent} class="bazi-agent-offline">not started</div>
+    </div>
+    """
+  end
+
+  # --- Agent drawer ---
+
+  attr :agent, :map, required: true
+  attr :activity, :map, required: true
+
+  def agent_drawer(assigns) do
+    ~H"""
+    <div class={"bazi-drawer #{if @agent, do: "open", else: ""}"}>
+      <div class="bazi-drawer-header">
+        <div class="bazi-drawer-name">
+          <span class={"bazi-status-dot #{status_class(@agent.status)}"}></span>
+          <span class="bazi-agent-label"><%= format_advisor(drawer_advisor_key(@agent.role)) %></span>
+          <span :if={@agent.current_step} class="bazi-drawer-step">step <%= @agent.current_step %></span>
+        </div>
+        <span class="bazi-drawer-close" phx-click="close_drawer">&times;</span>
+      </div>
+
+      <div class="bazi-drawer-meta">
+        <span class="bazi-drawer-model"><%= model_label(@agent.role) %></span>
+        <span :if={@agent.heap_size > 0} class="bazi-drawer-heap">heap: <%= format_heap(@agent.heap_size) %></span>
+      </div>
+
+      <div class="bazi-drawer-body">
+        <div :if={@activity.text != ""} class="bazi-drawer-text">
+          <%= @activity.text %>
+        </div>
+
+        <div :for={entry <- Enum.take(@activity.entries, 15)} class={"bazi-drawer-entry bazi-drawer-#{entry.type}"}>
+          <%= case entry.type do %>
+            <% :tool_start -> %>
+              <span class="bazi-drawer-tool-pill"><%= entry.content %></span>
+            <% :tool_result -> %>
+              <div class="bazi-drawer-tool-result"><%= String.slice(entry.content, 0, 100) %></div>
+            <% _ -> %>
+              <span class="bazi-drawer-misc"><%= entry.content %></span>
+          <% end %>
+        </div>
+
+        <div :if={@activity.text == "" and @activity.entries == []} class="bazi-drawer-waiting">
+          Waiting for activity...
+        </div>
+      </div>
     </div>
     """
   end
@@ -439,4 +497,39 @@ defmodule RhoWeb.BaziComponents do
   defp score_cell_class(n) when is_number(n) and n >= 80, do: "bazi-score bazi-score-high"
   defp score_cell_class(n) when is_number(n) and n >= 60, do: "bazi-score bazi-score-mid"
   defp score_cell_class(_), do: "bazi-score bazi-score-low"
+
+  defp model_label(:bazi_advisor_qwen), do: "qwen3-235b"
+  defp model_label(:bazi_advisor_deepseek), do: "deepseek-v3"
+  defp model_label(:bazi_advisor_gpt), do: "gpt-5.4"
+  defp model_label(:bazi_chairman), do: "coordinator"
+  defp model_label(_), do: ""
+
+  defp drawer_advisor_key(:bazi_advisor_qwen), do: :qwen
+  defp drawer_advisor_key(:bazi_advisor_deepseek), do: :deepseek
+  defp drawer_advisor_key(:bazi_advisor_gpt), do: :gpt
+  defp drawer_advisor_key(:bazi_chairman), do: :bazi_chairman
+  defp drawer_advisor_key(other), do: other
+
+  defp format_heap(nil), do: "—"
+  defp format_heap(0), do: "0"
+  defp format_heap(words) when is_integer(words) do
+    bytes = words * 8
+    cond do
+      bytes >= 1_048_576 -> "#{Float.round(bytes / 1_048_576, 1)} MB"
+      bytes >= 1_024 -> "#{div(bytes, 1_024)} KB"
+      true -> "#{bytes} B"
+    end
+  end
+  defp format_heap(_), do: "—"
+
+  defp format_reductions(nil), do: "—"
+  defp format_reductions(0), do: "0"
+  defp format_reductions(n) when is_integer(n) and n >= 1_000_000 do
+    "#{Float.round(n / 1_000_000, 1)}M"
+  end
+  defp format_reductions(n) when is_integer(n) and n >= 1_000 do
+    "#{Float.round(n / 1_000, 1)}K"
+  end
+  defp format_reductions(n) when is_integer(n), do: "#{n}"
+  defp format_reductions(_), do: "—"
 end

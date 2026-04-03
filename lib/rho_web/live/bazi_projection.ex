@@ -217,6 +217,33 @@ defmodule RhoWeb.BaziProjection do
     assign(socket, :agents, agents)
   end
 
+  # --- Session events (activity tracking for drawer) ---
+
+  defp do_project(socket, "rho.session." <> _ = type, data) when is_map(data) do
+    cond do
+      String.contains?(type, "text_delta") ->
+        append_activity_text(socket, data[:agent_id], data[:text] || data[:delta] || "")
+
+      String.contains?(type, "llm_text") ->
+        append_activity_text(socket, data[:agent_id], data[:text] || "")
+
+      String.contains?(type, "tool_start") ->
+        tool_name = data[:name] || "unknown"
+        add_activity_entry(socket, data[:agent_id], :tool_start, "Calling #{tool_name}...")
+
+      String.contains?(type, "tool_result") ->
+        output = String.slice(to_string(data[:output] || ""), 0, 200)
+        status = data[:status] || :ok
+        add_activity_entry(socket, data[:agent_id], :tool_result, "[#{status}] #{output}")
+
+      String.contains?(type, "step_start") ->
+        add_activity_entry(socket, data[:agent_id], :step, "Step #{data[:step]}")
+
+      true ->
+        socket
+    end
+  end
+
   # --- Catch-all ---
 
   defp do_project(socket, _type, _data), do: socket
@@ -277,6 +304,35 @@ defmodule RhoWeb.BaziProjection do
     socket
     |> assign(:scores, scores)
     |> assign(:timeline, timeline ++ timeline_entries)
+  end
+
+  # --- Activity helpers (for agent drawer) ---
+
+  defp append_activity_text(socket, nil, _text), do: socket
+  defp append_activity_text(socket, agent_id, text) do
+    activity = socket.assigns[:activity] || %{}
+    agent_activity = Map.get(activity, agent_id, %{text: "", entries: []})
+
+    new_text = agent_activity.text <> text
+    new_text = if String.length(new_text) > 1500, do: String.slice(new_text, -1500, 1500), else: new_text
+
+    updated = %{agent_activity | text: new_text}
+    assign(socket, :activity, Map.put(activity, agent_id, updated))
+  end
+
+  defp add_activity_entry(socket, nil, _type, _content), do: socket
+  defp add_activity_entry(socket, agent_id, type, content) do
+    activity = socket.assigns[:activity] || %{}
+    agent_activity = Map.get(activity, agent_id, %{text: "", entries: []})
+
+    entry = %{type: type, content: content, at: System.monotonic_time(:millisecond)}
+
+    updated = case type do
+      :step -> agent_activity
+      _ -> %{agent_activity | entries: [entry | agent_activity.entries] |> Enum.take(10)}
+    end
+
+    assign(socket, :activity, Map.put(activity, agent_id, updated))
   end
 
   defp advisor_key_for(:bazi_advisor_qwen), do: :qwen

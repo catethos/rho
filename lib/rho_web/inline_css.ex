@@ -1661,6 +1661,7 @@ defmodule RhoWeb.InlineCSS do
       flex: 1;
       overflow: hidden;
       min-height: calc(100vh - 52px);
+      position: relative;
     }
 
     /* --- Agent panel (left) --- */
@@ -1758,6 +1759,110 @@ defmodule RhoWeb.InlineCSS do
       color: var(--text-muted);
       font-style: italic;
       margin-top: 0.2rem;
+    }
+    .bazi-agent-card[phx-click] { cursor: pointer; }
+    .bazi-agent-card[phx-click]:hover { border-color: var(--teal); }
+    .bazi-agent-model {
+      font-size: 0.6rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      margin-left: auto;
+    }
+    .bazi-tool-indicator {
+      display: inline-block;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--teal);
+      margin-right: 4px;
+      animation: pulse 1.5s infinite;
+    }
+
+    /* --- Agent drawer --- */
+    .bazi-drawer {
+      position: absolute;
+      right: 0; top: 0; bottom: 0;
+      width: 360px;
+      z-index: 30;
+      background: var(--bg-primary);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.2s ease;
+    }
+    .bazi-drawer.open {
+      transform: translateX(0);
+      box-shadow: -4px 0 12px rgba(0,0,0,0.06);
+    }
+    .bazi-drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .bazi-drawer-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .bazi-drawer-step {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .bazi-drawer-close {
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 18px;
+      padding: 4px;
+    }
+    .bazi-drawer-close:hover { color: var(--text-primary); }
+    .bazi-drawer-meta {
+      display: flex;
+      gap: 12px;
+      padding: 6px 14px;
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      border-bottom: 1px solid var(--border);
+    }
+    .bazi-drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 14px;
+    }
+    .bazi-drawer-text {
+      background: var(--bg-shelf);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      margin-bottom: 10px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .bazi-drawer-tool-pill {
+      display: inline-block;
+      background: rgba(91,181,162,0.1);
+      color: var(--teal);
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin: 2px 0;
+      font-family: var(--font-mono);
+    }
+    .bazi-drawer-tool-result {
+      font-size: 10px;
+      color: var(--text-secondary);
+      padding: 2px 0;
+    }
+    .bazi-drawer-waiting {
+      color: var(--text-muted);
+      font-style: italic;
+      padding: 12px 0;
     }
 
     /* --- Timeline (middle) --- */

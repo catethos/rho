@@ -26,6 +26,8 @@ defmodule RhoWeb.BaziLive do
         timeline: [],
         scores: %{},
         agents: %{},
+        activity: %{},
+        selected_agent: nil,
         chart_data: nil,
         dimensions: [],
         proposed_dimensions: [],
@@ -44,7 +46,8 @@ defmodule RhoWeb.BaziLive do
           [
             "rho.agent.#{sid}.*",
             "rho.bazi.#{sid}.**",
-            "rho.task.#{sid}.*"
+            "rho.task.#{sid}.*",
+            "rho.session.#{sid}.events.*"
           ]
           |> Enum.flat_map(fn pattern ->
             case Rho.Comms.subscribe(pattern) do
@@ -183,6 +186,14 @@ defmodule RhoWeb.BaziLive do
     {:noreply, assign(socket, :birth_input_mode, mode)}
   end
 
+  def handle_event("select_agent", %{"agent-id" => agent_id}, socket) do
+    {:noreply, assign(socket, selected_agent: agent_id)}
+  end
+
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign(socket, selected_agent: nil)}
+  end
+
   # --- Tick: poll BEAM process internals ---
 
   @impl true
@@ -225,6 +236,12 @@ defmodule RhoWeb.BaziLive do
           chairman_ready={@chairman_ready}
         />
         <.scoreboard scores={@scores} dimensions={@dimensions} />
+
+        <.agent_drawer
+          :if={@selected_agent && @agents[@selected_agent]}
+          agent={@agents[@selected_agent]}
+          activity={Map.get(@activity, @selected_agent, %{text: "", entries: []})}
+        />
       </div>
     </div>
     """
