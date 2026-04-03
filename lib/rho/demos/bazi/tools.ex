@@ -75,26 +75,33 @@ defmodule Rho.Demos.Bazi.Tools do
       execute: fn args ->
         raw = args["dimensions"] || args[:dimensions]
 
-        case Jason.decode(raw) do
-          {:ok, dimensions} when is_list(dimensions) ->
-            Comms.publish(
-              "rho.bazi.#{session_id}.dimensions.proposed",
-              %{
-                session_id: session_id,
-                agent_id: agent_id,
-                role: role,
-                dimensions: dimensions
-              },
-              source: "/session/#{session_id}/agent/#{agent_id}"
-            )
-
-            {:ok, "Dimensions submitted: #{Enum.join(dimensions, ", ")}."}
-
-          {:ok, _} ->
-            {:error, "Invalid dimensions format. Must be a JSON array of strings."}
-
+        # Try JSON first, then fall back to parsing common formats
+        dims = case Jason.decode(raw) do
+          {:ok, dimensions} when is_list(dimensions) -> dimensions
           _ ->
-            {:error, "Invalid dimensions format. Must be a valid JSON array."}
+            # Fallback: try to parse comma/newline separated, strip quotes/brackets
+            raw
+            |> String.replace(~r/[\[\]"'""「」]/, "")
+            |> String.split(~r/[,，、\n]+/)
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+        end
+
+        if dims != [] do
+          Comms.publish(
+            "rho.bazi.#{session_id}.dimensions.proposed",
+            %{
+              session_id: session_id,
+              agent_id: agent_id,
+              role: role,
+              dimensions: dims
+            },
+            source: "/session/#{session_id}/agent/#{agent_id}"
+          )
+
+          {:ok, "Dimensions submitted: #{Enum.join(dims, ", ")}."}
+        else
+          {:error, "No dimensions found. Please provide a JSON array like [\"财运\", \"事业\"]."}
         end
       end
     }

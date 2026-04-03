@@ -1778,22 +1778,20 @@ defmodule RhoWeb.InlineCSS do
       animation: pulse 1.5s infinite;
     }
 
-    /* --- Agent drawer --- */
-    .bazi-drawer {
-      position: absolute;
-      right: 0; top: 0; bottom: 0;
-      width: 360px;
-      z-index: 30;
-      background: var(--bg-primary);
-      border-left: 1px solid var(--border);
+    /* --- Left column wrapper --- */
+    .bazi-left-col {
       display: flex;
       flex-direction: column;
-      transform: translateX(100%);
-      transition: transform 0.2s ease;
+      overflow-y: auto;
     }
-    .bazi-drawer.open {
-      transform: translateX(0);
-      box-shadow: -4px 0 12px rgba(0,0,0,0.06);
+
+    /* --- Agent drawer (inline below agent cards) --- */
+    .bazi-drawer {
+      background: var(--bg-primary);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      max-height: 50vh;
     }
     .bazi-drawer-header {
       display: flex;

@@ -227,7 +227,14 @@ defmodule RhoWeb.BaziLive do
       <.top_bar phase={@phase} round={@round} simulation_status={@simulation_status} />
 
       <div class="bazi-body">
-        <.agent_panel agents={@agents} />
+        <div class="bazi-left-col">
+          <.agent_panel agents={@agents} />
+          <.agent_drawer
+            :if={@selected_agent && @agents[@selected_agent]}
+            agent={@agents[@selected_agent]}
+            activity={Map.get(@activity, @selected_agent, %{text: "", entries: []})}
+          />
+        </div>
         <.timeline
           timeline={@timeline}
           phase={@phase}
@@ -236,12 +243,6 @@ defmodule RhoWeb.BaziLive do
           chairman_ready={@chairman_ready}
         />
         <.scoreboard scores={@scores} dimensions={@dimensions} />
-
-        <.agent_drawer
-          :if={@selected_agent && @agents[@selected_agent]}
-          agent={@agents[@selected_agent]}
-          activity={Map.get(@activity, @selected_agent, %{text: "", entries: []})}
-        />
       </div>
     </div>
     """
