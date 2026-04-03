@@ -15,6 +15,8 @@ defmodule RhoWeb.Router do
   scope "/", RhoWeb do
     pipe_through :browser
 
+    live "/bazi/:session_id", BaziLive, :show
+    live "/bazi", BaziLive, :new
     live "/observatory/:session_id", ObservatoryLive, :show
     live "/observatory", ObservatoryLive, :new
     live "/session/:session_id", SessionLive, :show
