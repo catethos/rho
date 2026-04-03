@@ -34,6 +34,7 @@ defmodule Rho.Demos.Bazi.Simulation do
     chart_image_b64: nil,
     birth_info: nil,
     user_options: [],
+    option_ids: %{},          # %{"A" => "Stay at Pulsifi", "B" => "Start business", ...}
     user_question: nil,
     dimensions: [],
     dimension_proposals: %{},
@@ -116,6 +117,7 @@ defmodule Rho.Demos.Bazi.Simulation do
     state = %{state |
       chart_image_b64: b64,
       user_options: params[:options] || [],
+      option_ids: build_option_ids(params[:options] || []),
       user_question: params[:question]
     }
 
@@ -137,6 +139,7 @@ defmodule Rho.Demos.Bazi.Simulation do
     state = %{state |
       birth_info: info,
       user_options: params[:options] || [],
+      option_ids: build_option_ids(params[:options] || []),
       user_question: params[:question]
     }
 
@@ -171,6 +174,7 @@ defmodule Rho.Demos.Bazi.Simulation do
       chart_image_b64: b64,
       birth_info: info,
       user_options: params[:options] || [],
+      option_ids: build_option_ids(params[:options] || []),
       user_question: params[:question]
     }
 
@@ -689,17 +693,41 @@ defmodule Rho.Demos.Bazi.Simulation do
     ChartCalculator.calculate(y, m, d, h, minute, gender)
   end
 
+  # --- Private: Option ID Mapping ---
+
+  @letters ~w(A B C D E F G H I J)
+
+  defp build_option_ids(options) do
+    options
+    |> Enum.with_index()
+    |> Map.new(fn {opt, idx} -> {Enum.at(@letters, idx, "#{idx + 1}"), opt} end)
+  end
+
+  defp format_options_with_ids(state) do
+    state.option_ids
+    |> Enum.sort_by(fn {id, _} -> id end)
+    |> Enum.map_join("\n", fn {id, name} -> "选项#{id}: #{name}" end)
+  end
+
+  # Resolve score option IDs back to full names
+  defp resolve_option_ids(scores, option_ids) do
+    Map.new(scores, fn {key, val} ->
+      resolved = Map.get(option_ids, key, key)
+      {resolved, val}
+    end)
+  end
+
   # --- Private: Dimension Proposal ---
 
   defp start_dimension_proposal(state) do
     chart_text = format_chart_data(state.chart_data)
-    options_text = Enum.map_join(state.user_options, "\n", fn opt -> "- #{opt}" end)
+    options_text = format_options_with_ids(state)
 
     prompt = """
     八字命盘数据：
     #{chart_text}
 
-    用户选项：
+    评估选项：
     #{options_text}
 
     用户问题：#{state.user_question}
@@ -776,7 +804,7 @@ defmodule Rho.Demos.Bazi.Simulation do
 
   defp round_prompt(1, state) do
     chart_text = format_chart_data(state.chart_data)
-    options_text = Enum.map_join(state.user_options, "\n", fn opt -> "- #{opt}" end)
+    options_text = format_options_with_ids(state)
     dimensions_text = Enum.map_join(state.dimensions, "、", & &1)
 
     """
@@ -793,7 +821,7 @@ defmodule Rho.Demos.Bazi.Simulation do
     请独立分析每个选项，根据八字命盘和用户问题，对每个选项的每个维度进行0-100评分。
     第1轮请进行独立分析，不需要与其他顾问讨论。
 
-    重要：submit_scores 时，选项名称必须使用上面列出的原文（如"#{List.first(state.user_options)}"），不要用 option_a、option_b 等替代名称。
+    评分时以选项ID（A, B, C...）为key提交，例如: {"A": {"事业发展": 80, "财运": 70, "rationale": "..."}, "B": {...}}
 
     评分完成后通过 submit_scores 工具提交，round 参数设为 1。
     如果需要向用户确认某些信息，可以使用 request_user_info 工具。
@@ -812,8 +840,13 @@ defmodule Rho.Demos.Bazi.Simulation do
         "主要分歧：\n#{disagreement}"
       end
 
+    options_text = format_options_with_ids(state)
+
     """
     第#{round_num}轮：委员会已审阅上一轮评分。
+
+    选项对照：
+    #{options_text}
 
     上一轮评分汇总：
     #{score_table}
@@ -823,6 +856,7 @@ defmodule Rho.Demos.Bazi.Simulation do
     请根据其他顾问的观点重新考虑你的评分。
     你可以使用 send_message 与其他顾问就具体选项进行讨论。
     讨论后通过 submit_scores 工具提交修改后的评分，round 参数设为 #{round_num}。
+    评分以选项ID（A, B, C...）为key提交。
     对于评分变化较大的维度，请说明理由。
     """
   end
@@ -830,6 +864,8 @@ defmodule Rho.Demos.Bazi.Simulation do
   # --- Private: Score Collection ---
 
   defp record_scores(state, role, round, scores) do
+    # Resolve option IDs (A, B, C) back to full names
+    scores = resolve_option_ids(scores, state.option_ids)
     key = {role, round}
     Logger.info("[Bazi] #{role} submitted scores for round #{round}")
     %{state | scores: Map.put(state.scores, key, scores)}
