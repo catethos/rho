@@ -117,14 +117,14 @@ defmodule Rho.Demos.Bazi.Tools do
         ReqLLM.tool(
           name: "submit_scores",
           description:
-            "提交对每个选项在各维度上的评分。每个维度0-100分，并附上理由。",
+            "提交对每个选项在各维度上的评分。每个维度0-100分，并附上理由。注意：选项名称必须使用用户提供的原文（如\"Stay at Pulsifi\"），不要用option_a等替代。",
           parameter_schema: [
-            round: [type: :integer, required: true, doc: "Current round number (1 or 2)."],
+            round: [type: :integer, required: true, doc: "当前轮次（1或2）"],
             scores: [
               type: :string,
               required: true,
               doc:
-                ~s|JSON object grouped by option, e.g. {"option_a": {"财运": 80, "rationale": "..."}}.|
+                ~s|JSON对象，以用户原始选项名称为key。例如: {"Stay at Pulsifi": {"事业发展": 80, "财运": 70, "rationale": "分析理由..."}, "Find new job": {"事业发展": 75, ...}}。必须使用用户提供的选项原文作为key。|
             ]
           ],
           callback: fn _args -> :ok end

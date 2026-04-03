@@ -792,6 +792,9 @@ defmodule Rho.Demos.Bazi.Simulation do
 
     请独立分析每个选项，根据八字命盘和用户问题，对每个选项的每个维度进行0-100评分。
     第1轮请进行独立分析，不需要与其他顾问讨论。
+
+    重要：submit_scores 时，选项名称必须使用上面列出的原文（如"#{List.first(state.user_options)}"），不要用 option_a、option_b 等替代名称。
+
     评分完成后通过 submit_scores 工具提交，round 参数设为 1。
     如果需要向用户确认某些信息，可以使用 request_user_info 工具。
     """
