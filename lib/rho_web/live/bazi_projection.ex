@@ -317,14 +317,14 @@ defmodule RhoWeb.BaziProjection do
         avg =
           if numeric_scores == [],
             do: nil,
-            else: Enum.sum(numeric_scores) / length(numeric_scores)
+            else: Enum.sum(numeric_scores) / max(length(numeric_scores), 1)
 
         # Compute delta from previous scores
         prev_scores = scores[option_name][prev_key]
         prev_avg = compute_avg_from_dim_map(prev_scores)
         delta =
-          if avg && prev_avg do
-            Float.round(avg - prev_avg, 1)
+          if is_number(avg) && is_number(prev_avg) do
+            safe_round(avg - prev_avg, 1)
           else
             nil
           end
@@ -334,7 +334,7 @@ defmodule RhoWeb.BaziProjection do
           advisor: advisor_key,
           role: role,
           option: option_name,
-          score: avg && Float.round(avg, 1),
+          score: avg && safe_round(avg, 1),
           delta: delta,
           text: String.slice(to_string(rationale), 0, 150),
           round: round_num,
@@ -346,6 +346,10 @@ defmodule RhoWeb.BaziProjection do
     |> assign(:scores, scores)
     |> assign(:timeline, timeline ++ timeline_entries)
   end
+
+  defp safe_round(val, _decimals) when is_integer(val), do: val * 1.0
+  defp safe_round(val, decimals) when is_float(val), do: Float.round(val, decimals)
+  defp safe_round(val, _decimals), do: val
 
   defp compute_avg_from_dim_map(nil), do: nil
   defp compute_avg_from_dim_map(dim_map) when map_size(dim_map) == 0, do: nil
