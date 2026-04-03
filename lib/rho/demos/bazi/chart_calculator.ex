@@ -154,7 +154,7 @@ result = {
     'pillars': pillars,
     'da_yun': da_yun_list,
     'liu_nian': liu_nian,
-    'notes': f'Solar: {solar.toYmd()}, Lunar: {lunar.toYmd()}'
+    'notes': f'Solar: {solar.toString()}, Lunar: {lunar.toString()}'
 }
 
 import json
@@ -162,6 +162,7 @@ json.dumps(result, ensure_ascii=False)
 """
 
     try do
+      ensure_python_initialized()
       {result, _globals} = Pythonx.eval(python_code, %{})
       json_str = Pythonx.decode(result)
 
@@ -207,5 +208,28 @@ json.dumps(result, ensure_ascii=False)
 
       diffs
     end)
+  end
+
+  # Ensure Pythonx is initialized with lunar-python dependency
+  defp ensure_python_initialized do
+    # Check if already initialized by attempting a simple eval
+    try do
+      Pythonx.eval("1 + 1", %{})
+    rescue
+      _ ->
+        pyproject = """
+        [project]
+        name = "rho-bazi"
+        version = "0.0.0"
+        requires-python = ">=3.11"
+        dependencies = [
+          "lunar-python",
+        ]
+        """
+
+        require Logger
+        Logger.info("[BaZi] Initializing Pythonx with lunar-python")
+        Pythonx.uv_init(pyproject)
+    end
   end
 end

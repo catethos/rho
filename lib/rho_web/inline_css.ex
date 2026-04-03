@@ -1647,11 +1647,13 @@ defmodule RhoWeb.InlineCSS do
 
     /* --- Layout --- */
     .bazi-observatory {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
       display: flex;
       flex-direction: column;
-      height: 100vh;
       overflow: hidden;
       background: var(--bg-abyss);
+      z-index: 10;
     }
     .bazi-body {
       display: grid;
@@ -2091,13 +2093,15 @@ defmodule RhoWeb.InlineCSS do
 
     /* --- Setup form --- */
     .bazi-setup {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
       padding: 3rem 1.5rem;
-      min-height: 100vh;
       overflow-y: auto;
       background: var(--bg-abyss);
+      z-index: 10;
     }
     .bazi-setup-header {
       text-align: center;

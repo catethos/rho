@@ -212,27 +212,19 @@ defmodule RhoWeb.BaziLive do
 
   def render(assigns) do
     ~H"""
-    <div class="bazi-layout">
+    <div class="bazi-observatory">
       <.top_bar phase={@phase} round={@round} simulation_status={@simulation_status} />
 
-      <div class="bazi-main">
-        <div class="bazi-left">
-          <.agent_panel agents={@agents} />
-        </div>
-
-        <div class="bazi-center">
-          <.timeline
-            timeline={@timeline}
-            phase={@phase}
-            proposed_dimensions={@proposed_dimensions}
-            pending_user_question={@pending_user_question}
-            chairman_ready={@chairman_ready}
-          />
-        </div>
-
-        <div class="bazi-right">
-          <.scoreboard scores={@scores} dimensions={@dimensions} />
-        </div>
+      <div class="bazi-body">
+        <.agent_panel agents={@agents} />
+        <.timeline
+          timeline={@timeline}
+          phase={@phase}
+          proposed_dimensions={@proposed_dimensions}
+          pending_user_question={@pending_user_question}
+          chairman_ready={@chairman_ready}
+        />
+        <.scoreboard scores={@scores} dimensions={@dimensions} />
       </div>
     </div>
     """
