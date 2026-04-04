@@ -933,12 +933,8 @@ defmodule Rho.Demos.Bazi.Simulation do
     config = Rho.Config.agent(:bazi_chairman)
 
     if chairman_pid do
-      # Only give finish tool for summary — advisors are stopped, send_message would fail
-      summary_tools =
-        Enum.filter(state.chairman_tools, fn t -> t.tool.name == "finish" end)
-
       Worker.submit(chairman_pid, closing_prompt,
-        tools: summary_tools,
+        tools: state.chairman_tools,
         model: config.model
       )
     else

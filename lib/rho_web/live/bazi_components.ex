@@ -195,6 +195,7 @@ defmodule RhoWeb.BaziComponents do
     <div class="bazi-timeline" id="bazi-timeline" phx-hook="AutoScroll">
       <h3 class="bazi-section-title">Timeline</h3>
 
+      <div class="bazi-timeline-feed">
       <div :for={entry <- @timeline} class={"bazi-timeline-entry bazi-timeline-#{entry.type}"}>
         <%= case entry.type do %>
           <% :round_start -> %>
@@ -273,6 +274,7 @@ defmodule RhoWeb.BaziComponents do
           <% _ -> %>
             <div></div>
         <% end %>
+      </div>
       </div>
 
       <!-- Dimension approval form -->

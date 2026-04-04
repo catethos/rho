@@ -198,7 +198,7 @@
     max_steps: 10
   ],
   bazi_chairman: [
-    model: "openrouter:anthropic/claude-opus-4-6",
+    model: "openrouter:anthropic/claude-sonnet-4.6",
     description: "八字决策分析主席 — 主持命理顾问团的讨论与总结",
     system_prompt: """
     你是八字决策分析的主席。你负责主持三位命理顾问的讨论。
