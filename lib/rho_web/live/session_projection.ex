@@ -69,6 +69,7 @@ defmodule RhoWeb.SessionProjection do
 
     # Add tab and initialize message list for new agent
     tab_order = socket.assigns.tab_order
+
     tab_order =
       if data.agent_id in tab_order do
         tab_order
@@ -169,7 +170,10 @@ defmodule RhoWeb.SessionProjection do
 
     # Buffer chunks for push_event to JS hook
     inflight = socket.assigns.inflight
-    entry = Map.get(inflight, agent_id, %{agent_id: agent_id, turn_id: data[:turn_id], chunks: []})
+
+    entry =
+      Map.get(inflight, agent_id, %{agent_id: agent_id, turn_id: data[:turn_id], chunks: []})
+
     entry = %{entry | chunks: entry.chunks ++ [text]}
     inflight = Map.put(inflight, agent_id, entry)
 
@@ -241,7 +245,9 @@ defmodule RhoWeb.SessionProjection do
       # If tool output contains images, append them as a visible assistant message
       socket =
         case RhoWeb.ChatComponents.extract_image_uris(data[:output]) do
-          [] -> socket
+          [] ->
+            socket
+
           image_uris ->
             img_msg = %{
               id: msg_id(),
@@ -251,6 +257,7 @@ defmodule RhoWeb.SessionProjection do
               agent_id: agent_id,
               content: "Visualization"
             }
+
             append_message(socket, img_msg)
         end
 
@@ -366,10 +373,19 @@ defmodule RhoWeb.SessionProjection do
     # Show the message in the target agent's tab as an incoming message
     target_agent_id =
       case Rho.Agent.Worker.whereis(to) do
-        pid when is_pid(pid) -> to
+        pid when is_pid(pid) ->
+          to
+
         nil ->
-          # Try resolving as role
-          case Rho.Agent.Registry.find_by_role(socket.assigns.session_id, String.to_atom(to)) do
+          # Try resolving as role — use to_existing_atom to prevent atom table exhaustion
+          role_atom =
+            try do
+              String.to_existing_atom(to)
+            rescue
+              ArgumentError -> nil
+            end
+
+          case role_atom && Rho.Agent.Registry.find_by_role(socket.assigns.session_id, role_atom) do
             [agent | _] -> agent.agent_id
             _ -> to
           end
@@ -421,6 +437,7 @@ defmodule RhoWeb.SessionProjection do
             content: text,
             agent_id: agent_id
           }
+
           append_message(socket, msg)
 
         {:error, reason} ->
@@ -431,6 +448,7 @@ defmodule RhoWeb.SessionProjection do
             content: format_error(reason),
             agent_id: agent_id
           }
+
           append_message(socket, msg)
 
         _ ->
@@ -467,14 +485,15 @@ defmodule RhoWeb.SessionProjection do
     projection = data[:projection] || %{}
 
     # Store the latest projection keyed by agent_id
-    debug_projections = Map.put(socket.assigns[:debug_projections] || %{}, agent_id, %{
-      context: format_projection_context(projection[:context] || []),
-      tools: format_projection_tools(projection[:tools] || []),
-      step: projection[:step],
-      timestamp: System.monotonic_time(:millisecond),
-      raw_message_count: length(projection[:context] || []),
-      raw_tool_count: length(projection[:tools] || [])
-    })
+    debug_projections =
+      Map.put(socket.assigns[:debug_projections] || %{}, agent_id, %{
+        context: format_projection_context(projection[:context] || []),
+        tools: format_projection_tools(projection[:tools] || []),
+        step: projection[:step],
+        timestamp: System.monotonic_time(:millisecond),
+        raw_message_count: length(projection[:context] || []),
+        raw_tool_count: length(projection[:tools] || [])
+      })
 
     assign(socket, :debug_projections, debug_projections)
   end
@@ -488,6 +507,7 @@ defmodule RhoWeb.SessionProjection do
       }
     end)
   end
+
   defp format_projection_context(_), do: []
 
   defp extract_role(%{role: role}), do: to_string(role)
@@ -495,6 +515,7 @@ defmodule RhoWeb.SessionProjection do
   defp extract_role(_), do: "unknown"
 
   defp extract_content(%{content: content}) when is_binary(content), do: content
+
   defp extract_content(%{content: parts}) when is_list(parts) do
     Enum.map_join(parts, "\n", fn
       %{text: text} -> text
@@ -504,10 +525,13 @@ defmodule RhoWeb.SessionProjection do
       other -> inspect(other, limit: 200, printable_limit: 500)
     end)
   end
+
   defp extract_content(%{"content" => content}) when is_binary(content), do: content
+
   defp extract_content(%{"content" => parts}) when is_list(parts) do
     extract_content(%{content: parts})
   end
+
   defp extract_content(msg), do: inspect(msg, limit: 200, printable_limit: 500)
 
   defp extract_cache_control(%{content: [%{cache_control: cc} | _]}), do: cc
@@ -520,6 +544,7 @@ defmodule RhoWeb.SessionProjection do
       other -> inspect(other, limit: 50)
     end)
   end
+
   defp format_projection_tools(_), do: []
 
   defp project_step_start(socket, data) do
@@ -529,7 +554,9 @@ defmodule RhoWeb.SessionProjection do
 
     agents =
       case Map.get(socket.assigns.agents, agent_id) do
-        nil -> socket.assigns.agents
+        nil ->
+          socket.assigns.agents
+
         agent ->
           Map.put(socket.assigns.agents, agent_id, %{agent | step: step, max_steps: max_steps})
       end
@@ -552,9 +579,11 @@ defmodule RhoWeb.SessionProjection do
           }
 
           # Clear chunks but keep the inflight entry (stream-end will remove it)
-          inflight = Map.put(socket.assigns.inflight, agent_id, %{
-            Map.get(socket.assigns.inflight, agent_id) | chunks: []
-          })
+          inflight =
+            Map.put(socket.assigns.inflight, agent_id, %{
+              Map.get(socket.assigns.inflight, agent_id)
+              | chunks: []
+            })
 
           socket
           |> assign(:inflight, inflight)
@@ -598,8 +627,13 @@ defmodule RhoWeb.SessionProjection do
     |> push_event("signal", signal)
   end
 
-  defp append_message(socket, msg) do
-    RhoWeb.SessionLive.append_message(socket, msg)
+  @doc "Appends a message to the agent_messages map in socket assigns."
+  def append_message(socket, msg) do
+    agent_id = msg[:agent_id] || primary_agent_id(socket)
+    agent_messages = socket.assigns.agent_messages
+    current = Map.get(agent_messages, agent_id, [])
+    updated = Map.put(agent_messages, agent_id, Enum.take(current ++ [msg], -200))
+    assign(socket, :agent_messages, updated)
   end
 
   defp update_message(socket, msg_id, update_fn) do
@@ -607,9 +641,10 @@ defmodule RhoWeb.SessionProjection do
 
     updated =
       Map.new(agent_messages, fn {agent_id, msgs} ->
-        {agent_id, Enum.map(msgs, fn msg ->
-          if msg.id == msg_id, do: update_fn.(msg), else: msg
-        end)}
+        {agent_id,
+         Enum.map(msgs, fn msg ->
+           if msg.id == msg_id, do: update_fn.(msg), else: msg
+         end)}
       end)
 
     assign(socket, :agent_messages, updated)
@@ -620,9 +655,10 @@ defmodule RhoWeb.SessionProjection do
 
     updated =
       Map.new(agent_messages, fn {agent_id, msgs} ->
-        {agent_id, Enum.map(msgs, fn msg ->
-          if pred.(msg), do: update_fn.(msg), else: msg
-        end)}
+        {agent_id,
+         Enum.map(msgs, fn msg ->
+           if pred.(msg), do: update_fn.(msg), else: msg
+         end)}
       end)
 
     assign(socket, :agent_messages, updated)
@@ -630,6 +666,7 @@ defmodule RhoWeb.SessionProjection do
 
   defp format_error(%Mint.TransportError{reason: reason}),
     do: "Connection error: #{inspect(reason)}. The request will be retried automatically."
+
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: "Error: #{inspect(reason)}"
 

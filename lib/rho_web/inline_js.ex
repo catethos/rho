@@ -125,6 +125,13 @@ defmodule RhoWeb.InlineJS do
         }
       },
 
+      AutoFocus: {
+        mounted() {
+          this.el.focus();
+          if (this.el.select) this.el.select();
+        }
+      },
+
       SignalTimeline: {
         mounted() {
           var self = this;

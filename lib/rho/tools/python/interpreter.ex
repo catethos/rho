@@ -35,9 +35,7 @@ defmodule Rho.Tools.Python.Interpreter do
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
 
-    GenServer.start_link(__MODULE__, opts,
-      name: via(session_id)
-    )
+    GenServer.start_link(__MODULE__, opts, name: via(session_id))
   end
 
   @doc """
@@ -49,7 +47,7 @@ defmodule Rho.Tools.Python.Interpreter do
   def eval(session_id, code, workspace \\ nil) do
     case whereis(session_id) do
       nil -> start_and_eval(session_id, code, workspace)
-      pid -> GenServer.call(pid, {:eval, code}, :infinity)
+      pid -> GenServer.call(pid, {:eval, code}, :timer.minutes(5))
     end
   end
 
@@ -169,7 +167,10 @@ defmodule Rho.Tools.Python.Interpreter do
       Logger.debug("[PythonInterpreter] stdout_bytes=#{byte_size(stdout)}")
 
       changed_files = if workspace, do: detect_changed_files(workspace, files_before), else: []
-      {disposition, output} = format_output(String.trim_trailing(stdout), result, changed_files, image_paths)
+
+      {disposition, output} =
+        format_output(String.trim_trailing(stdout), result, changed_files, image_paths)
+
       {{disposition, output}, state}
     rescue
       e in [Pythonx.Error] ->
@@ -253,7 +254,11 @@ defmodule Rho.Tools.Python.Interpreter do
           |> Enum.reject(&is_nil/1)
           |> Kernel.++(image_tags)
 
-        output = if parts == [], do: "(code executed successfully, no output)", else: Enum.join(parts, "\n")
+        output =
+          if parts == [],
+            do: "(code executed successfully, no output)",
+            else: Enum.join(parts, "\n")
+
         {:ok, output}
     end
   end
@@ -277,9 +282,14 @@ defmodule Rho.Tools.Python.Interpreter do
            Rho.Tools.Python.Supervisor,
            {__MODULE__, session_id: session_id, workspace: workspace}
          ) do
-      {:ok, _pid} -> GenServer.call(via(session_id), {:eval, code}, :infinity)
-      {:error, {:already_started, _pid}} -> GenServer.call(via(session_id), {:eval, code}, :infinity)
-      {:error, reason} -> {:error, "Failed to start Python interpreter: #{inspect(reason)}"}
+      {:ok, _pid} ->
+        GenServer.call(via(session_id), {:eval, code}, :timer.minutes(5))
+
+      {:error, {:already_started, _pid}} ->
+        GenServer.call(via(session_id), {:eval, code}, :timer.minutes(5))
+
+      {:error, reason} ->
+        {:error, "Failed to start Python interpreter: #{inspect(reason)}"}
     end
   end
 
@@ -300,10 +310,13 @@ defmodule Rho.Tools.Python.Interpreter do
       {:ok, entries} ->
         Map.new(entries, fn name ->
           path = Path.join(workspace, name)
-          mtime = case File.stat(path) do
-            {:ok, %{mtime: mtime}} -> mtime
-            _ -> nil
-          end
+
+          mtime =
+            case File.stat(path) do
+              {:ok, %{mtime: mtime}} -> mtime
+              _ -> nil
+            end
+
           {name, mtime}
         end)
 

@@ -76,6 +76,18 @@ defmodule Rho.Reasoner.Structured do
           :miss -> :miss
         end
 
+      {:ok, [%{} | _] = list} ->
+        # LLM returned a JSON array of objects — detect format and route
+        {tool, param} = detect_implicit_tool(list)
+
+        case Jason.encode(list) do
+          {:ok, json} -> {:ok, {tool, %{param => json}, nil}}
+          _ -> :miss
+        end
+
+      {:ok, _non_map} ->
+        :miss
+
       {:error, _} ->
         :miss
     end
@@ -88,7 +100,10 @@ defmodule Rho.Reasoner.Structured do
     thinking = parsed["thinking"] || parsed["thought"] || parsed["reasoning"]
 
     if is_binary(action) do
-      args_raw = parsed["action_input"] || parsed["tool_input"] || parsed["parameters"] || parsed["args"] || parsed["input"]
+      args_raw =
+        parsed["action_input"] || parsed["tool_input"] || parsed["parameters"] || parsed["args"] ||
+          parsed["input"]
+
       args = normalize_args(args_raw)
       {:ok, action, args, thinking}
     else
@@ -140,10 +155,16 @@ defmodule Rho.Reasoner.Structured do
         args = code_tool_args(tool_name, code)
 
         if Map.has_key?(tool_map, tool_name) do
-          Logger.info("[reasoner.structured] detected #{lang} code block, executing via #{tool_name}")
+          Logger.info(
+            "[reasoner.structured] detected #{lang} code block, executing via #{tool_name}"
+          )
+
           {:tool, tool_name, args, nil}
         else
-          Logger.warning("[reasoner.structured] detected #{lang} code block but no #{tool_name} tool available")
+          Logger.warning(
+            "[reasoner.structured] detected #{lang} code block but no #{tool_name} tool available"
+          )
+
           {:raw_response, text}
         end
 
@@ -152,7 +173,9 @@ defmodule Rho.Reasoner.Structured do
 
         if String.starts_with?(trimmed, "{") do
           # Tried to produce JSON but failed — worth a warning
-          Logger.warning("[reasoner.structured] malformed JSON, raw text: #{String.slice(text, 0..200)}")
+          Logger.warning(
+            "[reasoner.structured] malformed JSON, raw text: #{String.slice(text, 0..200)}"
+          )
         else
           # Plain text response — LLM answered directly without tools, this is normal
           Logger.debug("[reasoner.structured] plain text response (no JSON attempted)")
@@ -213,8 +236,16 @@ defmodule Rho.Reasoner.Structured do
     case lifecycle.before_tool.(call) do
       {:deny, reason} ->
         result = "Denied: #{reason}"
-        emit.(%{type: :tool_result, name: name, status: :error, output: result,
-                call_id: call_id, latency_ms: 0, error_type: :denied})
+
+        emit.(%{
+          type: :tool_result,
+          name: name,
+          status: :error,
+          output: result,
+          call_id: call_id,
+          latency_ms: 0,
+          error_type: :denied
+        })
 
         {:continue, build_tool_step_from_result(name, args, result)}
 
@@ -230,23 +261,48 @@ defmodule Rho.Reasoner.Structured do
   defp handle_tool_result({:final, output}, call, latency_ms, emit, lifecycle) do
     output_str = to_string(output)
     result = lifecycle.after_tool.(call, output_str)
-    emit.(%{type: :tool_result, name: call.name, status: :ok, output: result,
-            call_id: call.call_id, latency_ms: latency_ms})
+
+    emit.(%{
+      type: :tool_result,
+      name: call.name,
+      status: :ok,
+      output: result,
+      call_id: call.call_id,
+      latency_ms: latency_ms
+    })
+
     {:done, %{type: :response, text: result}}
   end
 
   defp handle_tool_result({:ok, output}, call, latency_ms, emit, lifecycle) do
     output_str = to_string(output)
     result = lifecycle.after_tool.(call, output_str)
-    emit.(%{type: :tool_result, name: call.name, status: :ok, output: result,
-            call_id: call.call_id, latency_ms: latency_ms})
+
+    emit.(%{
+      type: :tool_result,
+      name: call.name,
+      status: :ok,
+      output: result,
+      call_id: call.call_id,
+      latency_ms: latency_ms
+    })
+
     {:continue, build_tool_step_from_result(call.name, call.args, result)}
   end
 
   defp handle_tool_result({:error, reason}, call, latency_ms, emit, _lifecycle) do
     error_str = "Error: #{reason}"
-    emit.(%{type: :tool_result, name: call.name, status: :error, output: to_string(reason),
-            call_id: call.call_id, latency_ms: latency_ms, error_type: :runtime_error})
+
+    emit.(%{
+      type: :tool_result,
+      name: call.name,
+      status: :error,
+      output: to_string(reason),
+      call_id: call.call_id,
+      latency_ms: latency_ms,
+      error_type: :runtime_error
+    })
+
     {:continue, build_tool_step_from_result(call.name, call.args, error_str)}
   end
 
@@ -266,6 +322,7 @@ defmodule Rho.Reasoner.Structured do
             case StructuredOutput.parse_partial(new_acc) do
               {:ok, parsed} when is_map(parsed) ->
                 emit.(%{type: :structured_partial, parsed: parsed})
+
               _ ->
                 :ok
             end
@@ -277,7 +334,10 @@ defmodule Rho.Reasoner.Structured do
         case get_stream_metadata(stream_response) do
           {:error, reason} ->
             if attempt <= @max_stream_retries and retryable?(reason) do
-              Logger.warning("[reasoner.structured] stream failed mid-stream (attempt #{attempt}): #{inspect(reason)}, retrying...")
+              Logger.warning(
+                "[reasoner.structured] stream failed mid-stream (attempt #{attempt}): #{inspect(reason)}, retrying..."
+              )
+
               Process.sleep(1_000 * attempt)
               stream_with_retry(model, context, stream_opts, emit, attempt + 1)
             else
@@ -290,7 +350,10 @@ defmodule Rho.Reasoner.Structured do
 
       {:error, reason} ->
         if attempt <= @max_stream_retries and retryable?(reason) do
-          Logger.warning("[reasoner.structured] stream failed (attempt #{attempt}): #{inspect(reason)}, retrying...")
+          Logger.warning(
+            "[reasoner.structured] stream failed (attempt #{attempt}): #{inspect(reason)}, retrying..."
+          )
+
           Process.sleep(1_000 * attempt)
           stream_with_retry(model, context, stream_opts, emit, attempt + 1)
         else
@@ -395,18 +458,30 @@ defmodule Rho.Reasoner.Structured do
 
   # -- Helpers --
 
+  # Detect whether a raw JSON array is compact proficiency levels or full rows
+  defp detect_implicit_tool([first | _]) do
+    if Map.has_key?(first, "levels") do
+      {"add_proficiency_levels", "levels_json"}
+    else
+      {"add_rows", "rows_json"}
+    end
+  end
+
   defp emit_thinking(nil, _emit), do: :ok
+
   defp emit_thinking(thinking, emit) when is_binary(thinking) do
     if String.trim(thinking) != "", do: emit.(%{type: :llm_text, text: thinking})
   end
 
   defp normalize_args(nil), do: %{}
+
   defp normalize_args(s) when is_binary(s) do
     case Jason.decode(s) do
       {:ok, map} when is_map(map) -> map
       _ -> %{"_raw" => s}
     end
   end
+
   defp normalize_args(map) when is_map(map), do: map
   defp normalize_args(_), do: %{}
 
@@ -419,7 +494,8 @@ defmodule Rho.Reasoner.Structured do
     "zsh" => "bash"
   }
 
-  defp lang_to_tool(lang), do: Map.get(@lang_tool_map, String.downcase(lang), String.downcase(lang))
+  defp lang_to_tool(lang),
+    do: Map.get(@lang_tool_map, String.downcase(lang), String.downcase(lang))
 
   defp code_tool_args("python", code), do: %{"code" => code}
   defp code_tool_args("bash", code), do: %{"command" => code}

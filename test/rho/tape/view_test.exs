@@ -6,7 +6,14 @@ defmodule Rho.Tape.ViewTest do
   @test_tape "test_view_#{System.os_time(:nanosecond)}"
 
   setup do
-    on_exit(fn -> Store.clear(@test_tape) end)
+    on_exit(fn ->
+      Store.clear(@test_tape)
+      View.invalidate_cache(@test_tape)
+    end)
+
+    # Ensure clean state before each test
+    Store.clear(@test_tape)
+    View.invalidate_cache(@test_tape)
     :ok
   end
 

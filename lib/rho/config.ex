@@ -30,7 +30,8 @@ defmodule Rho.Config do
     journal: Rho.Mounts.JournalTools,
     step_budget: Rho.Plugins.StepBudget,
     live_render: Rho.Mounts.LiveRender,
-    py_agent: Rho.Mounts.PyAgent
+    py_agent: Rho.Mounts.PyAgent,
+    spreadsheet: Rho.Mounts.Spreadsheet
   }
 
   @doc """
@@ -70,7 +71,6 @@ defmodule Rho.Config do
     Map.get(@reasoner_modules, entry, entry)
   end
 
-
   @doc """
   Returns the agent config for the given agent name.
 
@@ -97,7 +97,8 @@ defmodule Rho.Config do
       reasoner_opts: config[:reasoner_opts] || [],
       description: config[:description],
       skills: config[:skills] || [],
-      prompt_format: config[:prompt_format] || :markdown
+      prompt_format: config[:prompt_format] || :markdown,
+      avatar: config[:avatar]
     }
   end
 
@@ -145,12 +146,50 @@ defmodule Rho.Config do
     |> Enum.uniq()
   end
 
+  @doc """
+  Loads an agent's avatar as a base64 data URI.
+
+  Resolves the `avatar` field from the agent config in `.rho.exs`.
+  Supports `~` expansion. Returns `nil` if not configured or file not found.
+  """
+  def load_avatar(agent_name) do
+    config = agent(agent_name)
+
+    case config[:avatar] do
+      nil -> nil
+      path -> read_avatar(Path.expand(path))
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp read_avatar(path) do
+    if File.exists?(path) do
+      binary = File.read!(path)
+      ext = path |> Path.extname() |> String.trim_leading(".")
+
+      media =
+        case ext do
+          "jpg" -> "image/jpeg"
+          "jpeg" -> "image/jpeg"
+          "png" -> "image/png"
+          "gif" -> "image/gif"
+          "webp" -> "image/webp"
+          "svg" -> "image/svg+xml"
+          _ -> "image/png"
+        end
+
+      "data:#{media};base64,#{Base.encode64(binary)}"
+    end
+  end
+
   # -- Private --
 
   defp load_file_config(name) do
     case load_file() do
       %{} = agents ->
-        agents[name] || raise "Agent #{inspect(name)} not found in #{@config_file}. Available: #{inspect(Map.keys(agents))}"
+        agents[name] ||
+          raise "Agent #{inspect(name)} not found in #{@config_file}. Available: #{inspect(Map.keys(agents))}"
 
       nil ->
         []
@@ -203,5 +242,4 @@ defmodule Rho.Config do
       end
     end)
   end
-
 end

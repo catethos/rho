@@ -36,31 +36,35 @@ defmodule Rho.Skill do
 
   Results are cached per workspace path with a 2-second TTL and fingerprint check.
   """
-  def discover(workspace_path) do
+  def discover(workspace_path, opts \\ []) do
+    sources = Keyword.get(opts, :sources, [:project, :global, :builtin])
+
     ensure_cache_table()
+    cache_key = {workspace_path, sources}
     now = System.monotonic_time(:second)
 
-    case :ets.lookup(@cache_table, workspace_path) do
+    case :ets.lookup(@cache_table, cache_key) do
       [{_, skills, _fingerprint, checked_at}] when now - checked_at < @cache_ttl_seconds ->
         skills
 
       cached ->
-        old_fingerprint = case cached do
-          [{_, _, fp, _}] -> fp
-          _ -> nil
-        end
+        old_fingerprint =
+          case cached do
+            [{_, _, fp, _}] -> fp
+            _ -> nil
+          end
 
-        new_fingerprint = compute_fingerprint(workspace_path)
+        new_fingerprint = compute_fingerprint(workspace_path, sources)
 
         if new_fingerprint == old_fingerprint do
           # Fingerprint unchanged, refresh TTL and return cached skills
           [{_, skills, _, _}] = cached
-          :ets.insert(@cache_table, {workspace_path, skills, new_fingerprint, now})
+          :ets.insert(@cache_table, {cache_key, skills, new_fingerprint, now})
           skills
         else
           # Skills changed, re-discover
-          skills = do_discover(workspace_path)
-          :ets.insert(@cache_table, {workspace_path, skills, new_fingerprint, now})
+          skills = do_discover(workspace_path, sources)
+          :ets.insert(@cache_table, {cache_key, skills, new_fingerprint, now})
           skills
         end
     end
@@ -138,12 +142,8 @@ defmodule Rho.Skill do
 
   # --- Private ---
 
-  defp do_discover(workspace_path) do
-    roots = [
-      {Path.join(workspace_path, ".agents/skills"), "project"},
-      {Path.expand("~/.agents/skills"), "global"},
-      {Application.app_dir(:rho, "priv/skills"), "builtin"}
-    ]
+  defp do_discover(workspace_path, sources) do
+    roots = source_roots(workspace_path, sources)
 
     roots
     |> Enum.flat_map(fn {root, source} ->
@@ -169,12 +169,18 @@ defmodule Rho.Skill do
     ArgumentError -> :ok
   end
 
-  defp compute_fingerprint(workspace_path) do
-    roots = [
-      Path.join(workspace_path, ".agents/skills"),
-      Path.expand("~/.agents/skills"),
-      Application.app_dir(:rho, "priv/skills")
-    ]
+  defp source_roots(workspace_path, sources) do
+    all = %{
+      project: {Path.join(workspace_path, ".agents/skills"), "project"},
+      global: {Path.expand("~/.agents/skills"), "global"},
+      builtin: {Application.app_dir(:rho, "priv/skills"), "builtin"}
+    }
+
+    Enum.map(sources, &Map.fetch!(all, &1))
+  end
+
+  defp compute_fingerprint(workspace_path, sources) do
+    roots = Enum.map(source_roots(workspace_path, sources), fn {path, _source} -> path end)
 
     roots
     |> Enum.flat_map(fn root ->
@@ -185,6 +191,7 @@ defmodule Rho.Skill do
         |> Enum.filter(&File.dir?/1)
         |> Enum.flat_map(fn dir ->
           skill_md = Path.join(dir, "SKILL.md")
+
           case File.stat(skill_md) do
             {:ok, %{mtime: mtime}} -> [{skill_md, mtime}]
             _ -> []

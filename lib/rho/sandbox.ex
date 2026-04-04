@@ -68,6 +68,7 @@ defmodule Rho.Sandbox do
         case Port.info(sandbox.port, :os_pid) do
           {:os_pid, os_pid} ->
             System.cmd("kill", [to_string(os_pid)], stderr_to_stdout: true)
+
           _ ->
             :ok
         end
@@ -127,13 +128,17 @@ defmodule Rho.Sandbox do
   Must be called while the sandbox is still mounted.
   """
   def commit(%__MODULE__{} = sandbox) do
-    case System.cmd("rsync", [
-           "-a",
-           "--exclude", ".DS_Store",
-           "--exclude", "._*",
-           "#{sandbox.mount_path}/",
-           "#{sandbox.workspace}/"
-         ], stderr_to_stdout: true) do
+    case System.cmd(
+           "rsync",
+           [
+             "-a",
+             "--exclude",
+             ".DS_Store",
+             "--exclude",
+             "._*",
+             "#{sandbox.mount_path}/",
+             "#{sandbox.workspace}/"
+           ], stderr_to_stdout: true) do
       {_, 0} -> :ok
       {output, code} -> {:error, "rsync failed (#{code}): #{output}"}
     end
@@ -148,13 +153,22 @@ defmodule Rho.Sandbox do
 
   # Kill any agentfs processes still holding the DB lock for this agent/mount.
   defp kill_stale_agentfs(agent_id, mount_path) do
-    case System.cmd("pgrep", ["-f", "agentfs mount.*#{agent_id}"], stderr_to_stdout: true) do
+    # Sanitize agent_id to prevent pattern injection in pgrep
+    safe_agent_id = String.replace(agent_id, ~r/[^a-zA-Z0-9_\-]/, "")
+
+    case System.cmd("pgrep", ["-f", "agentfs mount.*#{safe_agent_id}"], stderr_to_stdout: true) do
       {output, 0} ->
-        pids = output |> String.split("\n", trim: true)
-        Logger.info("[Sandbox] Killing #{length(pids)} stale agentfs process(es) for #{agent_id}")
+        pids =
+          output
+          |> String.split("\n", trim: true)
+          |> Enum.filter(&Regex.match?(~r/^\d+$/, String.trim(&1)))
+
+        Logger.info(
+          "[Sandbox] Killing #{length(pids)} stale agentfs process(es) for #{safe_agent_id}"
+        )
 
         for pid <- pids do
-          System.cmd("kill", [String.trim(pid)], stderr_to_stdout: true)
+          System.cmd("kill", [pid], stderr_to_stdout: true)
         end
 
         # Also unmount since the process was holding it

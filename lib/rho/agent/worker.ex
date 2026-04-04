@@ -53,9 +53,7 @@ defmodule Rho.Agent.Worker do
   def start_link(opts) do
     agent_id = Keyword.fetch!(opts, :agent_id)
 
-    GenServer.start_link(__MODULE__, opts,
-      name: {:via, Registry, {Rho.AgentRegistry, agent_id}}
-    )
+    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {Rho.AgentRegistry, agent_id}})
   end
 
   @doc "Submit input asynchronously. Returns {:ok, turn_id} immediately."
@@ -171,12 +169,16 @@ defmodule Rho.Agent.Worker do
     bus_subs = subscribe_to_bus(session_id, agent_id)
 
     # Publish agent started event
-    Comms.publish("rho.agent.started", %{
-      agent_id: agent_id,
-      session_id: session_id,
-      role: role,
-      capabilities: capabilities
-    }, source: "/session/#{session_id}/agent/#{agent_id}")
+    Comms.publish(
+      "rho.agent.started",
+      %{
+        agent_id: agent_id,
+        session_id: session_id,
+        role: role,
+        capabilities: capabilities
+      },
+      source: "/session/#{session_id}/agent/#{agent_id}"
+    )
 
     Logger.debug("Agent worker started: #{agent_id} (session: #{session_id}, role: #{role})")
 
@@ -200,14 +202,19 @@ defmodule Rho.Agent.Worker do
     model = Keyword.get(opts, :model)
     task_id = Keyword.get(opts, :task_id)
 
-    state = start_turn(task, [
-      max_steps: max_steps,
-      system_prompt: system_prompt,
-      tools: tools,
-      model: model,
-      task_id: task_id,
-      delegated: true
-    ], state)
+    state =
+      start_turn(
+        task,
+        [
+          max_steps: max_steps,
+          system_prompt: system_prompt,
+          tools: tools,
+          model: model,
+          task_id: task_id,
+          delegated: true
+        ],
+        state
+      )
 
     {:noreply, state}
   end
@@ -362,7 +369,15 @@ defmodule Rho.Agent.Worker do
     reply_to_waiters(state, {:ok, value})
     maybe_publish_task_completed(state, {:ok, value})
 
-    state = %{state | status: :idle, task_ref: nil, task_pid: nil, current_turn_id: nil, waiters: []}
+    state = %{
+      state
+      | status: :idle,
+        task_ref: nil,
+        task_pid: nil,
+        current_turn_id: nil,
+        waiters: []
+    }
+
     AgentRegistry.update_status(state.agent_id, :idle)
 
     state = process_queue(state)
@@ -370,8 +385,7 @@ defmodule Rho.Agent.Worker do
   end
 
   def handle_info({ref, result}, %{task_ref: ref} = state) do
-    # Regular turn end (end_turn, max_steps, text response) — do NOT reply to waiters
-    # The agent may receive more messages and do more turns before finishing
+    # Regular turn end (end_turn, max_steps, text response)
     Process.demonitor(ref, [:flush])
 
     maybe_publish_task_completed(state, result)
@@ -381,13 +395,29 @@ defmodule Rho.Agent.Worker do
 
     state = process_queue(state)
 
-    # If still idle after processing queue (no pending messages), broadcast idle event
-    # so `await: :finish` callers can detect implicit completion
+    # If still idle after processing queue (no pending messages):
     if state.status == :idle do
-      broadcast(state, %{type: :agent_idle, result: result, agent_id: state.agent_id})
-    end
+      # Reply to waiters if this is a delegated agent with no more work —
+      # the task is effectively done even without an explicit `finish` call
+      if state.waiters != [] and :queue.is_empty(state.mailbox) do
+        result_text =
+          case result do
+            {:ok, text} -> text
+            {:error, reason} -> "error: #{inspect(reason)}"
+            other -> inspect(other)
+          end
 
-    {:noreply, state}
+        reply_to_waiters(state, {:ok, result_text})
+        state = %{state | waiters: []}
+        broadcast(state, %{type: :agent_idle, result: result, agent_id: state.agent_id})
+        {:noreply, state}
+      else
+        broadcast(state, %{type: :agent_idle, result: result, agent_id: state.agent_id})
+        {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
   end
 
   # Task died
@@ -398,9 +428,17 @@ defmodule Rho.Agent.Worker do
     else
       # Emit turn_finished so the UI knows the turn ended (even on crash)
       error_result = {:error, "agent task failed: #{inspect(reason)}"}
-      event = %{type: :turn_finished, turn_id: state.current_turn_id, result: error_result,
-                agent_id: state.agent_id, session_id: state.session_id}
+
+      event = %{
+        type: :turn_finished,
+        turn_id: state.current_turn_id,
+        result: error_result,
+        agent_id: state.agent_id,
+        session_id: state.session_id
+      }
+
       broadcast(state, event)
+
       Comms.publish(
         "rho.session.#{state.session_id}.events.turn_finished",
         event,
@@ -411,7 +449,15 @@ defmodule Rho.Agent.Worker do
 
     reply_to_waiters(state, {:error, "agent task failed"})
 
-    state = %{state | status: :idle, task_ref: nil, task_pid: nil, current_turn_id: nil, waiters: []}
+    state = %{
+      state
+      | status: :idle,
+        task_ref: nil,
+        task_pid: nil,
+        current_turn_id: nil,
+        waiters: []
+    }
+
     AgentRegistry.update_status(state.agent_id, :idle)
 
     state = process_queue(state)
@@ -434,6 +480,7 @@ defmodule Rho.Agent.Worker do
     if code != 0 do
       Logger.warning("[Sandbox] mount process exited with code #{code}")
     end
+
     {:noreply, state}
   end
 
@@ -455,11 +502,15 @@ defmodule Rho.Agent.Worker do
     end
 
     # Publish stopped event
-    Comms.publish("rho.agent.stopped", %{
-      agent_id: state.agent_id,
-      session_id: state.session_id,
-      reason: inspect(reason)
-    }, source: "/session/#{state.session_id}/agent/#{state.agent_id}")
+    Comms.publish(
+      "rho.agent.stopped",
+      %{
+        agent_id: state.agent_id,
+        session_id: state.session_id,
+        reason: inspect(reason)
+      },
+      source: "/session/#{state.session_id}/agent/#{state.agent_id}"
+    )
 
     # Cleanup sandbox
     Rho.Sandbox.stop(state.sandbox)
@@ -523,7 +574,10 @@ defmodule Rho.Agent.Worker do
             Rho.AgentLoop.run(model, messages, agent_opts)
           rescue
             error ->
-              Logger.error("AgentLoop crashed: #{Exception.format(:error, error, __STACKTRACE__)}")
+              Logger.error(
+                "AgentLoop crashed: #{Exception.format(:error, error, __STACKTRACE__)}"
+              )
+
               {:error, Exception.message(error)}
           catch
             kind, reason ->
@@ -542,12 +596,13 @@ defmodule Rho.Agent.Worker do
     # Persist tools for future turns (message-triggered turns reuse them)
     persistent = if opts[:tools], do: opts[:tools], else: state.persistent_tools
 
-    %{state |
-      status: :busy,
-      task_ref: task.ref,
-      task_pid: task.pid,
-      current_turn_id: turn_id,
-      persistent_tools: persistent
+    %{
+      state
+      | status: :busy,
+        task_ref: task.ref,
+        task_pid: task.pid,
+        current_turn_id: turn_id,
+        persistent_tools: persistent
     }
   end
 
@@ -581,11 +636,15 @@ defmodule Rho.Agent.Worker do
     task_id = data[:task_id] || data["task_id"]
 
     if task do
-      start_turn(task, [
-        task_id: task_id,
-        delegated: true,
-        max_steps: data[:max_steps] || data["max_steps"] || 30
-      ], state)
+      start_turn(
+        task,
+        [
+          task_id: task_id,
+          delegated: true,
+          max_steps: data[:max_steps] || data["max_steps"] || 30
+        ],
+        state
+      )
     else
       state
     end
@@ -647,6 +706,7 @@ defmodule Rho.Agent.Worker do
     for {pid, _ref} <- state.subscribers do
       send(pid, {:session_event, state.session_id, state.current_turn_id, event})
     end
+
     :ok
   end
 
@@ -662,17 +722,31 @@ defmodule Rho.Agent.Worker do
 
       # Update worker runtime metadata
       case event.type do
-        :step_start -> send(worker_pid, {:meta_update, :current_step, event[:step]})
-        :tool_start -> send(worker_pid, {:meta_update, :current_tool, event[:name]})
-        :tool_result -> send(worker_pid, {:meta_update, :current_tool, nil})
+        :step_start ->
+          send(worker_pid, {:meta_update, :current_step, event[:step]})
+
+        :tool_start ->
+          send(worker_pid, {:meta_update, :current_tool, event[:name]})
+
+        :tool_result ->
+          send(worker_pid, {:meta_update, :current_tool, nil})
+
         :llm_usage ->
           usage = event[:usage] || %{}
-          send(worker_pid, {:meta_update, :token_usage, %{
-            input: usage[:input_tokens] || 0,
-            output: usage[:output_tokens] || 0
-          }})
-        _ -> :ok
+
+          send(
+            worker_pid,
+            {:meta_update, :token_usage,
+             %{
+               input: usage[:input_tokens] || 0,
+               output: usage[:output_tokens] || 0
+             }}
+          )
+
+        _ ->
+          :ok
       end
+
       send(worker_pid, {:meta_update, :last_activity_at, System.monotonic_time(:millisecond)})
 
       # Direct broadcast to subscribers (for CLI/Web backward compat)
@@ -682,8 +756,10 @@ defmodule Rho.Agent.Worker do
 
       # Publish to signal bus (skip high-freq events unless bus subscribers exist)
       signal_type = event_to_signal_type(event, has_bus_subs)
+
       if signal_type do
         payload = Map.merge(event, %{agent_id: agent_id, session_id: session_id})
+
         Comms.publish(
           "rho.session.#{session_id}.events.#{signal_type}",
           payload,
@@ -699,16 +775,18 @@ defmodule Rho.Agent.Worker do
   end
 
   # High-frequency events only published to bus when explicitly needed
-  @high_freq_event_types ~w(text_delta llm_text llm_usage)a
+  @high_freq_event_types ~w(text_delta llm_text llm_usage structured_partial)a
 
   @signal_event_types ~w(
     text_delta llm_text tool_start tool_result step_start llm_usage
     turn_started turn_finished turn_cancelled compact error
     subagent_progress subagent_tool subagent_error before_llm
+    structured_partial
   )a
 
-  defp event_to_signal_type(%{type: type}, _publish_high_freq = true) when type in @signal_event_types,
-    do: Atom.to_string(type)
+  defp event_to_signal_type(%{type: type}, _publish_high_freq = true)
+       when type in @signal_event_types,
+       do: Atom.to_string(type)
 
   defp event_to_signal_type(%{type: type}, _publish_high_freq) when type in @signal_event_types do
     if type in @high_freq_event_types, do: nil, else: Atom.to_string(type)
@@ -717,10 +795,14 @@ defmodule Rho.Agent.Worker do
   defp event_to_signal_type(_, _), do: nil
 
   defp publish_event(state, type, payload) do
-    Comms.publish(type, Map.merge(payload, %{
-      agent_id: state.agent_id,
-      session_id: state.session_id
-    }), source: "/session/#{state.session_id}/agent/#{state.agent_id}")
+    Comms.publish(
+      type,
+      Map.merge(payload, %{
+        agent_id: state.agent_id,
+        session_id: state.session_id
+      }),
+      source: "/session/#{state.session_id}/agent/#{state.agent_id}"
+    )
   end
 
   defp maybe_publish_task_completed(state, result) do
@@ -732,11 +814,15 @@ defmodule Rho.Agent.Worker do
           other -> inspect(other)
         end
 
-      Comms.publish("rho.task.completed", %{
-        agent_id: state.agent_id,
-        session_id: state.session_id,
-        result: result_text
-      }, source: "/session/#{state.session_id}/agent/#{state.agent_id}")
+      Comms.publish(
+        "rho.task.completed",
+        %{
+          agent_id: state.agent_id,
+          session_id: state.session_id,
+          result: result_text
+        },
+        source: "/session/#{state.session_id}/agent/#{state.agent_id}"
+      )
     end
   end
 
@@ -744,6 +830,7 @@ defmodule Rho.Agent.Worker do
     for from <- state.waiters do
       GenServer.reply(from, result)
     end
+
     :ok
   end
 

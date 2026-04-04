@@ -50,7 +50,8 @@ defmodule Rho.SkillTest do
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "SKILL.md"), "Just some markdown\n")
 
-      assert {:error, :no_frontmatter} = Skill.parse_skill_md(Path.join(dir, "SKILL.md"), "project")
+      assert {:error, :no_frontmatter} =
+               Skill.parse_skill_md(Path.join(dir, "SKILL.md"), "project")
     end
 
     test "rejects invalid name pattern", %{tmp_dir: tmp_dir} do
@@ -67,7 +68,8 @@ defmodule Rho.SkillTest do
 
       File.write!(Path.join(dir, "SKILL.md"), content)
 
-      assert {:error, :invalid_frontmatter} = Skill.parse_skill_md(Path.join(dir, "SKILL.md"), "project")
+      assert {:error, :invalid_frontmatter} =
+               Skill.parse_skill_md(Path.join(dir, "SKILL.md"), "project")
     end
 
     test "rejects missing description", %{tmp_dir: tmp_dir} do
@@ -83,7 +85,8 @@ defmodule Rho.SkillTest do
 
       File.write!(Path.join(dir, "SKILL.md"), content)
 
-      assert {:error, :invalid_frontmatter} = Skill.parse_skill_md(Path.join(dir, "SKILL.md"), "project")
+      assert {:error, :invalid_frontmatter} =
+               Skill.parse_skill_md(Path.join(dir, "SKILL.md"), "project")
     end
   end
 
@@ -107,14 +110,14 @@ defmodule Rho.SkillTest do
         """)
       end
 
-      skills = Skill.discover(workspace)
+      skills = Skill.discover(workspace, sources: [:project])
       assert length(skills) == 2
       assert Enum.map(skills, & &1.name) == ["alpha", "beta"]
       assert Enum.all?(skills, &(&1.source == "project"))
     end
 
     test "returns empty list when no skills directory exists", %{tmp_dir: tmp_dir} do
-      assert [] = Skill.discover(Path.join(tmp_dir, "nonexistent"))
+      assert [] = Skill.discover(Path.join(tmp_dir, "nonexistent"), sources: [:project])
     end
 
     test "skips directories without SKILL.md", %{tmp_dir: tmp_dir} do
@@ -123,7 +126,7 @@ defmodule Rho.SkillTest do
       empty_dir = Path.join(skills_dir, "empty-skill")
       File.mkdir_p!(empty_dir)
 
-      assert [] = Skill.discover(workspace)
+      assert [] = Skill.discover(workspace, sources: [:project])
     end
 
     test "deduplicates by name (first source wins)", %{tmp_dir: tmp_dir} do
@@ -141,7 +144,7 @@ defmodule Rho.SkillTest do
       Project body.
       """)
 
-      skills = Skill.discover(workspace)
+      skills = Skill.discover(workspace, sources: [:project])
       assert length(skills) == 1
       assert hd(skills).description == "Project version"
     end
@@ -150,8 +153,20 @@ defmodule Rho.SkillTest do
   describe "render_prompt/2" do
     test "renders summary of skills" do
       skills = [
-        %Skill{name: "alpha", description: "Does alpha", location: "/a", source: "project", body: "Alpha body"},
-        %Skill{name: "beta", description: "Does beta", location: "/b", source: "global", body: "Beta body"}
+        %Skill{
+          name: "alpha",
+          description: "Does alpha",
+          location: "/a",
+          source: "project",
+          body: "Alpha body"
+        },
+        %Skill{
+          name: "beta",
+          description: "Does beta",
+          location: "/b",
+          source: "global",
+          body: "Beta body"
+        }
       ]
 
       result = Skill.render_prompt(skills)
@@ -164,8 +179,20 @@ defmodule Rho.SkillTest do
 
     test "includes expanded skill bodies" do
       skills = [
-        %Skill{name: "alpha", description: "Does alpha", location: "/a", source: "project", body: "Alpha body"},
-        %Skill{name: "beta", description: "Does beta", location: "/b", source: "global", body: "Beta body"}
+        %Skill{
+          name: "alpha",
+          description: "Does alpha",
+          location: "/a",
+          source: "project",
+          body: "Alpha body"
+        },
+        %Skill{
+          name: "beta",
+          description: "Does beta",
+          location: "/b",
+          source: "global",
+          body: "Beta body"
+        }
       ]
 
       expanded = MapSet.new(["alpha"])

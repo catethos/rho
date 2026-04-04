@@ -799,11 +799,7 @@ defmodule RhoWeb.SessionLive do
 
   @doc false
   def append_message(socket, msg) do
-    agent_id = msg[:agent_id] || primary_agent_id(socket.assigns.session_id)
-    agent_messages = socket.assigns.agent_messages
-    current = Map.get(agent_messages, agent_id, [])
-    updated = Map.put(agent_messages, agent_id, Enum.take(current ++ [msg], -200))
-    assign(socket, :agent_messages, updated)
+    SessionProjection.append_message(socket, msg)
   end
 
   defp update_ui_message(socket, msg_id, spec, streaming?) do

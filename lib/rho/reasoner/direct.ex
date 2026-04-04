@@ -92,39 +92,83 @@ defmodule Rho.Reasoner.Direct do
         case lifecycle.before_tool.(call) do
           {:deny, reason} ->
             event = %{
-              type: :tool_result, name: name, status: :error,
-              output: "Denied: #{reason}", call_id: call_id,
-              latency_ms: 0, error_type: :denied
+              type: :tool_result,
+              name: name,
+              status: :error,
+              output: "Denied: #{reason}",
+              call_id: call_id,
+              latency_ms: 0,
+              error_type: :denied
             }
+
             {nil, call, "Denied: #{reason}", event}
 
           :ok ->
-            task = Task.async(fn ->
-              if tool_def do
-                t0 = System.monotonic_time(:millisecond)
+            task =
+              Task.async(fn ->
+                if tool_def do
+                  t0 = System.monotonic_time(:millisecond)
 
-                case tool_def.execute.(args) do
-                  {:final, output} ->
-                    latency_ms = System.monotonic_time(:millisecond) - t0
-                    output_str = to_string(output)
-                    {output_str, %{type: :tool_result, name: name, status: :ok, output: output_str, call_id: call_id, latency_ms: latency_ms}, :final}
+                  case tool_def.execute.(args) do
+                    {:final, output} ->
+                      latency_ms = System.monotonic_time(:millisecond) - t0
+                      output_str = to_string(output)
 
-                  {:ok, output} ->
-                    latency_ms = System.monotonic_time(:millisecond) - t0
-                    output_str = to_string(output)
-                    {output_str, %{type: :tool_result, name: name, status: :ok, output: output_str, call_id: call_id, latency_ms: latency_ms}, :normal}
+                      {output_str,
+                       %{
+                         type: :tool_result,
+                         name: name,
+                         status: :ok,
+                         output: output_str,
+                         call_id: call_id,
+                         latency_ms: latency_ms
+                       }, :final}
 
-                  {:error, reason} ->
-                    latency_ms = System.monotonic_time(:millisecond) - t0
-                    error_str = "Error: #{reason}"
-                    error_type = classify_tool_error(reason)
-                    {error_str, %{type: :tool_result, name: name, status: :error, output: to_string(reason), call_id: call_id, latency_ms: latency_ms, error_type: error_type}, :normal}
+                    {:ok, output} ->
+                      latency_ms = System.monotonic_time(:millisecond) - t0
+                      output_str = to_string(output)
+
+                      {output_str,
+                       %{
+                         type: :tool_result,
+                         name: name,
+                         status: :ok,
+                         output: output_str,
+                         call_id: call_id,
+                         latency_ms: latency_ms
+                       }, :normal}
+
+                    {:error, reason} ->
+                      latency_ms = System.monotonic_time(:millisecond) - t0
+                      error_str = "Error: #{reason}"
+                      error_type = classify_tool_error(reason)
+
+                      {error_str,
+                       %{
+                         type: :tool_result,
+                         name: name,
+                         status: :error,
+                         output: to_string(reason),
+                         call_id: call_id,
+                         latency_ms: latency_ms,
+                         error_type: error_type
+                       }, :normal}
+                  end
+                else
+                  error_str = "Error: unknown tool #{name}"
+
+                  {error_str,
+                   %{
+                     type: :tool_result,
+                     name: name,
+                     status: :error,
+                     output: "unknown tool #{name}",
+                     call_id: call_id,
+                     latency_ms: 0,
+                     error_type: :unknown_tool
+                   }, :normal}
                 end
-              else
-                error_str = "Error: unknown tool #{name}"
-                {error_str, %{type: :tool_result, name: name, status: :error, output: "unknown tool #{name}", call_id: call_id, latency_ms: 0, error_type: :unknown_tool}, :normal}
-              end
-            end)
+              end)
 
             {task, call, nil, nil}
         end
@@ -135,7 +179,7 @@ defmodule Rho.Reasoner.Direct do
           {ReqLLM.Context.tool_result(event.call_id, denied_result), nil}
 
         {task, meta, nil, nil} ->
-          {result, event, disposition} = Task.await(task, :infinity)
+          {result, event, disposition} = Task.await(task, :timer.minutes(5))
 
           result = lifecycle.after_tool.(meta, result)
 
@@ -174,6 +218,7 @@ defmodule Rho.Reasoner.Direct do
 
       true ->
         assistant_msg = ReqLLM.Context.assistant("", tool_calls: tool_calls)
+
         entries = %{
           type: :tool_step,
           assistant_msg: assistant_msg,
@@ -181,6 +226,7 @@ defmodule Rho.Reasoner.Direct do
           tool_calls: tool_calls,
           response_text: response_text
         }
+
         {:continue, entries}
     end
   end
@@ -196,7 +242,10 @@ defmodule Rho.Reasoner.Direct do
 
           {:error, reason} ->
             if attempt <= @max_stream_retries and retryable?(reason) do
-              Logger.warning("[reasoner.direct] stream_process failed (attempt #{attempt}): #{inspect(reason)}, retrying...")
+              Logger.warning(
+                "[reasoner.direct] stream_process failed (attempt #{attempt}): #{inspect(reason)}, retrying..."
+              )
+
               Process.sleep(1_000 * attempt)
               stream_with_retry(model, context, stream_opts, process_opts, emit, attempt + 1)
             else
@@ -206,7 +255,10 @@ defmodule Rho.Reasoner.Direct do
 
       {:error, reason} ->
         if attempt <= @max_stream_retries and retryable?(reason) do
-          Logger.warning("[reasoner.direct] stream_text failed (attempt #{attempt}): #{inspect(reason)}, retrying...")
+          Logger.warning(
+            "[reasoner.direct] stream_text failed (attempt #{attempt}): #{inspect(reason)}, retrying..."
+          )
+
           Process.sleep(1_000 * attempt)
           stream_with_retry(model, context, stream_opts, process_opts, emit, attempt + 1)
         else
@@ -231,11 +283,20 @@ defmodule Rho.Reasoner.Direct do
     reason_down = String.downcase(reason)
 
     cond do
-      String.contains?(reason_down, "timeout") -> :timeout
-      String.contains?(reason_down, "permission") or String.contains?(reason_down, "denied") -> :permission_denied
-      String.contains?(reason_down, "not found") or String.contains?(reason_down, "no such") -> :not_found
-      String.contains?(reason_down, "invalid") or String.contains?(reason_down, "argument") -> :invalid_args
-      true -> :runtime_error
+      String.contains?(reason_down, "timeout") ->
+        :timeout
+
+      String.contains?(reason_down, "permission") or String.contains?(reason_down, "denied") ->
+        :permission_denied
+
+      String.contains?(reason_down, "not found") or String.contains?(reason_down, "no such") ->
+        :not_found
+
+      String.contains?(reason_down, "invalid") or String.contains?(reason_down, "argument") ->
+        :invalid_args
+
+      true ->
+        :runtime_error
     end
   end
 
