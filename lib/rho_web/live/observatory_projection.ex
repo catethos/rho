@@ -6,7 +6,21 @@ defmodule RhoWeb.ObservatoryProjection do
 
   import Phoenix.Component, only: [assign: 3]
 
-  def project(socket, "rho.agent.started", data) do
+  # Normalize session-scoped signal types to generic keys for projection.
+  # e.g. "rho.agent.hiring_123.started" -> "rho.agent.started"
+  #      "rho.hiring.hiring_123.scores.submitted" -> "rho.hiring.scores.submitted"
+  #      "rho.session.hiring_123.events.text_delta" -> pass through as-is
+  def project(socket, type, data) do
+    normalized = normalize_type(socket.assigns[:session_id], type)
+    do_project(socket, normalized, data)
+  end
+
+  defp normalize_type(nil, type), do: type
+  defp normalize_type(sid, type) do
+    String.replace(type, ".#{sid}.", ".")
+  end
+
+  defp do_project(socket, "rho.agent.started", data) do
     agent = %{
       agent_id: data.agent_id,
       role: data.role,
@@ -28,7 +42,7 @@ defmodule RhoWeb.ObservatoryProjection do
     assign(socket, :agents, agents)
   end
 
-  def project(socket, "rho.agent.stopped", data) do
+  defp do_project(socket, "rho.agent.stopped", data) do
     agents =
       Map.update(socket.assigns.agents, data.agent_id, %{}, fn a ->
         %{a | alive: false, status: :stopped}
@@ -37,12 +51,12 @@ defmodule RhoWeb.ObservatoryProjection do
     assign(socket, :agents, agents)
   end
 
-  def project(socket, "rho.hiring.scores.submitted", data) do
+  defp do_project(socket, "rho.hiring.scores.submitted", data) do
     # Ignore late scores after simulation completed
     if socket.assigns[:simulation_status] == :completed, do: socket, else: do_project_scores(socket, data)
   end
 
-  def project(socket, "rho.hiring.round.started", data) do
+  defp do_project(socket, "rho.hiring.round.started", data) do
     timeline = socket.assigns[:timeline] || []
 
     entry = %{
@@ -59,17 +73,34 @@ defmodule RhoWeb.ObservatoryProjection do
       timestamp: System.monotonic_time(:millisecond)
     }
 
+    # Reset prev_* scores so convergence waits for all evaluators in the new round
+    reset_scores =
+      if data.round > 1 do
+        Map.new(socket.assigns.scores, fn {id, row} ->
+          {id, %{row | prev_technical: nil, prev_culture: nil, prev_compensation: nil}}
+        end)
+      else
+        socket.assigns.scores
+      end
+
     socket
     |> assign(:round, data.round)
+    |> assign(:scores, reset_scores)
     |> assign(:simulation_status, :running)
+    |> assign(:chairman_ready, false)
     |> assign(:timeline, timeline ++ [entry])
   end
 
-  def project(socket, "rho.hiring.simulation.completed", _data) do
+  defp do_project(socket, "rho.hiring.round.requested", _data) do
+    # Informational — the round.started signal handles the actual UI transition
+    socket
+  end
+
+  defp do_project(socket, "rho.hiring.simulation.completed", _data) do
     assign(socket, :simulation_status, :completed)
   end
 
-  def project(socket, "rho.hiring.chairman.message", data) do
+  defp do_project(socket, "rho.hiring.chairman.message", data) do
     timeline = socket.assigns[:timeline] || []
 
     entry = %{
@@ -89,7 +120,7 @@ defmodule RhoWeb.ObservatoryProjection do
     assign(socket, :timeline, timeline ++ [entry])
   end
 
-  def project(socket, "rho.hiring.chairman.summary", data) do
+  defp do_project(socket, "rho.hiring.chairman.summary", data) do
     timeline = socket.assigns[:timeline] || []
 
     entry = %{
@@ -111,7 +142,27 @@ defmodule RhoWeb.ObservatoryProjection do
     |> assign(:chairman_ready, true)
   end
 
-  def project(socket, "rho.hiring.chairman.reply", data) do
+  defp do_project(socket, "rho.hiring.user.question", data) do
+    timeline = socket.assigns[:timeline] || []
+
+    entry = %{
+      type: :user_question,
+      agent_role: nil,
+      agent_id: nil,
+      target: nil,
+      text: data[:text] || "",
+      candidate_id: nil,
+      candidate_name: nil,
+      score: nil,
+      delta: nil,
+      round: data[:round] || socket.assigns[:round] || 0,
+      timestamp: System.monotonic_time(:millisecond)
+    }
+
+    assign(socket, :timeline, timeline ++ [entry])
+  end
+
+  defp do_project(socket, "rho.hiring.chairman.reply", data) do
     timeline = socket.assigns[:timeline] || []
 
     entry = %{
@@ -131,14 +182,16 @@ defmodule RhoWeb.ObservatoryProjection do
     assign(socket, :timeline, timeline ++ [entry])
   end
 
-  def project(socket, "rho.session." <> _ = type, data) when is_map(data) do
+  defp do_project(socket, "rho.session." <> _ = type, data) when is_map(data) do
     completed? = socket.assigns[:simulation_status] == :completed
+    replaying? = socket.assigns[:replaying] || false
+    show_debates? = not completed? or replaying?
 
     cond do
-      String.contains?(type, "broadcast") and not completed? ->
+      String.contains?(type, "broadcast") and show_debates? ->
         add_debate_to_timeline(socket, data[:from], :all, data[:message], data[:agent_id])
 
-      String.contains?(type, "message_sent") and not completed? ->
+      String.contains?(type, "message_sent") and show_debates? ->
         add_debate_to_timeline(socket, data[:from], data[:to], data[:message], data[:agent_id])
 
       String.contains?(type, "text_delta") ->
@@ -164,7 +217,7 @@ defmodule RhoWeb.ObservatoryProjection do
     end
   end
 
-  def project(socket, _type, _data), do: socket
+  defp do_project(socket, _type, _data), do: socket
 
   # --- Helpers ---
 

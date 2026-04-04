@@ -50,13 +50,10 @@ defmodule RhoWeb.ObservatoryLive do
       # Subscribe to all relevant event channels BEFORE starting
       subs =
         [
-          "rho.agent.*",
+          "rho.agent.#{sid}.*",
           "rho.session.#{sid}.events.*",
-          "rho.task.*",
-          "rho.hiring.scores.*",
-          "rho.hiring.round.*",
-          "rho.hiring.simulation.*",
-          "rho.hiring.chairman.*"
+          "rho.task.#{sid}.*",
+          "rho.hiring.#{sid}.**"
         ]
         |> Enum.flat_map(fn pattern ->
           case Rho.Comms.subscribe(pattern) do
@@ -71,6 +68,8 @@ defmodule RhoWeb.ObservatoryLive do
         socket
         |> assign(:bus_subs, subs)
         |> hydrate_from_registry(sid)
+        |> hydrate_from_simulation(sid)
+        |> replay_signals(sid)
 
       {:ok, socket, layout: {RhoWeb.Layouts, :app}}
     else
@@ -123,30 +122,25 @@ defmodule RhoWeb.ObservatoryLive do
     else
       sid = socket.assigns.session_id
 
-      entry = %{
-        type: :user_question,
-        agent_role: nil,
-        agent_id: nil,
-        target: nil,
-        text: question,
-        candidate_id: nil,
-        candidate_name: nil,
-        score: nil,
-        delta: nil,
-        round: socket.assigns.round,
-        timestamp: System.monotonic_time(:millisecond)
-      }
-
-      timeline = socket.assigns.timeline ++ [entry]
-
       case GenServer.whereis(Simulation.via(sid)) do
         nil ->
-          notice = %{entry | type: :system_notice, text: "Session expired. Please start a new simulation."}
-          {:noreply, assign(socket, timeline: timeline ++ [notice])}
+          notice = %{
+            type: :system_notice, agent_role: nil, agent_id: nil, target: nil,
+            text: "Session expired. Please start a new simulation.",
+            candidate_id: nil, candidate_name: nil, score: nil, delta: nil,
+            round: socket.assigns.round, timestamp: System.monotonic_time(:millisecond)
+          }
+          {:noreply, assign(socket, timeline: socket.assigns.timeline ++ [notice])}
 
         _pid ->
+          Rho.Comms.publish("rho.hiring.#{sid}.user.question", %{
+            session_id: sid,
+            text: question,
+            round: socket.assigns.round
+          }, source: "/observatory/#{sid}")
+
           Simulation.ask(sid, question)
-          {:noreply, assign(socket, timeline: timeline)}
+          {:noreply, socket}
       end
     end
   end
@@ -194,29 +188,60 @@ defmodule RhoWeb.ObservatoryLive do
     ~H"""
     <div class="obs-landing">
       <div class="obs-landing-header">
-        <h1>Hiring Committee Observatory</h1>
-        <p>Watch 3 AI agents evaluate candidates, debate each other, and converge on a hiring decision — in real-time. Every agent is a BEAM process.</p>
+        <div class="obs-mission-eyebrow">// multi-agent simulation</div>
+        <h1>Hiring Committee</h1>
+        <p>You're the hiring manager. 5 candidates, 3 offer slots, and a panel of AI evaluators who don't always agree.</p>
+      </div>
+
+      <div class="obs-constraints">
+        <div class="obs-constraint">
+          <div class="obs-constraint-value">$160K–190K</div>
+          <div class="obs-constraint-label">Budget Band</div>
+        </div>
+        <div class="obs-constraint">
+          <div class="obs-constraint-value">3</div>
+          <div class="obs-constraint-label">Max Offers</div>
+        </div>
+        <div class="obs-constraint">
+          <div class="obs-constraint-value">5</div>
+          <div class="obs-constraint-label">Candidates</div>
+        </div>
       </div>
 
       <div class="obs-landing-section">
-        <div class="obs-landing-section-title">The Evaluators</div>
-        <.evaluator_cards />
-      </div>
-
-      <div class="obs-landing-section">
-        <div class="obs-landing-section-title">The Candidates — Senior Backend Engineer · $160K–$190K · Max 3 offers</div>
+        <div class="obs-section-header">
+          <span class="obs-section-num">01</span>
+          <span class="obs-landing-section-title" style="margin-bottom:0">The Candidates</span>
+          <span class="obs-section-aside">Senior Backend Engineer</span>
+        </div>
         <.candidate_cards candidates={@candidates} />
       </div>
 
+      <div class="obs-landing-panel-row">
+        <div class="obs-landing-panel-left">
+          <div class="obs-section-header">
+            <span class="obs-section-num">02</span>
+            <span class="obs-landing-section-title" style="margin-bottom:0">The Panel</span>
+          </div>
+          <.panel_formation />
+        </div>
+        <div class="obs-landing-panel-right">
+          <.why_multi_agent />
+        </div>
+      </div>
+
       <div class="obs-landing-section">
-        <div class="obs-landing-section-title">How It Works</div>
+        <div class="obs-section-header">
+          <span class="obs-section-num">03</span>
+          <span class="obs-landing-section-title" style="margin-bottom:0">How It Plays Out</span>
+        </div>
         <.how_it_works />
       </div>
 
       <button class="obs-start-btn-large" phx-click="start_simulation">
         Start Simulation
       </button>
-      <div class="obs-start-meta">~2–3 min · 3 agents × 2 rounds · 5 candidates · Uses Claude Haiku</div>
+      <div class="obs-start-meta">~2–3 min · 3 agents × 2 rounds · DeepSeek v3</div>
     </div>
     """
   end
@@ -299,6 +324,121 @@ defmodule RhoWeb.ObservatoryLive do
       end)
 
     assign(socket, :agents, agents)
+  end
+
+  defp hydrate_from_simulation(socket, session_id) do
+    case GenServer.whereis(Simulation.via(session_id)) do
+      nil -> socket
+      _pid ->
+        try do
+          sim = Simulation.get_state(session_id)
+
+          # Rebuild scoreboard from simulation's scores (latest round only)
+          latest_round =
+            sim.scores
+            |> Map.keys()
+            |> Enum.map(fn {_role, round} -> round end)
+            |> Enum.max(fn -> 0 end)
+
+          scores =
+            sim.scores
+            |> Enum.filter(fn {{_role, round}, _} -> round == latest_round end)
+            |> Enum.reduce(seed_scoreboard(), fn {{role, _round}, entries}, acc ->
+              role_key = score_column_for(role)
+
+              Enum.reduce(entries, acc, fn entry, inner ->
+                id = entry["id"]
+                score = entry["score"]
+
+                Map.update(inner, id, %{}, fn row ->
+                  row
+                  |> Map.put(role_key, score)
+                  |> recompute_avg()
+                end)
+              end)
+            end)
+
+          # Rebuild agents from evaluators map (even if processes are dead)
+          agents =
+            Enum.reduce(sim.evaluators, socket.assigns.agents, fn {role, agent_id}, acc ->
+              Map.put_new(acc, agent_id, %{
+                agent_id: agent_id,
+                role: role,
+                agent_name: role,
+                status: :stopped,
+                depth: 1,
+                pid: Worker.whereis(agent_id),
+                current_tool: nil,
+                current_step: nil,
+                message_queue_len: 0,
+                heap_size: 0,
+                reductions: 0,
+                prev_reductions: 0,
+                reductions_per_sec: 0,
+                alive: false
+              })
+            end)
+
+          socket
+          |> assign(:scores, scores)
+          |> assign(:round, sim.round)
+          |> assign(:simulation_status, sim.status)
+          |> assign(:agents, agents)
+          |> assign(:chairman_ready, sim.status == :completed and sim.summary_delivered)
+        catch
+          :exit, _ -> socket
+        end
+    end
+  end
+
+  defp score_column_for(:technical_evaluator), do: :technical
+  defp score_column_for(:culture_evaluator), do: :culture
+  defp score_column_for(:compensation_evaluator), do: :compensation
+  defp score_column_for(_), do: :other
+
+  defp recompute_avg(row) do
+    values =
+      [row[:technical], row[:culture], row[:compensation]]
+      |> Enum.reject(&is_nil/1)
+
+    avg = if values == [], do: nil, else: Enum.sum(values) / length(values)
+    Map.put(row, :avg, avg)
+  end
+
+  defp replay_signals(socket, session_id) do
+    # Replay signals from the in-memory bus journal to restore state after reconnect.
+    # Skip rho.session.** (flooded with text_delta/llm_usage noise hitting 1000 batch limit).
+    # Debate signals (message_sent/broadcast) are published via multi_agent mount directly
+    # to the bus, so we replay them with a specific pattern.
+    patterns = [
+      "rho.agent.#{session_id}.**",
+      "rho.hiring.#{session_id}.**",
+      "rho.session.#{session_id}.events.message_sent",
+      "rho.session.#{session_id}.events.broadcast"
+    ]
+
+    signals =
+      patterns
+      |> Enum.flat_map(fn pattern ->
+        case Rho.Comms.replay(pattern) do
+          {:ok, sigs} when is_list(sigs) -> sigs
+          sigs when is_list(sigs) -> sigs
+          _ -> []
+        end
+      end)
+      |> Enum.sort_by(fn recorded -> recorded.signal.time || "" end)
+
+    # During replay, temporarily mark as :replaying so projection doesn't
+    # filter out debates that happened before completion
+    socket = assign(socket, :replaying, true)
+
+    socket =
+      Enum.reduce(signals, socket, fn recorded, acc ->
+        sig = recorded.signal
+        RhoWeb.ObservatoryProjection.project(acc, sig.type, sig.data)
+      end)
+
+    assign(socket, :replaying, false)
   end
 
   defp seed_scoreboard do
