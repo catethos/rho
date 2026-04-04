@@ -18,7 +18,7 @@ defmodule Rho.Demos.Hiring.Tools do
               type: :string,
               required: true,
               doc:
-                ~s(JSON array: [{"id": "C01", "score": 85, "rationale": "..."}, ...]. Score each candidate 0-100.)
+                ~s|JSON array: [{"id": "C01", "score": 85, "rationale": "..."}, ...]. Score each of the 5 candidates (C01, C02, C03, C04, C05) from 0-100. Only these IDs are valid.|
             ]
           ],
           callback: fn _args -> :ok end
@@ -27,9 +27,13 @@ defmodule Rho.Demos.Hiring.Tools do
         round = args["round"] || args[:round]
         raw_scores = args["scores"] || args[:scores]
 
+        valid_ids = MapSet.new(Rho.Demos.Hiring.Candidates.all(), & &1.id)
+
         case Jason.decode(raw_scores) do
           {:ok, scores} when is_list(scores) ->
-            Comms.publish("rho.hiring.scores.submitted", %{
+            scores = Enum.filter(scores, &MapSet.member?(valid_ids, &1["id"]))
+
+            Comms.publish("rho.hiring.#{session_id}.scores.submitted", %{
               session_id: session_id,
               agent_id: agent_id,
               role: role,
