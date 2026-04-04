@@ -82,7 +82,9 @@ defmodule Rho.Tape.Compact do
   end
 
   # Asks the LLM to produce a concise summary of the current view.
-  defp summarize(model, view, gen_opts) do
+  defp summarize(model, view, gen_opts), do: summarize(model, view, gen_opts, 1)
+
+  defp summarize(model, view, gen_opts, attempt) do
     messages = View.to_messages(view)
 
     prompt =
@@ -102,7 +104,18 @@ defmodule Rho.Tape.Compact do
         {:ok, ReqLLM.Response.text(response)}
 
       {:error, reason} ->
-        {:error, reason}
+        if attempt <= 3 and retryable_compact?(reason) do
+          require Logger
+          Logger.warning("[compact] attempt #{attempt} failed: #{inspect(reason)}, retrying...")
+          Process.sleep(1_000 * attempt)
+          summarize(model, view, gen_opts, attempt + 1)
+        else
+          {:error, reason}
+        end
     end
   end
+
+  defp retryable_compact?(%RuntimeError{message: msg}), do: String.contains?(msg, "Finch")
+  defp retryable_compact?({:error, err}), do: retryable_compact?(err)
+  defp retryable_compact?(_), do: false
 end

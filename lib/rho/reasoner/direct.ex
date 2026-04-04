@@ -8,7 +8,7 @@ defmodule Rho.Reasoner.Direct do
 
   require Logger
 
-  @max_stream_retries 2
+  @max_stream_retries 3
   @terminal_tools MapSet.new(["create_anchor", "clear_memory", "finish", "end_turn"])
 
   @doc """
@@ -216,6 +216,8 @@ defmodule Rho.Reasoner.Direct do
   end
 
   defp retryable?(%Mint.TransportError{reason: reason}), do: retryable?(reason)
+  defp retryable?(%RuntimeError{message: msg}), do: String.contains?(msg, "Finch was unable to provide a connection")
+  defp retryable?({:error, %RuntimeError{} = err}), do: retryable?(err)
   defp retryable?({:timeout, _}), do: true
   defp retryable?({:closed, _}), do: true
   defp retryable?(:timeout), do: true

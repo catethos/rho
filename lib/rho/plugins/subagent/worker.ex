@@ -147,7 +147,7 @@ defmodule Rho.Plugins.Subagent.Worker do
     # Publish agent started signal so the LiveView UI can discover subagents
     session_id = state.session_id
 
-    Rho.Comms.publish("rho.agent.started", %{
+    Rho.Comms.publish("rho.agent.#{session_id}.started", %{
       agent_id: state.subagent_id,
       session_id: session_id,
       role: :subagent,
@@ -295,11 +295,11 @@ defmodule Rho.Plugins.Subagent.Worker do
     # Publish agent stopped signal
     session_id = state.session_id
 
-    Rho.Comms.publish("rho.agent.stopped", %{
+    Rho.Comms.publish("rho.agent.#{session_id}.stopped", %{
       agent_id: state.subagent_id,
       session_id: session_id,
       reason: inspect(reason)
-    }, source: "/subagent/#{state.subagent_id}")
+    }, source: "/subagent/#{session_id}/subagent/#{state.subagent_id}")
 
     try do
       :ets.delete(@status_table, state.subagent_id)

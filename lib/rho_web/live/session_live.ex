@@ -285,7 +285,9 @@ defmodule RhoWeb.SessionLive do
     if signal_for_session?(data, sid) do
       correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
       data = Map.put(data, :correlation_id, correlation_id)
-      {:noreply, SessionProjection.project(socket, %{type: type, data: data})}
+      # Normalize session-scoped type: "rho.agent.#{sid}.started" -> "rho.agent.started"
+      normalized_type = String.replace(type, ".#{sid}.", ".")
+      {:noreply, SessionProjection.project(socket, %{type: normalized_type, data: data})}
     else
       {:noreply, socket}
     end
@@ -643,8 +645,8 @@ defmodule RhoWeb.SessionLive do
 
     # Subscribe to signal bus only (NOT Rho.Session.subscribe to avoid duplicates)
     {:ok, sub1} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
-    {:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
-    {:ok, sub3} = Rho.Comms.subscribe("rho.task.*")
+    {:ok, sub2} = Rho.Comms.subscribe("rho.agent.#{session_id}.*")
+    {:ok, sub3} = Rho.Comms.subscribe("rho.task.#{session_id}.*")
 
     # Hydrate agent list
     agents =

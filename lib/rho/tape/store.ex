@@ -81,15 +81,16 @@ defmodule Rho.Tape.Store do
       [] ->
         []
 
-      [first | rest] ->
-        initial = lookup_token_ids(tape_name, first)
-
-        Enum.reduce(rest, initial, fn token, acc ->
-          token_ids = lookup_token_ids(tape_name, token)
-          MapSet.intersection(acc, token_ids)
+      tokens ->
+        # OR-with-ranking: collect all entries matching any token,
+        # sort by number of tokens matched (most relevant first)
+        tokens
+        |> Enum.flat_map(fn token ->
+          lookup_token_ids(tape_name, token) |> MapSet.to_list()
         end)
-        |> MapSet.to_list()
-        |> Enum.sort()
+        |> Enum.frequencies()
+        |> Enum.sort_by(fn {_id, count} -> -count end)
+        |> Enum.map(fn {id, _count} -> id end)
     end
   end
 

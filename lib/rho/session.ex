@@ -145,7 +145,7 @@ defmodule Rho.Session do
 
   @doc "Generate a new agent ID for use in a session."
   def new_agent_id do
-    "agent_#{:erlang.unique_integer([:positive])}"
+    "agent_#{System.unique_integer([:positive])}_#{System.os_time(:millisecond)}"
   end
 
   # --- Private ---

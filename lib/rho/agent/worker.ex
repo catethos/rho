@@ -170,7 +170,7 @@ defmodule Rho.Agent.Worker do
     bus_subs = subscribe_to_bus(session_id, agent_id)
 
     # Publish agent started event
-    Comms.publish("rho.agent.started", %{
+    Comms.publish("rho.agent.#{session_id}.started", %{
       agent_id: agent_id,
       session_id: session_id,
       role: role,
@@ -431,7 +431,7 @@ defmodule Rho.Agent.Worker do
     end
 
     # Publish stopped event
-    Comms.publish("rho.agent.stopped", %{
+    Comms.publish("rho.agent.#{state.session_id}.stopped", %{
       agent_id: state.agent_id,
       session_id: state.session_id,
       reason: inspect(reason)
@@ -476,7 +476,7 @@ defmodule Rho.Agent.Worker do
         depth: state.depth,
         prompt_format: config[:prompt_format] || :markdown
       ]
-      |> maybe_put(:provider, config.provider)
+      |> maybe_put(:provider, opts[:provider] || config.provider)
       |> maybe_put(:task_id, task_id)
 
     # For delegated agents at depth > 0, include subagent flag for lifecycle
@@ -700,7 +700,7 @@ defmodule Rho.Agent.Worker do
           other -> inspect(other)
         end
 
-      Comms.publish("rho.task.completed", %{
+      Comms.publish("rho.task.#{state.session_id}.completed", %{
         agent_id: state.agent_id,
         session_id: state.session_id,
         result: result_text

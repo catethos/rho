@@ -204,10 +204,10 @@ defmodule Rho.AgentLoop do
     [system_msg | tail]
   end
 
-  defp build_gen_opts(nil), do: [provider_options: [openrouter_cache_control: %{type: "ephemeral"}]]
+  defp build_gen_opts(nil), do: []
 
   defp build_gen_opts(provider) do
-    [provider_options: [openrouter_provider: provider, openrouter_cache_control: %{type: "ephemeral"}]]
+    [provider_options: [openrouter_provider: provider]]
   end
 
   # -- Main loop --
