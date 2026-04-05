@@ -118,21 +118,25 @@ Elixir module that routes file parsing by MIME type. Calls Python scripts via `P
 
 ```elixir
 @spec parse(path :: String.t(), mime_type :: String.t()) ::
-  {:structured, %{rows: [map()], columns: [String.t()], row_count: integer()}}
+  {:structured, %{sheets: [%{name: String.t(), rows: [map()], columns: [String.t()], row_count: integer()}]}}
   | {:text, String.t()}
   | {:image, binary(), String.t()}
   | {:error, String.t()}
 ```
+
+For single-sheet files (CSV, single-sheet Excel), `sheets` still returns a list with one element for consistency.
 
 **Routing:**
 
 | MIME Type | Handler | Output |
 |-----------|---------|--------|
 | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (.xlsx) | `scripts/parse_excel.py` via Pythonx | `{:structured, %{rows, columns, row_count}}` |
-| `text/csv` | `scripts/parse_excel.py` via Pythonx (handles both) | `{:structured, %{rows, columns, row_count}}` |
+| `text/csv` | `scripts/parse_excel.py` via Pythonx (handles both) | `{:structured, %{sheets: [%{name, rows, columns, row_count}]}}` |
 | `application/pdf` | `scripts/parse_pdf.py` via Pythonx | `{:structured, ...}` or `{:text, content}` |
 | `image/*` | `File.read!` + Base64 | `{:image, base64_data, media_type}` |
 | Other | — | `{:error, "Unsupported file type: .xls. Please re-save as .xlsx"}` |
+
+**Multi-sheet Excel handling:** `parse_excel.py` reads ALL sheets from an Excel file and returns them as a list: `{sheets: [{name: "Tech Skills", rows: [...], columns: [...]}, ...]}`. The file summary tells the agent about each sheet (name + row count). If there's only one sheet, the agent proceeds directly. If multiple sheets, the agent asks the user which sheet(s) to import.
 
 **PDF two-pass strategy** (in `parse_pdf.py`):
 1. Try pdfplumber table extraction
@@ -156,27 +160,83 @@ Add `allow_upload` in `mount/3`:
 )
 ```
 
-**On send_message:** consume uploaded entries, parse each file, store results, build enriched message.
+#### Upload Limits
+
+| Constraint | Limit | Enforced By |
+|------------|-------|-------------|
+| Per-file size | 10MB | LiveView `max_file_size` (client + server) |
+| Max files per message | 10 | LiveView `max_entries` |
+| Accepted types | .xlsx .csv .pdf .jpg .jpeg .png .webp | LiveView `accept` (client + server) |
+| Total upload per message | 50MB | Custom validation in `handle_event` (LiveView only enforces per-file) |
+
+The total upload limit prevents a user from uploading 10 x 10MB files (100MB) which would strain memory. Custom validation rejects with a flash message: "Total upload size exceeds 50MB. Please upload fewer or smaller files."
+
+#### Upload UI Changes
+
+The chat input area needs these additions to the render template:
+
+- **Attach button** (paperclip icon) next to the textarea, triggers `<.live_file_input upload={@uploads.files} />`
+- **File chips** above the textarea showing selected files before send: filename + type icon + "x" remove button. Use `@uploads.files.entries` to render.
+- **Upload progress** per file (LiveView's built-in `entry.progress` percentage)
+- **Parse status** after send: show "Parsing files..." spinner while async parsing runs, then "Parsed 45 rows from tech_skills.xlsx" on completion
+- **Error display** when a file fails to parse: red chip with error message
+
+Allow sending with files but no text (current code rejects empty messages):
 
 ```elixir
 def handle_event("send_message", %{"content" => content}, socket) do
-  # 1. Parse all uploaded files
-  file_results = consume_uploaded_entries(socket, :files, fn %{path: path}, entry ->
-    result = Rho.FileParser.parse(path, entry.client_type)
-    {:ok, %{filename: entry.client_name, result: result}}
+  content = String.trim(content)
+  has_files = @uploads.files.entries != []
+  if content == "" and not has_files, do: {:noreply, socket}, else: do_send_with_files(content, socket)
+end
+```
+
+#### Async File Parsing
+
+File parsing MUST NOT block the LiveView process. A large PDF could take 5-10 seconds via Pythonx. Parse asynchronously:
+
+```elixir
+defp do_send_with_files(content, socket) do
+  # 1. Consume uploaded entries (just copy temp files, fast)
+  file_entries = consume_uploaded_entries(socket, :files, fn %{path: path}, entry ->
+    # Copy to a stable location (temp files get cleaned up)
+    stable_path = Path.join(System.tmp_dir!(), "rho_upload_#{System.unique_integer([:positive])}_#{entry.client_name}")
+    File.cp!(path, stable_path)
+    {:ok, %{filename: entry.client_name, path: stable_path, mime: entry.client_type}}
   end)
 
-  # 2. Store parsed data in assigns (for get_uploaded_file tool)
-  socket = store_parsed_files(socket, file_results)
+  if file_entries == [] do
+    # No files — send plain text immediately
+    do_send_message(content, socket)
+  else
+    # 2. Show "Parsing files..." state
+    socket = assign(socket, :parsing_files, true)
 
-  # 3. Build message: user text + file summaries + image parts
+    # 3. Parse all files asynchronously via Task.Supervisor
+    parent = self()
+    Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+      results = Enum.map(file_entries, fn entry ->
+        result = Rho.FileParser.parse(entry.path, entry.mime)
+        File.rm(entry.path)  # Clean up temp copy
+        %{filename: entry.filename, result: result}
+      end)
+      send(parent, {:files_parsed, content, results})
+    end)
+
+    {:noreply, socket}
+  end
+end
+
+def handle_info({:files_parsed, content, file_results}, socket) do
+  socket = assign(socket, :parsing_files, false)
+  socket = store_parsed_files(socket, file_results)
   {text_summary, image_parts} = build_file_context(file_results)
   enriched_content = build_submit_content(content, text_summary, image_parts)
-
-  # 4. Submit to agent
   do_send_message(enriched_content, socket)
 end
 ```
+
+**Known limitation (v1):** Parsed file data is stored in `socket.assigns.parsed_files`. If the LiveView process crashes or the user refreshes, parsed data is lost. The user would need to re-upload. Persisting to disk or ETS is a v2 improvement.
 
 **File summary format** (injected as text, NOT full data):
 
@@ -434,6 +494,8 @@ Agent: Intent → Reference + Generate
 - Apple Numbers (.numbers), LibreOffice (.ods)
 - Automatic column mapping (v1 is agent-proposed, user-confirmed)
 - File drag-and-drop (v1 uses click-to-upload)
+- **Export to Excel** — download the spreadsheet as .xlsx. Natural fast-follow after import+enhance. Architecture supports it: pair `parse_excel.py` with `export_excel.py`, add `export_table` tool to spreadsheet mount
+- Persisting parsed file data to disk/ETS (survives LiveView crash)
 - Skill-to-skill composition
 - `$ARGUMENTS` / `${RHO_SKILL_DIR}` variable substitution in skill bodies
 
