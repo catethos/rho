@@ -782,6 +782,7 @@ In `SpreadsheetLive.mount/3`, add after existing assigns:
 ```elixir
 |> assign(:parsed_files, %{})
 |> assign(:parsing_files, false)
+|> assign(:parsing_task_ref, nil)
 |> allow_upload(:files,
   accept: ~w(.xlsx .csv .pdf .jpg .jpeg .png .webp),
   max_entries: 10,
@@ -828,18 +829,30 @@ defp do_send_with_files(content, socket) do
   else
     parent = self()
 
-    Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
-      results =
-        Enum.map(file_entries, fn entry ->
-          result = Rho.FileParser.parse(entry.path, entry.mime)
-          File.rm(entry.path)
-          %{filename: entry.filename, result: result}
-        end)
+    # async_nolink: if the Task crashes, we get {:DOWN, ...} instead of
+    # crashing the LiveView. MUST handle both success and failure paths.
+    task =
+      Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+        results =
+          Enum.map(file_entries, fn entry ->
+            result =
+              try do
+                Rho.FileParser.parse(entry.path, entry.mime)
+              rescue
+                e -> {:error, "Parse failed: #{Exception.message(e)}"}
+              end
 
-      send(parent, {:files_parsed, content, results})
-    end)
+            File.rm(entry.path)
+            %{filename: entry.filename, result: result}
+          end)
 
-    {:noreply, assign(socket, :parsing_files, true)}
+        send(parent, {:files_parsed, content, results})
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:parsing_files, true)
+     |> assign(:parsing_task_ref, task.ref)}
   end
 end
 ```
@@ -891,6 +904,32 @@ def handle_info({:files_parsed, content, file_results}, socket) do
 
   # Use display_text for the chat feed, submit_content for the agent
   do_send_message_with_display(submit_content, display_text, socket)
+end
+```
+
+Add Task result/crash handlers (standard LiveView pattern for `async_nolink`):
+
+```elixir
+# Task completed successfully — async_nolink sends {ref, result} on success.
+# The actual work is done in {:files_parsed, ...} above; this just cleans up the monitor.
+def handle_info({ref, _result}, socket) when is_reference(ref) do
+  Process.demonitor(ref, [:flush])
+  {:noreply, socket}
+end
+
+# Task crashed — Pythonx segfault, OOM, etc. Reset parsing state and show error.
+def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
+  if ref == socket.assigns[:parsing_task_ref] do
+    socket =
+      socket
+      |> assign(:parsing_files, false)
+      |> assign(:parsing_task_ref, nil)
+      |> put_flash(:error, "File parsing failed: #{inspect(reason)}")
+
+    {:noreply, socket}
+  else
+    {:noreply, socket}
+  end
 end
 ```
 
