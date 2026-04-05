@@ -41,6 +41,9 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:total_reasoning_tokens, 0)
       |> assign(:step_input_tokens, 0)
       |> assign(:step_output_tokens, 0)
+      |> assign(:parsed_files, %{})
+      |> assign(:parsing_files, false)
+      |> assign(:parsing_task_ref, nil)
       |> assign(:connected, connected?(socket))
       |> assign(:user_avatar, load_avatar("avatar"))
       |> assign(
@@ -58,6 +61,13 @@ defmodule RhoWeb.SpreadsheetLive do
       else
         socket
       end
+
+    socket =
+      allow_upload(socket, :files,
+        accept: ~w(.xlsx .csv .pdf .jpg .jpeg .png .webp),
+        max_entries: 10,
+        max_file_size: 10_000_000
+      )
 
     {:ok, socket, layout: {RhoWeb.Layouts, :app}}
   end
@@ -128,7 +138,33 @@ defmodule RhoWeb.SpreadsheetLive do
 
   def handle_event("send_message", %{"content" => content}, socket) do
     content = String.trim(content)
-    if content == "", do: {:noreply, socket}, else: do_send_message(content, socket)
+    has_files = socket.assigns.uploads.files.entries != []
+
+    if content == "" and not has_files do
+      {:noreply, socket}
+    else
+      do_send_with_files(content, socket)
+    end
+  end
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :files, ref)}
+  end
+
+  def handle_event("validate_upload", _params, socket) do
+    total_size =
+      Enum.reduce(socket.assigns.uploads.files.entries, 0, fn entry, acc ->
+        entry.client_size + acc
+      end)
+
+    socket =
+      if total_size > 50_000_000 do
+        put_flash(socket, :error, "Total upload size exceeds 50MB.")
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   def handle_event("select_tab", %{"agent-id" => agent_id}, socket) do
@@ -141,6 +177,123 @@ defmodule RhoWeb.SpreadsheetLive do
   def handle_info({:spreadsheet_get_table, {caller_pid, ref}, filter}, socket) do
     rows = socket.assigns.rows_map |> Map.values() |> filter_rows(filter)
     send(caller_pid, {ref, {:ok, rows}})
+    {:noreply, socket}
+  end
+
+  # --- Signal bus events ---
+
+  # --- File parsing results ---
+
+  def handle_info({:files_parsed, content, file_results}, socket) do
+    socket =
+      socket
+      |> assign(:parsing_files, false)
+      |> assign(:parsing_task_ref, nil)
+
+    # Store parsed data for get_uploaded_file tool
+    parsed_files =
+      Enum.reduce(file_results, socket.assigns.parsed_files, fn
+        %{filename: name, result: {:structured, data}}, acc ->
+          Map.put(acc, name, {:structured, data})
+
+        %{filename: name, result: {:text, text}}, acc ->
+          Map.put(acc, name, {:text, text})
+
+        _, acc ->
+          acc
+      end)
+
+    socket = assign(socket, :parsed_files, parsed_files)
+
+    # Build enriched message
+    {text_summary, image_parts} = build_file_context(file_results)
+
+    display_text =
+      case {content, text_summary} do
+        {"", ""} -> "[Files uploaded]"
+        {c, ""} -> c
+        {"", s} -> s
+        {c, s} -> c <> "\n\n" <> s
+      end
+
+    submit_content =
+      if image_parts != [] do
+        text_parts =
+          if display_text != "",
+            do: [ReqLLM.Message.ContentPart.text(display_text)],
+            else: []
+
+        text_parts ++ image_parts
+      else
+        display_text
+      end
+
+    do_send_message_with_display(submit_content, display_text, socket)
+  end
+
+  # Task completed successfully — clean up monitor
+  def handle_info({ref, _result}, socket) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, socket}
+  end
+
+  # Task crashed — reset parsing state and show error
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
+    if ref == socket.assigns[:parsing_task_ref] do
+      socket =
+        socket
+        |> assign(:parsing_files, false)
+        |> assign(:parsing_task_ref, nil)
+        |> put_flash(:error, "File parsing failed: #{inspect(reason)}")
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # --- Uploaded file tool reads ---
+
+  def handle_info({:get_uploaded_file, {caller_pid, ref}, args}, socket) do
+    filename = args["filename"] || ""
+    sheet_name = args["sheet"]
+    offset = args["offset"] || 0
+    limit = args["limit"] || 200
+
+    result =
+      case Map.get(socket.assigns.parsed_files, filename) do
+        nil ->
+          available = socket.assigns.parsed_files |> Map.keys() |> Enum.join(", ")
+
+          {:error, "No uploaded file found: \"#{filename}\". Available: #{available}"}
+
+        {:structured, %{sheets: sheets}} ->
+          sheet =
+            if sheet_name do
+              Enum.find(sheets, hd(sheets), &(&1.name == sheet_name))
+            else
+              hd(sheets)
+            end
+
+          paginated_rows = sheet.rows |> Enum.drop(offset) |> Enum.take(limit)
+          total = sheet.row_count
+
+          {:ok,
+           %{
+             name: sheet.name,
+             columns: sheet.columns,
+             rows: paginated_rows,
+             row_count: length(paginated_rows),
+             total_rows: total,
+             offset: offset,
+             has_more: offset + limit < total
+           }}
+
+        {:text, text} ->
+          {:ok, %{type: "text", content: text, char_count: String.length(text)}}
+      end
+
+    send(caller_pid, {ref, result})
     {:noreply, socket}
   end
 
@@ -612,6 +765,148 @@ defmodule RhoWeb.SpreadsheetLive do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to send: #{inspect(reason)}")}
     end
+  end
+
+  defp do_send_with_files(content, socket) do
+    file_entries =
+      consume_uploaded_entries(socket, :files, fn %{path: path}, entry ->
+        stable_path =
+          Path.join(
+            System.tmp_dir!(),
+            "rho_upload_#{System.unique_integer([:positive])}_#{entry.client_name}"
+          )
+
+        File.cp!(path, stable_path)
+        {:ok, %{filename: entry.client_name, path: stable_path, mime: entry.client_type}}
+      end)
+
+    if file_entries == [] do
+      do_send_message(content, socket)
+    else
+      parent = self()
+
+      task =
+        Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+          results =
+            Enum.map(file_entries, fn entry ->
+              result =
+                try do
+                  Rho.FileParser.parse(entry.path, entry.mime)
+                rescue
+                  e -> {:error, "Parse failed: #{Exception.message(e)}"}
+                end
+
+              File.rm(entry.path)
+              %{filename: entry.filename, result: result}
+            end)
+
+          send(parent, {:files_parsed, content, results})
+        end)
+
+      {:noreply,
+       socket
+       |> assign(:parsing_files, true)
+       |> assign(:parsing_task_ref, task.ref)}
+    end
+  end
+
+  defp do_send_message_with_display(submit_content, display_text, socket) do
+    sid = socket.assigns.session_id
+
+    {sid, socket} =
+      if sid do
+        {sid, socket}
+      else
+        {new_sid, sock} = ensure_session(socket, nil)
+        sock = subscribe_and_hydrate(sock, new_sid)
+        {new_sid, assign(sock, :session_id, new_sid)}
+      end
+
+    target_id = socket.assigns.active_tab
+
+    user_msg = %{
+      id: "user_#{System.unique_integer([:positive])}",
+      role: :user,
+      type: :text,
+      content: display_text,
+      agent_id: target_id
+    }
+
+    socket = SessionProjection.append_message(socket, user_msg)
+
+    result =
+      if target_id do
+        case Rho.Agent.Worker.whereis(target_id) do
+          nil -> {:error, "Agent not found"}
+          pid -> Rho.Agent.Worker.submit(pid, submit_content)
+        end
+      else
+        Rho.Session.submit(sid, submit_content)
+      end
+
+    case result do
+      {:ok, _turn_id} ->
+        pending_id = target_id || primary_agent_id(sid)
+        pending = MapSet.put(socket.assigns.pending_response, pending_id)
+        {:noreply, assign(socket, :pending_response, pending)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to send: #{inspect(reason)}")}
+    end
+  end
+
+  defp build_file_context(file_results) do
+    {summaries, images} =
+      Enum.reduce(file_results, {[], []}, fn result, {summ, imgs} ->
+        case result do
+          %{filename: name, result: {:structured, %{sheets: sheets}}} ->
+            sheet_info =
+              Enum.map_join(sheets, "\n", fn s ->
+                sample =
+                  s.rows
+                  |> Enum.take(3)
+                  |> Enum.with_index(1)
+                  |> Enum.map_join("\n", fn {row, i} ->
+                    "  Row #{i}: #{Jason.encode!(row)}"
+                  end)
+
+                "  Sheet \"#{s.name}\": #{s.row_count} rows, #{length(s.columns)} columns (#{Enum.join(s.columns, ", ")})\n#{sample}"
+              end)
+
+            summary =
+              "- #{name}:\n#{sheet_info}\n  Use get_uploaded_file(\"#{name}\") to read all rows."
+
+            {[summary | summ], imgs}
+
+          %{filename: name, result: {:text, text}} ->
+            summary =
+              "- #{name}: Extracted text (#{String.length(text)} chars). Prose content.\n  Use get_uploaded_file(\"#{name}\") to read full text."
+
+            {[summary | summ], imgs}
+
+          %{filename: _name, result: {:image, base64, media_type}} ->
+            image_part =
+              ReqLLM.Message.ContentPart.image(Base64.decode64!(base64), media_type)
+
+            {summ, [image_part | imgs]}
+
+          %{filename: name, result: {:error, message}} ->
+            summary = "- #{name}: ERROR — #{message}"
+            {[summary | summ], imgs}
+
+          _ ->
+            {summ, imgs}
+        end
+      end)
+
+    text =
+      if summaries != [] do
+        "[Uploaded files]\n" <> Enum.join(Enum.reverse(summaries), "\n")
+      else
+        ""
+      end
+
+    {text, Enum.reverse(images)}
   end
 
   defp ensure_session(socket, nil) do
