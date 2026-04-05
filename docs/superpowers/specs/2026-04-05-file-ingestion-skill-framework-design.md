@@ -364,16 +364,22 @@ spreadsheet: [
     :skills,  # NEW — enables skill discovery + read_resource
     {:multi_agent, only: [:delegate_task, :await_task, :list_agents]}
   ],
+  default_skills: ["framework-editor"],  # NEW — always expand these skills into prompt
+  python_deps: ["openpyxl", "pdfplumber", "chardet"],
   system_prompt: """
-  You are a skill framework editor assistant. $framework-editor
-
+  You are a skill framework editor assistant.
   Use the framework-editor skill to guide your workflow.
   For simple edits, use spreadsheet tools directly.
   """
 ]
 ```
 
-The `$framework-editor` hint triggers `expanded_hints()` to auto-expand the skill body into the prompt — zero round-trip cost.
+**Important: `default_skills` is a new config field.** The existing `$skill-name` hint mechanism in `Rho.Skills.prompt_sections/2` only checks user messages — it does NOT check the system prompt. So putting `$framework-editor` in the system prompt would NOT trigger auto-expansion.
+
+Instead, `default_skills` is an explicit config field. `Rho.Skills.prompt_sections/2` must be modified to check `context.agent_name → Rho.Config.agent(name).default_skills` and always expand those skills into the prompt. This is:
+- **Explicit** — no parsing magic, config says exactly which skills to always load
+- **Zero round-trip** — skill body is in the prompt from the start
+- **Reusable** — any agent can declare default skills
 
 The current monolithic system prompt (intake + skeleton + proficiency generation instructions) moves into `references/generate-workflow.md`. The system prompt becomes thin.
 
@@ -535,7 +541,8 @@ Agent: Intent → Reference + Generate
 
 | File | Change |
 |------|--------|
-| `lib/rho/skills.ex` | Add `read_resource` tool |
+| `lib/rho/skills.ex` | Add `read_resource` tool + `default_skills` expansion |
+| `lib/rho/config.ex` | Support `default_skills` config field |
 | `lib/rho/mounts/spreadsheet.ex` | Add `get_uploaded_file` tool |
 | `lib/rho_web/live/spreadsheet_live.ex` | Add `allow_upload`, file parsing pipeline, multimodal message assembly, `parsed_files` assigns handling |
 | `.rho.exs` | Add `:skills` mount, `python_deps`, thin system prompt with `$framework-editor` hint |
