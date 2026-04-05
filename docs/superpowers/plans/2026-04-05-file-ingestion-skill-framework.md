@@ -199,6 +199,7 @@ def parse_pdf(file_path):
         }
     # Pass 2: Extract text
     full_text = ""
+    page_count = len(pdf.pages)  # capture BEFORE close
     for page in pdf.pages:
         text = page.extract_text()
         if text:
@@ -207,7 +208,7 @@ def parse_pdf(file_path):
     full_text = full_text.strip()
     if not full_text:
         return {"type": "error", "message": "Scanned PDF detected. Please upload a digitally-generated PDF or take a screenshot instead."}
-    return {"type": "text", "content": full_text, "char_count": len(full_text), "page_count": len(pdf.pages) if hasattr(pdf, 'pages') else 0}
+    return {"type": "text", "content": full_text, "char_count": len(full_text), "page_count": page_count}
 
 def parse(file_path):
     """Entry point called by Rho.FileParser via Pythonx.eval.
@@ -996,22 +997,9 @@ defp build_file_context(file_results) do
   {text, Enum.reverse(images)}
 end
 
-defp build_submit_content(content, text_summary, image_parts) do
-  enriched_text =
-    case {content, text_summary} do
-      {"", ""} -> ""
-      {c, ""} -> c
-      {"", s} -> s
-      {c, s} -> c <> "\n\n" <> s
-    end
-
-  if image_parts != [] do
-    text_parts = if enriched_text != "", do: [ReqLLM.Message.ContentPart.text(enriched_text)], else: []
-    text_parts ++ image_parts
-  else
-    enriched_text
-  end
-end
+  # NOTE: build_submit_content was removed — multimodal content assembly
+  # is now handled inline in handle_info({:files_parsed, ...}) to keep
+  # display_text and submit_content in the same scope.
 ```
 
 - [ ] **Step 6: Add handle_info for get_uploaded_file**
