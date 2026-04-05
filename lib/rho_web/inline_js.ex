@@ -69,8 +69,7 @@ defmodule RhoWeb.InlineJS do
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               el.closest("form").dispatchEvent(new Event("submit", {bubbles: true, cancelable: true}));
-              el.value = "";
-              el.style.height = "auto";
+              setTimeout(function() { el.value = ""; el.style.height = "auto"; }, 50);
             }
           });
         }
