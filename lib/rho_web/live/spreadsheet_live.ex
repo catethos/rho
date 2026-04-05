@@ -940,7 +940,7 @@ defmodule RhoWeb.SpreadsheetLive do
 
           %{filename: _name, result: {:image, base64, media_type}} ->
             image_part =
-              ReqLLM.Message.ContentPart.image(Base64.decode64!(base64), media_type)
+              ReqLLM.Message.ContentPart.image(Base.decode64!(base64), media_type)
 
             {summ, [image_part | imgs]}
 

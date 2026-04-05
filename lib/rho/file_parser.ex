@@ -47,7 +47,7 @@ defmodule Rho.FileParser do
 
   defp parse_image(path, media_type) do
     case File.read(path) do
-      {:ok, binary} -> {:image, Base64.encode64(binary), media_type}
+      {:ok, binary} -> {:image, Base.encode64(binary), media_type}
       {:error, reason} -> {:error, "Failed to read image: #{inspect(reason)}"}
     end
   end
