@@ -58,7 +58,7 @@
     description: "Skill framework editor with guided intake and parallel generation",
     skills: [],
     default_skills: ["framework-editor"],
-    python_deps: ["openpyxl", "pdfplumber", "chardet"],
+    python_deps: ["openpyxl", "pdfplumber", "chardet", "Pillow"],
     system_prompt: """
     You are a skill framework editor assistant.
     Use the framework-editor skill to guide your workflow.
