@@ -40,6 +40,7 @@ defmodule Rho.Mounts.Spreadsheet do
     [
       get_table_tool(session_id),
       get_table_summary_tool(session_id),
+      get_uploaded_file_tool(session_id),
       update_cells_tool(context),
       add_rows_tool(context),
       add_proficiency_levels_tool(session_id, context),
@@ -140,6 +141,54 @@ defmodule Rho.Mounts.Spreadsheet do
 
           receive do
             {^ref, {:ok, rows}} -> {:ok, Jason.encode!(build_summary(rows))}
+          after
+            5_000 -> {:error, "Spreadsheet did not respond in time"}
+          end
+        end)
+      end
+    }
+  end
+
+  defp get_uploaded_file_tool(session_id) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "get_uploaded_file",
+          description:
+            "Read parsed content of an uploaded file. For large files (>200 rows), " <>
+              "returns first 200 rows by default — use offset/limit to paginate.",
+          parameter_schema: [
+            filename: [
+              type: :string,
+              required: true,
+              doc: "Filename as shown in the upload summary"
+            ],
+            sheet: [
+              type: :string,
+              required: false,
+              doc: "Sheet name for multi-sheet Excel. Defaults to first sheet."
+            ],
+            offset: [
+              type: :integer,
+              required: false,
+              doc: "Start row (0-based). Default: 0"
+            ],
+            limit: [
+              type: :integer,
+              required: false,
+              doc: "Max rows to return. Default: 200"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        with_pid(session_id, fn pid ->
+          ref = make_ref()
+          send(pid, {:get_uploaded_file, {self(), ref}, args})
+
+          receive do
+            {^ref, {:ok, data}} -> {:ok, Jason.encode!(data)}
+            {^ref, {:error, reason}} -> {:error, reason}
           after
             5_000 -> {:error, "Spreadsheet did not respond in time"}
           end
