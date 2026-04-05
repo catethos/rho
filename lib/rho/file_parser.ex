@@ -63,6 +63,15 @@ defmodule Rho.FileParser do
 
     python_code = """
     __name__ = '__rho_fileparser__'
+    import warnings as _w
+    _w.filterwarnings("ignore", category=UserWarning)
+    import unittest.mock as _mock
+    import sys as _sys
+    # Suppress PIL/Pillow import errors — openpyxl tries to import it
+    # but doesn't need it for reading cell data (only embedded images)
+    if 'PIL' not in _sys.modules:
+        _sys.modules['PIL'] = _mock.MagicMock()
+        _sys.modules['PIL.Image'] = _mock.MagicMock()
     exec(open(#{inspect(script)}).read())
     import json as _json
     _r = parse(#{call_args})
