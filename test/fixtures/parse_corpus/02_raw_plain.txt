@@ -1,0 +1,113 @@
+I'll generate behaviorally anchored proficiency levels for each skill in the Leadership & Collaboration category, then call the add_proficiency_levels tool.
+
+<tool_call>
+<tool_name>add_proficiency_levels</tool_name>
+<tool_parameter>levels_json>[
+  {
+    "skill_name": "Kitchen Communication",
+    "category": "Leadership & Collaboration",
+    "cluster": "Team Dynamics",
+    "skill_description": "Communicates clearly with front-of-house, peers, and leadership to ensure smooth service execution.",
+    "levels": [
+      {
+        "level": 1,
+        "level_name": "Foundational",
+        "level_description": "Relays basic service information and urgent messages to team members using standard kitchen terminology and hand signals. Follows established communication protocols and acknowledges orders or feedback when directed, requiring reminders to maintain clear channels during routine prep and service."
+      },
+      {
+        "level": 2,
+        "level_name": "Competent",
+        "level_description": "Proactively communicates station updates, timing adjustments, and obstacles to front-of-house and kitchen leadership in real time during service. Listens actively to feedback, clarifies ambiguous orders, and adapts messaging for different audiences (e.g., line cooks vs. servers) to prevent errors and maintain service flow."
+      },
+      {
+        "level": 3,
+        "level_name": "Expert",
+        "level_description": "Sets communication standards that become operational best practice, modeling clear, decisive language under high-pressure service conditions that defuses tension and aligns the entire kitchen to shared priorities. Mentors staff on effective communication techniques and continuously refines inter-departmental protocols to anticipate and prevent service breakdowns."
+      }
+    ]
+  },
+  {
+    "skill_name": "Coaching & Mentoring",
+    "category": "Leadership & Collaboration",
+    "cluster": "Team Dynamics",
+    "skill_description": "Develops junior kitchen staff through demonstration, feedback, and structured on-the-job guidance.",
+    "levels": [
+      {
+        "level": 1,
+        "level_name": "Foundational",
+        "level_description": "Shows junior staff how to perform basic prep tasks through direct demonstration and corrects obvious mistakes when observed. Provides encouragement and follows a checklist-based training approach, though feedback is inconsistent and typically reactive rather than planned."
+      },
+      {
+        "level": 2,
+        "level_name": "Competent",
+        "level_description": "Delivers structured, hands-on coaching sessions that build technical skills progressively from foundational knife work through plating standards. Gives specific, actionable feedback tied to observable outcomes, and adjusts teaching pace based on individual learning rates to ensure staff can execute tasks independently within 2-4 weeks."
+      },
+      {
+        "level": 3,
+        "level_name": "Expert",
+        "level_description": "Designs comprehensive culinary development pathways that grow junior staff into specialized roles (e.g., saucier, pastry) while building problem-solving and leadership capabilities. Regularly assesses mentee progress against clear milestones, provides reflective feedback that builds confidence, and develops multiple staff members into promotable supervisors through deliberate skill sequencing."
+      }
+    ]
+  },
+  {
+    "skill_name": "Quality Standards",
+    "category": "Leadership & Collaboration",
+    "cluster": "Accountability",
+    "skill_description": "Upholds consistent plate presentation, portion control, and dish quality across all service periods.",
+    "levels": [
+      {
+        "level": 1,
+        "level_name": "Foundational",
+        "level_description": "Follows plating templates and portion guides to produce dishes that meet basic specifications for temperature, seasoning, and visual presentation. Occasionally requires reminders about consistency and may miss details during busy service or when working unfamiliar stations."
+      },
+      {
+        "level": 2,
+        "level_name": "Competent",
+        "level_description": "Consistently delivers plates that exceed standard specifications across all service conditions—maintaining portion accuracy (±5%), vibrant flavor profiles, and polished presentation that reflects the restaurant's brand identity. Monitors own output for quality drift and adjusts technique proactively to maintain excellence during high-volume rushes."
+      },
+      {
+        "level": 3,
+        "level_name": "Expert",
+        "level_description": "Establishes quality benchmarks and mentors all kitchen staff to maintain them, catching and correcting subtle departures in seasoning, plating angle, or temperature before plates leave the kitchen. Drives continuous improvement by analyzing plate feedback, testing refinements to recipes or plating sequences, and holding the entire team accountable to championship-level standards every service."
+      }
+    ]
+  },
+  {
+    "skill_name": "Adaptability & Problem Solving",
+    "category": "Leadership & Collaboration",
+    "cluster": "Accountability",
+    "skill_description": "Responds effectively to unexpected challenges such as ingredient shortages, equipment failures, or staff gaps.",
+    "levels": [
+      {
+        "level": 1,
+        "level_name": "Foundational",
+        "level_description": "Reports unexpected problems (equipment down, ingredient missing, staff absence) to leadership and follows their instructions to work around the obstacle. Executes provided backup solutions with guidance but struggles to generate alternatives independently or assess impact on service delivery."
+      },
+      {
+        "level": 2,
+        "level_name": "Competent",
+        "level_description": "Quickly diagnoses problems, identifies 2–3 viable workarounds, and implements solutions with minimal supervisory input—such as cross-training to a vacant station, substituting ingredients while maintaining dish integrity, or redistributing prep to other team members. Makes sound judgment calls that prioritize service continuity without compromising quality or safety."
+      },
+      {
+        "level": 3,
+        "level_name": "Expert",
+        "level_description": "Anticipates potential failures and builds contingency systems (backup equipment, ingredient substitutes, cross-trained staff pools) that prevent crises from disrupting service. When unexpected challenges emerge, responds with strategic calm and creative solutions that protect both team morale and customer experience, often turning obstacles into opportunities to demonstrate kitchen resilience."
+      }
+    ]
+  }
+]</tool_parameter>
+</tool_invoke>
+</tool_call>
+
+<tool_name>finish</tool_name>
+<tool_parameter>result">Proficiency levels have been successfully generated for all four skills in the Leadership & Collaboration category:
+
+✓ Kitchen Communication (Team Dynamics)
+✓ Coaching & Mentoring (Team Dynamics)
+✓ Quality Standards (Accountability)
+✓ Adaptability & Problem Solving (Accountability)
+
+Each skill includes 3 behaviorally anchored levels (Foundational, Competent, Expert) written in enterprise HR language with clear differentiation between adjacent levels. Descriptions focus on observable actions, business outcomes, and progressive complexity from foundational task execution through expert-level system design and mentorship.
+
+All levels have been submitted to the framework for integration.</tool_parameter>
+</tool_invoke>

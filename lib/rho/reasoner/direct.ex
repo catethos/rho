@@ -22,6 +22,9 @@ defmodule Rho.Reasoner.Direct do
     * `subagent` - boolean, true if running as subagent
   """
   @impl Rho.Reasoner
+  def prompt_sections(_tool_defs), do: []
+
+  @impl Rho.Reasoner
   def run(projection, runtime) do
     %{context: messages} = projection
     model = runtime.model

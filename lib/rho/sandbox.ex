@@ -138,7 +138,9 @@ defmodule Rho.Sandbox do
              "._*",
              "#{sandbox.mount_path}/",
              "#{sandbox.workspace}/"
-           ], stderr_to_stdout: true) do
+           ],
+           stderr_to_stdout: true
+         ) do
       {_, 0} -> :ok
       {output, code} -> {:error, "rsync failed (#{code}): #{output}"}
     end

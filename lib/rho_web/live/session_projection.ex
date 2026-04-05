@@ -172,9 +172,27 @@ defmodule RhoWeb.SessionProjection do
     inflight = socket.assigns.inflight
 
     entry =
-      Map.get(inflight, agent_id, %{agent_id: agent_id, turn_id: data[:turn_id], chunks: []})
+      Map.get(inflight, agent_id, %{
+        agent_id: agent_id,
+        turn_id: data[:turn_id],
+        chunks: [],
+        envelope: nil
+      })
 
     entry = %{entry | chunks: entry.chunks ++ [text]}
+
+    # Lenient-parse the accumulated buffer for an envelope preview (action /
+    # thinking). This is best-effort — on failure we keep the previous
+    # envelope summary, if any, so the UI doesn't flicker.
+    buffer = IO.iodata_to_binary(entry.chunks)
+
+    envelope =
+      case RhoWeb.StreamEnvelope.analyze(buffer) do
+        {:envelope, summary} -> summary
+        :no_envelope -> entry[:envelope]
+      end
+
+    entry = Map.put(entry, :envelope, envelope)
     inflight = Map.put(inflight, agent_id, entry)
 
     socket

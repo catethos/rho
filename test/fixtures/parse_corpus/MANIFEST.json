@@ -1,0 +1,198 @@
+[
+  {
+    "file": "00_map_get_table_summary_dict.txt",
+    "signature": [
+      "map",
+      "get_table_summary",
+      "dict"
+    ],
+    "length": 48
+  },
+  {
+    "file": "01_raw_plain.txt",
+    "signature": [
+      "raw",
+      "plain"
+    ],
+    "length": 41
+  },
+  {
+    "file": "02_raw_plain.txt",
+    "signature": [
+      "raw",
+      "plain"
+    ],
+    "length": 7520
+  },
+  {
+    "file": "03_map_ask_researcher_dict.txt",
+    "signature": [
+      "map",
+      "ask_researcher",
+      "dict"
+    ],
+    "length": 81
+  },
+  {
+    "file": "04_map_ask_researcher_dict.txt",
+    "signature": [
+      "map",
+      "ask_researcher",
+      "dict"
+    ],
+    "length": 172
+  },
+  {
+    "file": "05_map_present_ui_dict.txt",
+    "signature": [
+      "map",
+      "present_ui",
+      "dict"
+    ],
+    "length": 932
+  },
+  {
+    "file": "06_map_present_ui_dict.txt",
+    "signature": [
+      "map",
+      "present_ui",
+      "dict"
+    ],
+    "length": 3025
+  },
+  {
+    "file": "07_map_ask_weather_dict.txt",
+    "signature": [
+      "map",
+      "ask_weather",
+      "dict"
+    ],
+    "length": 91
+  },
+  {
+    "file": "08_map_ask_weather_dict.txt",
+    "signature": [
+      "map",
+      "ask_weather",
+      "dict"
+    ],
+    "length": 98
+  },
+  {
+    "file": "09_map_add_rows_dict.txt",
+    "signature": [
+      "map",
+      "add_rows",
+      "dict"
+    ],
+    "length": 2582
+  },
+  {
+    "file": "10_map_add_rows_dict.txt",
+    "signature": [
+      "map",
+      "add_rows",
+      "dict"
+    ],
+    "length": 7601
+  },
+  {
+    "file": "11_map_delegate_task_dict.txt",
+    "signature": [
+      "map",
+      "delegate_task",
+      "dict"
+    ],
+    "length": 1086
+  },
+  {
+    "file": "12_map_delegate_task_dict.txt",
+    "signature": [
+      "map",
+      "delegate_task",
+      "dict"
+    ],
+    "length": 3017
+  },
+  {
+    "file": "13_map_await_task_dict.txt",
+    "signature": [
+      "map",
+      "await_task",
+      "dict"
+    ],
+    "length": 63
+  },
+  {
+    "file": "14_map_await_task_dict.txt",
+    "signature": [
+      "map",
+      "await_task",
+      "dict"
+    ],
+    "length": 78
+  },
+  {
+    "file": "15_map_get_table_dict.txt",
+    "signature": [
+      "map",
+      "get_table",
+      "dict"
+    ],
+    "length": 40
+  },
+  {
+    "file": "16_map_get_table_dict.txt",
+    "signature": [
+      "map",
+      "get_table",
+      "dict"
+    ],
+    "length": 113
+  },
+  {
+    "file": "17_map_delete_rows_dict.txt",
+    "signature": [
+      "map",
+      "delete_rows",
+      "dict"
+    ],
+    "length": 77
+  },
+  {
+    "file": "18_map_delete_rows_dict.txt",
+    "signature": [
+      "map",
+      "delete_rows",
+      "dict"
+    ],
+    "length": 107
+  },
+  {
+    "file": "19_map_clear_memory_dict.txt",
+    "signature": [
+      "map",
+      "clear_memory",
+      "dict"
+    ],
+    "length": 72
+  },
+  {
+    "file": "20_map_replace_all_dict.txt",
+    "signature": [
+      "map",
+      "replace_all",
+      "dict"
+    ],
+    "length": 1295
+  },
+  {
+    "file": "21_map_list_frameworks_dict.txt",
+    "signature": [
+      "map",
+      "list_frameworks",
+      "dict"
+    ],
+    "length": 46
+  }
+]

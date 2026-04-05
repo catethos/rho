@@ -4,7 +4,7 @@ defmodule RhoWeb.SignalComponents do
   """
   use Phoenix.Component
 
-  attr :open, :boolean, default: false
+  attr(:open, :boolean, default: false)
 
   def signal_timeline(assigns) do
     ~H"""
@@ -18,5 +18,4 @@ defmodule RhoWeb.SignalComponents do
     </div>
     """
   end
-
 end

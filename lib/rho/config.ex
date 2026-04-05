@@ -31,7 +31,9 @@ defmodule Rho.Config do
     step_budget: Rho.Plugins.StepBudget,
     live_render: Rho.Mounts.LiveRender,
     py_agent: Rho.Mounts.PyAgent,
-    spreadsheet: Rho.Mounts.Spreadsheet
+    spreadsheet: Rho.Mounts.Spreadsheet,
+    framework_persistence: Rho.Mounts.FrameworkPersistence,
+    doc_ingest: Rho.Mounts.DocIngest
   }
 
   @doc """

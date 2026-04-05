@@ -11,8 +11,15 @@ defmodule Rho.Tools.ClearMemory do
               "This permanently removes all messages, tool calls, and anchors from memory. " <>
               "Use only when explicitly asked by the user to clear or reset the conversation.",
           parameter_schema: [
-            archive: [type: :boolean, doc: "If true, save a backup before clearing (default: true)"],
-            confirm: [type: :boolean, required: true, doc: "Must be true to confirm the clear operation"]
+            archive: [
+              type: :boolean,
+              doc: "If true, save a backup before clearing (default: true)"
+            ],
+            confirm: [
+              type: :boolean,
+              required: true,
+              doc: "Must be true to confirm the clear operation"
+            ]
           ],
           callback: fn _args -> :ok end
         ),
@@ -28,7 +35,9 @@ defmodule Rho.Tools.ClearMemory do
       {:error, "Please set confirm: true to clear memory. This action cannot be undone."}
     else
       Rho.Tape.Service.reset(tape_name, archive)
-      {:ok, "Memory cleared. All conversation history has been removed and a fresh session started."}
+
+      {:ok,
+       "Memory cleared. All conversation history has been removed and a fresh session started."}
     end
   end
 end

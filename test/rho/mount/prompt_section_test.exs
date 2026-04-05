@@ -32,7 +32,14 @@ defmodule Rho.Mount.PromptSectionTest do
 
   describe "from_binding/1" do
     test "converts a binding map to metadata section" do
-      binding = %{name: "journal", kind: :text_corpus, size: 42, summary: "Journal entries", access: :tool}
+      binding = %{
+        name: "journal",
+        kind: :text_corpus,
+        size: 42,
+        summary: "Journal entries",
+        access: :tool
+      }
+
       s = PromptSection.from_binding(binding)
       assert s.key == :binding_journal
       assert s.kind == :metadata

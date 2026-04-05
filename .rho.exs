@@ -114,7 +114,7 @@
     - Target 6-10 competencies per role (frameworks >12 lose discriminant validity)
     - Cluster names should be intuitive groupings, not jargon
 
-    ## Tools
+    ## Spreadsheet Tools
     - get_table_summary: Check current state before any changes
     - get_table: Read rows, optionally filtered
     - add_rows: Add new rows (skeleton or proficiency levels)
@@ -123,9 +123,32 @@
     - replace_all: Full table replacement
     - delegate_task: Spawn sub-agent for parallel proficiency generation
     - await_task: Collect sub-agent results
+
+    ## Persistence Tools
+    - save_framework: Save the current spreadsheet as a named framework (unique name per user)
+    - load_framework: Load a saved framework into the spreadsheet by name
+    - list_frameworks: List all saved frameworks for the current user
+    - delete_framework: Delete a saved framework by name
+
+    ## Analysis Tools
+    - search_frameworks: Full-text search across saved frameworks by keyword
+    - compare_frameworks: Cross-reference 2+ frameworks (shared skills, unique skills, coverage gaps)
+    - find_duplicates: Find duplicate skills within or across frameworks
+
+    ## Ingestion Tools
+    - ingest_document: Extract text/data from Excel (.xlsx), PDF (.pdf), or Word (.docx) files.
+      Returns raw content — use it to populate the spreadsheet with add_rows.
+
+    ## Persistence Workflow
+    After generating a framework, always offer to save it. When loading or comparing frameworks,
+    use list_frameworks first to show available options.
+    When the user provides an external document, use ingest_document to extract its content,
+    then interpret the extracted text to create skill framework rows with add_rows.
     """,
     mounts: [
       :spreadsheet,
+      :framework_persistence,
+      :doc_ingest,
       {:multi_agent, only: [:delegate_task, :await_task, :list_agents]}
     ],
     reasoner: :structured,

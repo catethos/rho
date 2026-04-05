@@ -99,7 +99,8 @@ defmodule Rho.Tools.WebFetch do
 
   defp truncate(text) do
     if String.length(text) > @max_text_length do
-      String.slice(text, 0, @max_text_length) <> "\n\n[truncated — content exceeded #{@max_text_length} chars]"
+      String.slice(text, 0, @max_text_length) <>
+        "\n\n[truncated — content exceeded #{@max_text_length} chars]"
     else
       text
     end

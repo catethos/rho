@@ -6,13 +6,13 @@ defmodule RhoWeb.ChatComponents do
 
   import RhoWeb.CoreComponents
 
-  attr :messages, :list, required: true
-  attr :session_id, :string, required: true
-  attr :inflight, :map, required: true
-  attr :active_tab, :string, default: ""
-  attr :user_avatar, :string, default: nil
-  attr :agent_avatar, :string, default: nil
-  attr :pending, :boolean, default: false
+  attr(:messages, :list, required: true)
+  attr(:session_id, :string, required: true)
+  attr(:inflight, :map, required: true)
+  attr(:active_tab, :string, default: "")
+  attr(:user_avatar, :string, default: nil)
+  attr(:agent_avatar, :string, default: nil)
+  attr(:pending, :boolean, default: false)
 
   def chat_feed(assigns) do
     ~H"""
@@ -55,7 +55,15 @@ defmodule RhoWeb.ChatComponents do
               <div class="message-avatar avatar-assistant" title={inflight.agent_id}>R</div>
             <% end %>
             <div class="message-content">
-              <div class="message-body" id={"stream-body-#{agent_id}"} phx-update="ignore" phx-hook="StreamingText">
+              <.envelope_preview :if={inflight[:envelope]} envelope={inflight.envelope} stream_id={agent_id} />
+              <div style={if(inflight[:envelope], do: "display:none", else: "")}>
+                <div
+                  class="message-body"
+                  id={"stream-body-#{agent_id}"}
+                  phx-update="ignore"
+                  phx-hook="StreamingText"
+                >
+                </div>
               </div>
             </div>
           </div>
@@ -65,9 +73,9 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :message, :map, required: true
-  attr :user_avatar, :string, default: nil
-  attr :agent_avatar, :string, default: nil
+  attr(:message, :map, required: true)
+  attr(:user_avatar, :string, default: nil)
+  attr(:agent_avatar, :string, default: nil)
 
   def message_row(assigns) do
     ~H"""
@@ -118,10 +126,11 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :call, :map, required: true
+  attr(:call, :map, required: true)
 
   def tool_call_row(assigns) do
-    assigns = assign(assigns, :formatted_args, format_tool_args(assigns.call.name, assigns.call[:args]))
+    assigns =
+      assign(assigns, :formatted_args, format_tool_args(assigns.call.name, assigns.call[:args]))
 
     ~H"""
     <details class="tool-call">
@@ -153,7 +162,7 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :delegation, :map, required: true
+  attr(:delegation, :map, required: true)
 
   def delegation_card(assigns) do
     ~H"""
@@ -171,45 +180,49 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :content, :string, required: true
-  attr :msg_id, :string, required: true
+  attr(:content, :string, required: true)
+  attr(:msg_id, :string, required: true)
 
   def thinking_block(assigns) do
     parsed = parse_thinking(assigns.content)
     assigns = assign(assigns, :parsed, parsed)
 
     ~H"""
-    <details class="thinking-block">
-      <summary class="thinking-summary">
-        <%= case @parsed do %>
-          <% {:json, map} -> %>
+    <%= case @parsed do %>
+      <% {:json, %{"action" => "final_answer"} = map} -> %>
+        <div :if={map["thinking"]} class="thinking-reasoning markdown-body"
+          id={"think-md-#{@msg_id}"} phx-hook="Markdown" data-md={map["thinking"]}
+          style="color:var(--text-secondary);font-size:0.8125rem;margin-bottom:0.5rem;opacity:0.8;"></div>
+        <div class="message-text markdown-body"
+          id={"think-answer-#{@msg_id}"} phx-hook="Markdown"
+          data-md={final_answer_text(map["action_input"])}></div>
+      <% {:json, map} -> %>
+        <details class="thinking-block">
+          <summary class="thinking-summary">
             <%= truncate_summary(Map.get(map, "thinking")) || Map.get(map, "action", "Thinking") %>
-          <% {:text, _} -> %>
-            Thinking
-        <% end %>
-      </summary>
-      <div class="thinking-content">
-        <%= case @parsed do %>
-          <% {:json, map} -> %>
+          </summary>
+          <div class="thinking-content">
             <div :if={map["thinking"]} class="thinking-reasoning markdown-body"
               id={"think-md-#{@msg_id}"} phx-hook="Markdown" data-md={map["thinking"]}></div>
             <div :if={map["action"]} class="thinking-action">
               <span class="thinking-label">Action:</span>
               <code><%= map["action"] %></code>
             </div>
-            <pre :if={map["action_input"]} class="thinking-args"
-              id={"think-json-#{@msg_id}"} phx-hook="JsonPretty"
-              data-json={Jason.encode!(map["action_input"])}></pre>
-          <% {:text, text} -> %>
+          </div>
+        </details>
+      <% {:text, text} -> %>
+        <details class="thinking-block">
+          <summary class="thinking-summary">Thinking</summary>
+          <div class="thinking-content">
             <div class="thinking-plain markdown-body"
               id={"think-txt-#{@msg_id}"} phx-hook="Markdown" data-md={text}></div>
-        <% end %>
-      </div>
-    </details>
+          </div>
+        </details>
+    <% end %>
     """
   end
 
-  attr :message, :map, required: true
+  attr(:message, :map, required: true)
 
   def ui_block(assigns) do
     ~H"""
@@ -237,14 +250,66 @@ defmodule RhoWeb.ChatComponents do
   end
 
   defp valid_spec?(nil), do: false
+
   defp valid_spec?(spec) when is_map(spec) do
     is_binary(spec["root"]) and is_map(spec["elements"])
   end
+
   defp valid_spec?(_), do: false
 
   defp tool_icon(:ok), do: "✓"
   defp tool_icon(:error), do: "✗"
   defp tool_icon(_), do: "⋯"
+
+  attr(:envelope, :map, required: true)
+  attr(:stream_id, :string, required: true)
+
+  @doc """
+  Render of the in-flight assistant envelope while it streams in. Replaces
+  the raw streaming JSON text in the chat bubble with a structured view:
+
+    * `thinking` — shown as muted markdown-rendered prose.
+    * `final_answer` — shown as the visible assistant prose
+      (pulled from `action_input.answer`), markdown-rendered.
+    * any other action — shown as a "Calling <tool>" chip.
+
+  Uses the existing `Markdown` JS hook (via `window.marked` + DOMPurify)
+  so content renders with the same fidelity as finalized messages.
+  Rendered on every re-assign of `inflight`, so the markdown output
+  updates as new chunks arrive.
+  """
+  def envelope_preview(assigns) do
+    ~H"""
+    <div class="envelope-preview" style="font-size:0.875rem;line-height:1.65;color:var(--text-primary);">
+      <div :if={@envelope[:thinking]}
+        class="envelope-thinking markdown-body"
+        id={"env-think-#{@stream_id}"}
+        phx-hook="Markdown"
+        data-md={to_string(@envelope.thinking)}
+        style="color:var(--text-secondary);font-size:0.8125rem;margin-bottom:0.5rem;opacity:0.8;">
+      </div>
+      <%= cond do %>
+        <% @envelope[:action] == "final_answer" -> %>
+          <div class="envelope-answer markdown-body"
+            id={"env-answer-#{@stream_id}"}
+            phx-hook="Markdown"
+            data-md={final_answer_text(@envelope[:action_input])}>
+          </div>
+        <% is_binary(@envelope[:action]) -> %>
+          <div class="envelope-action">
+            <span class="envelope-action-label" style="color:var(--text-secondary);">Calling</span>
+            <code class="envelope-action-name"><%= @envelope.action %></code>
+          </div>
+        <% true -> %>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp final_answer_text(%{"answer" => answer}) when is_binary(answer), do: answer
+  defp final_answer_text(%{answer: answer}) when is_binary(answer), do: answer
+  defp final_answer_text(text) when is_binary(text), do: text
+  defp final_answer_text(_), do: ""
 
   # Format tool args with special handling for tools with code fields
   defp format_tool_args(tool_name, args) when is_map(args) and tool_name in ["python", "bash"] do
@@ -255,6 +320,18 @@ defmodule RhoWeb.ChatComponents do
     rest_parts = if rest != %{}, do: [{nil, Jason.encode!(rest, pretty: true), nil}], else: []
 
     case code_parts ++ rest_parts do
+      [] -> [{nil, format_args(args), nil}]
+      parts -> parts
+    end
+  end
+
+  defp format_tool_args(_tool_name, args) when is_map(args) do
+    {inner_parts, rest} = RhoWeb.ArgFormatter.extract_inner_json(args)
+
+    rest_part =
+      if rest == %{}, do: [], else: [{nil, Jason.encode!(rest, pretty: true), nil}]
+
+    case inner_parts ++ rest_part do
       [] -> [{nil, format_args(args), nil}]
       parts -> parts
     end
@@ -271,6 +348,7 @@ defmodule RhoWeb.ChatComponents do
   defp truncate(text, max) when byte_size(text) > max do
     String.slice(text, 0, max) <> "\n…(truncated)"
   end
+
   defp truncate(text, _max), do: text
 
   @image_pattern ~r/!\[.*?\]\((data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+)\)/
@@ -279,20 +357,25 @@ defmodule RhoWeb.ChatComponents do
   @doc "Extract data URIs from markdown image tags or file-based plot references in text."
   def extract_image_uris(text) when is_binary(text) do
     inline = Regex.scan(@image_pattern, text) |> Enum.map(fn [_full, uri] -> uri end)
-    from_files = Regex.scan(@file_image_pattern, text)
+
+    from_files =
+      Regex.scan(@file_image_pattern, text)
       |> Enum.flat_map(fn [_full, path] ->
         case File.read(path) do
           {:ok, data} -> ["data:image/png;base64," <> Base.encode64(data)]
           _ -> []
         end
       end)
+
     inline ++ from_files
   end
+
   def extract_image_uris(_), do: []
 
   defp split_image_segments(output) when is_binary(output) do
     # Combined pattern for both inline base64 and file-based images
-    combined = ~r/!\[.*?\]\(data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+\)|\[Plot saved: [^\]]+\.png\]/
+    combined =
+      ~r/!\[.*?\]\(data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+\)|\[Plot saved: [^\]]+\.png\]/
 
     parts = Regex.split(combined, output, include_captures: true, trim: true)
 
@@ -304,6 +387,7 @@ defmodule RhoWeb.ChatComponents do
 
         match = Regex.run(@file_image_pattern, part) ->
           [_full, path] = match
+
           case File.read(path) do
             {:ok, data} -> {:image, "data:image/png;base64," <> Base.encode64(data)}
             _ -> {:text, part}
@@ -322,12 +406,13 @@ defmodule RhoWeb.ChatComponents do
   defp split_image_segments(_), do: []
 
   defp truncate_summary(nil), do: nil
+
   defp truncate_summary(text) do
     if String.length(text) > 80, do: String.slice(text, 0, 80) <> "...", else: text
   end
 
   defp parse_thinking(content) do
-    case Jason.decode(content) do
+    case Rho.Parse.Lenient.parse(content) do
       {:ok, map} when is_map(map) -> {:json, map}
       _ -> {:text, content}
     end

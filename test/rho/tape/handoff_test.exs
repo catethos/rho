@@ -16,9 +16,10 @@ defmodule Rho.Tape.HandoffTest do
       Service.append(@test_tape, :message, %{"role" => "user", "content" => "find the bug"})
       Service.append(@test_tape, :message, %{"role" => "assistant", "content" => "found it"})
 
-      {:ok, anchor} = Service.handoff(@test_tape, "implement", "Discovery complete. Bug found in auth module.",
-        next_steps: ["Fix auth module", "Run tests"]
-      )
+      {:ok, anchor} =
+        Service.handoff(@test_tape, "implement", "Discovery complete. Bug found in auth module.",
+          next_steps: ["Fix auth module", "Run tests"]
+        )
 
       assert anchor.kind == :anchor
       assert anchor.payload["name"] == "implement"
@@ -57,7 +58,9 @@ defmodule Rho.Tape.HandoffTest do
 
       ids =
         for i <- 1..5 do
-          {:ok, e} = Service.append(@test_tape, :message, %{"role" => "user", "content" => "msg #{i}"})
+          {:ok, e} =
+            Service.append(@test_tape, :message, %{"role" => "user", "content" => "msg #{i}"})
+
           e.id
         end
 

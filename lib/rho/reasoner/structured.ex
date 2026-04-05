@@ -38,6 +38,9 @@ defmodule Rho.Reasoner.Structured do
   # -- Entry point: stream → parse → execute --
 
   @impl Rho.Reasoner
+  def prompt_sections(tool_defs), do: [prompt_section(tool_defs)]
+
+  @impl Rho.Reasoner
   def run(projection, runtime) do
     %{context: messages} = projection
     model = runtime.model

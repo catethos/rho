@@ -56,6 +56,9 @@ defmodule RhoWeb.InlineCSS do
       --font-body: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'Fragment Mono', 'JetBrains Mono', 'SF Mono', monospace;
 
+      /* Layout */
+      --nav-height: 44px;
+
       /* Shape */
       --radius: 8px;
       --radius-sm: 5px;
@@ -71,7 +74,7 @@ defmodule RhoWeb.InlineCSS do
       background: var(--bg-abyss);
       color: var(--text-primary);
       height: 100vh;
-      overflow: hidden;
+      overflow: auto;
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
       font-weight: 400;
@@ -98,7 +101,8 @@ defmodule RhoWeb.InlineCSS do
     .session-layout {
       display: flex;
       flex-direction: column;
-      height: 100vh;
+      height: calc(100vh - var(--nav-height));
+      overflow: hidden;
     }
 
     /* === Header === */
@@ -1254,7 +1258,7 @@ defmodule RhoWeb.InlineCSS do
     /* === Observatory === */
 
     /* --- Shell layout --- */
-    .obs-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    .obs-shell { display: flex; flex-direction: column; height: calc(100vh - var(--nav-height)); overflow: hidden; }
     .obs-topbar {
       display: flex; justify-content: space-between; align-items: center;
       padding: 10px 20px; border-bottom: 1px solid var(--border);
@@ -1334,7 +1338,7 @@ defmodule RhoWeb.InlineCSS do
     /* --- Landing --- */
     .obs-landing {
       display: flex; flex-direction: column; align-items: center;
-      justify-content: center; height: 100vh; text-align: center; padding: 40px;
+      justify-content: center; height: calc(100vh - var(--nav-height)); text-align: center; padding: 40px;
     }
     .obs-landing h1 { font-size: 2rem; font-weight: 700; margin-bottom: 12px; }
     .obs-landing p { color: var(--text-secondary); max-width: 500px; line-height: 1.7; }
@@ -1661,7 +1665,7 @@ defmodule RhoWeb.InlineCSS do
     /* === Spreadsheet Layout === */
     .spreadsheet-layout {
       display: flex;
-      height: 100vh;
+      height: calc(100vh - var(--nav-height));
       overflow: hidden;
       background: var(--bg-abyss);
     }
@@ -2026,6 +2030,326 @@ defmodule RhoWeb.InlineCSS do
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.3; transform: scale(0.8); }
     }
+
+    /* === Auth pages (login / register) === */
+    .auth-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: calc(100vh - var(--nav-height));
+      padding: 2rem;
+      background: var(--bg-abyss);
+    }
+
+    .auth-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 2.5rem 2rem 2rem;
+      box-shadow: var(--shadow-md);
+    }
+
+    .auth-title {
+      font-family: var(--font-body);
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 1.75rem;
+      letter-spacing: -0.01em;
+    }
+
+    .auth-field {
+      margin-bottom: 1.15rem;
+    }
+
+    .auth-field label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 0.4rem;
+      letter-spacing: 0.01em;
+    }
+
+    .auth-field input {
+      width: 100%;
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-body);
+      font-size: 0.875rem;
+      color: var(--text-primary);
+      background: var(--bg-shelf);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .auth-field input:focus {
+      border-color: var(--teal);
+      box-shadow: 0 0 0 2px var(--teal-glow);
+    }
+
+    .auth-field input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .auth-button {
+      width: 100%;
+      padding: 0.6rem;
+      margin-top: 0.5rem;
+      font-family: var(--font-body);
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #fff;
+      background: var(--teal);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .auth-button:hover {
+      background: var(--teal-bright);
+    }
+
+    .auth-link {
+      margin-top: 1.25rem;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .auth-link a {
+      color: var(--teal);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .auth-link a:hover {
+      text-decoration: underline;
+    }
+
+    .auth-error {
+      font-size: 0.75rem;
+      color: var(--red);
+      margin-top: 0.3rem;
+    }
+
+    /* === Global Navigation === */
+    .global-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: var(--nav-height);
+      padding: 0 1.25rem;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 50;
+    }
+    .global-nav-left { display: flex; align-items: center; gap: 1.5rem; }
+    .global-nav-logo {
+      font-family: var(--font-mono);
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--teal);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+    .global-nav-links { display: flex; gap: 0.25rem; }
+    .global-nav-link {
+      padding: 0.3rem 0.65rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-decoration: none;
+      border-radius: var(--radius-sm);
+      transition: all 0.15s;
+    }
+    .global-nav-link:hover { color: var(--text-primary); background: var(--bg-hover); }
+    .global-nav-link[aria-current="page"] {
+      color: var(--teal);
+      background: var(--teal-dim);
+    }
+    .global-nav-right { display: flex; align-items: center; gap: 0.75rem; }
+    .global-nav-user { font-size: 0.75rem; color: var(--text-muted); }
+    .global-nav-logout-form { margin: 0; }
+    .global-nav-logout {
+      background: none; border: none;
+      font-family: var(--font-body);
+      font-size: 0.75rem; font-weight: 500;
+      color: var(--text-muted); cursor: pointer;
+      padding: 0; transition: color 0.15s;
+    }
+    .global-nav-logout:hover { color: var(--red); }
+
+    @media (max-width: 640px) {
+      .global-nav-links { display: none; }
+    }
+
+    /* === Auth logo === */
+    .auth-logo {
+      font-family: var(--font-mono);
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--teal);
+      text-align: center;
+      margin-bottom: 1.5rem;
+      letter-spacing: -0.03em;
+    }
+
+    /* === Page Shell (standard pages) === */
+    .page-shell {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+
+    .page-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 2rem;
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .page-header-text { flex: 1; }
+    .page-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+    }
+    .page-subtitle {
+      margin-top: 0.35rem;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .page-header-actions { display: flex; gap: 0.5rem; margin-left: 1rem; }
+
+    /* === Shared Card === */
+    .rho-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem 1.5rem;
+      box-shadow: var(--shadow-sm);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .rho-card:hover {
+      border-color: var(--border-active);
+      box-shadow: var(--shadow-md);
+    }
+
+    /* === Empty State === */
+    .empty-state {
+      text-align: center;
+      padding: 3rem 2rem;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      background: var(--bg-shelf);
+      border-radius: var(--radius-lg);
+      border: 1px dashed var(--border);
+    }
+
+    /* === Shared Buttons === */
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      padding: 0.5rem 1rem;
+      font-family: var(--font-body);
+      font-size: 0.8rem; font-weight: 600;
+      color: #fff; background: var(--teal);
+      border: none; border-radius: var(--radius);
+      cursor: pointer; transition: background 0.15s;
+      text-decoration: none;
+    }
+    .btn-primary:hover { background: var(--teal-bright); }
+
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      padding: 0.5rem 1rem;
+      font-family: var(--font-body);
+      font-size: 0.8rem; font-weight: 500;
+      color: var(--text-secondary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer; transition: all 0.15s;
+      text-decoration: none;
+    }
+    .btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-active); }
+
+    .btn-danger-sm {
+      padding: 0.3rem 0.65rem;
+      font-family: var(--font-body);
+      font-size: 0.75rem; font-weight: 500;
+      color: var(--red); background: var(--red-dim);
+      border: 1px solid rgba(229,83,75,0.15);
+      border-radius: var(--radius-sm);
+      cursor: pointer; transition: all 0.15s;
+    }
+    .btn-danger-sm:hover { background: rgba(229,83,75,0.15); }
+
+    /* === Shared Table === */
+    .rho-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .rho-table thead th {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .rho-table tbody td {
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--bg-deep);
+      color: var(--text-primary);
+    }
+    .rho-table tbody tr:hover { background: var(--bg-shelf); }
+
+    /* === Breadcrumb === */
+    .breadcrumb {
+      display: flex; align-items: center; gap: 0.35rem;
+      font-size: 0.8rem; color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+    .breadcrumb a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .breadcrumb a:hover { color: var(--teal); }
+    .breadcrumb-sep { color: var(--text-muted); }
+
+    /* === Framework Pages === */
+    .framework-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+    }
+    .framework-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+    .framework-card-name {
+      font-size: 1.05rem; font-weight: 600;
+      color: var(--text-primary); text-decoration: none;
+    }
+    .framework-card-name:hover { color: var(--teal); }
+    .framework-card-desc { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 0.75rem; }
+    .framework-card-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 0.75rem; border-top: 1px solid var(--bg-deep); }
+    .framework-card-date { font-size: 0.75rem; color: var(--text-muted); }
+    .badge-muted { background: var(--bg-deep); color: var(--text-secondary); font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 999px; }
+    .fw-section { margin-bottom: 2rem; }
+    .fw-section-title { font-size: 1.1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+    .fw-cluster { margin-bottom: 1.5rem; }
+    .fw-cluster-title { font-size: 0.9rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0.5rem; }
     """
   end
 end

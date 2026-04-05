@@ -9,7 +9,9 @@ defmodule Rho.Tools.Python do
   @behaviour Rho.Mount
 
   @impl Rho.Mount
-  def tools(_mount_opts, %{tape_name: tape_name, workspace: workspace}), do: [tool_def(tape_name, workspace)]
+  def tools(_mount_opts, %{tape_name: tape_name, workspace: workspace}),
+    do: [tool_def(tape_name, workspace)]
+
   def tools(_mount_opts, %{tape_name: tape_name}), do: [tool_def(tape_name, nil)]
   def tools(_mount_opts, _context), do: []
 

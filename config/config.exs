@@ -26,3 +26,10 @@ config :rho, RhoWeb.Endpoint,
   live_view: [signing_salt: "rho_lv_salt"]
 
 config :phoenix, :json_library, Jason
+
+# Ecto / SQLite
+config :rho, ecto_repos: [Rho.Repo]
+
+config :rho, Rho.Repo,
+  database: Path.expand("../priv/rho.db", __DIR__),
+  pool_size: 5

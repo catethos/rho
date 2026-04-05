@@ -15,8 +15,16 @@ defmodule Rho.Tools.Anchor do
               "(e.g., discovery → implementation → verification). This compresses older context " <>
               "and starts a fresh working window.",
           parameter_schema: [
-            name: [type: :string, required: true, doc: "Phase name (e.g., 'discovery', 'implement', 'verify')"],
-            summary: [type: :string, required: true, doc: "Summary of what happened before this point"],
+            name: [
+              type: :string,
+              required: true,
+              doc: "Phase name (e.g., 'discovery', 'implement', 'verify')"
+            ],
+            summary: [
+              type: :string,
+              required: true,
+              doc: "Summary of what happened before this point"
+            ],
             next_steps: [type: {:list, :string}, doc: "Suggested next actions"]
           ],
           callback: fn _args -> :ok end
@@ -32,7 +40,8 @@ defmodule Rho.Tools.Anchor do
 
     case Rho.Tape.Service.handoff(tape_name, name, summary, next_steps: next_steps) do
       {:ok, _entry} ->
-        {:ok, "Anchor '#{name}' created. Context window has been refreshed. STOP here and wait for the user's next message — do not continue from the previous context."}
+        {:ok,
+         "Anchor '#{name}' created. Context window has been refreshed. STOP here and wait for the user's next message — do not continue from the previous context."}
 
       {:error, reason} ->
         {:error, "Failed to create anchor: #{inspect(reason)}"}

@@ -75,8 +75,10 @@ defmodule Rho.Agent.Registry do
   def find_by_role(session_id, role) do
     spec = [
       {{:"$1", :"$2"},
-       [{:andalso, {:andalso, session_guard(session_id), {:==, {:map_get, :role, :"$2"}, role}}, live_guard()}],
-       [:"$2"]}
+       [
+         {:andalso, {:andalso, session_guard(session_id), {:==, {:map_get, :role, :"$2"}, role}},
+          live_guard()}
+       ], [:"$2"]}
     ]
 
     :ets.select(@table, spec)
@@ -93,9 +95,7 @@ defmodule Rho.Agent.Registry do
   @doc "List all live agents in a session."
   def list(session_id) do
     spec = [
-      {{:"$1", :"$2"},
-       [{:andalso, session_guard(session_id), live_guard()}],
-       [:"$2"]}
+      {{:"$1", :"$2"}, [{:andalso, session_guard(session_id), live_guard()}], [:"$2"]}
     ]
 
     :ets.select(@table, spec)
@@ -104,9 +104,7 @@ defmodule Rho.Agent.Registry do
   @doc "List all agents in a session (including stopped)."
   def list_all(session_id) do
     spec = [
-      {{:"$1", :"$2"},
-       [session_guard(session_id)],
-       [:"$2"]}
+      {{:"$1", :"$2"}, [session_guard(session_id)], [:"$2"]}
     ]
 
     :ets.select(@table, spec)
@@ -116,8 +114,10 @@ defmodule Rho.Agent.Registry do
   def list_except(session_id, exclude_agent_id) do
     spec = [
       {{:"$1", :"$2"},
-       [{:andalso, {:andalso, session_guard(session_id), {:"=/=", :"$1", exclude_agent_id}}, live_guard()}],
-       [:"$2"]}
+       [
+         {:andalso, {:andalso, session_guard(session_id), {:"=/=", :"$1", exclude_agent_id}},
+          live_guard()}
+       ], [:"$2"]}
     ]
 
     :ets.select(@table, spec)
@@ -134,9 +134,7 @@ defmodule Rho.Agent.Registry do
   @doc "Count live agents in a session."
   def count(session_id) do
     spec = [
-      {{:"$1", :"$2"},
-       [{:andalso, session_guard(session_id), live_guard()}],
-       [true]}
+      {{:"$1", :"$2"}, [{:andalso, session_guard(session_id), live_guard()}], [true]}
     ]
 
     :ets.select_count(@table, spec)

@@ -38,8 +38,7 @@ defmodule Rho.Tape.Store do
   @doc "Reads entries with id >= from_id."
   def read(tape_name, from_id) do
     spec = [
-      {{{tape_name, :"$1"}, :"$2"},
-       [{:is_integer, :"$1"}, {:>=, :"$1", from_id}],
+      {{{tape_name, :"$1"}, :"$2"}, [{:is_integer, :"$1"}, {:>=, :"$1", from_id}],
        [{{:"$1", :"$2"}}]}
     ]
 
@@ -98,6 +97,7 @@ defmodule Rho.Tape.Store do
     case :ets.lookup(@table, {tape_name, :meta}) do
       [{{_, :meta}, %{last_anchor_id: anchor_id}}] when is_integer(anchor_id) ->
         get(tape_name, anchor_id)
+
       _ ->
         nil
     end
@@ -206,7 +206,10 @@ defmodule Rho.Tape.Store do
       end)
 
     if max_id > 0 do
-      :ets.insert(@table, {{tape_name, :meta}, %{next_id: max_id + 1, last_anchor_id: last_anchor_id}})
+      :ets.insert(
+        @table,
+        {{tape_name, :meta}, %{next_id: max_id + 1, last_anchor_id: last_anchor_id}}
+      )
     end
   end
 

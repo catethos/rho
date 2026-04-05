@@ -390,7 +390,9 @@ defmodule Rho.Mounts.MultiAgent do
           task: task_prompt,
           context_summary: params.context_summary,
           max_steps: params.max_steps
-        }, source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}")
+        },
+        source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}"
+      )
 
       {:ok,
        "Delegated #{task_id} to #{prepared.agent_id} (role: #{params.role}). Use await_task(agent_id: \"#{prepared.agent_id}\") to get the result."}
@@ -501,7 +503,9 @@ defmodule Rho.Mounts.MultiAgent do
           agent_id: prepared.agent_id,
           role: role_str,
           spawned_by: parent_agent_id
-        }, source: "/session/#{session_id}/agent/#{parent_agent_id}")
+        },
+        source: "/session/#{session_id}/agent/#{parent_agent_id}"
+      )
 
       {:ok,
        "Spawned #{prepared.agent_id} (role: #{role_str}). Agent is idle and ready for messages. Use send_message(target: \"#{prepared.agent_id}\", message: \"...\") to start a conversation."}
@@ -594,7 +598,9 @@ defmodule Rho.Mounts.MultiAgent do
             from: self_agent_id,
             to: target,
             message: message
-          }, source: "/session/#{session_id}/agent/#{self_agent_id}")
+          },
+          source: "/session/#{session_id}/agent/#{self_agent_id}"
+        )
 
         {:ok, "Message sent to #{target}"}
       end
@@ -623,7 +629,9 @@ defmodule Rho.Mounts.MultiAgent do
           from: self_agent_id,
           message: message,
           target_count: length(targets)
-        }, source: "/session/#{session_id}/agent/#{self_agent_id}")
+        },
+        source: "/session/#{session_id}/agent/#{self_agent_id}"
+      )
 
       {:ok, "Broadcast sent to #{length(targets)} agents"}
     end

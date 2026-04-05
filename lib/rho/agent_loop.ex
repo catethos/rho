@@ -123,10 +123,11 @@ defmodule Rho.AgentLoop do
     base_prompt = opts[:system_prompt] || "You are a helpful assistant."
 
     extra_sections =
-      if reasoner == Rho.Reasoner.Structured do
-        [Rho.Reasoner.Structured.prompt_section(tool_defs)]
+      with {:module, _} <- Code.ensure_loaded(reasoner),
+           true <- function_exported?(reasoner, :prompt_sections, 1) do
+        reasoner.prompt_sections(tool_defs)
       else
-        []
+        _ -> []
       end
 
     system_prompt = build_system_prompt(base_prompt, subagent, mount_context, extra_sections)
@@ -193,7 +194,9 @@ defmodule Rho.AgentLoop do
   defp build_initial_context(runtime, messages) do
     system_msg =
       ReqLLM.Context.system([
-        ReqLLM.Message.ContentPart.text(runtime.system_prompt, %{cache_control: %{type: "ephemeral"}})
+        ReqLLM.Message.ContentPart.text(runtime.system_prompt, %{
+          cache_control: %{type: "ephemeral"}
+        })
       ])
 
     tail =
@@ -204,10 +207,16 @@ defmodule Rho.AgentLoop do
     [system_msg | tail]
   end
 
-  defp build_gen_opts(nil), do: [provider_options: [openrouter_cache_control: %{type: "ephemeral"}]]
+  defp build_gen_opts(nil),
+    do: [provider_options: [openrouter_cache_control: %{type: "ephemeral"}]]
 
   defp build_gen_opts(provider) do
-    [provider_options: [openrouter_provider: provider, openrouter_cache_control: %{type: "ephemeral"}]]
+    [
+      provider_options: [
+        openrouter_provider: provider,
+        openrouter_cache_control: %{type: "ephemeral"}
+      ]
+    ]
   end
 
   # -- Main loop --
@@ -237,8 +246,11 @@ defmodule Rho.AgentLoop do
   defp maybe_compact(context, %Runtime{tape: %Tape{compact_supported: false}}), do: {:ok, context}
 
   defp maybe_compact(context, runtime) do
-    %Runtime{tape: %Tape{name: tape, memory_mod: mem, compact_threshold: threshold},
-             model: model, gen_opts: gen_opts} = runtime
+    %Runtime{
+      tape: %Tape{name: tape, memory_mod: mem, compact_threshold: threshold},
+      model: model,
+      gen_opts: gen_opts
+    } = runtime
 
     compact_opts = [model: model, gen_opts: gen_opts, threshold: threshold]
 
@@ -258,7 +270,11 @@ defmodule Rho.AgentLoop do
 
   # -- Before-LLM hook --
 
-  defp run_before_llm(context, %Runtime{req_tools: req_tools, lifecycle: lifecycle, emit: emit}, step) do
+  defp run_before_llm(
+         context,
+         %Runtime{req_tools: req_tools, lifecycle: lifecycle, emit: emit},
+         step
+       ) do
     projection =
       %{context: context, tools: req_tools, step: step}
       |> lifecycle.before_llm.()
@@ -281,8 +297,16 @@ defmodule Rho.AgentLoop do
   defp handle_reasoner_result({:error, reason}, _ctx, _opts, _step, _max),
     do: {:error, reason}
 
-  defp handle_reasoner_result({:continue, %{type: :subagent_nudge, text: text}}, context, runtime, step, max) do
-    nudge_msg = "[System] Continue working on your task. Call `finish` with your result when done."
+  defp handle_reasoner_result(
+         {:continue, %{type: :subagent_nudge, text: text}},
+         context,
+         runtime,
+         step,
+         max
+       ) do
+    nudge_msg =
+      "[System] Continue working on your task. Call `finish` with your result when done."
+
     Recorder.record_assistant_text(runtime, text)
     Recorder.record_injected_messages(runtime, [nudge_msg])
 
@@ -300,7 +324,10 @@ defmodule Rho.AgentLoop do
 
   defp handle_reasoner_result(
          {:continue, %{type: :tool_step} = entries},
-         context, runtime, step, max
+         context,
+         runtime,
+         step,
+         max
        ) do
     Recorder.record_tool_step(runtime, entries)
     next_step = step + 1
@@ -319,11 +346,17 @@ defmodule Rho.AgentLoop do
 
   # -- Context advancement --
 
-  defp advance_context(_context, _entries, _injected, %Runtime{tape: %Tape{name: tape}} = runtime) when tape != nil do
+  defp advance_context(_context, _entries, _injected, %Runtime{tape: %Tape{name: tape}} = runtime)
+       when tape != nil do
     Recorder.rebuild_context(runtime)
   end
 
-  defp advance_context(context, %{assistant_msg: assistant_msg, tool_results: tool_results}, injected, _runtime) do
+  defp advance_context(
+         context,
+         %{assistant_msg: assistant_msg, tool_results: tool_results},
+         injected,
+         _runtime
+       ) do
     base = context ++ [assistant_msg | tool_results]
     base ++ Enum.map(injected, &ReqLLM.Context.user/1)
   end
@@ -337,9 +370,15 @@ defmodule Rho.AgentLoop do
 
       {_, on_event, on_text} when is_function(on_event) or is_function(on_text) ->
         fn
-          %{type: :text_delta, text: chunk} when is_function(on_text) -> on_text.(chunk); :ok
-          event when is_function(on_event) -> on_event.(event)
-          _ -> :ok
+          %{type: :text_delta, text: chunk} when is_function(on_text) ->
+            on_text.(chunk)
+            :ok
+
+          event when is_function(on_event) ->
+            on_event.(event)
+
+          _ ->
+            :ok
         end
 
       _ ->

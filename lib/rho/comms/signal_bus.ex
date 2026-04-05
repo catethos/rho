@@ -95,5 +95,4 @@ defmodule Rho.Comms.SignalBus do
 
   @doc "Returns the bus name for direct access if needed."
   def bus_name, do: @bus_name
-
 end

@@ -10,11 +10,14 @@ defmodule Rho.Plugins.Subagent.UI do
   def render_status(subagents) do
     lines = build_lines(subagents)
 
-    box = [
-      "  ┌ subagents #{String.duplicate("─", @box_width - 14)}┐",
-      lines,
-      "  └#{String.duplicate("─", @box_width)}┘"
-    ] |> List.flatten() |> Enum.join("\n")
+    box =
+      [
+        "  ┌ subagents #{String.duplicate("─", @box_width - 14)}┐",
+        lines,
+        "  └#{String.duplicate("─", @box_width)}┘"
+      ]
+      |> List.flatten()
+      |> Enum.join("\n")
 
     # Move cursor up to overwrite previous render
     up = "\e[#{length(lines) + 2}A\r"
@@ -27,11 +30,14 @@ defmodule Rho.Plugins.Subagent.UI do
   def initial_render(subagents) do
     lines = build_lines(subagents)
 
-    box = [
-      "  ┌ subagents #{String.duplicate("─", @box_width - 14)}┐",
-      lines,
-      "  └#{String.duplicate("─", @box_width)}┘"
-    ] |> List.flatten() |> Enum.join("\n")
+    box =
+      [
+        "  ┌ subagents #{String.duplicate("─", @box_width - 14)}┐",
+        lines,
+        "  └#{String.duplicate("─", @box_width)}┘"
+      ]
+      |> List.flatten()
+      |> Enum.join("\n")
 
     IO.write(box <> "\n")
   end

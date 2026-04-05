@@ -25,7 +25,11 @@ defmodule Rho.Skills do
       []
     else
       messages = Map.get(context, :messages)
-      expanded = if messages, do: Rho.Skill.expanded_hints(extract_user_text(messages), skills), else: MapSet.new()
+
+      expanded =
+        if messages,
+          do: Rho.Skill.expanded_hints(extract_user_text(messages), skills),
+          else: MapSet.new()
 
       [
         %PromptSection{
@@ -52,7 +56,11 @@ defmodule Rho.Skills do
             "Load a skill's full prompt content by name. Use this when you need the " <>
               "detailed instructions from a skill listed in <available_skills>.",
           parameter_schema: [
-            name: [type: :string, required: true, doc: "The skill name to expand (e.g. \"code-review\")"]
+            name: [
+              type: :string,
+              required: true,
+              doc: "The skill name to expand (e.g. \"code-review\")"
+            ]
           ],
           callback: fn _args -> :ok end
         ),

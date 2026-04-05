@@ -19,6 +19,7 @@ defmodule RhoWeb.SpreadsheetLive do
 
     socket =
       socket
+      |> assign(:active_page, :editor)
       |> assign(:session_id, session_id)
       |> assign(:rows_map, %{})
       |> assign(:next_id, 1)
@@ -616,12 +617,17 @@ defmodule RhoWeb.SpreadsheetLive do
 
   defp ensure_session(socket, nil) do
     new_sid = "sheet_#{System.unique_integer([:positive])}"
-    {:ok, _pid} = Rho.Session.ensure_started(new_sid, agent_name: :spreadsheet)
+    user_id = get_in(socket.assigns, [:current_user, Access.key(:id)])
+
+    {:ok, _pid} =
+      Rho.Session.ensure_started(new_sid, agent_name: :spreadsheet, user_id: user_id)
+
     {new_sid, assign(socket, :session_id, new_sid)}
   end
 
   defp ensure_session(socket, sid) do
-    {:ok, _pid} = Rho.Session.ensure_started(sid, agent_name: :spreadsheet)
+    user_id = get_in(socket.assigns, [:current_user, Access.key(:id)])
+    {:ok, _pid} = Rho.Session.ensure_started(sid, agent_name: :spreadsheet, user_id: user_id)
     {sid, socket}
   end
 

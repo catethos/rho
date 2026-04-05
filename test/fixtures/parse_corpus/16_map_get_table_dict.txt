@@ -1,0 +1,1 @@
+{"action":"get_table","action_input":{"filter_field":"category","filter_value":"Market & Customer Intelligence"}}

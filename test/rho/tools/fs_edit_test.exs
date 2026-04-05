@@ -15,7 +15,10 @@ defmodule Rho.Tools.FsEditTest do
 
   test "replaces first occurrence" do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
-    assert {:ok, _} = tool.execute.(%{"path" => "edit.txt", "old" => "line 2", "new" => "LINE TWO"})
+
+    assert {:ok, _} =
+             tool.execute.(%{"path" => "edit.txt", "old" => "line 2", "new" => "LINE TWO"})
+
     content = File.read!(Path.join(@workspace, "edit.txt"))
     assert content =~ "LINE TWO"
     refute content =~ "line 2"
@@ -31,7 +34,15 @@ defmodule Rho.Tools.FsEditTest do
 
   test "uses start offset" do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
-    assert {:ok, _} = tool.execute.(%{"path" => "edit.txt", "old" => "line", "new" => "LINE", "start" => 3})
+
+    assert {:ok, _} =
+             tool.execute.(%{
+               "path" => "edit.txt",
+               "old" => "line",
+               "new" => "LINE",
+               "start" => 3
+             })
+
     content = File.read!(Path.join(@workspace, "edit.txt"))
     # Lines 0-2 unchanged, first "line" after line 3 is replaced
     assert content =~ "line 0"
@@ -40,7 +51,10 @@ defmodule Rho.Tools.FsEditTest do
 
   test "returns error when text not found" do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
-    assert {:error, msg} = tool.execute.(%{"path" => "edit.txt", "old" => "nonexistent", "new" => "x"})
+
+    assert {:error, msg} =
+             tool.execute.(%{"path" => "edit.txt", "old" => "nonexistent", "new" => "x"})
+
     assert msg =~ "Text not found"
   end
 

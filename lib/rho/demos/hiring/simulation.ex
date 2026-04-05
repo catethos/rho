@@ -53,9 +53,13 @@ defmodule Rho.Demos.Hiring.Simulation do
 
   @impl true
   def handle_call(:begin, _from, %{status: :not_started} = state) do
-    Comms.publish("rho.hiring.simulation.started", %{
-      session_id: state.session_id
-    }, source: "/session/#{state.session_id}")
+    Comms.publish(
+      "rho.hiring.simulation.started",
+      %{
+        session_id: state.session_id
+      },
+      source: "/session/#{state.session_id}"
+    )
 
     state = spawn_evaluators(state)
     state = start_round(state, 1)
@@ -102,6 +106,7 @@ defmodule Rho.Demos.Hiring.Simulation do
         # Only include multi-agent tools (send_message, broadcast, list_agents)
         # Filter out unrelated tools like present_ui, bash, file tools, etc.
         allowed_tools = ~w(send_message broadcast_message list_agents)
+
         mount_tools =
           Rho.MountRegistry.collect_tools(tool_context)
           |> Enum.filter(fn t -> t.tool.name in allowed_tools end)
@@ -135,7 +140,9 @@ defmodule Rho.Demos.Hiring.Simulation do
       end)
 
     evaluator_map = Map.new(evaluators, fn {role, info} -> {role, info.agent_id} end)
-    tools_map = Map.new(evaluators, fn {role, info} -> {role, %{tools: info.tools, config: info.config}} end)
+
+    tools_map =
+      Map.new(evaluators, fn {role, info} -> {role, %{tools: info.tools, config: info.config}} end)
 
     %{state | evaluators: evaluator_map, evaluator_tools: tools_map}
   end
@@ -143,10 +150,14 @@ defmodule Rho.Demos.Hiring.Simulation do
   defp start_round(state, round_num) do
     prompt = round_prompt(round_num, state)
 
-    Comms.publish("rho.hiring.round.started", %{
-      session_id: state.session_id,
-      round: round_num
-    }, source: "/session/#{state.session_id}")
+    Comms.publish(
+      "rho.hiring.round.started",
+      %{
+        session_id: state.session_id,
+        round: round_num
+      },
+      source: "/session/#{state.session_id}"
+    )
 
     Logger.info("[Hiring] Starting round #{round_num}")
 
@@ -157,8 +168,10 @@ defmodule Rho.Demos.Hiring.Simulation do
     |> Enum.each(fn {{role, agent_id}, idx} ->
       if idx > 0, do: Process.sleep(1_000)
       pid = Worker.whereis(agent_id)
+
       if pid do
         role_info = Map.get(state.evaluator_tools, role, %{})
+
         Worker.submit(pid, prompt,
           tools: role_info[:tools],
           system_prompt: role_info[:config] && role_info.config.system_prompt,
@@ -214,10 +227,14 @@ defmodule Rho.Demos.Hiring.Simulation do
       if state.round >= state.max_rounds do
         final = compute_final_shortlist(state)
 
-        Comms.publish("rho.hiring.simulation.completed", %{
-          session_id: state.session_id,
-          shortlist: final
-        }, source: "/session/#{state.session_id}")
+        Comms.publish(
+          "rho.hiring.simulation.completed",
+          %{
+            session_id: state.session_id,
+            shortlist: final
+          },
+          source: "/session/#{state.session_id}"
+        )
 
         Logger.info("[Hiring] Simulation complete. Shortlist: #{inspect(final)}")
         %{state | status: :completed}
@@ -225,7 +242,10 @@ defmodule Rho.Demos.Hiring.Simulation do
         start_round(state, state.round + 1)
       end
     else
-      Logger.info("[Hiring] Waiting for scores: #{submitted}/#{expected} for round #{state.round}")
+      Logger.info(
+        "[Hiring] Waiting for scores: #{submitted}/#{expected} for round #{state.round}"
+      )
+
       state
     end
   end

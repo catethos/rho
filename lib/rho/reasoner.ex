@@ -30,4 +30,15 @@ defmodule Rho.Reasoner do
     * `{:final, value, entries}` - explicit convergence (RLM FINAL())
   """
   @callback run(projection :: map(), runtime :: map()) :: turn_result()
+
+  @doc """
+  Returns prompt sections a reasoner wants injected into the system prompt.
+
+  Receives the list of tool definitions available for the turn. Reasoners
+  like `:structured` and `:tagged` describe the required output format here;
+  `:direct` (native tool_use) returns an empty list.
+  """
+  @callback prompt_sections(tool_defs :: [map()]) :: [Rho.Mount.PromptSection.t()]
+
+  @optional_callbacks prompt_sections: 1
 end

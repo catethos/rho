@@ -6,8 +6,8 @@ defmodule RhoWeb.AgentComponents do
 
   import RhoWeb.CoreComponents
 
-  attr :agents, :map, required: true
-  attr :selected_agent_id, :string, default: nil
+  attr(:agents, :map, required: true)
+  attr(:selected_agent_id, :string, default: nil)
 
   def agent_sidebar(assigns) do
     assigns = assign(assigns, :roots, root_agents(assigns.agents))
@@ -31,10 +31,10 @@ defmodule RhoWeb.AgentComponents do
     """
   end
 
-  attr :agent, :map, required: true
-  attr :agents, :map, required: true
-  attr :selected, :boolean, default: false
-  attr :selected_agent_id, :string, default: nil
+  attr(:agent, :map, required: true)
+  attr(:agents, :map, required: true)
+  attr(:selected, :boolean, default: false)
+  attr(:selected_agent_id, :string, default: nil)
 
   def agent_node(assigns) do
     children = children(assigns.agents, assigns.agent.agent_id)

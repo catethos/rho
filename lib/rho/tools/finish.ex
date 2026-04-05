@@ -10,7 +10,11 @@ defmodule Rho.Tools.Finish do
             "Call this when your task is complete. Pass your final result. " <>
               "This is the only way to return your output to the parent agent.",
           parameter_schema: [
-            result: [type: :string, required: true, doc: "Your final result to return to the parent"]
+            result: [
+              type: :string,
+              required: true,
+              doc: "Your final result to return to the parent"
+            ]
           ],
           callback: fn _args -> :ok end
         ),

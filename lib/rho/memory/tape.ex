@@ -11,7 +11,8 @@ defmodule Rho.Memory.Tape do
   def bootstrap(tape_name), do: Service.ensure_bootstrap_anchor(tape_name)
 
   @impl true
-  def append(tape_name, kind, payload, meta \\ %{}), do: Service.append(tape_name, kind, payload, meta)
+  def append(tape_name, kind, payload, meta \\ %{}),
+    do: Service.append(tape_name, kind, payload, meta)
 
   @impl true
   def append_from_event(tape_name, event), do: Service.append_from_event(tape_name, event)

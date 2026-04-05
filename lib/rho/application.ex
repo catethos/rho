@@ -40,6 +40,7 @@ defmodule Rho.Application do
 
     children =
       [
+        Rho.Repo,
         {Registry, keys: :unique, name: Rho.AgentRegistry},
         {Registry, keys: :unique, name: Rho.SubagentRegistry},
         {Registry, keys: :unique, name: Rho.PythonRegistry},
@@ -48,13 +49,15 @@ defmodule Rho.Application do
         Rho.MountRegistry,
         Rho.Comms.SignalBus,
         Rho.Observatory
-      ] ++ memory_children ++ [
-        Rho.Plugins.Subagent.Supervisor,
-        Rho.Agent.Supervisor,
-        {Registry, keys: :unique, name: Rho.EventLogRegistry},
-        {DynamicSupervisor, name: Rho.Session.EventLog.Supervisor, strategy: :one_for_one},
-        Rho.CLI
-      ] ++ web_children()
+      ] ++
+        memory_children ++
+        [
+          Rho.Plugins.Subagent.Supervisor,
+          Rho.Agent.Supervisor,
+          {Registry, keys: :unique, name: Rho.EventLogRegistry},
+          {DynamicSupervisor, name: Rho.Session.EventLog.Supervisor, strategy: :one_for_one},
+          Rho.CLI
+        ] ++ web_children()
 
     opts = [strategy: :one_for_one, name: Rho.Supervisor]
     {:ok, pid} = Supervisor.start_link(children, opts)
@@ -146,7 +149,9 @@ defmodule Rho.Application do
       # Forward relevant env vars to Python (Dotenvy loads into Elixir but not OS env)
       for key <- ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] do
         case System.get_env(key) do
-          nil -> :ok
+          nil ->
+            :ok
+
           val ->
             escaped = String.replace(val, "\\", "\\\\") |> String.replace("'", "\\'")
             :py.exec("os.environ['#{key}'] = '#{escaped}'")

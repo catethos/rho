@@ -14,7 +14,10 @@ defmodule Rho.Tape.CompactTest do
     test "estimates based on content length" do
       Service.ensure_bootstrap_anchor(@test_tape)
       # 400 chars ~= 100 tokens
-      Service.append(@test_tape, :message, %{"role" => "user", "content" => String.duplicate("a", 400)})
+      Service.append(@test_tape, :message, %{
+        "role" => "user",
+        "content" => String.duplicate("a", 400)
+      })
 
       tokens = Compact.estimate_tokens(@test_tape)
       assert tokens == 100
@@ -37,14 +40,21 @@ defmodule Rho.Tape.CompactTest do
     test "returns true when over threshold" do
       Service.ensure_bootstrap_anchor(@test_tape)
       # 800_000 chars ~= 200_000 tokens, well over default 100k threshold
-      Service.append(@test_tape, :message, %{"role" => "user", "content" => String.duplicate("x", 800_000)})
+      Service.append(@test_tape, :message, %{
+        "role" => "user",
+        "content" => String.duplicate("x", 800_000)
+      })
 
       assert Compact.needed?(@test_tape)
     end
 
     test "respects custom threshold" do
       Service.ensure_bootstrap_anchor(@test_tape)
-      Service.append(@test_tape, :message, %{"role" => "user", "content" => String.duplicate("x", 400)})
+
+      Service.append(@test_tape, :message, %{
+        "role" => "user",
+        "content" => String.duplicate("x", 400)
+      })
 
       assert Compact.needed?(@test_tape, threshold: 50)
       refute Compact.needed?(@test_tape, threshold: 200)

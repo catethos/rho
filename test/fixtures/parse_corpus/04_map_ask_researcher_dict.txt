@@ -1,0 +1,1 @@
+{"action":"ask_researcher","action_input":{"message":"Please look up and explain the term 'BEAM' - what does it mean, especially in the context of computing/programming?"}}

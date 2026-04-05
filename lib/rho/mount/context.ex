@@ -24,7 +24,8 @@ defmodule Rho.Mount.Context do
     :subagent,
     :agent_id,
     :session_id,
-    :prompt_format
+    :prompt_format,
+    :user_id
   ]
 
   @type t :: %__MODULE__{
@@ -39,7 +40,8 @@ defmodule Rho.Mount.Context do
           subagent: boolean(),
           agent_id: String.t() | nil,
           session_id: String.t() | nil,
-          prompt_format: :markdown | :xml | nil
+          prompt_format: :markdown | :xml | nil,
+          user_id: String.t() | nil
         }
 
   @impl Access

@@ -26,9 +26,10 @@ defmodule Rho.Tools.RecallContext do
     anchors = Enum.filter(entries, &(&1.kind == :anchor))
 
     # Exclude the bootstrap anchor (has no meaningful summary)
-    anchors = Enum.reject(anchors, fn a ->
-      a.payload["name"] == "bootstrap" && (a.payload["state"]["summary"] || "") == ""
-    end)
+    anchors =
+      Enum.reject(anchors, fn a ->
+        a.payload["name"] == "bootstrap" && (a.payload["state"]["summary"] || "") == ""
+      end)
 
     if phase do
       recall_phase(anchors, phase)
@@ -47,7 +48,12 @@ defmodule Rho.Tools.RecallContext do
         state = a.payload["state"] || %{}
         name = state["phase"] || a.payload["name"] || "unknown"
         summary = state["summary"] || ""
-        preview = if String.length(summary) > 100, do: String.slice(summary, 0, 100) <> "...", else: summary
+
+        preview =
+          if String.length(summary) > 100,
+            do: String.slice(summary, 0, 100) <> "...",
+            else: summary
+
         "- #{name}: #{preview}"
       end)
 
@@ -63,10 +69,12 @@ defmodule Rho.Tools.RecallContext do
 
     case match do
       nil ->
-        names = Enum.map(anchors, fn a ->
-          state = a.payload["state"] || %{}
-          state["phase"] || a.payload["name"] || "unknown"
-        end)
+        names =
+          Enum.map(anchors, fn a ->
+            state = a.payload["state"] || %{}
+            state["phase"] || a.payload["name"] || "unknown"
+          end)
+
         {:ok, "Phase \"#{phase}\" not found. Available: #{Enum.join(names, ", ")}"}
 
       anchor ->
@@ -75,7 +83,11 @@ defmodule Rho.Tools.RecallContext do
         next_steps = state["next_steps"] || []
 
         parts = ["Phase: #{phase}", "Summary: #{summary}"]
-        parts = if next_steps != [], do: parts ++ ["Next steps: #{Enum.join(next_steps, ", ")}"], else: parts
+
+        parts =
+          if next_steps != [],
+            do: parts ++ ["Next steps: #{Enum.join(next_steps, ", ")}"],
+            else: parts
 
         {:ok, Enum.join(parts, "\n")}
     end

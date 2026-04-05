@@ -18,6 +18,7 @@ defmodule RhoWeb.SessionLive do
 
     socket =
       socket
+      |> assign(:active_page, :chat)
       |> assign(:session_id, session_id)
       |> assign(:agents, %{})
       |> assign(:active_tab, nil)

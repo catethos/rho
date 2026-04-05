@@ -98,7 +98,7 @@ defmodule Rho.Tape.Service do
         |> elem(0)
 
       all_entries
-      |> Enum.filter(&(MapSet.member?(id_set, &1.id)))
+      |> Enum.filter(&MapSet.member?(id_set, &1.id))
       |> Enum.take(-limit)
       |> Enum.flat_map(fn entry ->
         if entry.payload["role"] == "user" do
@@ -127,11 +127,11 @@ defmodule Rho.Tape.Service do
 
     source_ids =
       opts[:source_ids] ||
-        (tape_name
-         |> Store.read()
-         |> Enum.filter(&(&1.kind != :anchor))
-         |> Enum.map(& &1.id)
-         |> Enum.take(-20))
+        tape_name
+        |> Store.read()
+        |> Enum.filter(&(&1.kind != :anchor))
+        |> Enum.map(& &1.id)
+        |> Enum.take(-20)
 
     payload = %{
       "name" => phase,
@@ -172,7 +172,13 @@ defmodule Rho.Tape.Service do
   end
 
   defp entry_to_history(%{kind: :message} = e) do
-    %{type: "message", role: e.payload["role"], content: e.payload["content"], id: e.id, ts: e.date}
+    %{
+      type: "message",
+      role: e.payload["role"],
+      content: e.payload["content"],
+      id: e.id,
+      ts: e.date
+    }
   end
 
   defp entry_to_history(%{kind: :tool_call} = e) do
@@ -180,8 +186,14 @@ defmodule Rho.Tape.Service do
   end
 
   defp entry_to_history(%{kind: :tool_result} = e) do
-    %{type: "tool_result", name: e.payload["name"], output: e.payload["output"],
-      status: e.payload["status"], id: e.id, ts: e.date}
+    %{
+      type: "tool_result",
+      name: e.payload["name"],
+      output: e.payload["output"],
+      status: e.payload["status"],
+      id: e.id,
+      ts: e.date
+    }
   end
 
   defp entry_to_history(%{kind: :anchor} = e) do
@@ -201,7 +213,11 @@ defmodule Rho.Tape.Service do
 
   defp event_to_entry(%{type: :tool_result, name: name} = event) do
     payload =
-      %{"name" => name, "status" => to_string(event[:status] || :ok), "output" => event[:output] || ""}
+      %{
+        "name" => name,
+        "status" => to_string(event[:status] || :ok),
+        "output" => event[:output] || ""
+      }
       |> maybe_put_call_id(event)
       |> maybe_put("latency_ms", event[:latency_ms])
       |> maybe_put("error_type", if(event[:error_type], do: to_string(event[:error_type])))

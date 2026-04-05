@@ -45,7 +45,8 @@ defmodule Rho.Agent.Worker do
     current_tool: nil,
     current_step: nil,
     token_usage: %{input: 0, output: 0},
-    last_activity_at: nil
+    last_activity_at: nil,
+    user_id: nil
   ]
 
   # --- Public API ---
@@ -145,7 +146,8 @@ defmodule Rho.Agent.Worker do
       agent_name: agent_name,
       depth: depth,
       capabilities: capabilities,
-      parent_agent_id: parent_agent_id
+      parent_agent_id: parent_agent_id,
+      user_id: Keyword.get(opts, :user_id)
     }
 
     # Pull id card from config
@@ -855,7 +857,8 @@ defmodule Rho.Agent.Worker do
       session_id: state.session_id,
       depth: depth,
       subagent: false,
-      opts: Enum.into(opts, %{})
+      opts: Enum.into(opts, %{}),
+      user_id: state.user_id
     }
   end
 

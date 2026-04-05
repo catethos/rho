@@ -73,7 +73,8 @@ defmodule Rho.AgentLoopTest do
       {:ok, {:fake_stream, Agent.get(counter, & &1)}}
     end)
 
-    expect(ReqLLM.StreamResponse, :process_stream, length(responses), fn {:fake_stream, _idx}, _opts ->
+    expect(ReqLLM.StreamResponse, :process_stream, length(responses), fn {:fake_stream, _idx},
+                                                                         _opts ->
       i = Agent.get_and_update(counter, fn n -> {n, n + 1} end)
       {:ok, Enum.at(responses, i)}
     end)
@@ -107,23 +108,25 @@ defmodule Rho.AgentLoopTest do
       {_ref, _counter} = expect_stream_sequence([tool_resp, final_resp])
 
       echo_tool = %{
-        tool: ReqLLM.tool(
-          name: "echo",
-          description: "Echoes a message",
-          parameter_schema: [msg: [type: :string, required: true, doc: "Message"]],
-          callback: fn _args -> :ok end
-        ),
+        tool:
+          ReqLLM.tool(
+            name: "echo",
+            description: "Echoes a message",
+            parameter_schema: [msg: [type: :string, required: true, doc: "Message"]],
+            callback: fn _args -> :ok end
+          ),
         execute: fn %{"msg" => msg} -> {:ok, "echoed: #{msg}"} end
       }
 
-      events = collect_events(fn on_event ->
-        assert {:ok, "The echo returned: pong"} =
-                 Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("echo ping")],
-                   tools: [echo_tool],
-                   on_event: on_event,
-                   max_steps: 5
-                 )
-      end)
+      events =
+        collect_events(fn on_event ->
+          assert {:ok, "The echo returned: pong"} =
+                   Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("echo ping")],
+                     tools: [echo_tool],
+                     on_event: on_event,
+                     max_steps: 5
+                   )
+        end)
 
       # Verify tool_start and tool_result events were emitted
       assert Enum.any?(events, &match?(%{type: :tool_start, name: "echo"}, &1))
@@ -156,15 +159,16 @@ defmodule Rho.AgentLoopTest do
       # The loop itself: single-turn text response
       stub_stream_returning(text_response("Done after compaction."))
 
-      events = collect_events(fn on_event ->
-        assert {:ok, "Done after compaction."} =
-                 Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("continue")],
-                   tape_name: @test_tape,
-                   on_event: on_event,
-                   max_steps: 5,
-                   compact_threshold: 50
-                 )
-      end)
+      events =
+        collect_events(fn on_event ->
+          assert {:ok, "Done after compaction."} =
+                   Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("continue")],
+                     tape_name: @test_tape,
+                     on_event: on_event,
+                     max_steps: 5,
+                     compact_threshold: 50
+                   )
+        end)
 
       assert Enum.any?(events, &match?(%{type: :compact}, &1))
     end
@@ -186,19 +190,24 @@ defmodule Rho.AgentLoopTest do
       # Only one LLM call — the loop must NOT make a second call
       {_ref, _counter} = expect_stream_sequence([tool_resp])
 
-      events = collect_events(fn on_event ->
-        assert {:ok, "Saving progress."} =
-                 Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("wrap up")],
-                   tape_name: @test_tape,
-                   tools: [anchor_tool],
-                   on_event: on_event,
-                   max_steps: 10
-                 )
-      end)
+      events =
+        collect_events(fn on_event ->
+          assert {:ok, "Saving progress."} =
+                   Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("wrap up")],
+                     tape_name: @test_tape,
+                     tools: [anchor_tool],
+                     on_event: on_event,
+                     max_steps: 10
+                   )
+        end)
 
       # Verify the anchor tool was started
       assert Enum.any?(events, &match?(%{type: :tool_start, name: "create_anchor"}, &1))
-      assert Enum.any?(events, &match?(%{type: :tool_result, name: "create_anchor", status: :ok}, &1))
+
+      assert Enum.any?(
+               events,
+               &match?(%{type: :tool_result, name: "create_anchor", status: :ok}, &1)
+             )
 
       # Verify only one step_start (loop did not continue)
       step_starts = Enum.filter(events, &match?(%{type: :step_start}, &1))
@@ -224,26 +233,32 @@ defmodule Rho.AgentLoopTest do
       {_ref, _counter} = expect_stream_sequence([tool_resp, final_resp])
 
       dangerous_tool = %{
-        tool: ReqLLM.tool(
-          name: "dangerous",
-          description: "A dangerous tool",
-          parameter_schema: [],
-          callback: fn _args -> :ok end
-        ),
+        tool:
+          ReqLLM.tool(
+            name: "dangerous",
+            description: "A dangerous tool",
+            parameter_schema: [],
+            callback: fn _args -> :ok end
+          ),
         execute: fn _args -> {:ok, "should not run"} end
       }
 
-      events = collect_events(fn on_event ->
-        assert {:ok, "Got denied"} =
-                 Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("do something dangerous")],
-                   tools: [dangerous_tool],
-                   emit: on_event,
-                   max_steps: 5,
-                   agent_name: :default
-                 )
-      end)
+      events =
+        collect_events(fn on_event ->
+          assert {:ok, "Got denied"} =
+                   Rho.AgentLoop.run(
+                     "mock:model",
+                     [ReqLLM.Context.user("do something dangerous")],
+                     tools: [dangerous_tool],
+                     emit: on_event,
+                     max_steps: 5,
+                     agent_name: :default
+                   )
+        end)
 
-      denied = Enum.find(events, &match?(%{type: :tool_result, name: "dangerous", status: :error}, &1))
+      denied =
+        Enum.find(events, &match?(%{type: :tool_result, name: "dangerous", status: :error}, &1))
+
       assert denied.output =~ "Denied"
     end
   end
@@ -264,26 +279,30 @@ defmodule Rho.AgentLoopTest do
       {_ref, _counter} = expect_stream_sequence([tool_resp, final_resp])
 
       bash_tool = %{
-        tool: ReqLLM.tool(
-          name: "bash",
-          description: "Run a command",
-          parameter_schema: [cmd: [type: :string, required: true, doc: "Command"]],
-          callback: fn _args -> :ok end
-        ),
+        tool:
+          ReqLLM.tool(
+            name: "bash",
+            description: "Run a command",
+            parameter_schema: [cmd: [type: :string, required: true, doc: "Command"]],
+            callback: fn _args -> :ok end
+          ),
         execute: fn _args -> {:ok, "raw output"} end
       }
 
-      events = collect_events(fn on_event ->
-        assert {:ok, "Filtered result received"} =
-                 Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("run ls")],
-                   tools: [bash_tool],
-                   emit: on_event,
-                   max_steps: 5,
-                   agent_name: :default
-                 )
-      end)
+      events =
+        collect_events(fn on_event ->
+          assert {:ok, "Filtered result received"} =
+                   Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("run ls")],
+                     tools: [bash_tool],
+                     emit: on_event,
+                     max_steps: 5,
+                     agent_name: :default
+                   )
+        end)
 
-      result_event = Enum.find(events, &match?(%{type: :tool_result, name: "bash", status: :ok}, &1))
+      result_event =
+        Enum.find(events, &match?(%{type: :tool_result, name: "bash", status: :ok}, &1))
+
       assert result_event.output =~ "[filtered]"
     end
   end
@@ -302,12 +321,13 @@ defmodule Rho.AgentLoopTest do
       final_resp = text_response("Done with injection")
 
       echo_tool = %{
-        tool: ReqLLM.tool(
-          name: "echo",
-          description: "Echo",
-          parameter_schema: [msg: [type: :string, required: true, doc: "Msg"]],
-          callback: fn _args -> :ok end
-        ),
+        tool:
+          ReqLLM.tool(
+            name: "echo",
+            description: "Echo",
+            parameter_schema: [msg: [type: :string, required: true, doc: "Msg"]],
+            callback: fn _args -> :ok end
+          ),
         execute: fn %{"msg" => msg} -> {:ok, "echoed: #{msg}"} end
       }
 
@@ -372,12 +392,14 @@ defmodule Rho.AgentLoopTest do
 
       assert_received {:llm_context, context}
       # The mount adds an extra user message
-      texts = Enum.flat_map(context, fn msg ->
-        case msg do
-          %{role: :user, content: content} -> [extract_msg_text(content)]
-          _ -> []
-        end
-      end)
+      texts =
+        Enum.flat_map(context, fn msg ->
+          case msg do
+            %{role: :user, content: content} -> [extract_msg_text(content)]
+            _ -> []
+          end
+        end)
+
       assert Enum.any?(texts, &(&1 =~ "injected_by_before_llm"))
     end
   end
@@ -418,12 +440,14 @@ defmodule Rho.AgentLoopTest do
 
       assert_received {:subagent_context, context}
       # before_llm should NOT have injected anything
-      texts = Enum.flat_map(context, fn msg ->
-        case msg do
-          %{role: :user, content: content} -> [extract_msg_text(content)]
-          _ -> []
-        end
-      end)
+      texts =
+        Enum.flat_map(context, fn msg ->
+          case msg do
+            %{role: :user, content: content} -> [extract_msg_text(content)]
+            _ -> []
+          end
+        end)
+
       refute Enum.any?(texts, &(&1 =~ "injected_by_before_llm"))
     end
   end
@@ -432,13 +456,14 @@ defmodule Rho.AgentLoopTest do
     test "compaction failure returns error instead of silently continuing" do
       stub_stream_returning(text_response("Should not reach here"))
 
-      result = Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("continue")],
-        tape_name: "test_compact_error",
-        memory_mod: __MODULE__.FailingCompactMem,
-        emit: fn _event -> :ok end,
-        max_steps: 5,
-        compact_threshold: 50
-      )
+      result =
+        Rho.AgentLoop.run("mock:model", [ReqLLM.Context.user("continue")],
+          tape_name: "test_compact_error",
+          memory_mod: __MODULE__.FailingCompactMem,
+          emit: fn _event -> :ok end,
+          max_steps: 5,
+          compact_threshold: 50
+        )
 
       assert {:error, {:compact_failed, :compaction_broken}} = result
     end
@@ -457,7 +482,6 @@ defmodule Rho.AgentLoopTest do
                )
     end
   end
-
 
   # -- Test memory module for compaction error --
 
@@ -506,6 +530,7 @@ defmodule Rho.AgentLoopTest do
   # -- Helpers --
 
   defp extract_msg_text(content) when is_binary(content), do: content
+
   defp extract_msg_text(parts) when is_list(parts) do
     Enum.map_join(parts, "", fn
       %{text: t} -> t
@@ -513,6 +538,7 @@ defmodule Rho.AgentLoopTest do
       _ -> ""
     end)
   end
+
   defp extract_msg_text(other), do: inspect(other)
 
   # -- Event collection helper --

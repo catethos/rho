@@ -24,7 +24,8 @@ defmodule Rho.Memory do
   @callback reset(memory_ref(), opts :: keyword()) :: :ok
 
   # --- Optional ---
-  @callback compact_if_needed(memory_ref(), opts :: keyword()) :: {:ok, :not_needed} | {:ok, term()} | {:error, term()}
+  @callback compact_if_needed(memory_ref(), opts :: keyword()) ::
+              {:ok, :not_needed} | {:ok, term()} | {:error, term()}
   @callback fork(memory_ref(), opts :: keyword()) :: {:ok, memory_ref()}
   @callback merge(fork_ref :: memory_ref(), main_ref :: memory_ref()) :: {:ok, integer()}
   @callback children(opts :: keyword()) :: [Supervisor.child_spec()]
