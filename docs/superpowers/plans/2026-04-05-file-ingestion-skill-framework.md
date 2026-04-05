@@ -1115,17 +1115,25 @@ In `SpreadsheetLive.render/1`, replace the chat input area with:
   <%!-- File chips for selected files --%>
   <div :if={@uploads.files.entries != []} class="file-chips">
     <%= for entry <- @uploads.files.entries do %>
-      <div class="file-chip">
+      <div class={"file-chip" <> if(!entry.valid?, do: " file-chip-error", else: "")}>
         <span class="file-chip-icon"><%= file_type_icon(entry.client_type) %></span>
         <span class="file-chip-name"><%= entry.client_name %></span>
         <span :if={entry.progress > 0 and entry.progress < 100} class="file-chip-progress">
           <%= entry.progress %>%
+        </span>
+        <%!-- Show per-entry validation errors (file too large, wrong type) --%>
+        <span :for={err <- upload_errors(@uploads.files, entry)} class="file-chip-err">
+          <%= humanize_upload_error(err) %>
         </span>
         <button type="button" phx-click="cancel_upload" phx-value-ref={entry.ref} class="file-chip-remove">
           x
         </button>
       </div>
     <% end %>
+    <%!-- Show global upload errors (too many files) --%>
+    <span :for={err <- upload_errors(@uploads.files)} class="file-chips-err">
+      <%= humanize_upload_error(err) %>
+    </span>
   </div>
 
   <%!-- Parsing indicator --%>
@@ -1174,7 +1182,7 @@ def handle_event("validate_upload", _params, socket) do
 end
 ```
 
-- [ ] **Step 3: Add file_type_icon helper**
+- [ ] **Step 3: Add file_type_icon and humanize_upload_error helpers**
 
 ```elixir
 defp file_type_icon(mime_type) do
@@ -1185,6 +1193,11 @@ defp file_type_icon(mime_type) do
     true -> "FILE"
   end
 end
+
+defp humanize_upload_error(:too_large), do: "File too large (max 10MB)"
+defp humanize_upload_error(:not_accepted), do: "File type not supported"
+defp humanize_upload_error(:too_many_files), do: "Too many files (max 10)"
+defp humanize_upload_error(err), do: inspect(err)
 ```
 
 - [ ] **Step 4: Add CSS for upload UI**
