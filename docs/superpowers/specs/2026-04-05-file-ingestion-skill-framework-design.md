@@ -48,21 +48,22 @@ SKILL LAYER (.agents/skills/framework-editor/)
 ### Skill Directory Layout
 
 ```
-.agents/skills/framework-editor/
-├── SKILL.md                          # Router: intent detection + dispatch
-├── references/
-│   ├── generate-workflow.md          # Phase 1-3: intake → skeleton → proficiency
-│   ├── import-workflow.md            # Structured file → spreadsheet mapping
-│   ├── enhance-workflow.md           # AI enhancement of imported data
-│   ├── reference-workflow.md         # Using file as context for new generation
-│   ├── dreyfus-model.md              # Proficiency level definitions
-│   ├── blooms-verbs.md               # Action verbs per cognitive level
-│   ├── quality-rubric.md             # Observable behavior quality rules
-│   └── column-mapping.md             # Common column name aliases + mapping protocol
-└── scripts/
-    ├── parse_excel.py                # openpyxl: .xlsx/.csv → JSON rows
-    ├── parse_pdf.py                  # pdfplumber: table extraction + text fallback
-    └── detect_structure.py           # Classify: structured table or prose?
+.agents/skills/framework-editor/          # Skill (agent-facing)
+├── SKILL.md                              # Router: intent detection + dispatch
+└── references/
+    ├── generate-workflow.md              # Phase 1-3: intake → skeleton → proficiency
+    ├── import-workflow.md                # Structured file → spreadsheet mapping
+    ├── enhance-workflow.md               # AI enhancement of imported data
+    ├── reference-workflow.md             # Using file as context for new generation
+    ├── dreyfus-model.md                  # Proficiency level definitions
+    ├── blooms-verbs.md                   # Action verbs per cognitive level
+    ├── quality-rubric.md                 # Observable behavior quality rules
+    └── column-mapping.md                 # Common column name aliases + mapping protocol
+
+priv/python/file_parser/                  # Backend Python scripts (owned by FileParser module)
+├── parse_excel.py                        # openpyxl + chardet: .xlsx/.csv → JSON
+├── parse_pdf.py                          # pdfplumber: table extraction + text fallback
+└── detect_structure.py                   # Classify: structured table or prose?
 ```
 
 ### Key Design Decision: Scripts Run in Backend, Not Agent
@@ -114,7 +115,22 @@ The SKILL.md also includes shared rules that always apply (MECE categories, Drey
 
 **File:** `lib/rho/file_parser.ex`
 
-Elixir module that routes file parsing by MIME type. Calls Python scripts via `Pythonx.eval/2` directly (not through the agent's Python interpreter — `FileParser` is a backend module, not a mount). Scripts are located relative to the skill directory but `FileParser` receives the script paths at configuration time, not from the agent.
+Elixir module that routes file parsing by MIME type. Calls Python code via `Pythonx.eval/2` directly (not through the agent's Python interpreter — `FileParser` is a backend module, not a mount).
+
+**Script ownership:** `FileParser` owns its Python code as module attributes (inline strings) or reads from `priv/python/file_parser/`. The `.agents/skills/framework-editor/scripts/` directory is a documentation convention showing what the skill depends on, but the actual parsing code lives in the Elixir app's `priv/` to avoid coupling a backend module to skill discovery paths.
+
+**Python dependencies:** Add to `.rho.exs` spreadsheet agent config:
+
+```elixir
+python_deps: ["openpyxl", "pdfplumber", "chardet"]
+```
+
+These get picked up by `Rho.Config.python_deps/0` and installed via `Pythonx.uv_init/1` at app startup. `chardet` is needed for CSV/Excel encoding detection (Asian clients may use GB2312, Big5, Shift-JIS).
+
+**CSV handling:** `parse_excel.py` must:
+- Auto-detect encoding via `chardet.detect()` before reading
+- Auto-detect delimiter via `csv.Sniffer().sniff()` (handles comma, semicolon, tab)
+- Fall back to UTF-8 + comma if detection fails
 
 ```elixir
 @spec parse(path :: String.t(), mime_type :: String.t()) ::
@@ -266,9 +282,12 @@ New tool added to the spreadsheet mount's `tools/2`:
 %{
   tool: ReqLLM.tool(
     name: "get_uploaded_file",
-    description: "Read the full parsed content of an uploaded file by filename. Returns structured rows (for Excel/CSV) or extracted text (for PDF).",
+    description: "Read parsed content of an uploaded file. For large files (>200 rows), returns first 200 rows by default — use offset/limit to paginate.",
     parameter_schema: [
-      filename: [type: :string, required: true, doc: "Filename as shown in the upload summary"]
+      filename: [type: :string, required: true, doc: "Filename as shown in the upload summary"],
+      sheet: [type: :string, required: false, doc: "Sheet name for multi-sheet Excel files. Defaults to first sheet."],
+      offset: [type: :integer, required: false, doc: "Start row (0-based). Default: 0"],
+      limit: [type: :integer, required: false, doc: "Max rows to return. Default: 200"]
     ]
   ),
   execute: fn args ->
@@ -506,11 +525,11 @@ Agent: Intent → Reference + Generate
 | File | Purpose |
 |------|---------|
 | `lib/rho/file_parser.ex` | File parsing router module |
+| `priv/python/file_parser/parse_excel.py` | Excel/CSV parser (openpyxl + chardet) |
+| `priv/python/file_parser/parse_pdf.py` | PDF parser (pdfplumber) |
+| `priv/python/file_parser/detect_structure.py` | Table vs prose classifier |
 | `.agents/skills/framework-editor/SKILL.md` | Skill router |
-| `.agents/skills/framework-editor/references/*.md` | 7-8 reference files |
-| `.agents/skills/framework-editor/scripts/parse_excel.py` | Excel/CSV parser |
-| `.agents/skills/framework-editor/scripts/parse_pdf.py` | PDF parser |
-| `.agents/skills/framework-editor/scripts/detect_structure.py` | Table vs prose classifier |
+| `.agents/skills/framework-editor/references/*.md` | 7-8 reference workflow files |
 
 ### Modified Files
 
@@ -519,7 +538,7 @@ Agent: Intent → Reference + Generate
 | `lib/rho/skills.ex` | Add `read_resource` tool |
 | `lib/rho/mounts/spreadsheet.ex` | Add `get_uploaded_file` tool |
 | `lib/rho_web/live/spreadsheet_live.ex` | Add `allow_upload`, file parsing pipeline, multimodal message assembly, `parsed_files` assigns handling |
-| `.rho.exs` | Add `:skills` mount to spreadsheet agent, thin system prompt with `$framework-editor` hint |
+| `.rho.exs` | Add `:skills` mount, `python_deps`, thin system prompt with `$framework-editor` hint |
 | `lib/rho_web/inline_css.ex` | Upload UI styling (file chips, progress indicators) |
 
 ### Unchanged
