@@ -62,6 +62,7 @@ defmodule Rho.FileParser do
       end
 
     python_code = """
+    __name__ = '__rho_fileparser__'
     exec(open(#{inspect(script)}).read())
     import json as _json
     _r = parse(#{call_args})
