@@ -136,20 +136,23 @@ def parse_csv(file_path):
         "sheets": [{"name": "Sheet1", "columns": columns, "rows": rows, "row_count": len(rows)}]
     }
 
-def main():
-    file_path = sys.argv[1]
-    mime_type = sys.argv[2] if len(sys.argv) > 2 else ""
+def parse(file_path, mime_type=""):
+    """Entry point called by Rho.FileParser via Pythonx.eval.
+    Returns a dict (NOT prints JSON). Pythonx.decode converts to Elixir map."""
     try:
         if mime_type == "text/csv" or file_path.endswith(".csv"):
-            result = parse_csv(file_path)
+            return parse_csv(file_path)
         else:
-            result = parse_xlsx(file_path)
-        print(json.dumps(result))
+            return parse_xlsx(file_path)
     except Exception as e:
-        print(json.dumps({"type": "error", "message": str(e)}))
+        return {"type": "error", "message": str(e)}
 
+# CLI entry point for manual testing: python parse_excel.py file.xlsx
 if __name__ == "__main__":
-    main()
+    import sys
+    file_path = sys.argv[1]
+    mime_type = sys.argv[2] if len(sys.argv) > 2 else ""
+    print(json.dumps(parse(file_path, mime_type)))
 ```
 
 - [ ] **Step 3: Write parse_pdf.py**
@@ -206,16 +209,18 @@ def parse_pdf(file_path):
         return {"type": "error", "message": "Scanned PDF detected. Please upload a digitally-generated PDF or take a screenshot instead."}
     return {"type": "text", "content": full_text, "char_count": len(full_text), "page_count": len(pdf.pages) if hasattr(pdf, 'pages') else 0}
 
-def main():
-    file_path = sys.argv[1]
+def parse(file_path):
+    """Entry point called by Rho.FileParser via Pythonx.eval.
+    Returns a dict (NOT prints JSON). Pythonx.decode converts to Elixir map."""
     try:
-        result = parse_pdf(file_path)
-        print(json.dumps(result))
+        return parse_pdf(file_path)
     except Exception as e:
-        print(json.dumps({"type": "error", "message": str(e)}))
+        return {"type": "error", "message": str(e)}
 
+# CLI entry point for manual testing: python parse_pdf.py file.pdf
 if __name__ == "__main__":
-    main()
+    import sys
+    print(json.dumps(parse(sys.argv[1])))
 ```
 
 - [ ] **Step 4: Manually test with a sample file**
@@ -366,23 +371,29 @@ defmodule Rho.FileParser do
 
   defp parse_with_python(type, path, mime_type) do
     script = script_for(type)
-    args = if type == :pdf, do: [path], else: [path, mime_type]
-    code = "exec(open(#{inspect(script)}).read()); main()" |> String.replace("main()", build_main_call(args))
 
-    # Use Pythonx to run the parser script
+    # Load the Python script and call its parse() function.
+    # Pattern matches Rho.Tools.Python.Interpreter: Pythonx.eval returns
+    # a Python object, Pythonx.decode converts to Elixir term.
+    # Scripts expose parse(file_path, ...) → dict (not print/stdout).
+    call_args =
+      case type do
+        :pdf -> inspect(path)
+        _ -> "#{inspect(path)}, #{inspect(mime_type)}"
+      end
+
     python_code = """
-    import sys
-    sys.argv = #{inspect([script | args])}
     exec(open(#{inspect(script)}).read())
     import json
-    _result = main()
+    _r = parse(#{call_args})
+    json.dumps(_r)
     """
 
     try do
-      {result, _} = Pythonx.eval(python_code, %{})
-      decoded = Pythonx.decode(result)
+      {result, _globals} = Pythonx.eval(python_code, %{})
+      json_string = Pythonx.decode(result)
 
-      case Jason.decode(decoded) do
+      case Jason.decode(json_string) do
         {:ok, %{"type" => "structured", "sheets" => sheets}} ->
           parsed_sheets =
             Enum.map(sheets, fn s ->
@@ -393,6 +404,7 @@ defmodule Rho.FileParser do
                 row_count: s["row_count"]
               }
             end)
+
           {:structured, %{sheets: parsed_sheets}}
 
         {:ok, %{"type" => "text", "content" => content}} ->
@@ -418,15 +430,8 @@ defmodule Rho.FileParser do
   defp script_path(name) do
     Application.app_dir(:rho, Path.join(["priv", "python", "file_parser", name]))
   end
-
-  defp build_main_call(args) do
-    args_str = Enum.map_join(args, ", ", &inspect/1)
-    "main()"
-  end
 end
 ```
-
-**Note:** The Pythonx integration will need adjustment during implementation — the exact eval pattern depends on how the scripts expose `main()`. The scripts are designed to work as CLI (`sys.argv`) so the simplest approach is to set `sys.argv` and call `main()`, capturing stdout. Adjust the `parse_with_python/3` function to match the actual Pythonx API used in `Rho.Tools.Python.Interpreter`.
 
 - [ ] **Step 5: Run tests**
 
@@ -840,6 +845,10 @@ end
 
 - [ ] **Step 4: Add handle_info for files_parsed**
 
+**Important:** The existing `do_send_message/2` assumes `content` is always a string — it builds `user_msg` with `type: :text` and passes `content` directly to `SessionProjection.append_message`. For multimodal messages (image uploads), `content` will be a list of `ContentPart` structs, which breaks the chat feed display.
+
+Fix: extract the display text separately from the submit content.
+
 ```elixir
 def handle_info({:files_parsed, content, file_results}, socket) do
   socket = assign(socket, :parsing_files, false)
@@ -857,27 +866,83 @@ def handle_info({:files_parsed, content, file_results}, socket) do
   # Build enriched message
   {text_summary, image_parts} = build_file_context(file_results)
 
-  enriched_text =
-    if content != "" and text_summary != "" do
-      content <> "\n\n" <> text_summary
-    else
-      content <> text_summary
+  # Display text for chat feed (always a string, even with images)
+  display_text =
+    case {content, text_summary} do
+      {"", ""} -> "[Files uploaded]"
+      {c, ""} -> c
+      {"", s} -> s
+      {c, s} -> c <> "\n\n" <> s
     end
 
+  # Submit content for LLM (may be multimodal)
   submit_content =
     if image_parts != [] do
       text_parts =
-        if enriched_text != "",
-          do: [ReqLLM.Message.ContentPart.text(enriched_text)],
+        if display_text != "",
+          do: [ReqLLM.Message.ContentPart.text(display_text)],
           else: []
 
       text_parts ++ image_parts
     else
-      enriched_text
+      display_text
     end
 
-  do_send_message(submit_content, socket)
+  # Use display_text for the chat feed, submit_content for the agent
+  do_send_message_with_display(submit_content, display_text, socket)
 end
+```
+
+Then add a `do_send_message_with_display/3` that uses `display_text` for `user_msg.content` (chat feed) and `submit_content` for `Rho.Session.submit` (agent). This is the same pattern as `SessionLive` where image uploads show as "[Image attached]" in the chat feed but the full ContentPart goes to the LLM.
+
+```elixir
+defp do_send_message_with_display(submit_content, display_text, socket) do
+  sid = socket.assigns.session_id
+
+  {sid, socket} =
+    if sid do
+      {sid, socket}
+    else
+      {new_sid, sock} = ensure_session(socket, nil)
+      sock = subscribe_and_hydrate(sock, new_sid)
+      {new_sid, assign(sock, :session_id, new_sid)}
+    end
+
+  target_id = socket.assigns.active_tab
+
+  # Chat feed always gets the text version
+  user_msg = %{
+    id: "user_#{System.unique_integer([:positive])}",
+    role: :user,
+    type: :text,
+    content: display_text,
+    agent_id: target_id
+  }
+
+  socket = SessionProjection.append_message(socket, user_msg)
+
+  # Agent gets the full content (may be multimodal)
+  result =
+    if target_id do
+      case Rho.Agent.Worker.whereis(target_id) do
+        nil -> {:error, "Agent not found"}
+        pid -> Rho.Agent.Worker.submit(pid, submit_content)
+      end
+    else
+      Rho.Session.submit(sid, submit_content)
+    end
+
+  case result do
+    {:ok, _turn_id} ->
+      pending_id = target_id || primary_agent_id(sid)
+      pending = MapSet.put(socket.assigns.pending_response, pending_id)
+      {:noreply, assign(socket, :pending_response, pending)}
+
+    {:error, reason} ->
+      {:noreply, put_flash(socket, :error, "Failed to send: #{inspect(reason)}")}
+  end
+end
+```
 ```
 
 - [ ] **Step 5: Add file context builder helpers**
