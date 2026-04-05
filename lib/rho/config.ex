@@ -97,6 +97,7 @@ defmodule Rho.Config do
       reasoner_opts: config[:reasoner_opts] || [],
       description: config[:description],
       skills: config[:skills] || [],
+      default_skills: config[:default_skills] || [],
       prompt_format: config[:prompt_format] || :markdown,
       avatar: config[:avatar]
     }
