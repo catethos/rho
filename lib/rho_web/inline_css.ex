@@ -648,6 +648,37 @@ defmodule RhoWeb.InlineCSS do
       padding: 1px 0;
     }
 
+    /* File chips (spreadsheet upload) */
+    .file-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; padding: 0.4rem 0.75rem 0; }
+    .file-chip {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 0.2rem 0.5rem; font-size: 0.75rem; color: var(--fg-muted);
+    }
+    .file-chip-error { border-color: #f85149; color: #f85149; }
+    .file-chip-icon { font-weight: 600; font-size: 0.65rem; opacity: 0.7; }
+    .file-chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-chip-progress { font-size: 0.65rem; opacity: 0.6; }
+    .file-chip-err { font-size: 0.65rem; color: #f85149; }
+    .file-chip-remove {
+      background: none; border: none; color: var(--fg-muted); cursor: pointer;
+      font-size: 0.85rem; line-height: 1; padding: 0 0.15rem; opacity: 0.6;
+    }
+    .file-chip-remove:hover { opacity: 1; color: #f85149; }
+    .file-chips-err { font-size: 0.7rem; color: #f85149; padding: 0 0.75rem; }
+    .file-input-hidden { position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; }
+    .btn-attach {
+      display: flex; align-items: center; justify-content: center;
+      background: none; border: none; color: var(--fg-muted); cursor: pointer;
+      padding: 0.3rem; border-radius: var(--radius); flex-shrink: 0;
+    }
+    .btn-attach:hover { color: var(--teal); background: var(--bg-surface); }
+    .parsing-indicator {
+      padding: 0.3rem 0.75rem; font-size: 0.75rem; color: var(--teal);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
     /* === Agent sidebar === */
     .agent-sidebar {
       background: var(--bg-surface);

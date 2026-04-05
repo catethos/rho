@@ -652,11 +652,65 @@ defmodule RhoWeb.SpreadsheetLive do
         />
 
         <div class="chat-input-area">
-          <form id="chat-input-form" phx-submit="send_message" class="chat-input-form">
+          <div :if={@uploads.files.entries != []} class="file-chips">
+            <%= for entry <- @uploads.files.entries do %>
+              <div class={"file-chip" <> if(!entry.valid?, do: " file-chip-error", else: "")}>
+                <span class="file-chip-icon"><%= file_type_icon(entry.client_type) %></span>
+                <span class="file-chip-name"><%= entry.client_name %></span>
+                <span
+                  :if={entry.progress > 0 and entry.progress < 100}
+                  class="file-chip-progress"
+                >
+                  <%= entry.progress %>%
+                </span>
+                <span
+                  :for={err <- upload_errors(@uploads.files, entry)}
+                  class="file-chip-err"
+                >
+                  <%= humanize_upload_error(err) %>
+                </span>
+                <button
+                  type="button"
+                  phx-click="cancel_upload"
+                  phx-value-ref={entry.ref}
+                  class="file-chip-remove"
+                >
+                  &times;
+                </button>
+              </div>
+            <% end %>
+            <span :for={err <- upload_errors(@uploads.files)} class="file-chips-err">
+              <%= humanize_upload_error(err) %>
+            </span>
+          </div>
+
+          <div :if={@parsing_files} class="parsing-indicator">
+            Parsing files...
+          </div>
+
+          <form
+            id="chat-input-form"
+            phx-submit="send_message"
+            phx-change="validate_upload"
+            class="chat-input-form"
+          >
+            <.live_file_input upload={@uploads.files} class="file-input-hidden" />
+            <label for={@uploads.files.ref} class="btn-attach" title="Attach files">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+              </svg>
+            </label>
             <textarea
               name="content"
               id="chat-input"
-              placeholder="Ask to generate skills, edit rows, etc..."
+              placeholder="Ask to generate skills, import files, edit rows..."
               rows="1"
               phx-hook="AutoResize"
             ></textarea>
@@ -1053,6 +1107,30 @@ defmodule RhoWeb.SpreadsheetLive do
   end
 
   defp slug(_), do: "unknown"
+
+  # --- Upload UI helpers ---
+
+  defp file_type_icon(mime_type) do
+    cond do
+      String.contains?(mime_type || "", "spreadsheet") or
+          String.contains?(mime_type || "", "csv") ->
+        "XLS"
+
+      String.contains?(mime_type || "", "pdf") ->
+        "PDF"
+
+      String.starts_with?(mime_type || "", "image/") ->
+        "IMG"
+
+      true ->
+        "FILE"
+    end
+  end
+
+  defp humanize_upload_error(:too_large), do: "Too large (max 10MB)"
+  defp humanize_upload_error(:not_accepted), do: "Type not supported"
+  defp humanize_upload_error(:too_many_files), do: "Too many files (max 10)"
+  defp humanize_upload_error(err), do: inspect(err)
 
   # --- Table data helpers ---
 
