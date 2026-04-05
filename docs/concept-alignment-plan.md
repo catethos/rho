@@ -6,6 +6,15 @@ architecture diagram in `CLAUDE.md` one-to-one. No new subsystems. No
 feature loss. This is a vocabulary and factoring refactor that removes
 mismatches forcing readers to hold extra context.
 
+> **Progress tracking.** Per-phase deliverables live in
+> [`docs/concept-alignment-tasks.md`](./concept-alignment-tasks.md).
+> **After completing any phase (or any deliverable within a phase),
+> update that file:** check off the completed items, mark
+> in-progress items with `- [~]`, flag blocked items with `- [!]`.
+> When branching, use the branch name listed in the tasks file for
+> that phase (e.g. `refactor/phase-1-tape-rename`). The plan
+> describes *what and why*; the tasks file tracks *what's done*.
+
 > **Revision note.** Revised in response to
 > `docs/concept-alignment-plan-critique.md`. Key changes: Skill's
 > placement made explicit; Plugin callbacks keep per-instance opts;
@@ -337,6 +346,38 @@ deferred phases stay deferred until prerequisites are stable.
 - **Namespace migration** (`Rho.Exec.*` / `Rho.Coord.*` / `Rho.Edge.*`)
   + xref boundary check. Separate structural concern from semantic
   concept cleanup.
+
+### Branching strategy
+
+Each phase lands as its own branch off `main`, merged sequentially:
+
+```
+main → refactor/phase-1-tape-rename → merge →
+       refactor/phase-2-plugin-behaviour → merge →
+       refactor/phase-3-transformer → merge → …
+```
+
+Rules:
+
+- **One branch per phase.** Each phase is self-contained and leaves
+  tests green, so one PR per phase keeps diffs reviewable and `main`
+  always green.
+- **Merge before starting the next phase.** Phases unblock each other
+  (e.g. Phase 2's `Plugin` behaviour is a prerequisite for Phase 3's
+  Transformer migration). Stacking unmerged branches creates rebase
+  pain.
+- **No long-lived integration branch.** `main` is the integration
+  point. Sequential merges keep history linear.
+- **Pre-phase hygiene.** Before branching for a phase, stash or land
+  any unrelated WIP on `main`. Mixing refactor diffs with unrelated
+  changes destroys reviewability.
+- **Rollback = `git revert`** of the phase's merge commit. No flag
+  gates, no parallel module paths — git history is the rollback
+  mechanism.
+
+Parity-gated phases (Phase 5, Phase 6) get extra scrutiny: the parity
+test suite / field audit lands in the same PR as the phase deliverable,
+not in a follow-up.
 
 ---
 
