@@ -23,3 +23,11 @@ erl_crash.dump
 rho-*.tar
 
 .env
+
+# Rho runtime session data
+/_rho/
+
+# SQLite runtime database files
+/priv/rho.db
+/priv/rho.db-shm
+/priv/rho.db-wal

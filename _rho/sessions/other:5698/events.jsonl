@@ -1,4 +1,0 @@
-{"data":{"role":"primary","session_id":"test-1734","capabilities":[],"agent_id":"primary_test-1734"},"type":"rho.agent.started","seq":1,"session_id":"other:5698","agent_id":"primary_test-1734","ts":"2026-04-02T10:06:32.174045Z","turn_id":null}
-{"data":{"role":"primary","session_id":"test-5890","capabilities":[],"agent_id":"primary_test-5890"},"type":"rho.agent.started","seq":2,"session_id":"other:5698","agent_id":"primary_test-5890","ts":"2026-04-02T10:06:32.175178Z","turn_id":null}
-{"data":{"role":"primary","session_id":"test-5986","capabilities":[],"agent_id":"primary_test-5986"},"type":"rho.agent.started","seq":3,"session_id":"other:5698","agent_id":"primary_test-5986","ts":"2026-04-02T10:06:32.176469Z","turn_id":null}
-{"data":{"role":"primary","session_id":"test-6082","capabilities":[],"agent_id":"primary_test-6082"},"type":"rho.agent.started","seq":4,"session_id":"other:5698","agent_id":"primary_test-6082","ts":"2026-04-02T10:06:32.177647Z","turn_id":null}

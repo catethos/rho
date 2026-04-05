@@ -1,2 +1,0 @@
-{"data":{"role":"primary","session_id":"test-2022","capabilities":[],"agent_id":"primary_test-2022"},"type":"rho.agent.started","seq":1,"session_id":"test-1990","agent_id":"primary_test-2022","ts":"2026-04-02T10:13:33.390972Z","turn_id":null}
-{"data":{"role":"primary","session_id":"test-2086","capabilities":[],"agent_id":"primary_test-2086"},"type":"rho.agent.started","seq":2,"session_id":"test-1990","agent_id":"primary_test-2086","ts":"2026-04-02T10:13:33.392864Z","turn_id":null}
