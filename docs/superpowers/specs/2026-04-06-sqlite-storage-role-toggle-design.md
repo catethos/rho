@@ -257,22 +257,44 @@ def mount(params, _session, socket) do
 end
 ```
 
-The company_id is passed to the agent via mount context. The agent knows:
+The company_id is passed to the agent via mount context opts. The agent knows:
 - `company_id == "pulsifi_admin"` → can save as `type='industry'`
 - `company_id == "bank_abc"` → can only save as `type='company'`, can read industry templates
 - `company_id == nil` → agent asks "Which company are you working for?"
+
+### Passing Company Context to Agent
+
+**Important:** `Rho.Mount.Context` does NOT have `company_id` or `is_admin` fields. These are passed via `opts` through `Session.ensure_started`:
+
+```elixir
+# In SpreadsheetLive.ensure_session:
+Rho.Session.ensure_started(new_sid,
+  agent_name: :spreadsheet,
+  company_id: socket.assigns.company_id,
+  is_admin: socket.assigns.is_admin
+)
+```
+
+Mount tools access them via `context.opts`:
+```elixir
+# In spreadsheet mount tool execute functions:
+company_id = context.opts[:company_id]
+is_admin = context.opts[:is_admin] || false
+```
+
+This uses the existing `opts` passthrough — no changes to `Context` struct needed.
 
 ### Auto-Create Company (Race-Safe)
 
 ```elixir
 def ensure_company(company_id) do
-  %Company{id: company_id, name: company_id}
-  |> Company.changeset(%{})
+  %Company{}
+  |> Company.changeset(%{id: company_id, name: company_id})
   |> Repo.insert(on_conflict: :nothing)
 end
 ```
 
-Uses `on_conflict: :nothing` — if two requests hit simultaneously with the same new company_id, one inserts and the other silently succeeds. No crash.
+Uses `on_conflict: :nothing` — if two requests hit simultaneously with the same new company_id, one inserts and the other silently succeeds. No crash. Uses changeset (not direct struct) so validations run.
 
 ---
 
@@ -385,7 +407,7 @@ Three new tools added to the spreadsheet mount. All tools enforce company scopin
   ),
   execute: fn args ->
     type_filter = args["type"]
-    frameworks = Rho.SkillStore.list_frameworks_for(context.company_id, context.is_admin, type_filter)
+    frameworks = Rho.SkillStore.list_frameworks_for(context.opts[:company_id], context.opts[:is_admin], type_filter)
     {:ok, Jason.encode!(frameworks)}
   end
 }
@@ -435,7 +457,7 @@ from(r in FrameworkRow,
         {:error, "Framework not found"}
 
       framework ->
-        if can_access?(framework, context.company_id, context.is_admin) do
+        if can_access?(framework, context.opts[:company_id], context.opts[:is_admin]) do
           rows = Rho.SkillStore.get_framework_rows(framework_id)
           # Send rows to LiveView via the existing replace_all pattern
           # LiveView receives rows, assigns IDs, populates rows_map
@@ -474,7 +496,7 @@ Receives rows (maps without `:id`), assigns sequential IDs, populates `rows_map`
     if type == "industry" and not context.is_admin do
       {:error, "Only Pulsifi admin can save industry templates"}
     else
-      company_id = if type == "industry", do: nil, else: context.company_id
+      company_id = if type == "industry", do: nil, else: context.opts[:company_id]
 
       # Get current spreadsheet rows from LiveView
       with_pid(session_id, fn pid ->
@@ -520,12 +542,9 @@ defmodule Rho.SkillStore do
   # --- Companies ---
 
   def ensure_company(company_id) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-    Repo.insert(
-      %Company{id: company_id, name: company_id, inserted_at: now},
-      on_conflict: :nothing
-    )
+    %Company{}
+    |> Company.changeset(%{id: company_id, name: company_id})
+    |> Repo.insert(on_conflict: :nothing)
   end
 
   # --- Frameworks ---
@@ -606,7 +625,10 @@ defmodule Rho.SkillStore do
             framework = Repo.get!(Framework, id)
             # Delete existing rows (will be replaced)
             Repo.delete_all(from r in FrameworkRow, where: r.framework_id == ^id)
+            # Update framework metadata (name, source may have changed)
             framework
+            |> Framework.changeset(%{name: attrs.name, source: attrs[:source]})
+            |> Repo.update!()
         end
 
       # Bulk insert rows (NOT one-by-one)
@@ -862,6 +884,12 @@ Or manually: `mix ecto.migrate --repo Rho.SkillStore.Repo`
 - Three new reference workflow files
 - Admin mode for creating industry templates
 
+### Known Limitations (v1)
+
+- **Large framework performance:** Loading FSF (24K rows) into LiveView assigns uses ~12MB. Initial render is slow due to full DOM diff. Collapsible groups help (collapsed content hidden via CSS). For v2, consider lazy-loading only expanded groups.
+- **No concurrent edit protection:** If admin updates an industry template while HR has it loaded, HR's unsaved edits are lost on reload. Standard "last writer wins" — acceptable for demo.
+- **No auto-save:** User must explicitly ask to save. Agent reminds after significant edits but doesn't auto-save.
+
 ### Not In This Spec
 - Phase 2 role-skill selection UI
 - External API integration (no calls to ds-agents)
@@ -870,4 +898,4 @@ Or manually: `mix ecto.migrate --repo Rho.SkillStore.Repo`
 - Framework sharing between companies (community templates)
 - Export to Excel
 - Delete framework (agent handles gracefully: "not supported yet")
-- Auto-save / draft saving
+- Lazy loading for large frameworks (>5K rows)
