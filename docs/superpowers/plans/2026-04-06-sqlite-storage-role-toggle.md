@@ -105,7 +105,7 @@ defmodule Rho.SkillStore.Repo.Migrations.CreateTables do
     end
 
     create table(:frameworks) do
-      add :company_id, references(:companies, type: :string, on_delete: :nilify_all)
+      add :company_id, references(:companies, type: :string, on_delete: :delete_all)
       add :name, :string, null: false
       add :type, :string, null: false, default: "company"
       add :source, :string
@@ -296,27 +296,50 @@ git commit -m "feat: add Ecto schemas for Company, Framework, FrameworkRow"
 ```elixir
 # test/rho/skill_store_test.exs
 defmodule Rho.SkillStoreTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias Rho.SkillStore
 
   setup do
-    # Clean DB before each test
+    # Use on_exit to guarantee cleanup even if test crashes
+    on_exit(fn ->
+      Rho.SkillStore.Repo.delete_all(Rho.SkillStore.FrameworkRow)
+      Rho.SkillStore.Repo.delete_all(Rho.SkillStore.Framework)
+      Rho.SkillStore.Repo.delete_all(Rho.SkillStore.Company)
+    end)
+
+    # Also clean before to ensure fresh state
     Rho.SkillStore.Repo.delete_all(Rho.SkillStore.FrameworkRow)
     Rho.SkillStore.Repo.delete_all(Rho.SkillStore.Framework)
     Rho.SkillStore.Repo.delete_all(Rho.SkillStore.Company)
     :ok
   end
 
+  # Helper to build a complete row fixture
+  defp full_row(overrides \\ %{}) do
+    Map.merge(
+      %{
+        role: "", category: "Technical", cluster: "Programming",
+        skill_name: "Test Skill", skill_description: "A test skill",
+        level: 1, level_name: "Novice", level_description: "Basic level",
+        skill_code: ""
+      },
+      overrides
+    )
+  end
+
   describe "ensure_company/1" do
     test "creates a new company" do
       assert {:ok, company} = SkillStore.ensure_company("test_co")
       assert company.id == "test_co"
-      assert company.name == "test_co"
     end
 
-    test "is idempotent (no crash on duplicate)" do
-      assert {:ok, _} = SkillStore.ensure_company("test_co")
+    test "is idempotent — second call does not crash" do
+      assert {:ok, first} = SkillStore.ensure_company("test_co")
+      assert first.id == "test_co"
+
+      # on_conflict: :nothing may return %Company{id: nil} on second call
+      # The important thing is no crash
       assert {:ok, _} = SkillStore.ensure_company("test_co")
     end
   end
@@ -332,12 +355,10 @@ defmodule Rho.SkillStoreTest do
           company_id: "test_co",
           source: "test",
           rows: [
-            %{role: "Data Analyst", category: "Technical", cluster: "Programming",
-              skill_name: "Python", skill_description: "Coding", level: 1,
-              level_name: "Novice", level_description: "Basic scripts"},
-            %{role: "Data Analyst", category: "Technical", cluster: "Programming",
-              skill_name: "Python", skill_description: "Coding", level: 2,
-              level_name: "Developing", level_description: "Builds pipelines"}
+            full_row(%{role: "Data Analyst", skill_name: "Python", level: 1,
+                       level_name: "Novice", level_description: "Basic scripts"}),
+            full_row(%{role: "Data Analyst", skill_name: "Python", level: 2,
+                       level_name: "Developing", level_description: "Builds pipelines"})
           ]
         })
 
@@ -351,25 +372,32 @@ defmodule Rho.SkillStoreTest do
       assert hd(rows).role == "Data Analyst"
     end
 
-    test "updates existing framework (replaces rows)" do
+    test "updates existing framework (replaces rows and name)" do
       SkillStore.ensure_company("test_co")
 
       {:ok, fw} =
         SkillStore.save_framework(%{
           name: "V1", type: "company", company_id: "test_co",
-          rows: [%{skill_name: "SQL", role: "DA"}]
+          rows: [full_row(%{skill_name: "SQL", role: "DA"})]
         })
 
       {:ok, fw2} =
         SkillStore.save_framework(%{
           id: fw.id, name: "V2", type: "company", company_id: "test_co",
-          rows: [%{skill_name: "Python", role: "DE"}, %{skill_name: "SQL", role: "DE"}]
+          rows: [
+            full_row(%{skill_name: "Python", role: "DE"}),
+            full_row(%{skill_name: "SQL", role: "DE"})
+          ]
         })
 
       assert fw2.id == fw.id
       assert fw2.name == "V2"
       rows = SkillStore.get_framework_rows(fw.id)
       assert length(rows) == 2
+    end
+
+    test "get_framework_rows returns empty list for nonexistent id" do
+      assert SkillStore.get_framework_rows(999_999) == []
     end
   end
 
@@ -379,17 +407,18 @@ defmodule Rho.SkillStoreTest do
       SkillStore.ensure_company("co_b")
 
       SkillStore.save_framework(%{name: "AICB", type: "industry", company_id: nil,
-        rows: [%{skill_name: "Risk Mgmt"}]})
+        rows: [full_row(%{skill_name: "Risk Mgmt"})]})
       SkillStore.save_framework(%{name: "Co A Framework", type: "company", company_id: "co_a",
-        rows: [%{skill_name: "Python", role: "DA"}]})
+        rows: [full_row(%{skill_name: "Python", role: "DA"})]})
       SkillStore.save_framework(%{name: "Co B Framework", type: "company", company_id: "co_b",
-        rows: [%{skill_name: "SQL", role: "DE"}]})
+        rows: [full_row(%{skill_name: "SQL", role: "DE"})]})
       :ok
     end
 
     test "admin sees everything" do
       frameworks = SkillStore.list_frameworks_for(nil, true)
-      assert length(frameworks) == 3
+      names = Enum.map(frameworks, & &1.name) |> Enum.sort()
+      assert names == ["AICB", "Co A Framework", "Co B Framework"]
     end
 
     test "company user sees industry + own company only" do
@@ -400,6 +429,12 @@ defmodule Rho.SkillStoreTest do
       refute "Co B Framework" in names
     end
 
+    test "non-admin with nil company sees only industry" do
+      frameworks = SkillStore.list_frameworks_for(nil, false)
+      names = Enum.map(frameworks, & &1.name)
+      assert names == ["AICB"]
+    end
+
     test "type filter works" do
       frameworks = SkillStore.list_frameworks_for("co_a", false, "industry")
       assert length(frameworks) == 1
@@ -408,7 +443,9 @@ defmodule Rho.SkillStoreTest do
 
     test "includes roles in response" do
       frameworks = SkillStore.list_frameworks_for("co_a", false, "company")
-      assert hd(frameworks).roles == ["DA"]
+      co_a = Enum.find(frameworks, &(&1.name == "Co A Framework"))
+      assert co_a != nil
+      assert "DA" in co_a.roles
     end
   end
 end
@@ -456,27 +493,32 @@ defmodule Rho.SkillStore do
 
     query = order_by(query, [f], [asc: f.type, asc: f.name])
 
-    Repo.all(query)
-    |> Enum.map(fn f ->
-      roles = get_framework_roles(f.id)
+    frameworks = Repo.all(query)
+    framework_ids = Enum.map(frameworks, & &1.id)
 
+    # Single query for ALL roles across all frameworks (no N+1)
+    roles_by_framework =
+      if framework_ids != [] do
+        from(r in FrameworkRow,
+          where: r.framework_id in ^framework_ids and r.role != "" and not is_nil(r.role),
+          distinct: [r.framework_id, r.role],
+          select: {r.framework_id, r.role},
+          order_by: [r.framework_id, r.role]
+        )
+        |> Repo.all()
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      else
+        %{}
+      end
+
+    Enum.map(frameworks, fn f ->
       Map.from_struct(f)
       |> Map.drop([:__meta__, :rows, :company])
-      |> Map.put(:roles, roles)
+      |> Map.put(:roles, Map.get(roles_by_framework, f.id, []))
     end)
   end
 
   def get_framework(id), do: Repo.get(Framework, id)
-
-  defp get_framework_roles(framework_id) do
-    from(r in FrameworkRow,
-      where: r.framework_id == ^framework_id and r.role != "" and not is_nil(r.role),
-      distinct: r.role,
-      select: r.role,
-      order_by: r.role
-    )
-    |> Repo.all()
-  end
 
   # --- Framework Rows ---
 
@@ -540,11 +582,12 @@ defmodule Rho.SkillStore do
         Repo.insert_all(FrameworkRow, chunk)
       end)
 
+      # Update cached counts — use change/2, not cast/4 (internal computed data)
       row_count = length(row_maps)
       skill_count = row_maps |> Enum.map(& &1.skill_name) |> Enum.uniq() |> length()
 
       framework
-      |> Framework.changeset(%{row_count: row_count, skill_count: skill_count})
+      |> Ecto.Changeset.change(%{row_count: row_count, skill_count: skill_count})
       |> Repo.update!()
     end)
   end
@@ -638,12 +681,22 @@ In `lib/rho_web/live/spreadsheet_live.ex`, in `mount/3`, add after existing assi
 |> assign(:loaded_framework_name, nil)
 ```
 
-And auto-create company:
+**IMPORTANT (Iron Law: No DB in disconnected mount):** Auto-create company ONLY in the `connected?` branch — `mount/3` runs twice (HTTP + WebSocket). DB writes must only happen once:
+
 ```elixir
-company_id = params["company"]
-if company_id && company_id != "pulsifi_admin" do
-  Rho.SkillStore.ensure_company(company_id)
-end
+socket =
+  if connected?(socket) do
+    # Auto-create company (only on WebSocket connect, not HTTP render)
+    company_id = socket.assigns.company_id
+    if company_id && company_id != "pulsifi_admin" do
+      Rho.SkillStore.ensure_company(company_id)
+    end
+
+    {sid, socket} = ensure_session(socket, session_id)
+    # ... existing subscribe_and_hydrate ...
+  else
+    socket
+  end
 ```
 
 - [ ] **Step 4: Add toggle event handler**

@@ -96,7 +96,7 @@ defmodule Rho.SkillStore.Repo.Migrations.CreateTables do
     end
 
     create table(:frameworks) do
-      add :company_id, references(:companies, type: :string, on_delete: :nilify_all)
+      add :company_id, references(:companies, type: :string, on_delete: :delete_all)
       add :name, :string, null: false
       add :type, :string, null: false, default: "company"
       add :source, :string
@@ -597,27 +597,33 @@ defmodule Rho.SkillStore do
 
     query = order_by(query, [f], [asc: f.type, asc: f.name])
 
-    Repo.all(query)
-    |> Enum.map(fn f ->
-      roles = get_framework_roles(f.id)
+    frameworks = Repo.all(query)
+    framework_ids = Enum.map(frameworks, & &1.id)
+
+    # Single query for ALL roles (no N+1)
+    roles_by_framework =
+      if framework_ids != [] do
+        from(r in FrameworkRow,
+          where: r.framework_id in ^framework_ids and r.role != "" and not is_nil(r.role),
+          distinct: [r.framework_id, r.role],
+          select: {r.framework_id, r.role},
+          order_by: [r.framework_id, r.role]
+        )
+        |> Repo.all()
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      else
+        %{}
+      end
+
+    Enum.map(frameworks, fn f ->
       Map.from_struct(f)
       |> Map.drop([:__meta__, :rows, :company])
-      |> Map.put(:roles, roles)
+      |> Map.put(:roles, Map.get(roles_by_framework, f.id, []))
     end)
   end
 
   def get_framework(id) do
     Repo.get(Framework, id)
-  end
-
-  defp get_framework_roles(framework_id) do
-    from(r in FrameworkRow,
-      where: r.framework_id == ^framework_id and r.role != "" and not is_nil(r.role),
-      distinct: r.role,
-      select: r.role,
-      order_by: r.role
-    )
-    |> Repo.all()
   end
 
   # --- Framework Rows ---
@@ -690,8 +696,9 @@ defmodule Rho.SkillStore do
       row_count = length(row_maps)
       skill_count = row_maps |> Enum.map(& &1.skill_name) |> Enum.uniq() |> length()
 
+      # Use change/2 for internal computed data, not cast/4
       framework
-      |> Framework.changeset(%{row_count: row_count, skill_count: skill_count})
+      |> Ecto.Changeset.change(%{row_count: row_count, skill_count: skill_count})
       |> Repo.update!()
     end)
   end

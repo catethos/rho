@@ -34,7 +34,7 @@ defmodule Rho.FileParserTest do
       assert is_binary(data)
       assert byte_size(data) > 0
       # Verify it's valid base64
-      assert {:ok, _} = Base.decode64(data) |> then(&{:ok, &1})
+      assert {:ok, _decoded} = Base.decode64(data)
 
       File.rm(path)
     end
