@@ -69,6 +69,51 @@ defmodule Rho.SkillStore do
     |> Enum.map(&row_to_map/1)
   end
 
+  def get_framework_role_directory(framework_id) do
+    role_stats =
+      from(r in FrameworkRow,
+        where: r.framework_id == ^framework_id and r.role != "" and not is_nil(r.role),
+        group_by: r.role,
+        select: {r.role, count(fragment("DISTINCT ?", r.skill_name))},
+        order_by: r.role
+      )
+      |> Repo.all()
+
+    if role_stats == [] do
+      []
+    else
+      role_names = Enum.map(role_stats, &elem(&1, 0))
+
+      skills_by_role =
+        from(r in FrameworkRow,
+          where: r.framework_id == ^framework_id and r.role in ^role_names,
+          select: {r.role, r.skill_name},
+          order_by: [r.role, r.category, r.skill_name]
+        )
+        |> Repo.all()
+        |> Enum.uniq_by(fn {role, skill} -> {role, skill} end)
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+      Enum.map(role_stats, fn {role, skill_count} ->
+        top_skills =
+          skills_by_role
+          |> Map.get(role, [])
+          |> Enum.take(5)
+
+        %{role: role, skill_count: skill_count, top_skills: top_skills}
+      end)
+    end
+  end
+
+  def get_framework_rows_for_roles(framework_id, role_names) when is_list(role_names) do
+    from(r in FrameworkRow,
+      where: r.framework_id == ^framework_id and r.role in ^role_names,
+      order_by: r.id
+    )
+    |> Repo.all()
+    |> Enum.map(&row_to_map/1)
+  end
+
   # --- Save ---
 
   def save_framework(attrs) do

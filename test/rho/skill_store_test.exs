@@ -185,4 +185,138 @@ defmodule Rho.SkillStoreTest do
       assert "DA" in co_a.roles
     end
   end
+
+  describe "get_framework_role_directory/1" do
+    test "returns distinct roles with skill counts and top skills" do
+      SkillStore.ensure_company("co_a")
+
+      {:ok, fw} =
+        SkillStore.save_framework(%{
+          name: "Industry FW",
+          type: "industry",
+          company_id: nil,
+          rows: [
+            full_row(%{
+              role: "Risk Analyst",
+              category: "Core",
+              skill_name: "Risk Assessment",
+              level: 1
+            }),
+            full_row(%{
+              role: "Risk Analyst",
+              category: "Core",
+              skill_name: "Risk Assessment",
+              level: 2
+            }),
+            full_row(%{
+              role: "Risk Analyst",
+              category: "Core",
+              skill_name: "Credit Analysis",
+              level: 1
+            }),
+            full_row(%{
+              role: "Risk Analyst",
+              category: "Technical",
+              skill_name: "Basel Compliance",
+              level: 1
+            }),
+            full_row(%{
+              role: "Compliance Officer",
+              category: "Core",
+              skill_name: "AML",
+              level: 1
+            }),
+            full_row(%{
+              role: "Compliance Officer",
+              category: "Core",
+              skill_name: "Policy Review",
+              level: 1
+            }),
+            full_row(%{role: "", skill_name: "Communication", level: 1})
+          ]
+        })
+
+      directory = SkillStore.get_framework_role_directory(fw.id)
+
+      roles = Enum.map(directory, & &1.role)
+      refute "" in roles
+
+      ra = Enum.find(directory, &(&1.role == "Risk Analyst"))
+      assert ra.skill_count == 3
+      assert length(ra.top_skills) == 3
+      assert "Risk Assessment" in ra.top_skills
+      assert "Credit Analysis" in ra.top_skills
+      assert "Basel Compliance" in ra.top_skills
+
+      co = Enum.find(directory, &(&1.role == "Compliance Officer"))
+      assert co.skill_count == 2
+    end
+
+    test "returns empty list for framework with no roles" do
+      {:ok, fw} =
+        SkillStore.save_framework(%{
+          name: "No Roles FW",
+          type: "industry",
+          company_id: nil,
+          rows: [full_row(%{role: "", skill_name: "Communication", level: 1})]
+        })
+
+      assert SkillStore.get_framework_role_directory(fw.id) == []
+    end
+
+    test "caps top_skills at 5" do
+      {:ok, fw} =
+        SkillStore.save_framework(%{
+          name: "Big Role FW",
+          type: "industry",
+          company_id: nil,
+          rows:
+            for name <- ~w(A B C D E F G) do
+              full_row(%{role: "Analyst", category: "Core", skill_name: name, level: 1})
+            end
+        })
+
+      [entry] = SkillStore.get_framework_role_directory(fw.id)
+      assert entry.skill_count == 7
+      assert length(entry.top_skills) == 5
+    end
+  end
+
+  describe "get_framework_rows_for_roles/2" do
+    test "returns only rows matching the given roles" do
+      {:ok, fw} =
+        SkillStore.save_framework(%{
+          name: "Multi Role FW",
+          type: "industry",
+          company_id: nil,
+          rows: [
+            full_row(%{role: "Risk Analyst", skill_name: "Risk Assessment", level: 1}),
+            full_row(%{role: "Risk Analyst", skill_name: "Risk Assessment", level: 2}),
+            full_row(%{role: "Compliance Officer", skill_name: "AML", level: 1}),
+            full_row(%{role: "Trader", skill_name: "Execution", level: 1}),
+            full_row(%{role: "", skill_name: "Communication", level: 1})
+          ]
+        })
+
+      rows =
+        SkillStore.get_framework_rows_for_roles(fw.id, ["Risk Analyst", "Compliance Officer"])
+
+      assert length(rows) == 3
+
+      roles = Enum.map(rows, & &1.role) |> Enum.uniq() |> Enum.sort()
+      assert roles == ["Compliance Officer", "Risk Analyst"]
+    end
+
+    test "returns empty list when no roles match" do
+      {:ok, fw} =
+        SkillStore.save_framework(%{
+          name: "FW",
+          type: "industry",
+          company_id: nil,
+          rows: [full_row(%{role: "Trader", skill_name: "Execution", level: 1})]
+        })
+
+      assert SkillStore.get_framework_rows_for_roles(fw.id, ["Risk Analyst"]) == []
+    end
+  end
 end
