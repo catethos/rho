@@ -380,6 +380,47 @@ defmodule RhoWeb.SpreadsheetLive do
     end
   end
 
+  # Load framework rows from DB into spreadsheet
+  def handle_info({:load_framework_rows, rows, framework}, socket) do
+    {id_rows, next_id} =
+      Enum.map_reduce(rows, 1, fn row, id ->
+        {Map.put(row, :id, id), id + 1}
+      end)
+
+    rows_map = Map.new(id_rows, fn row -> {row.id, row} end)
+
+    has_roles = Enum.any?(rows, fn r -> (r[:role] || "") != "" end)
+    view_mode = if has_roles, do: :role, else: :category
+
+    socket =
+      socket
+      |> assign(:rows_map, rows_map)
+      |> assign(:next_id, next_id)
+      |> assign(:view_mode, view_mode)
+      |> assign(:loaded_framework_id, framework.id)
+      |> assign(:loaded_framework_name, framework.name)
+
+    {:noreply, socket}
+  end
+
+  # Read all rows for save_framework tool
+  def handle_info({:get_all_rows, {caller_pid, ref}}, socket) do
+    rows =
+      socket.assigns.rows_map
+      |> Map.values()
+      |> Enum.sort_by(& &1[:id])
+      |> Enum.map(fn row -> Map.drop(row, [:id]) end)
+
+    send(caller_pid, {ref, {:ok, rows}})
+    {:noreply, socket}
+  end
+
+  # Agent-triggered view switch
+  def handle_info({:switch_view, mode}, socket) do
+    view_mode = if mode == "category", do: :category, else: :role
+    {:noreply, assign(socket, :view_mode, view_mode)}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # --- Spreadsheet signal handlers ---

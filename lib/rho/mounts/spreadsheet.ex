@@ -45,7 +45,11 @@ defmodule Rho.Mounts.Spreadsheet do
       add_rows_tool(context),
       add_proficiency_levels_tool(session_id, context),
       delete_rows_tool(context),
-      replace_all_tool(context)
+      replace_all_tool(context),
+      list_frameworks_tool(context),
+      load_framework_tool(session_id, context),
+      save_framework_tool(session_id, context),
+      switch_view_tool(context)
     ]
   end
 
@@ -409,6 +413,171 @@ defmodule Rho.Mounts.Spreadsheet do
     }
   end
 
+  defp list_frameworks_tool(context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "list_frameworks",
+          description:
+            "List available skill frameworks. Returns industry templates visible to all, " <>
+              "plus company frameworks for the current company only.",
+          parameter_schema: [
+            type: [type: :string, required: false, doc: "'industry' or 'company'. Omit for both."]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+        type_filter = args["type"]
+
+        frameworks = Rho.SkillStore.list_frameworks_for(company_id, is_admin, type_filter)
+        {:ok, Jason.encode!(frameworks)}
+      end
+    }
+  end
+
+  defp load_framework_tool(session_id, context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "load_framework",
+          description:
+            "Load a framework from the database into the spreadsheet. Replaces current " <>
+              "spreadsheet content. Does NOT change ownership.",
+          parameter_schema: [
+            framework_id: [
+              type: :integer,
+              required: true,
+              doc: "Framework ID from list_frameworks"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        framework_id = args["framework_id"]
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+
+        case Rho.SkillStore.get_framework(framework_id) do
+          nil ->
+            {:error, "Framework not found"}
+
+          framework ->
+            if can_access?(framework, company_id, is_admin) do
+              rows = Rho.SkillStore.get_framework_rows(framework_id)
+
+              with_pid(session_id, fn pid ->
+                send(pid, {:load_framework_rows, rows, framework})
+                {:ok, "Loaded '#{framework.name}' — #{length(rows)} rows"}
+              end)
+            else
+              {:error, "Access denied"}
+            end
+        end
+      end
+    }
+  end
+
+  defp save_framework_tool(session_id, context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "save_framework",
+          description:
+            "Save the current spreadsheet to the database. Creates new or updates existing.",
+          parameter_schema: [
+            name: [type: :string, required: true, doc: "Framework name"],
+            type: [
+              type: :string,
+              required: false,
+              doc: "'industry' (admin only) or 'company' (default)"
+            ],
+            framework_id: [
+              type: :integer,
+              required: false,
+              doc: "If provided, updates existing. If omitted, creates new."
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        type = args["type"] || "company"
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+
+        cond do
+          type == "industry" and not is_admin ->
+            {:error, "Only Pulsifi admin can save industry templates"}
+
+          type == "company" and (company_id == nil or company_id == "") ->
+            {:error, "Company context required. Open the editor with ?company=your_company_id"}
+
+          true ->
+            save_company_id = if type == "industry", do: nil, else: company_id
+
+            with_pid(session_id, fn pid ->
+              ref = make_ref()
+              send(pid, {:get_all_rows, {self(), ref}})
+
+              receive do
+                {^ref, {:ok, rows}} ->
+                  case Rho.SkillStore.save_framework(%{
+                         id: args["framework_id"],
+                         name: args["name"],
+                         type: type,
+                         company_id: save_company_id,
+                         source: "spreadsheet_editor",
+                         rows: rows
+                       }) do
+                    {:ok, framework} ->
+                      {:ok,
+                       "Saved '#{args["name"]}' (id: #{framework.id}) — #{length(rows)} rows"}
+
+                    {:error, reason} ->
+                      {:error, "Save failed: #{inspect(reason)}"}
+                  end
+              after
+                5_000 -> {:error, "Spreadsheet did not respond in time"}
+              end
+            end)
+        end
+      end
+    }
+  end
+
+  defp switch_view_tool(context) do
+    session_id = context[:session_id]
+
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "switch_view",
+          description:
+            "Switch the spreadsheet view mode. Use 'role' to group by role, 'category' to group by skill category.",
+          parameter_schema: [
+            mode: [type: :string, required: true, doc: "'role' or 'category'"]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        mode = args["mode"]
+
+        with_pid(session_id, fn pid ->
+          send(pid, {:switch_view, mode})
+          {:ok, "Switched to #{mode} view"}
+        end)
+      end
+    }
+  end
+
+  defp can_access?(_framework, _company_id, true = _is_admin), do: true
+  defp can_access?(%{type: "industry"}, _company_id, _is_admin), do: true
+
+  defp can_access?(framework, company_id, _is_admin) do
+    Map.get(framework, :company_id) == company_id
+  end
+
   # --- Signal bus publishing (progressive streaming) ---
 
   defp stream_rows_progressive(rows, op, session_id, agent_id) do
@@ -465,6 +634,12 @@ defmodule Rho.Mounts.Spreadsheet do
   end
 
   defp build_summary(rows) do
+    roles =
+      rows
+      |> Enum.map(fn r -> r[:role] || Map.get(r, :role) end)
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.uniq()
+
     categories =
       rows
       |> Enum.group_by(& &1.category)
@@ -484,6 +659,8 @@ defmodule Rho.Mounts.Spreadsheet do
       total_rows: length(rows),
       total_categories: length(categories),
       total_skills: rows |> Enum.map(& &1.skill_name) |> Enum.uniq() |> length(),
+      total_roles: length(roles),
+      roles: roles,
       categories: categories
     }
   end
