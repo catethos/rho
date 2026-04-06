@@ -45,6 +45,11 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:parsing_files, false)
       |> assign(:parsing_task_ref, nil)
       |> assign(:connected, connected?(socket))
+      |> assign(:view_mode, :role)
+      |> assign(:company_id, params["company"])
+      |> assign(:is_admin, params["company"] == "pulsifi_admin")
+      |> assign(:loaded_framework_id, nil)
+      |> assign(:loaded_framework_name, nil)
       |> assign(:user_avatar, load_avatar("avatar"))
       |> assign(
         :agent_avatar,
@@ -53,6 +58,12 @@ defmodule RhoWeb.SpreadsheetLive do
 
     socket =
       if connected?(socket) do
+        company_id = socket.assigns.company_id
+
+        if company_id && company_id != "pulsifi_admin" do
+          Rho.SkillStore.ensure_company(company_id)
+        end
+
         {sid, socket} = ensure_session(socket, session_id)
 
         socket
@@ -121,6 +132,11 @@ defmodule RhoWeb.SpreadsheetLive do
 
   def handle_event("cancel_edit", _params, socket) do
     {:noreply, assign(socket, :editing, nil)}
+  end
+
+  def handle_event("switch_view", %{"mode" => mode}, socket) do
+    view_mode = if mode == "category", do: :category, else: :role
+    {:noreply, assign(socket, :view_mode, view_mode)}
   end
 
   def handle_event("toggle_group", %{"group" => group_id}, socket) do
@@ -566,7 +582,7 @@ defmodule RhoWeb.SpreadsheetLive do
         Map.take(assigns.inflight, [primary_id])
       end
 
-    grouped = group_rows(assigns.rows_map)
+    grouped = group_rows(assigns.rows_map, assigns.view_mode)
 
     assigns =
       assigns
@@ -586,57 +602,136 @@ defmodule RhoWeb.SpreadsheetLive do
           <span :if={@total_cost > 0} class="spreadsheet-cost">
             $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
           </span>
+          <div class="ss-view-toggle">
+            <button
+              class={"ss-toggle-btn" <> if(@view_mode == :role, do: " ss-toggle-active", else: "")}
+              phx-click="switch_view"
+              phx-value-mode="role"
+            >
+              By Role
+            </button>
+            <button
+              class={"ss-toggle-btn" <> if(@view_mode == :category, do: " ss-toggle-active", else: "")}
+              phx-click="switch_view"
+              phx-value-mode="category"
+            >
+              By Category
+            </button>
+          </div>
         </div>
 
         <div class="ss-table-wrap">
           <%= if @grouped == [] do %>
             <div class="ss-empty">No data — ask the assistant to generate a skill framework</div>
           <% else %>
-            <%= for {category, clusters} <- @grouped do %>
-              <% cat_id = "cat-" <> slug(category) %>
-              <div id={cat_id} class={"ss-group ss-cat-group" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-collapsed", else: "")}>
-                <div class="ss-group-header ss-cat-header" phx-click="toggle_group" phx-value-group={cat_id}>
-                  <span class="ss-chevron"></span>
-                  <span class="ss-group-name"><%= category %></span>
-                  <span class="ss-group-count"><%= count_group_rows(clusters) %> rows</span>
-                </div>
-                <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-hidden", else: "")}>
-                  <%= for {cluster, rows} <- clusters do %>
-                    <% cluster_id = "cluster-" <> slug(category) <> "-" <> slug(cluster) %>
-                    <div id={cluster_id} class={"ss-group ss-cluster-group" <> if(MapSet.member?(@collapsed, cluster_id), do: " ss-collapsed", else: "")}>
-                      <div class="ss-group-header ss-cluster-header" phx-click="toggle_group" phx-value-group={cluster_id}>
-                        <span class="ss-chevron"></span>
-                        <span class="ss-group-name"><%= cluster %></span>
-                        <span class="ss-group-count"><%= length(rows) %> rows</span>
+            <%= if @view_mode == :role do %>
+              <%= for {role, categories} <- @grouped do %>
+                <% role_id = "role-" <> slug(role) %>
+                <div id={role_id} class={"ss-group ss-role-group" <> if(MapSet.member?(@collapsed, role_id), do: " ss-collapsed", else: "")}>
+                  <div class="ss-group-header ss-role-header" phx-click="toggle_group" phx-value-group={role_id}>
+                    <span class="ss-chevron"></span>
+                    <span class="ss-group-name"><%= role %></span>
+                    <span class="ss-group-count"><%= count_role_rows(categories) %> rows</span>
+                  </div>
+                  <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, role_id), do: " ss-hidden", else: "")}>
+                    <%= for {category, clusters} <- categories do %>
+                      <% cat_id = "cat-" <> slug(role) <> "-" <> slug(category) %>
+                      <div id={cat_id} class={"ss-group ss-cat-group" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-collapsed", else: "")}>
+                        <div class="ss-group-header ss-cat-header" phx-click="toggle_group" phx-value-group={cat_id}>
+                          <span class="ss-chevron"></span>
+                          <span class="ss-group-name"><%= category %></span>
+                          <span class="ss-group-count"><%= count_group_rows(clusters) %> rows</span>
+                        </div>
+                        <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-hidden", else: "")}>
+                          <%= for {cluster, rows} <- clusters do %>
+                            <% cluster_id = "cluster-" <> slug(role) <> "-" <> slug(category) <> "-" <> slug(cluster) %>
+                            <div id={cluster_id} class={"ss-group ss-cluster-group" <> if(MapSet.member?(@collapsed, cluster_id), do: " ss-collapsed", else: "")}>
+                              <div class="ss-group-header ss-cluster-header" phx-click="toggle_group" phx-value-group={cluster_id}>
+                                <span class="ss-chevron"></span>
+                                <span class="ss-group-name"><%= cluster %></span>
+                                <span class="ss-group-count"><%= length(rows) %> rows</span>
+                              </div>
+                              <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cluster_id), do: " ss-hidden", else: "")}>
+                                <table class="ss-table">
+                                  <thead>
+                                    <tr>
+                                      <th class="ss-th ss-th-id">ID</th>
+                                      <th class="ss-th ss-th-skill">Skill</th>
+                                      <th class="ss-th ss-th-desc">Description</th>
+                                      <th class="ss-th ss-th-lvl">Lvl</th>
+                                      <th class="ss-th ss-th-lvlname">Level Name</th>
+                                      <th class="ss-th ss-th-lvldesc">Level Description</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr :for={row <- rows} id={"row-#{row.id}"} class="ss-row">
+                                      <td class="ss-td ss-td-id"><%= row.id %></td>
+                                      <.editable_cell row={row} field={:skill_name} editing={@editing} />
+                                      <.editable_cell row={row} field={:skill_description} editing={@editing} type="textarea" />
+                                      <.editable_cell row={row} field={:level} editing={@editing} type="number" />
+                                      <.editable_cell row={row} field={:level_name} editing={@editing} />
+                                      <.editable_cell row={row} field={:level_description} editing={@editing} type="textarea" />
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          <% end %>
+                        </div>
                       </div>
-                      <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cluster_id), do: " ss-hidden", else: "")}>
-                        <table class="ss-table">
-                          <thead>
-                            <tr>
-                              <th class="ss-th ss-th-id">ID</th>
-                              <th class="ss-th ss-th-skill">Skill</th>
-                              <th class="ss-th ss-th-desc">Description</th>
-                              <th class="ss-th ss-th-lvl">Lvl</th>
-                              <th class="ss-th ss-th-lvlname">Level Name</th>
-                              <th class="ss-th ss-th-lvldesc">Level Description</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr :for={row <- rows} id={"row-#{row.id}"} class="ss-row">
-                              <td class="ss-td ss-td-id"><%= row.id %></td>
-                              <.editable_cell row={row} field={:skill_name} editing={@editing} />
-                              <.editable_cell row={row} field={:skill_description} editing={@editing} type="textarea" />
-                              <.editable_cell row={row} field={:level} editing={@editing} type="number" />
-                              <.editable_cell row={row} field={:level_name} editing={@editing} />
-                              <.editable_cell row={row} field={:level_description} editing={@editing} type="textarea" />
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  <% end %>
+                    <% end %>
+                  </div>
                 </div>
-              </div>
+              <% end %>
+            <% else %>
+              <%= for {category, clusters} <- @grouped do %>
+                <% cat_id = "cat-" <> slug(category) %>
+                <div id={cat_id} class={"ss-group ss-cat-group" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-collapsed", else: "")}>
+                  <div class="ss-group-header ss-cat-header" phx-click="toggle_group" phx-value-group={cat_id}>
+                    <span class="ss-chevron"></span>
+                    <span class="ss-group-name"><%= category %></span>
+                    <span class="ss-group-count"><%= count_group_rows(clusters) %> rows</span>
+                  </div>
+                  <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-hidden", else: "")}>
+                    <%= for {cluster, rows} <- clusters do %>
+                      <% cluster_id = "cluster-" <> slug(category) <> "-" <> slug(cluster) %>
+                      <div id={cluster_id} class={"ss-group ss-cluster-group" <> if(MapSet.member?(@collapsed, cluster_id), do: " ss-collapsed", else: "")}>
+                        <div class="ss-group-header ss-cluster-header" phx-click="toggle_group" phx-value-group={cluster_id}>
+                          <span class="ss-chevron"></span>
+                          <span class="ss-group-name"><%= cluster %></span>
+                          <span class="ss-group-count"><%= length(rows) %> rows</span>
+                        </div>
+                        <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cluster_id), do: " ss-hidden", else: "")}>
+                          <table class="ss-table">
+                            <thead>
+                              <tr>
+                                <th class="ss-th ss-th-id">ID</th>
+                                <th class="ss-th ss-th-role">Role</th>
+                                <th class="ss-th ss-th-skill">Skill</th>
+                                <th class="ss-th ss-th-desc">Description</th>
+                                <th class="ss-th ss-th-lvl">Lvl</th>
+                                <th class="ss-th ss-th-lvlname">Level Name</th>
+                                <th class="ss-th ss-th-lvldesc">Level Description</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr :for={row <- rows} id={"row-#{row.id}"} class="ss-row">
+                                <td class="ss-td ss-td-id"><%= row.id %></td>
+                                <td class="ss-td ss-td-role"><span class="ss-role-tag"><%= row[:role] || "" %></span></td>
+                                <.editable_cell row={row} field={:skill_name} editing={@editing} />
+                                <.editable_cell row={row} field={:skill_description} editing={@editing} type="textarea" />
+                                <.editable_cell row={row} field={:level} editing={@editing} type="number" />
+                                <.editable_cell row={row} field={:level_name} editing={@editing} />
+                                <.editable_cell row={row} field={:level_description} editing={@editing} type="textarea" />
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+              <% end %>
             <% end %>
           <% end %>
         </div>
@@ -972,12 +1067,25 @@ defmodule RhoWeb.SpreadsheetLive do
 
   defp ensure_session(socket, nil) do
     new_sid = "sheet_#{System.unique_integer([:positive])}"
-    {:ok, _pid} = Rho.Session.ensure_started(new_sid, agent_name: :spreadsheet)
+
+    {:ok, _pid} =
+      Rho.Session.ensure_started(new_sid,
+        agent_name: :spreadsheet,
+        company_id: socket.assigns.company_id,
+        is_admin: socket.assigns.is_admin
+      )
+
     {new_sid, assign(socket, :session_id, new_sid)}
   end
 
   defp ensure_session(socket, sid) do
-    {:ok, _pid} = Rho.Session.ensure_started(sid, agent_name: :spreadsheet)
+    {:ok, _pid} =
+      Rho.Session.ensure_started(sid,
+        agent_name: :spreadsheet,
+        company_id: socket.assigns.company_id,
+        is_admin: socket.assigns.is_admin
+      )
+
     {sid, socket}
   end
 
@@ -1048,14 +1156,29 @@ defmodule RhoWeb.SpreadsheetLive do
 
   # --- Grouping helpers ---
 
-  defp group_rows(rows_map) when map_size(rows_map) == 0, do: []
+  defp group_rows(rows_map, view_mode)
 
-  defp group_rows(rows_map) do
-    # Sort by ID (insertion order) to preserve streaming sequence
+  defp group_rows(rows_map, _view_mode) when map_size(rows_map) == 0, do: []
+
+  defp group_rows(rows_map, :category) do
     rows_map
     |> Map.values()
     |> Enum.sort_by(& &1[:id])
     |> group_preserving_order()
+  end
+
+  defp group_rows(rows_map, :role) do
+    rows_map
+    |> Map.values()
+    |> Enum.sort_by(& &1[:id])
+    |> Enum.group_by(fn row ->
+      r = row[:role] || ""
+      if r == "", do: "Unassigned", else: r
+    end)
+    |> Enum.sort_by(fn {role, _} -> if role == "Unassigned", do: "zzz", else: role end)
+    |> Enum.map(fn {role, role_rows} ->
+      {role, group_preserving_order(role_rows)}
+    end)
   end
 
   # Groups rows by category → cluster while preserving the order of first appearance
@@ -1106,6 +1229,12 @@ defmodule RhoWeb.SpreadsheetLive do
     Enum.reduce(clusters, 0, fn {_cluster, rows}, acc -> acc + length(rows) end)
   end
 
+  defp count_role_rows(categories) do
+    Enum.reduce(categories, 0, fn {_cat, clusters}, acc ->
+      acc + count_group_rows(clusters)
+    end)
+  end
+
   defp slug(text) when is_binary(text) do
     text
     |> String.downcase()
@@ -1141,7 +1270,7 @@ defmodule RhoWeb.SpreadsheetLive do
 
   # --- Table data helpers ---
 
-  @known_fields ~w(id category cluster skill_name skill_description level level_name level_description)
+  @known_fields ~w(id role category cluster skill_name skill_description level level_name level_description)
 
   defp atomize_keys(row) when is_map(row) do
     Map.new(row, fn

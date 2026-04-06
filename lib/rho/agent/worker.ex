@@ -45,7 +45,8 @@ defmodule Rho.Agent.Worker do
     current_tool: nil,
     current_step: nil,
     token_usage: %{input: 0, output: 0},
-    last_activity_at: nil
+    last_activity_at: nil,
+    extra_opts: %{}
   ]
 
   # --- Public API ---
@@ -133,6 +134,8 @@ defmodule Rho.Agent.Worker do
         {ref, eff_ws, sb}
       end
 
+    extra_opts = Keyword.get(opts, :extra_opts, []) |> Enum.into(%{})
+
     state = %__MODULE__{
       agent_id: agent_id,
       session_id: session_id,
@@ -145,7 +148,8 @@ defmodule Rho.Agent.Worker do
       agent_name: agent_name,
       depth: depth,
       capabilities: capabilities,
-      parent_agent_id: parent_agent_id
+      parent_agent_id: parent_agent_id,
+      extra_opts: extra_opts
     }
 
     # Pull id card from config
@@ -855,7 +859,7 @@ defmodule Rho.Agent.Worker do
       session_id: state.session_id,
       depth: depth,
       subagent: false,
-      opts: Enum.into(opts, %{})
+      opts: Map.merge(state.extra_opts, Enum.into(opts, %{}))
     }
   end
 

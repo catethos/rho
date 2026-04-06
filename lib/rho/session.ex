@@ -25,7 +25,8 @@ defmodule Rho.Session do
             workspace: workspace,
             agent_name: opts[:agent_name] || :default,
             role: :primary,
-            depth: 0
+            depth: 0,
+            extra_opts: Keyword.drop(opts, [:workspace, :agent_name])
           ]
 
           case Rho.Agent.Supervisor.start_worker(worker_opts) do

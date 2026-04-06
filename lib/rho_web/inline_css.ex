@@ -1994,6 +1994,32 @@ defmodule RhoWeb.InlineCSS do
       border-bottom: none;
     }
 
+    /* Toggle */
+    .ss-view-toggle {
+      display: inline-flex; gap: 2px; background: var(--bg-surface);
+      border: 1px solid var(--border); border-radius: 6px; padding: 2px; margin-left: 8px;
+    }
+    .ss-toggle-btn {
+      padding: 3px 10px; border: none; border-radius: 4px; font-size: 11px;
+      cursor: pointer; background: transparent; color: var(--fg-muted);
+    }
+    .ss-toggle-active { background: var(--teal); color: white; }
+
+    /* Role group */
+    .ss-role-group { margin-bottom: 4px; }
+    .ss-role-header {
+      font-size: 14px; font-weight: 600; padding: 6px 8px;
+      background: rgba(31, 111, 235, 0.08); border-left: 3px solid var(--teal);
+    }
+
+    /* Role tag in category view */
+    .ss-role-tag {
+      display: inline-block; font-size: 10px; padding: 1px 6px;
+      background: rgba(31, 111, 235, 0.1); color: var(--teal);
+      border-radius: 8px;
+    }
+    .ss-th-role { width: 120px; }
+
     /* Spreadsheet chat panel */
     .spreadsheet-chat-panel {
       width: 380px;

@@ -58,7 +58,11 @@ defmodule Rho.Mounts.Spreadsheet do
       # Spreadsheet Editor Context
 
       You have a spreadsheet with columns:
-      id, category, cluster, skill_name, skill_description, level, level_name, level_description.
+      id, role, category, cluster, skill_name, skill_description, level, level_name, level_description.
+
+      The "role" field identifies which job role this skill belongs to.
+      - Set role when generating/importing skills for a specific role
+      - Leave empty for company-wide skills not tied to a role
 
       Each row represents one proficiency level for one skill. A skill with 5 proficiency levels
       has 5 rows (sharing the same category, cluster, skill_name, skill_description).
@@ -73,7 +77,7 @@ defmodule Rho.Mounts.Spreadsheet do
 
       ## Row Format
       When adding skeleton rows (Phase 2), use level=0 and level_description="⏳ Pending...":
-      {"category": "...", "cluster": "...", "skill_name": "...", "skill_description": "...", "level": 0, "level_name": "", "level_description": "⏳ Pending..."}
+      {"role": "Data Analyst", "category": "...", "cluster": "...", "skill_name": "...", "skill_description": "...", "level": 0, "level_name": "", "level_description": "⏳ Pending..."}
 
       When adding proficiency level rows (Phase 3), use level=1-5 with full descriptions.
       """
@@ -305,6 +309,7 @@ defmodule Rho.Mounts.Spreadsheet do
           rows =
             Enum.flat_map(skills, fn skill_entry ->
               skill_name = skill_entry["skill_name"] || ""
+              role = skill_entry["role"] || ""
               category = skill_entry["category"] || ""
               cluster = skill_entry["cluster"] || ""
               skill_desc = skill_entry["skill_description"] || ""
@@ -312,6 +317,7 @@ defmodule Rho.Mounts.Spreadsheet do
 
               Enum.map(levels, fn lvl ->
                 %{
+                  role: role,
                   category: category,
                   cluster: cluster,
                   skill_name: skill_name,
@@ -447,6 +453,7 @@ defmodule Rho.Mounts.Spreadsheet do
 
   defp normalize_row(row) when is_map(row) do
     %{
+      role: row["role"] || row[:role] || "",
       category: row["category"] || row[:category] || "",
       cluster: row["cluster"] || row[:cluster] || "",
       skill_name: row["skill_name"] || row[:skill_name] || "",
