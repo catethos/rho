@@ -26,3 +26,9 @@ config :rho, RhoWeb.Endpoint,
   live_view: [signing_salt: "rho_lv_salt"]
 
 config :phoenix, :json_library, Jason
+
+config :rho, Rho.SkillStore.Repo,
+  database: Path.expand("priv/skill_store.db"),
+  pool_size: 5
+
+config :rho, ecto_repos: [Rho.SkillStore.Repo]

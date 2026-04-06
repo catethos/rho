@@ -37,7 +37,9 @@ defmodule Rho.MixProject do
       {:phoenix_html, "~> 4.2"},
       {:live_render, "~> 0.5"},
       {:nimble_options, "~> 1.0"},
-      {:erlang_python, "~> 2.3"}
+      {:erlang_python, "~> 2.3"},
+      {:ecto_sql, "~> 3.12"},
+      {:ecto_sqlite3, "~> 0.17"}
     ]
   end
 end

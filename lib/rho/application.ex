@@ -40,6 +40,7 @@ defmodule Rho.Application do
 
     children =
       [
+        Rho.SkillStore.Repo,
         {Registry, keys: :unique, name: Rho.AgentRegistry},
         {Registry, keys: :unique, name: Rho.SubagentRegistry},
         {Registry, keys: :unique, name: Rho.PythonRegistry},
@@ -60,6 +61,14 @@ defmodule Rho.Application do
 
     opts = [strategy: :one_for_one, name: Rho.Supervisor]
     {:ok, pid} = Supervisor.start_link(children, opts)
+
+    # Auto-run migrations for dev convenience
+    Ecto.Migrator.run(
+      Rho.SkillStore.Repo,
+      Path.join(:code.priv_dir(:rho), "skill_store/migrations"),
+      :up,
+      all: true
+    )
 
     # Initialize Python interpreter if any agent uses the :python tool
     maybe_init_python()

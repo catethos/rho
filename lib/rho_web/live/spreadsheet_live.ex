@@ -137,8 +137,15 @@ defmodule RhoWeb.SpreadsheetLive do
   # --- Chat events ---
 
   def handle_event("send_message", %{"content" => content}, socket) do
+    require Logger
     content = String.trim(content)
-    has_files = socket.assigns.uploads.files.entries != []
+    entries = socket.assigns.uploads.files.entries
+    has_files = entries != []
+
+    Logger.info(
+      "[SpreadsheetLive] send_message: content=#{byte_size(content)}b, entries=#{length(entries)}, " <>
+        "done=#{Enum.count(entries, & &1.done?)}, valid=#{Enum.count(entries, & &1.valid?)}"
+    )
 
     if content == "" and not has_files do
       {:noreply, socket}
@@ -1176,14 +1183,6 @@ defmodule RhoWeb.SpreadsheetLive do
         row -> Map.put(map, id, Map.put(row, field, value))
       end
     end)
-  end
-
-  defp get_changed_rows(rows_map, changes) do
-    ids = MapSet.new(changes, & &1["id"])
-
-    rows_map
-    |> Enum.filter(fn {id, _row} -> MapSet.member?(ids, id) end)
-    |> Enum.map(fn {_id, row} -> row end)
   end
 
   defp update_ui_message(socket, msg_id, spec, streaming?) do
