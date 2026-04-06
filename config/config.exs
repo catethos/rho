@@ -9,7 +9,7 @@ config :req_llm,
   finch: [
     name: ReqLLM.Finch,
     pools: %{
-      :default => [protocols: [:http1], size: 1, count: 25, conn_max_idle_time: 30_000]
+      :default => [protocols: [:http1], size: 5, count: 25, conn_max_idle_time: 30_000]
     }
   ]
 
