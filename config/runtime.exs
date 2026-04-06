@@ -8,5 +8,5 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  config :rho, RhoWeb.Endpoint, secret_key_base: secret_key_base
+  config :rho_web, RhoWeb.Endpoint, secret_key_base: secret_key_base
 end

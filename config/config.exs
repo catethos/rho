@@ -13,8 +13,13 @@ config :req_llm,
     }
   ]
 
+config :phoenix, :json_library, Jason
+
+# Core rho app config
+config :rho, tape_module: Rho.Tape.Context.Tape
+
 # Phoenix endpoint configuration
-config :rho, RhoWeb.Endpoint,
+config :rho_web, RhoWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   http: [ip: {127, 0, 0, 1}, port: 4001],
   url: [host: "localhost"],
@@ -25,11 +30,11 @@ config :rho, RhoWeb.Endpoint,
   pubsub_server: Rho.PubSub,
   live_view: [signing_salt: "rho_lv_salt"]
 
-config :phoenix, :json_library, Jason
-
 # Ecto / SQLite
-config :rho, ecto_repos: [Rho.Repo]
+config :rho_frameworks, ecto_repos: [RhoFrameworks.Repo]
 
-config :rho, Rho.Repo,
-  database: Path.expand("../priv/rho.db", __DIR__),
+config :rho_frameworks, RhoFrameworks.Repo,
+  database: Path.expand("../apps/rho_frameworks/priv/rho.db", __DIR__),
   pool_size: 5
+
+import_config "#{config_env()}.exs"

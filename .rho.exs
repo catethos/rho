@@ -39,6 +39,8 @@
     - If a tool returns an error, diagnose the issue and try a different approach rather than retrying the same call.
     - Be concise. Prefer a single well-crafted tool call over multiple redundant ones.
     """,
+    # `mounts:` — list of plugins (atom shorthand, {atom, opts}, or module).
+    # Still the canonical key even after the Mount → Plugin rename.
     mounts: [
       {:multi_agent, except: [:collect_results]},
       :journal,
@@ -50,6 +52,8 @@
       order: [],
       allow_fallbacks: true
     },
+    # `turn_strategy:` is the canonical key. `reasoner:` is accepted as a
+    # legacy alias (both go through Rho.Config.resolve_turn_strategy/1).
     reasoner: :structured,
     max_steps: 50
   ],
@@ -147,7 +151,7 @@
     """,
     mounts: [
       :spreadsheet,
-      :framework_persistence,
+      RhoFrameworks.Plugin,
       :doc_ingest,
       {:multi_agent, only: [:delegate_task, :await_task, :list_agents]}
     ],

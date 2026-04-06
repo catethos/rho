@@ -1,6 +1,18 @@
 # Rho
 
-An Elixir agent framework with pluggable memory backends, a signal-based multi-agent coordination layer, and parallel peer agents with isolated context windows. The default memory backend is an append-only tape system with JSONL persistence.
+An Elixir agent framework with pluggable turn strategies over an append-only tape, a typed transformer pipeline for in-flight policy and mutation, a signal-based multi-agent coordination layer, and parallel peer agents with isolated context windows.
+
+## Architecture at a glance
+
+```
+Runner → TurnStrategy → Transformer pipeline → Tape → Bus
+```
+
+- **`Rho.Runner`** drives the outer loop: step budget, compaction, tape recording, and transformer dispatch.
+- **`Rho.TurnStrategy`** owns the inner turn: LLM call, tool dispatch, response parsing (`:direct` and `:structured` ship built-in).
+- **`Rho.Transformer`** runs six typed stages per step (`:prompt_out`, `:response_in`, `:tool_args_out`, `:tool_result_in`, `:post_step`, `:tape_write`) for PII scrub, policy, denial, result replacement, and post-step injection.
+- **Tape** is the append-only JSONL event log — the source of truth per agent.
+- **Bus** (`Rho.Comms`, backed by `jido_signal`) delivers every event; CLI, LiveViews, and the per-session JSONL `EventLog` all subscribe to `rho.session.<sid>.events.*`.
 
 ## Quick Start
 
@@ -113,17 +125,20 @@ Each `:tool_result` entry includes:
 | `latency_ms` | Wall-clock execution time |
 | `error_type` | Classification: `timeout`, `permission_denied`, `not_found`, `invalid_args`, `runtime_error`, `unknown_tool` |
 
-## Memory System
+## Tape
 
-Rho uses a pluggable memory backend defined by the `Rho.Memory` behaviour. The default implementation (`Rho.Memory.Tape`) is an append-only event log backed by JSONL files under `~/.rho/tapes/`. Memory tools (anchor, search, recall, clear) are provided automatically by the active backend — they don't need to be listed in your `tools:` config.
+Rho's tape is a pluggable, append-only event log. The default projection (`Rho.Tape.Context.Tape`) persists to JSONL files under `~/.rho/tapes/`. Tape tools (anchor, search, recall, clear) are contributed automatically by the active projection — they don't need to be listed in your `mounts:` config.
 
-To swap in a custom backend, implement `Rho.Memory` and set it in `config/config.exs`:
+To swap in a custom projection, implement the `Rho.Tape.Context` callbacks and set it via:
 
 ```elixir
-config :rho, :memory_module, MyApp.Memory.VectorDB
+# config/config.exs
+config :rho, :memory_module, MyApp.Tape.VectorDB
 ```
 
-### Tape Backend (Default)
+> **Legacy alias.** `:memory_module` is kept as the config key for the tape-context projection binding (`Rho.Config.memory_module/0`). The pre-refactor names `Rho.Memory` / `Rho.Memory.Tape` have been renamed to `Rho.Tape.Context` / `Rho.Tape.Context.Tape`.
+
+### Tape projection (default)
 
 The tape is an append-only event log. Every message, tool call, and tool result is recorded as an immutable **Entry**.
 
@@ -295,7 +310,7 @@ Main Tape              Fork Tape
 
 #### Multi-Agent Delegation
 
-The `Rho.Mounts.MultiAgent` mount lets an agent spawn peer agents that run in parallel, each with their own tape, tools, and agent loop. Every agent is a first-class process — they can delegate subtasks, send messages to each other, and be discovered by role.
+The `Rho.Mounts.MultiAgent` plugin lets an agent spawn peer agents that run in parallel, each with their own tape, tools, and Runner. Every agent is a first-class process — they can delegate subtasks, send messages to each other, and be discovered by role.
 
 ##### Enabling multi-agent
 
@@ -339,7 +354,7 @@ When `delegate_task(role: "researcher")` is called, the worker spawns with the `
 
 1. **Delegate** — The primary LLM calls `delegate_task(task: "...", role: "researcher")`. A new `Agent.Worker` process starts under the `Agent.Supervisor` with its own tape, tools resolved from the role profile, and a system prompt incorporating the task. A `rho.task.requested` signal is published to the bus.
 
-2. **Run** — The delegated agent runs its own agent loop independently. It has full mount/lifecycle support and can itself delegate further (up to max depth). The agent calls `finish` when its task is complete, publishing `rho.task.completed` to the signal bus.
+2. **Run** — The delegated agent runs its own Runner loop independently, with full plugin + transformer support, and can itself delegate further (up to max depth). The agent calls `finish` when its task is complete, publishing `rho.task.completed` to the signal bus.
 
 3. **Await** — The parent calls `await_task(agent_id: "agent_123")`. This blocks until the delegated agent's loop returns. The result text is returned to the parent.
 
@@ -406,10 +421,10 @@ Each line is a JSON object:
 
 ```elixir
 # Read events with cursor-based pagination
-{events, last_seq} = Rho.Session.EventLog.read(session_id, after: 0, limit: 100)
+{events, last_seq} = Rho.Agent.EventLog.read(session_id, after: 0, limit: 100)
 
 # Get the file path for direct reading
-path = Rho.Session.event_log_path(session_id)
+path = Path.join([workspace, "_rho", "sessions", session_id, "events.jsonl"])
 ```
 
 ##### HTTP API
@@ -429,10 +444,10 @@ Inject messages into a running session from external tools (e.g. Claude Code obs
 
 ```elixir
 # Inject to the primary agent
-Rho.Session.inject(session_id, nil, "What's your status?")
+Rho.Agent.Primary.inject(session_id, nil, "What's your status?")
 
 # Inject to a specific agent
-Rho.Session.inject(session_id, "agent_42", "Reconsider your evaluation", from: "external")
+Rho.Agent.Primary.inject(session_id, "agent_42", "Reconsider your evaluation", from: "external")
 ```
 
 ```bash
@@ -477,16 +492,20 @@ Create a `.rho.exs` file in your project root:
   default: [
     model: "openrouter:anthropic/claude-sonnet",
     system_prompt: "You are a helpful assistant.",
+    # `mounts:` is the config key for registered plugins — atom shorthand,
+    # {atom, opts} tuple, or raw module.
     mounts: [:bash, :fs_read, :fs_write, :fs_edit, :web_fetch, :multi_agent],
+    # `turn_strategy:` picks the TurnStrategy. Legacy alias: `reasoner:`
+    turn_strategy: :direct,
     max_steps: 50
   ]
 }
 ```
 
-### Available Mounts
+### Available plugins (`mounts:` entries)
 
-| Mount | Description |
-|-------|-------------|
+| Shorthand | Description |
+|-----------|-------------|
 | `:bash` | Execute shell commands |
 | `:fs_read` | Read file contents (requires workspace context) |
 | `:fs_write` | Write files (requires workspace context) |
@@ -500,7 +519,7 @@ Create a `.rho.exs` file in your project root:
 | `:step_budget` | Step budget enforcement |
 | `:python` | Execute Python in a persistent REPL |
 
-Tools injected automatically by the memory backend (not listed in `mounts:`):
+Tools injected automatically by the tape projection (not listed in `mounts:`):
 
 | Tool | Description |
 |------|-------------|
@@ -710,43 +729,55 @@ The `agentfs` binary must be installed and available on `PATH`. Install it via:
 cargo install agentfs
 ```
 
-## Mount System
+## Plugins & Transformers
 
-Rho uses a unified mount system based on the `Rho.Mount` behaviour. Mounts contribute **affordances** (tools, prompt sections, bindings) and handle **lifecycle hooks** (before/after LLM calls, tool calls, and steps). All optional behavior arrives through mounts.
+Rho splits the old "mount" concept into two behaviours:
 
-A built-in mount (`Rho.Builtin`) is registered at startup with the lowest priority — any user mount registered after it takes precedence.
+- **`Rho.Plugin`** — the contribution role. A plugin contributes *affordances*: tools, prompt sections, and bindings. Callbacks: `tools/2`, `prompt_sections/2`, `bindings/2`, all taking `(plugin_opts, context)`.
+- **`Rho.Transformer`** — the pipeline role. A transformer participates in one or more of six typed stages that fire at fixed points in the agent loop (`:prompt_out`, `:response_in`, `:tool_args_out`, `:tool_result_in`, `:post_step`, `:tape_write`). Single callback: `transform(stage, data, context)`.
 
-### Writing a Mount
+A single module may implement both behaviours. Both register through `Rho.PluginRegistry`. A built-in plugin (`Rho.Builtin`) is registered at startup with the lowest priority — any user plugin registered after it takes precedence.
+
+> **Legacy alias.** `Rho.Mount` (behaviour) and `Rho.MountRegistry` (registry) are kept as delegated aliases; existing `@behaviour Rho.Mount` declarations and `Rho.MountRegistry.*` callers continue to compile and run.
+
+### Writing a Plugin
 
 ```elixir
-defmodule MyMount do
-  @behaviour Rho.Mount
+defmodule MyPlugin do
+  @behaviour Rho.Plugin
+  @behaviour Rho.Transformer
 
-  # Provide tools
-  @impl true
-  def tools(_mount_opts, %{workspace: workspace}) do
+  # --- Rho.Plugin: affordances ---
+
+  @impl Rho.Plugin
+  def tools(_opts, %{workspace: workspace}) do
     [jira_tool(workspace)]
   end
 
-  # Provide prompt sections
-  @impl true
-  def prompt_sections(_mount_opts, _context) do
+  @impl Rho.Plugin
+  def prompt_sections(_opts, _context) do
     ["Always check Jira before starting work."]
   end
 
-  # Intercept tool results
-  @impl true
-  def after_tool(%{name: "bash"} = _call, result, _mount_opts, _context) do
+  # --- Rho.Transformer: in-flight mutation ---
+
+  # Redact secrets from bash results before they reach the LLM.
+  @impl Rho.Transformer
+  def transform(:tool_result_in, %{tool_name: "bash", result: result} = data, _ctx) do
     case result do
       {:ok, output} when is_binary(output) ->
-        if String.contains?(output, "SECRET"),
-          do: {:override, "[redacted]"},
-          else: :ok
-      _ -> :ok
+        if String.contains?(output, "SECRET") do
+          {:cont, %{data | result: {:ok, "[redacted]"}}}
+        else
+          {:cont, data}
+        end
+
+      _ ->
+        {:cont, data}
     end
   end
 
-  def after_tool(_call, _result, _mount_opts, _context), do: :ok
+  def transform(_stage, data, _ctx), do: {:cont, data}
 
   defp jira_tool(_workspace) do
     %{
@@ -764,109 +795,136 @@ defmodule MyMount do
 end
 ```
 
-### Registering Mounts
+### Transformer example — denying a tool call
 
-#### Per-agent mounts via `.rho.exs`
+A transformer can refuse a tool call at the `:tool_args_out` stage. Unlike `:halt`, a `:deny` skips the call, records a synthetic denial entry on the tape, and lets the turn continue.
 
-Register scoped mounts using the `mounts:` key — they only activate when that agent is running:
+```elixir
+defmodule BlockRmPolicy do
+  @behaviour Rho.Transformer
+
+  @impl true
+  def transform(:tool_args_out, %{tool_name: "bash", args: %{"cmd" => cmd}} = data, _ctx) do
+    if cmd =~ ~r/\brm\s+-rf\b/ do
+      {:deny, "refusing to run `rm -rf` via bash"}
+    else
+      {:cont, data}
+    end
+  end
+
+  def transform(_stage, data, _ctx), do: {:cont, data}
+end
+
+# Register globally
+Rho.PluginRegistry.register(BlockRmPolicy)
+```
+
+### Registering plugins
+
+#### Per-agent via `.rho.exs`
+
+Scope plugins to a specific agent profile via the `mounts:` key (the historic key name; it accepts any plugin entry — atom shorthand, `{atom, opts}` tuple, or raw module). Plugins listed here activate only when that agent profile is running:
 
 ```elixir
 %{
   default: [
     model: "openrouter:anthropic/claude-sonnet",
-    mounts: [:bash, :fs_read, :fs_write, MyJiraMount],
+    mounts: [:bash, :fs_read, :fs_write, MyPlugin],
     max_steps: 50
   ],
   coder: [
     model: "openrouter:anthropic/claude-sonnet-4",
-    mounts: [:bash, :fs_read, :fs_write, :fs_edit, MyLintMount],
+    mounts: [:bash, :fs_read, :fs_write, :fs_edit, MyLintPlugin],
     max_steps: 30
   ]
 }
 ```
 
-#### Global mounts (programmatic)
+#### Global plugins (programmatic)
 
-For mounts that should apply to all agents (e.g., error reporting), register them at runtime:
+For plugins or transformers that should apply to all agents (e.g. a PII scrubber, a deny policy, an audit logger), register them at runtime:
 
 ```elixir
-Rho.MountRegistry.register(MyGlobalMount)
+Rho.PluginRegistry.register(MyGlobalPlugin)
 ```
 
 #### Explicit scope control
 
 ```elixir
 # Global (default) — fires for all agents
-Rho.MountRegistry.register(MyMount)
+Rho.PluginRegistry.register(MyPlugin)
 
 # Scoped to a specific agent — only fires when agent_name matches
-Rho.MountRegistry.register(MyMount, scope: {:agent, :coder})
+Rho.PluginRegistry.register(MyPlugin, scope: {:agent, :coder})
 
-# With options
-Rho.MountRegistry.register(MyMount, scope: {:agent, :coder}, opts: [some: :opt])
+# With per-instance opts
+Rho.PluginRegistry.register(MyPlugin, scope: {:agent, :coder}, opts: [some: :opt])
 ```
 
-Later registrations have higher priority. Affordances from all matching mounts are merged — tools, prompt sections, and bindings are concatenated.
+Later registrations have higher priority. Affordances from all matching plugins are merged — tools, prompt sections, and bindings are concatenated.
 
-### Mount Scope Semantics
+### Plugin scope semantics
 
-| Context has `agent_name`? | Global mount | Scoped `{:agent, :coder}` mount |
+| Context has `agent_name`? | Global plugin | Scoped `{:agent, :coder}` plugin |
 |---|---|---|
 | `agent_name: :coder` | fires | fires |
 | `agent_name: :default` | fires | skipped |
 | no `agent_name` (system-level) | fires | skipped |
 
-### Mount Callbacks
+### Plugin callbacks
 
-The `Rho.Mount` behaviour defines these optional callbacks:
-
-**Affordances:**
+`Rho.Plugin` defines three optional capability callbacks — a plugin implements only the ones it provides.
 
 | Callback | Signature | Purpose |
 |----------|-----------|---------|
-| `tools/2` | `(mount_opts, context)` | Return tool definitions (`[%{tool: ReqLLM.Tool.t(), execute: fn}]`) |
-| `prompt_sections/2` | `(mount_opts, context)` | Return extra text appended to the system prompt |
-| `bindings/2` | `(mount_opts, context)` | Return key-value bindings for prompt metadata |
+| `tools/2` | `(plugin_opts, context)` | Return tool definitions (`[%{tool: ReqLLM.Tool.t(), execute: fn}]`) |
+| `prompt_sections/2` | `(plugin_opts, context)` | Return strings or `%Rho.Mount.PromptSection{}` structs appended to the system prompt |
+| `bindings/2` | `(plugin_opts, context)` | Return bindings for large resources exposed by reference |
 
-**Lifecycle Hooks:**
+### Transformer stages
 
-| Callback | Signature | Purpose |
-|----------|-----------|---------|
-| `before_llm/3` | `(messages, mount_opts, context)` | Intercept/transform messages before LLM call |
-| `before_tool/3` | `(tool_call, mount_opts, context)` | Intercept before tool execution |
-| `after_tool/4` | `(tool_call, result, mount_opts, context)` | Intercept after tool execution. Return `:ok` or `{:override, string}` |
-| `after_step/4` | `(step, max_steps, mount_opts, context)` | Intercept after each step. Return `:ok` or `{:inject, string}` |
+`Rho.Transformer` defines a single callback `transform(stage, data, context)` that pattern-matches on the stage atom:
 
-**Lifecycle:**
+| Stage | Data | Allowed returns |
+|-------|------|-----------------|
+| `:prompt_out` | `%{messages: [...], system: ...}` | `{:cont, data}` / `{:halt, reason}` |
+| `:response_in` | `%{text, tool_calls, usage}` | `{:cont, data}` / `{:halt, reason}` |
+| `:tool_args_out` | `%{tool_name, args}` | `{:cont, data}` / `{:deny, reason}` / `{:halt, reason}` |
+| `:tool_result_in` | `%{tool_name, result}` | `{:cont, data}` / `{:halt, reason}` |
+| `:post_step` | `%{step, entries_appended}` | `{:cont, nil}` / `{:inject, [msg]}` / `{:halt, reason}` |
+| `:tape_write` | `entry :: map` | `{:cont, entry}` (halt disallowed) |
 
-| Callback | Signature | Purpose |
-|----------|-----------|---------|
-| `children/2` | `(mount_opts, context)` | Return child specs for supervised processes |
+Subagents bypass all transformer stages automatically.
 
-### Mount Context
+### Context struct
 
-All mount callbacks receive a context map:
+All plugin/transformer callbacks receive a `%Rho.Context{}` struct:
 
 ```elixir
-%{
-  tape_name: "tape_abc123",
-  workspace: "/my/project",
-  agent_name: :default,
-  agent_id: "primary_cli:default",
-  session_id: "cli:default",
-  depth: 0,
-  sandbox: nil
+%Rho.Context{
+  tape_name:     "tape_abc123",        # nil when no persistence
+  memory_mod:    Rho.Tape.Context.Tape,
+  workspace:     "/my/project",
+  agent_name:    :default,
+  depth:         0,
+  subagent:      false,
+  agent_id:      "primary_cli:default",
+  session_id:    "cli:default",
+  prompt_format: :markdown,
+  user_id:       nil
 }
 ```
+
+Implements the `Access` behaviour, so both `context.field` and `context[:field]` work.
 
 ### Introspection
 
 ```elixir
 # Collect merged tools for a context
-Rho.MountRegistry.collect_tools(%{agent_name: :default, workspace: "."})
+Rho.PluginRegistry.collect_tools(%{agent_name: :default, workspace: "."})
 
-# Collect prompt sections
-Rho.MountRegistry.collect_prompt_sections(%{agent_name: :default, workspace: "."})
+# Collect prompt sections (raw strings + %PromptSection{})
+Rho.PluginRegistry.collect_prompt_sections(%{agent_name: :default, workspace: "."})
 ```
 
 ## Architecture
@@ -876,24 +934,25 @@ Rho separates concerns into three planes:
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   EDGE PLANE                        │
-│  CLI adapter, Web/WS adapter                        │
-│  Subscribe to session events (direct + bus)         │
+│  CLI, LiveViews, EventLog, HTTP API                 │
+│  Bus-only subscribers to session events             │
 └──────────────────────┬──────────────────────────────┘
                        │ events
 ┌──────────────────────▼──────────────────────────────┐
 │               COORDINATION PLANE                    │
 │  Signal Bus (jido_signal via Rho.Comms)             │
 │  Agent Registry (role/capability discovery)         │
-│  Multi-Agent Mount (delegation, messaging)          │
+│  MultiAgent Plugin (delegation, messaging)          │
 │  Session (agent group namespace)                    │
 └──────────────────────┬──────────────────────────────┘
                        │ function calls
 ┌──────────────────────▼──────────────────────────────┐
 │                EXECUTION PLANE                      │
-│  AgentLoop (recursive LLM tool-calling)             │
-│  Reasoner (Direct, extensible)                      │
-│  Tape Memory (per-agent, append-only JSONL)         │
-│  Mount System (tools, prompt sections, hooks)       │
+│  Runner (outer loop, budget, compaction)            │
+│  TurnStrategy (Direct, Structured, extensible)      │
+│  Transformer pipeline (6 typed stages)              │
+│  Tape (per-agent, append-only JSONL)                │
+│  Plugins (tools, prompt sections, bindings)         │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -905,9 +964,9 @@ Rho.Supervisor (one_for_one)
 ├── Registry (Rho.PythonRegistry)       # Python interpreter tracking
 ├── Task.Supervisor (Rho.TaskSupervisor)
 ├── DynamicSupervisor (Python.Supervisor)
-├── Rho.MountRegistry                   # mount registration + ETS dispatch
+├── Rho.PluginRegistry                  # plugin + transformer registration + ETS dispatch
 ├── Rho.Comms.SignalBus                 # jido_signal bus (:rho_bus)
-├── [Memory children]                   # from memory_mod.children/1
+├── [Tape children]                     # from memory_mod.children/1
 ├── Rho.Agent.Supervisor (DynamicSupervisor)
 │   ├── Rho.Agent.Worker (primary_cli:default)    # primary agent
 │   ├── Rho.Agent.Worker (agent_42)               # delegated researcher
@@ -915,7 +974,7 @@ Rho.Supervisor (one_for_one)
 │   └── ...
 ├── Registry (Rho.EventLogRegistry)     # session_id → EventLog pid
 ├── DynamicSupervisor (EventLog.Supervisor)
-│   ├── Rho.Session.EventLog (session_1) # JSONL writer for session
+│   ├── Rho.Agent.EventLog (session_1)  # JSONL writer for session
 │   └── ...
 ├── Rho.CLI                             # CLI adapter
 └── [Web children]                      # conditional: RateLimiter, Endpoint
@@ -932,23 +991,25 @@ lib/rho/
   sandbox.ex           # AgentFS overlay filesystem lifecycle
 
   # --- Execution plane ---
-  agent_loop.ex        # Recursive LLM tool-calling loop
+  runner.ex            # Outer loop: budget, compaction, transformer dispatch
+  agent_loop.ex        # Thin delegate to Rho.Runner.run/3
   agent_loop/
     recorder.ex        # Tape writes during loop
     runtime.ex         # Immutable config per invocation
     tape.ex            # Tape management
-  reasoner.ex          # Reasoner behaviour
-  reasoner/
-    direct.ex          # Default tool-use loop
-  lifecycle.ex         # Mount hook closures
-  mount.ex             # Mount behaviour
+  turn_strategy.ex     # TurnStrategy behaviour
+  turn_strategy/
+    direct.ex          # Standard tool-use loop
+    structured.ex      # Schema-aligned-parsing strategy
+  plugin.ex            # Plugin behaviour (capability: tools/sections/bindings)
+  transformer.ex       # Transformer behaviour (6 typed stages)
+  mount.ex             # Delegated alias for Rho.Plugin
+  context.ex           # Rho.Context struct (10 documented fields)
   mount/
-    context.ex         # Context struct (agent_id, session_id, depth, ...)
-  mount_instance.ex    # Configured mount struct
-  mount_registry.ex    # Registration + ETS dispatch
-  memory.ex            # Pluggable memory behaviour
-  memory/
-    tape.ex            # Default tape backend
+    prompt_section.ex  # Prompt section struct
+  plugin_instance.ex   # Configured plugin struct
+  plugin_registry.ex   # Registration + ETS dispatch + apply_stage/3
+  mount_registry.ex    # Delegated alias for Rho.PluginRegistry
   tape/
     entry.ex           # Immutable fact record
     store.ex           # GenServer + ETS + JSONL persistence
@@ -956,6 +1017,9 @@ lib/rho/
     view.ex            # Context window assembly
     compact.ex         # Context compaction
     fork.ex            # Fork/merge for parallel exploration
+    context.ex         # Tape-context projection behaviour
+    context/
+      tape.ex          # Default tape-context projection
   tools/
     bash.ex            # Shell commands
     fs_read.ex         # Read files
@@ -964,11 +1028,13 @@ lib/rho/
     web_fetch.ex       # HTTP fetch
     python.ex          # Python REPL
     sandbox.ex         # Sandbox tools
+    tape_tools.ex      # Tape introspection tools (was journal_tools)
     finish.ex          # Delegated agent completion signal
+    end_turn.ex        # Terminal end-of-turn signal
     anchor.ex          # Tape anchor creation
     search_history.ex  # Tape search
     recall_context.ex  # Context recall
-    clear_memory.ex    # Memory reset
+    clear_memory.ex    # Tape reset
     path_utils.ex      # Workspace boundary enforcement
 
   # --- Coordination plane ---
@@ -984,7 +1050,11 @@ lib/rho/
     event_log.ex       # Per-session JSONL event log (bus subscriber)
   mounts/
     multi_agent.ex     # delegate_task, await_task, send_message, list_agents
-    journal_tools.ex   # Journal introspection tools
+    live_render.ex     # present_ui plugin (UI rendering)
+    spreadsheet.ex     # Spreadsheet editor plugin
+    framework_persistence.ex
+    doc_ingest.ex      # Document ingestion
+    py_agent.ex        # Python-agent bridge
 
   # --- Edge plane ---
   cli.ex               # CLI REPL adapter
@@ -996,20 +1066,23 @@ lib/rho/
     auth.ex            # Authentication
     rate_limit_plug.ex # Rate limiting
 
-  # --- Legacy (backward compat) ---
+  # --- Plugins (transformer + capability) ---
   plugins/
-    subagent.ex        # Legacy subagent mount (use :multi_agent instead)
+    step_budget.ex     # Step-budget warning (Plugin + Transformer :post_step)
+    subagent.ex        # Legacy subagent plugin (use :multi_agent instead)
     subagent/
       worker.ex        # Legacy subagent worker
       supervisor.ex    # Legacy subagent supervisor
       ui.ex            # CLI progress display
 
   # --- Utilities ---
-  builtin.ex           # Default infrastructure mount
+  builtin.ex           # Default infrastructure plugin
   command_parser.ex    # ,tool key=value syntax
   debounce.ex          # Per-session message buffering
   skill.ex             # Skill struct + discovery
-  skills.ex            # Skills mount
+  skill/
+    plugin.ex          # Rho.Skill.Plugin — skills as a plugin
+    loader.ex          # Skill discovery + loading
 
 lib/mix/tasks/
   rho.chat.ex          # Interactive REPL
