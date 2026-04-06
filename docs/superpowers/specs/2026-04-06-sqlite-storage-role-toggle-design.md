@@ -267,12 +267,25 @@ The company_id is passed to the agent via mount context opts. The agent knows:
 **Important:** `Rho.Mount.Context` does NOT have `company_id` or `is_admin` fields. These are passed via `opts` through `Session.ensure_started`:
 
 ```elixir
-# In SpreadsheetLive.ensure_session:
-Rho.Session.ensure_started(new_sid,
-  agent_name: :spreadsheet,
-  company_id: socket.assigns.company_id,
-  is_admin: socket.assigns.is_admin
-)
+# In SpreadsheetLive.ensure_session (both clauses):
+defp ensure_session(socket, nil) do
+  new_sid = "sheet_#{System.unique_integer([:positive])}"
+  {:ok, _pid} = Rho.Session.ensure_started(new_sid,
+    agent_name: :spreadsheet,
+    company_id: socket.assigns.company_id,
+    is_admin: socket.assigns.is_admin
+  )
+  {new_sid, assign(socket, :session_id, new_sid)}
+end
+
+defp ensure_session(socket, sid) do
+  {:ok, _pid} = Rho.Session.ensure_started(sid,
+    agent_name: :spreadsheet,
+    company_id: socket.assigns.company_id,
+    is_admin: socket.assigns.is_admin
+  )
+  {sid, socket}
+end
 ```
 
 Mount tools access them via `context.opts`:
@@ -473,6 +486,13 @@ from(r in FrameworkRow,
 }
 ```
 
+**`can_access?/3` helper** (in the spreadsheet mount module):
+```elixir
+defp can_access?(_framework, _company_id, true = _is_admin), do: true
+defp can_access?(%{type: "industry"}, _company_id, _is_admin), do: true
+defp can_access?(%{company_id: fco}, company_id, _is_admin), do: fco == company_id
+```
+
 **SpreadsheetLive handler for `:load_framework_rows`:**
 Receives rows (maps without `:id`), assigns sequential IDs, populates `rows_map`, optionally sets `view_mode` based on whether roles exist.
 
@@ -492,11 +512,18 @@ Receives rows (maps without `:id`), assigns sequential IDs, populates `rows_map`
   execute: fn args ->
     type = args["type"] || "company"
 
-    # Admin check for industry type
-    if type == "industry" and not context.is_admin do
-      {:error, "Only Pulsifi admin can save industry templates"}
-    else
-      company_id = if type == "industry", do: nil, else: context.opts[:company_id]
+    company_id = context.opts[:company_id]
+    is_admin = context.opts[:is_admin] || false
+
+    cond do
+      type == "industry" and not is_admin ->
+        {:error, "Only Pulsifi admin can save industry templates"}
+
+      type == "company" and (company_id == nil or company_id == "") ->
+        {:error, "Company context required. Open the editor with ?company=your_company_id"}
+
+      true ->
+        company_id = if type == "industry", do: nil, else: company_id
 
       # Get current spreadsheet rows from LiveView
       with_pid(session_id, fn pid ->
