@@ -48,7 +48,9 @@ defmodule Rho.Mounts.Spreadsheet do
       replace_all_tool(context),
       import_from_file_tool(context),
       list_frameworks_tool(context),
+      search_framework_roles_tool(context),
       load_framework_tool(session_id, context),
+      load_framework_roles_tool(session_id, context),
       save_framework_tool(session_id, context),
       switch_view_tool(context)
     ]
@@ -438,6 +440,45 @@ defmodule Rho.Mounts.Spreadsheet do
     }
   end
 
+  defp search_framework_roles_tool(context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "search_framework_roles",
+          description:
+            "Get a directory of all roles in a framework with skill counts and sample skill names. " <>
+              "Use this to browse large industry frameworks before loading — lets you pick specific " <>
+              "roles instead of loading everything.",
+          parameter_schema: [
+            framework_id: [
+              type: :integer,
+              required: true,
+              doc: "Framework ID from list_frameworks"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        framework_id = args["framework_id"]
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+
+        case Rho.SkillStore.get_framework(framework_id) do
+          nil ->
+            {:error, "Framework not found"}
+
+          framework ->
+            if can_access?(framework, company_id, is_admin) do
+              directory = Rho.SkillStore.get_framework_role_directory(framework_id)
+              {:ok, Jason.encode!(%{framework: framework.name, roles: directory})}
+            else
+              {:error, "Access denied"}
+            end
+        end
+      end
+    }
+  end
+
   defp load_framework_tool(session_id, context) do
     %{
       tool:
@@ -475,6 +516,66 @@ defmodule Rho.Mounts.Spreadsheet do
             else
               {:error, "Access denied"}
             end
+        end
+      end
+    }
+  end
+
+  defp load_framework_roles_tool(session_id, context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "load_framework_roles",
+          description:
+            "Load specific roles from a framework into the spreadsheet. Use after " <>
+              "search_framework_roles — pass exact role names from the search results. " <>
+              "Replaces current spreadsheet content.",
+          parameter_schema: [
+            framework_id: [
+              type: :integer,
+              required: true,
+              doc: "Framework ID from list_frameworks"
+            ],
+            roles_json: [
+              type: :string,
+              required: true,
+              doc: ~s(JSON array of role names, e.g. ["Risk Analyst", "Credit Risk Manager"])
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        framework_id = args["framework_id"]
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+
+        roles =
+          case Jason.decode(args["roles_json"] || "[]") do
+            {:ok, list} when is_list(list) -> list
+            _ -> []
+          end
+
+        if roles == [] do
+          {:error, "No roles specified. Pass roles_json as a JSON array of role name strings."}
+        else
+          case Rho.SkillStore.get_framework(framework_id) do
+            nil ->
+              {:error, "Framework not found"}
+
+            framework ->
+              if can_access?(framework, company_id, is_admin) do
+                rows = Rho.SkillStore.get_framework_rows_for_roles(framework_id, roles)
+
+                with_pid(session_id, fn pid ->
+                  send(pid, {:load_framework_rows, rows, framework})
+
+                  {:ok,
+                   "Loaded #{length(roles)} role(s) from '#{framework.name}' — #{length(rows)} rows"}
+                end)
+              else
+                {:error, "Access denied"}
+              end
+          end
         end
       end
     }
