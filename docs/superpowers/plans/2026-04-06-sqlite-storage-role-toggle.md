@@ -154,10 +154,11 @@ After `Supervisor.start_link`, add auto-migration:
 {:ok, pid} = Supervisor.start_link(children, opts)
 
 # Auto-run migrations for dev convenience
-Ecto.Migrator.run(Rho.SkillStore.Repo, :up, all: true,
-  prefix: nil,
-  migration_source: "schema_migrations",
-  migrations_paths: [Path.join(:code.priv_dir(:rho), "skill_store/migrations")]
+Ecto.Migrator.run(
+  Rho.SkillStore.Repo,
+  Path.join(:code.priv_dir(:rho), "skill_store/migrations"),
+  :up,
+  all: true
 )
 ```
 
@@ -296,7 +297,9 @@ git commit -m "feat: add Ecto schemas for Company, Framework, FrameworkRow"
 ```elixir
 # test/rho/skill_store_test.exs
 defmodule Rho.SkillStoreTest do
-  use ExUnit.Case, async: true
+  # NOTE: async: false because ecto_sqlite3 does not support SQL.Sandbox
+  # and tests share a single SQLite DB file
+  use ExUnit.Case, async: false
 
   alias Rho.SkillStore
 
@@ -781,8 +784,23 @@ This is the largest change. The table area needs to branch on `@view_mode`:
         <span class="ss-group-count"><%= count_role_rows(categories) %> rows</span>
       </div>
       <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, role_id), do: " ss-hidden", else: "")}>
-        <%!-- Reuse existing category → cluster → table rendering --%>
-        <%= render_category_groups(assigns, categories) %>
+        <%!-- Inline the category → cluster → table rendering (same as category view but without role column) --%>
+        <%= for {category, clusters} <- categories do %>
+          <% cat_id = "role-" <> slug(role) <> "-cat-" <> slug(category) %>
+          <div id={cat_id} class={"ss-group ss-cat-group" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-collapsed", else: "")}>
+            <div class="ss-group-header ss-cat-header" phx-click="toggle_group" phx-value-group={cat_id}>
+              <span class="ss-chevron"></span>
+              <span class="ss-group-name"><%= category %></span>
+              <span class="ss-group-count"><%= count_group_rows(clusters) %> rows</span>
+            </div>
+            <div class={"ss-group-content" <> if(MapSet.member?(@collapsed, cat_id), do: " ss-hidden", else: "")}>
+              <%!-- cluster → table rendering same as existing --%>
+              <%= for {cluster, rows} <- clusters do %>
+                <%!-- ... existing cluster group + table code ... --%>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
       </div>
     </div>
   <% end %>
