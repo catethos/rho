@@ -25,7 +25,8 @@ When a user message arrives, classify their intent and load the appropriate work
 | Already has data + edit request | **Edit** | Use spreadsheet tools directly (no workflow file needed) |
 | Ambiguous | **Ask** | "I see you uploaded [filename]. Would you like me to import it into the spreadsheet, or use it as a reference to build a new framework?" |
 | "Show templates" / "What frameworks exist?" | **Browse templates** | `list_frameworks(type: "industry")` → show list |
-| "Load AICB" / "Use banking framework" | **Load template** | `list_frameworks` → find → `load_framework(id)` |
+| "Load AICB" / "Use banking framework" (full load) | **Load template** | `list_frameworks` → find → `load_framework(id)` |
+| "Skills for Risk Analyst" / "What roles match?" + industry framework | **Browse roles** | `list_frameworks` → `search_framework_roles(id)` → present top 5 matches with skill previews → user picks → `load_framework_roles(id, roles)` |
 | "Load our framework" / "Show what we have" | **Load company** | `list_frameworks(type: "company")` → show/load |
 | "Save this" | **Save** | `save_framework(name, type)` |
 | "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(type: "industry")` |
@@ -93,7 +94,9 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 
 ### Persistence
 - `list_frameworks` — see available industry templates and company frameworks
-- `load_framework` — load a framework into the spreadsheet
+- `search_framework_roles` — browse roles in a framework (skill counts + sample skills). Use for large industry frameworks instead of loading everything.
+- `load_framework` — load an entire framework into the spreadsheet
+- `load_framework_roles` — load only specific roles from a framework. Use after `search_framework_roles`.
 - `save_framework` — save spreadsheet to database
 - `switch_view` — toggle between "By Role" and "By Category" view
 
