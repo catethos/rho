@@ -28,6 +28,16 @@ Only after the user confirms your intake summary, generate the high-level struct
 
 IMPORTANT: Do NOT generate proficiency levels yourself. Only generate the skeleton.
 
+When adding skeleton rows, include the role field:
+{"role": "[role name or empty]", "category": "...", ...}
+
+If the user specified a role (e.g., "Build skills for Data Analyst"),
+set role="Data Analyst" on all generated rows.
+If no role specified, set role="" (company-wide).
+
+After generating, switch to Role view if role was specified:
+switch_view(mode: "role")
+
 After adding the skeleton via `add_rows`, STOP and ask:
 "Here's the proposed framework structure with [N] skills across [M] categories. Review the categories and skills — want me to adjust anything before I generate the proficiency levels?"
 
@@ -44,3 +54,7 @@ Once the user approves:
 4. After ALL awaits complete, use `get_table` to find rows with `level=0`
 5. Delete only those placeholder rows by their IDs
 6. Report completion stats to user
+
+After generation is complete, remind the user:
+"Framework generated with [N] skills. Want to save it? You can say 'save this'
+or continue editing first."

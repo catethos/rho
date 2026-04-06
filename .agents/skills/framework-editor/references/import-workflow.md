@@ -30,6 +30,13 @@ Map the uploaded columns to spreadsheet columns. Propose the mapping and confirm
 
 If columns don't map cleanly, explain what you found and ask the user how to proceed.
 
+When importing files:
+- Check if the source has role/job information (column named "Role", "Job Role", etc.)
+- If yes: set role field per skill based on the mapping
+- If no: set role="" (company-wide library)
+- For industry frameworks with role-skill mapping matrices (like FSF):
+  read the mapping, create one row per skill × role combination
+
 ## Step 4: Confirm Before Importing
 
 Present the mapping summary:
@@ -46,3 +53,6 @@ If the spreadsheet already has data, ask: "The spreadsheet already has [N] rows.
 ## Step 6: Report
 
 Report what was imported: row count, categories found, any issues (unmapped columns, empty values, duplicates).
+
+After import is complete, remind user to save:
+"Imported [N] rows. Save as [company/industry] framework?"
