@@ -54,7 +54,7 @@
     max_steps: 50
   ],
   spreadsheet: [
-    model: "openrouter:anthropic/claude-sonnet-4.6",
+    model: "openrouter:deepseek/deepseek-chat-v3.1",
     description: "Skill framework editor with guided intake and parallel generation",
     skills: [],
     default_skills: ["framework-editor"],
@@ -73,7 +73,7 @@
     max_steps: 50
   ],
   proficiency_writer: [
-    model: "openrouter:anthropic/claude-haiku-4.5",
+    model: "openrouter:deepseek/deepseek-chat-v3.1",
     description:
       "Generates Dreyfus-model proficiency levels for skills in a competency framework",
     skills: ["competency frameworks", "proficiency levels", "behavioral indicators"],
@@ -134,6 +134,21 @@
     mounts: [:spreadsheet],
     reasoner: :direct,
     max_steps: 15
+  ],
+  data_extractor: [
+    model: "openrouter:anthropic/claude-sonnet-4",
+    description:
+      "Extracts data from uploaded files (Excel, CSV, PDF) into spreadsheet row format using Python",
+    skills: ["data extraction", "file parsing", "data transformation"],
+    default_skills: ["data-extractor"],
+    system_prompt: """
+    You are a data extraction specialist.
+    Use the data-extractor skill to guide your workflow.
+    Always check reference scripts for similar file patterns before writing your own.
+    """,
+    mounts: [:bash, :skills, :spreadsheet],
+    reasoner: :direct,
+    max_steps: 30
   ],
   coder: [
     model: "openrouter:anthropic/claude-sonnet-4",

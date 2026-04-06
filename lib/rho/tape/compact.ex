@@ -82,8 +82,14 @@ defmodule Rho.Tape.Compact do
   end
 
   # Asks the LLM to produce a concise summary of the current view.
+  # Truncates large messages to fit within model context limits.
+  @max_compact_chars 400_000
+
   defp summarize(model, view, gen_opts) do
-    messages = View.to_messages(view)
+    messages =
+      view
+      |> View.to_messages()
+      |> truncate_messages(@max_compact_chars)
 
     prompt =
       ReqLLM.Context.user(
@@ -105,4 +111,47 @@ defmodule Rho.Tape.Compact do
         {:error, reason}
     end
   end
+
+  # Truncate individual message content that's too large (e.g., file uploads, big tool results).
+  # Keeps the first/last bits so the summarizer knows what happened without the full payload.
+  defp truncate_messages(messages, max_total_chars) do
+    {truncated, _remaining} =
+      Enum.map_reduce(messages, max_total_chars, fn msg, budget ->
+        content = msg_content(msg)
+        len = String.length(content)
+
+        if len > 2000 and len > budget do
+          # Truncate this message, keeping head + tail for context
+          snippet =
+            String.slice(content, 0, 500) <>
+              "\n\n[... #{len} chars truncated for compaction ...]\n\n" <>
+              String.slice(content, -200, 200)
+
+          {put_content(msg, snippet), budget}
+        else
+          {msg, budget - len}
+        end
+      end)
+
+    truncated
+  end
+
+  defp msg_content(%{content: content}) when is_binary(content), do: content
+
+  defp msg_content(%{content: parts}) when is_list(parts) do
+    Enum.map_reduce(parts, "", fn
+      %{text: t}, acc when is_binary(t) -> {t, acc <> t}
+      _, acc -> {"", acc}
+    end)
+    |> elem(1)
+  end
+
+  defp msg_content(_), do: ""
+
+  defp put_content(%{content: c} = msg, new) when is_binary(c), do: %{msg | content: new}
+
+  defp put_content(%{content: [%{text: _} = first | _]} = msg, new),
+    do: %{msg | content: [%{first | text: new}]}
+
+  defp put_content(msg, _new), do: msg
 end

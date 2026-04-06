@@ -83,8 +83,13 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 - `get_uploaded_file` — read parsed content of uploaded file (paginated)
 
 ### Multi-Agent
-- `delegate_task` — spawn sub-agent for parallel work
+- `delegate_task` — spawn sub-agent for specialized work
 - `await_task` — collect sub-agent results
+
+**Delegation rules:**
+- **Complex file extraction** → delegate to `data_extractor` role (has Python + spreadsheet access)
+- **Proficiency level generation** → delegate to `proficiency_writer` role (Phase 3 of generate-workflow)
+- **NEVER delegate to `coder` or `worker`** — they don't have spreadsheet access
 
 ### Persistence
 - `list_frameworks` — see available industry templates and company frameworks

@@ -50,6 +50,8 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:is_admin, params["company"] == "pulsifi_admin")
       |> assign(:loaded_framework_id, nil)
       |> assign(:loaded_framework_name, nil)
+      |> assign(:group_summary, [])
+      |> assign(:bulk_total, 0)
       |> assign(:user_avatar, load_avatar("avatar"))
       |> assign(
         :agent_avatar,
@@ -112,20 +114,28 @@ defmodule RhoWeb.SpreadsheetLive do
 
   @impl true
   def handle_event("start_edit", %{"id" => id, "field" => field}, socket) do
-    {:noreply, assign(socket, :editing, {String.to_integer(id), field})}
+    if MapSet.size(socket.assigns.pending_response) > 0 do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, :editing, {String.to_integer(id), field})}
+    end
+  end
+
+  # Handle both blur (sends "id") and form submit (sends "row_id")
+  def handle_event("save_edit", %{"id" => id} = params, socket)
+      when not is_map_key(params, "row_id") do
+    handle_event("save_edit", Map.put(params, "row_id", id), socket)
   end
 
   def handle_event("save_edit", %{"row_id" => id, "field" => field, "value" => value}, socket) do
     row_id = String.to_integer(id)
     field_atom = String.to_existing_atom(field)
     rows_map = Map.update!(socket.assigns.rows_map, row_id, &Map.put(&1, field_atom, value))
-    row = rows_map[row_id]
 
     socket =
       socket
       |> assign(:rows_map, rows_map)
       |> assign(:editing, nil)
-      |> stream_insert(:rows, row)
 
     {:noreply, socket}
   end
@@ -140,14 +150,71 @@ defmodule RhoWeb.SpreadsheetLive do
   end
 
   def handle_event("toggle_group", %{"group" => group_id}, socket) do
+    alias Rho.Mounts.SpreadsheetStore
     collapsed = socket.assigns.collapsed
+    is_collapsed = MapSet.member?(collapsed, group_id)
+    has_store = SpreadsheetStore.has_rows?(socket.assigns.session_id)
 
-    collapsed =
-      if MapSet.member?(collapsed, group_id),
-        do: MapSet.delete(collapsed, group_id),
-        else: MapSet.put(collapsed, group_id)
+    summary = Map.get(socket.assigns, :group_summary, [])
 
-    {:noreply, assign(socket, :collapsed, collapsed)}
+    socket =
+      if is_collapsed and has_store do
+        # Expanding — lazy-load rows for this group from ETS
+        case find_group_name(group_id, summary) do
+          {view_mode, group_name} ->
+            group_rows =
+              SpreadsheetStore.rows_for_group(socket.assigns.session_id, view_mode, group_name)
+
+            new_rows = Map.new(group_rows, fn row -> {row[:id], row} end)
+            rows_map = Map.merge(socket.assigns.rows_map, new_rows)
+
+            socket
+            |> assign(:rows_map, rows_map)
+            |> assign(:collapsed, MapSet.delete(collapsed, group_id))
+
+          nil ->
+            # Sub-group (category/cluster within role) — just toggle visibility
+            assign(socket, :collapsed, MapSet.delete(collapsed, group_id))
+        end
+      else
+        if not is_collapsed and has_store do
+          # Collapsing — remove this group's rows from assigns to free memory
+          case find_group_name(group_id, summary) do
+            {view_mode, group_name} ->
+              rows_map =
+                socket.assigns.rows_map
+                |> Enum.reject(fn {_id, row} ->
+                  case view_mode do
+                    :role ->
+                      role = row[:role] || ""
+                      name = if role == "", do: "Unassigned", else: role
+                      name == group_name
+
+                    :category ->
+                      (row[:category] || "") == group_name
+                  end
+                end)
+                |> Map.new()
+
+              socket
+              |> assign(:rows_map, rows_map)
+              |> assign(:collapsed, MapSet.put(collapsed, group_id))
+
+            nil ->
+              assign(socket, :collapsed, MapSet.put(collapsed, group_id))
+          end
+        else
+          # No store (small dataset) — just toggle CSS visibility as before
+          new_collapsed =
+            if is_collapsed,
+              do: MapSet.delete(collapsed, group_id),
+              else: MapSet.put(collapsed, group_id)
+
+          assign(socket, :collapsed, new_collapsed)
+        end
+      end
+
+    {:noreply, socket}
   end
 
   # --- Chat events ---
@@ -381,6 +448,51 @@ defmodule RhoWeb.SpreadsheetLive do
   end
 
   # Load framework rows from DB into spreadsheet
+  # Bulk import from import_from_file tool — stores in ETS, lazy-loads on expand
+  def handle_info({:bulk_import_rows, rows}, socket) do
+    alias Rho.Mounts.SpreadsheetStore
+    session_id = socket.assigns.session_id
+
+    # Assign IDs to all rows
+    {id_rows, next_id} =
+      Enum.map_reduce(rows, socket.assigns.next_id, fn row, id ->
+        {Map.put(row, :id, id), id + 1}
+      end)
+
+    has_roles = Enum.any?(rows, fn r -> (r[:role] || "") != "" end)
+    view_mode = if has_roles, do: :role, else: :category
+
+    # Store ALL rows in ETS (not in LiveView assigns)
+    SpreadsheetStore.put_rows(session_id, id_rows)
+
+    # Build group summary for rendering collapsed headers
+    summary = SpreadsheetStore.group_summary(session_id, view_mode)
+
+    # All groups start collapsed — rows_map stays empty
+    collapsed =
+      Enum.reduce(summary, MapSet.new(), fn {name, _stats}, acc ->
+        group_id =
+          if view_mode == :role do
+            if name == "Unassigned", do: "role-unassigned", else: "role-" <> slug(name)
+          else
+            "cat-" <> slug(name)
+          end
+
+        MapSet.put(acc, group_id)
+      end)
+
+    socket =
+      socket
+      |> assign(:rows_map, %{})
+      |> assign(:next_id, next_id)
+      |> assign(:view_mode, view_mode)
+      |> assign(:collapsed, collapsed)
+      |> assign(:group_summary, summary)
+      |> assign(:bulk_total, length(id_rows))
+
+    {:noreply, socket}
+  end
+
   def handle_info({:load_framework_rows, rows, framework}, socket) do
     {id_rows, next_id} =
       Enum.map_reduce(rows, 1, fn row, id ->
@@ -630,13 +742,14 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:active_messages, active_messages)
       |> assign(:active_inflight, active_inflight)
       |> assign(:grouped, grouped)
+      |> assign(:has_bulk, assigns.bulk_total > 0)
 
     ~H"""
     <div class="spreadsheet-layout">
       <div class="spreadsheet-panel">
         <div class="spreadsheet-toolbar">
           <h2 class="spreadsheet-title">Skill Framework Editor</h2>
-          <span class="ss-row-count"><%= map_size(@rows_map) %> rows</span>
+          <span class="ss-row-count"><%= if @bulk_total > 0, do: @bulk_total, else: map_size(@rows_map) %> rows</span>
           <span :if={MapSet.size(@pending_response) > 0} class="spreadsheet-streaming">
             streaming...
           </span>
@@ -662,10 +775,25 @@ defmodule RhoWeb.SpreadsheetLive do
         </div>
 
         <div class="ss-table-wrap">
-          <%= if @grouped == [] do %>
+          <%= if @grouped == [] and @group_summary == [] do %>
             <div class="ss-empty">No data — ask the assistant to generate a skill framework</div>
           <% else %>
             <%= if @view_mode == :role do %>
+              <% expanded_roles = Enum.map(@grouped, fn {role, _} -> role end) |> MapSet.new() %>
+              <%!-- Render summary-only groups (collapsed, not yet loaded) --%>
+              <%= for {role, stats} <- @group_summary do %>
+                <% role_id = if(role == "Unassigned", do: "role-unassigned", else: "role-" <> slug(role)) %>
+                <%= if not MapSet.member?(expanded_roles, role) do %>
+                  <div id={role_id} class="ss-group ss-role-group ss-collapsed">
+                    <div class="ss-group-header ss-role-header" phx-click="toggle_group" phx-value-group={role_id}>
+                      <span class="ss-chevron"></span>
+                      <span class="ss-group-name"><%= role %></span>
+                      <span class="ss-group-count"><%= stats.skill_count %> skills · <%= stats.row_count %> rows</span>
+                    </div>
+                  </div>
+                <% end %>
+              <% end %>
+              <%!-- Render expanded groups with actual row data --%>
               <%= for {role, categories} <- @grouped do %>
                 <% role_id = "role-" <> slug(role) %>
                 <div id={role_id} class={"ss-group ss-role-group" <> if(MapSet.member?(@collapsed, role_id), do: " ss-collapsed", else: "")}>
@@ -993,8 +1121,8 @@ defmodule RhoWeb.SpreadsheetLive do
                   e -> {:error, "Parse failed: #{Exception.message(e)}"}
                 end
 
-              File.rm(entry.path)
-              %{filename: entry.filename, result: result}
+              # Keep file for data_extractor agent to read via Python
+              %{filename: entry.filename, path: entry.path, result: result}
             end)
 
           send(parent, {:files_parsed, content, results})
@@ -1056,7 +1184,7 @@ defmodule RhoWeb.SpreadsheetLive do
     {summaries, images} =
       Enum.reduce(file_results, {[], []}, fn result, {summ, imgs} ->
         case result do
-          %{filename: name, result: {:structured, %{sheets: sheets}}} ->
+          %{filename: name, result: {:structured, %{sheets: sheets}}} = fr ->
             sheet_info =
               Enum.map_join(sheets, "\n", fn s ->
                 sample =
@@ -1070,8 +1198,10 @@ defmodule RhoWeb.SpreadsheetLive do
                 "  Sheet \"#{s.name}\": #{s.row_count} rows, #{length(s.columns)} columns (#{Enum.join(s.columns, ", ")})\n#{sample}"
               end)
 
+            path_info = if path = fr[:path], do: "\n  File path: #{path}", else: ""
+
             summary =
-              "- #{name}:\n#{sheet_info}\n  Use get_uploaded_file(\"#{name}\") to read all rows."
+              "- #{name}:\n#{sheet_info}#{path_info}\n  Use get_uploaded_file(\"#{name}\") to read all rows."
 
             {[summary | summ], imgs}
 
@@ -1274,6 +1404,31 @@ defmodule RhoWeb.SpreadsheetLive do
     Enum.reduce(categories, 0, fn {_cat, clusters}, acc ->
       acc + count_group_rows(clusters)
     end)
+  end
+
+  # Match a group_id like "role-direct-sales" back to the original name "Direct Sales"
+  defp find_group_name(group_id, summary) do
+    cond do
+      String.starts_with?(group_id, "role-") ->
+        match =
+          Enum.find(summary, fn {name, _} ->
+            expected = if name == "Unassigned", do: "role-unassigned", else: "role-" <> slug(name)
+            expected == group_id
+          end)
+
+        if match, do: {:role, elem(match, 0)}, else: nil
+
+      String.starts_with?(group_id, "cat-") ->
+        match =
+          Enum.find(summary, fn {name, _} ->
+            "cat-" <> slug(name) == group_id
+          end)
+
+        if match, do: {:category, elem(match, 0)}, else: nil
+
+      true ->
+        nil
+    end
   end
 
   defp slug(text) when is_binary(text) do

@@ -25,7 +25,8 @@ defmodule Rho.Mounts.MultiAgent do
   @max_agents_per_session 10
   @default_max_steps 30
   @await_timeout 300_000
-  @known_roles_cache Rho.Config.agent_names() |> Enum.map(&Atom.to_string/1)
+  # Runtime lookup — .rho.exs can change without recompilation
+  defp known_roles, do: Rho.Config.agent_names() |> Enum.map(&Atom.to_string/1)
 
   # --- Mount callbacks ---
 
@@ -311,7 +312,7 @@ defmodule Rho.Mounts.MultiAgent do
          parent_emit
        ) do
     task_prompt = arg(args, :task)
-    role_str = arg(args, :role) || "worker"
+    role_str = (arg(args, :role) || "worker") |> String.replace("-", "_")
     context_summary = arg(args, :context_summary)
     inherit_context = arg(args, :inherit_context) || false
     max_steps = arg(args, :max_steps) || @default_max_steps
@@ -320,7 +321,7 @@ defmodule Rho.Mounts.MultiAgent do
       {:error, "task parameter is required"}
     else
       role_atom =
-        if role_str in @known_roles_cache, do: String.to_existing_atom(role_str), else: :worker
+        if role_str in known_roles(), do: String.to_existing_atom(role_str), else: :worker
 
       do_delegate(task_prompt, %{
         session_id: session_id,
@@ -390,7 +391,9 @@ defmodule Rho.Mounts.MultiAgent do
           task: task_prompt,
           context_summary: params.context_summary,
           max_steps: params.max_steps
-        }, source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}")
+        },
+        source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}"
+      )
 
       {:ok,
        "Delegated #{task_id} to #{prepared.agent_id} (role: #{params.role}). Use await_task(agent_id: \"#{prepared.agent_id}\") to get the result."}
@@ -452,7 +455,7 @@ defmodule Rho.Mounts.MultiAgent do
          memory_mod,
          _parent_emit
        ) do
-    role_str = arg(args, :role) || "worker"
+    role_str = (arg(args, :role) || "worker") |> String.replace("-", "_")
     system_prompt_extra = arg(args, :system_prompt_extra)
     max_steps = arg(args, :max_steps) || @default_max_steps
 
@@ -501,7 +504,9 @@ defmodule Rho.Mounts.MultiAgent do
           agent_id: prepared.agent_id,
           role: role_str,
           spawned_by: parent_agent_id
-        }, source: "/session/#{session_id}/agent/#{parent_agent_id}")
+        },
+        source: "/session/#{session_id}/agent/#{parent_agent_id}"
+      )
 
       {:ok,
        "Spawned #{prepared.agent_id} (role: #{role_str}). Agent is idle and ready for messages. Use send_message(target: \"#{prepared.agent_id}\", message: \"...\") to start a conversation."}
@@ -594,7 +599,9 @@ defmodule Rho.Mounts.MultiAgent do
             from: self_agent_id,
             to: target,
             message: message
-          }, source: "/session/#{session_id}/agent/#{self_agent_id}")
+          },
+          source: "/session/#{session_id}/agent/#{self_agent_id}"
+        )
 
         {:ok, "Message sent to #{target}"}
       end
@@ -623,7 +630,9 @@ defmodule Rho.Mounts.MultiAgent do
           from: self_agent_id,
           message: message,
           target_count: length(targets)
-        }, source: "/session/#{session_id}/agent/#{self_agent_id}")
+        },
+        source: "/session/#{session_id}/agent/#{self_agent_id}"
+      )
 
       {:ok, "Broadcast sent to #{length(targets)} agents"}
     end
@@ -721,7 +730,7 @@ defmodule Rho.Mounts.MultiAgent do
       {:error, "agent limit reached (#{@max_agents_per_session} per session)."}
     else
       role_atom =
-        if role_str in @known_roles_cache, do: String.to_existing_atom(role_str), else: :worker
+        if role_str in known_roles(), do: String.to_existing_atom(role_str), else: :worker
 
       agent_name = if role_atom in Rho.Config.agent_names(), do: role_atom, else: :default
       config = Rho.Config.agent(agent_name)

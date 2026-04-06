@@ -240,12 +240,13 @@ defmodule Rho.AgentLoop do
 
   defp maybe_compact(context, runtime) do
     %Runtime{
-      tape: %Tape{name: tape, memory_mod: mem, compact_threshold: threshold},
-      model: model,
-      gen_opts: gen_opts
+      tape: %Tape{name: tape, memory_mod: mem, compact_threshold: threshold}
     } = runtime
 
-    compact_opts = [model: model, gen_opts: gen_opts, threshold: threshold]
+    # Use a cheap, large-context model for compaction — the agent's own model
+    # may not have enough context to re-ingest the full conversation for summarization.
+    compact_model = "openrouter:anthropic/claude-haiku-4.5"
+    compact_opts = [model: compact_model, gen_opts: [], threshold: threshold]
 
     case mem.compact_if_needed(tape, compact_opts) do
       {:ok, :not_needed} ->

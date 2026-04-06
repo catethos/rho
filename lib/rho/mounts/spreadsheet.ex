@@ -46,6 +46,7 @@ defmodule Rho.Mounts.Spreadsheet do
       add_proficiency_levels_tool(session_id, context),
       delete_rows_tool(context),
       replace_all_tool(context),
+      import_from_file_tool(context),
       list_frameworks_tool(context),
       load_framework_tool(session_id, context),
       save_framework_tool(session_id, context),
@@ -567,6 +568,55 @@ defmodule Rho.Mounts.Spreadsheet do
           send(pid, {:switch_view, mode})
           {:ok, "Switched to #{mode} view"}
         end)
+      end
+    }
+  end
+
+  defp import_from_file_tool(context) do
+    session_id = context[:session_id]
+
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "import_from_file",
+          description:
+            "Import rows from a JSON file on disk directly into the spreadsheet. " <>
+              "The file must contain a JSON array of row objects. " <>
+              "Use this after extracting data with a Python script — the LLM never needs to see the row data.",
+          parameter_schema: [
+            path: [
+              type: :string,
+              required: true,
+              doc: "Absolute path to a JSON file containing an array of row objects"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        file_path = args["path"]
+
+        with {:ok, content} <- File.read(file_path),
+             {:ok, data} <- Jason.decode(content) do
+          rows =
+            case data do
+              list when is_list(list) -> Enum.map(list, &normalize_row/1)
+              _ -> []
+            end
+
+          if rows == [] do
+            {:error, "No valid rows in file. Expected a JSON array of row objects."}
+          else
+            # Bulk load — send all rows in one event (no progressive streaming)
+            # to avoid 400+ small DOM updates that crash the browser
+            with_pid(session_id, fn pid ->
+              send(pid, {:bulk_import_rows, rows})
+              {:ok, "Imported #{length(rows)} row(s) from #{file_path}"}
+            end)
+          end
+        else
+          {:error, :enoent} -> {:error, "File not found: #{file_path}"}
+          {:error, reason} -> {:error, "Failed to read file: #{inspect(reason)}"}
+        end
       end
     }
   end
