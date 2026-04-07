@@ -44,6 +44,7 @@ defmodule Rho.Mounts.Spreadsheet do
       update_cells_tool(context),
       add_rows_tool(context),
       add_proficiency_levels_tool(session_id, context),
+      generate_proficiency_levels_tool(session_id, context),
       delete_rows_tool(context),
       replace_all_tool(context),
       import_from_file_tool(context),
@@ -345,6 +346,220 @@ defmodule Rho.Mounts.Spreadsheet do
         end
       end
     }
+  end
+
+  defp generate_proficiency_levels_tool(session_id, context) do
+    agent_id = context[:agent_id]
+
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "generate_proficiency_levels",
+          description:
+            "Generate Dreyfus-model proficiency levels (5 levels) for a list of skills using AI. " <>
+              "Pass skill metadata — the tool handles LLM generation in parallel and streams results into the spreadsheet. " <>
+              "Use this instead of writing proficiency levels yourself.",
+          parameter_schema: [
+            skills_json: [
+              type: :string,
+              required: true,
+              doc:
+                ~s(JSON array of skills: [{"skill_name":"SQL","category":"Data","cluster":"Wrangling","skill_description":"...","role":"Data Analyst"},...]  )
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        raw = args["skills_json"] || args[:skills_json] || "[]"
+
+        skills =
+          case Jason.decode(raw) do
+            {:ok, list} when is_list(list) -> list
+            _ -> []
+          end
+
+        if skills == [] do
+          {:error, "No valid skills. Ensure skills_json is a valid JSON array."}
+        else
+          generate_levels_parallel(skills, session_id, agent_id, context)
+        end
+      end
+    }
+  end
+
+  defp generate_levels_parallel(skills, session_id, agent_id, context) do
+    require Logger
+    prompt = proficiency_system_prompt()
+    model = resolve_proficiency_model(context)
+
+    batches = Enum.chunk_every(skills, 6)
+
+    results =
+      batches
+      |> Task.async_stream(
+        fn batch ->
+          call_proficiency_llm(batch, model, prompt, session_id, agent_id)
+        end,
+        max_concurrency: 4,
+        timeout: 90_000,
+        on_timeout: :kill_task
+      )
+      |> Enum.reduce({0, 0, []}, fn
+        {:ok, {:ok, count}}, {total, batches_done, errors} ->
+          {total + count, batches_done + 1, errors}
+
+        {:ok, {:error, reason}}, {total, batches_done, errors} ->
+          {total, batches_done + 1, [reason | errors]}
+
+        {:exit, _reason}, {total, batches_done, errors} ->
+          {total, batches_done + 1, ["batch timed out" | errors]}
+      end)
+
+    {total_levels, _batches_done, errors} = results
+
+    case {total_levels, errors} do
+      {0, errs} ->
+        {:error, "Failed to generate levels: #{Enum.join(errs, "; ")}"}
+
+      {n, []} ->
+        {:ok, "Generated #{n} proficiency level(s) for #{length(skills)} skill(s)"}
+
+      {n, errs} ->
+        {:ok,
+         "Generated #{n} proficiency level(s) for #{length(skills)} skill(s). " <>
+           "#{length(errs)} batch(es) failed: #{Enum.join(errs, "; ")}"}
+    end
+  end
+
+  defp call_proficiency_llm(skills_batch, model, system_prompt, session_id, agent_id) do
+    require Logger
+
+    user_content =
+      "Generate 5 Dreyfus proficiency levels for each skill below. " <>
+        "Return ONLY a JSON array.\n\n" <>
+        Jason.encode!(skills_batch)
+
+    messages = [
+      %{role: "system", content: system_prompt},
+      %{role: "user", content: user_content}
+    ]
+
+    case ReqLLM.generate_text(model, messages, []) do
+      {:ok, response} ->
+        text = extract_proficiency_text(response)
+
+        case parse_levels_json(text) do
+          {:ok, skill_levels} ->
+            rows = levels_to_rows(skill_levels, skills_batch)
+            stream_rows_progressive(rows, :add, session_id, agent_id)
+            {:ok, length(rows)}
+
+          {:error, reason} ->
+            Logger.warning("[spreadsheet] proficiency JSON parse failed: #{reason}")
+            {:error, "JSON parse failed: #{reason}"}
+        end
+
+      {:error, reason} ->
+        Logger.warning("[spreadsheet] proficiency LLM call failed: #{inspect(reason)}")
+        {:error, "LLM call failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp extract_proficiency_text(%{choices: [%{message: %{content: content}} | _]}), do: content
+
+  defp extract_proficiency_text(%{"choices" => [%{"message" => %{"content" => content}} | _]}),
+    do: content
+
+  defp extract_proficiency_text(other), do: inspect(other)
+
+  defp parse_levels_json(text) do
+    cleaned =
+      text
+      |> String.replace(~r/```json\s*/, "")
+      |> String.replace(~r/```\s*/, "")
+      |> String.trim()
+
+    case Jason.decode(cleaned) do
+      {:ok, list} when is_list(list) -> {:ok, list}
+      {:ok, _} -> {:error, "expected JSON array"}
+      {:error, err} -> {:error, inspect(err)}
+    end
+  end
+
+  defp levels_to_rows(skill_levels, skills_batch) do
+    meta_lookup = Map.new(skills_batch, fn s -> {s["skill_name"], s} end)
+
+    Enum.flat_map(skill_levels, fn skill_entry ->
+      skill_name = skill_entry["skill_name"] || ""
+      meta = Map.get(meta_lookup, skill_name, %{})
+      role = meta["role"] || skill_entry["role"] || ""
+      category = meta["category"] || skill_entry["category"] || ""
+      cluster = meta["cluster"] || skill_entry["cluster"] || ""
+      skill_desc = meta["skill_description"] || skill_entry["skill_description"] || ""
+      levels = skill_entry["levels"] || []
+
+      Enum.map(levels, fn lvl ->
+        %{
+          role: role,
+          category: category,
+          cluster: cluster,
+          skill_name: skill_name,
+          skill_description: skill_desc,
+          level: lvl["level"] || 1,
+          level_name: lvl["level_name"] || "",
+          level_description: lvl["level_description"] || ""
+        }
+      end)
+    end)
+  end
+
+  defp resolve_proficiency_model(context) do
+    agent_name = context[:agent_name] || :spreadsheet
+    config = Rho.Config.agent(agent_name)
+    config[:proficiency_model] || config[:model] || "openrouter:openai/gpt-oss-120b"
+  end
+
+  defp proficiency_system_prompt do
+    """
+    You generate Dreyfus-model proficiency levels for competency framework skills.
+
+    ## Proficiency Level Model (Dreyfus-based)
+
+    Level 1 — Novice (Foundational):
+      Follows established procedures. Needs supervision for non-routine situations.
+      Verbs: identifies, follows, recognizes, describes, lists
+
+    Level 2 — Advanced Beginner (Developing):
+      Applies learned patterns to real situations. Handles routine tasks independently.
+      Verbs: applies, demonstrates, executes, implements, operates
+
+    Level 3 — Competent (Proficient):
+      Plans deliberately. Organizes work systematically. Takes ownership of outcomes.
+      Verbs: analyzes, organizes, prioritizes, troubleshoots, coordinates
+
+    Level 4 — Advanced (Senior):
+      Exercises judgment in ambiguous situations. Mentors others. Optimizes processes.
+      Verbs: evaluates, mentors, optimizes, integrates, influences
+
+    Level 5 — Expert (Master):
+      Innovates and shapes the field. Operates intuitively. Recognized authority.
+      Verbs: architects, transforms, pioneers, establishes, strategizes
+
+    ## Quality Rules
+    - Each description MUST be observable: what would you literally SEE this person doing?
+    - Format: [action verb] + [core activity] + [context or business outcome]
+    - GOOD: "Designs distributed architectures that maintain sub-100ms p99 latency under 10x traffic spikes"
+    - BAD: "Is good at system design"
+    - Each level assumes mastery of all prior levels — don't repeat lower-level behaviors
+    - Levels must be mutually exclusive — if two levels sound interchangeable, rewrite
+    - 1-2 sentences per level_description, max
+
+    ## Output Format
+    Return ONLY a JSON array. Each entry has skill_name and levels:
+    [{"skill_name":"SQL","levels":[{"level":1,"level_name":"Novice","level_description":"..."},...]},...]
+
+    Include ALL skills provided. No markdown, no explanation — just the JSON array.
+    """
   end
 
   defp delete_rows_tool(context) do
