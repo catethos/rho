@@ -43,15 +43,13 @@ After adding the skeleton via `add_rows`, STOP and ask:
 
 Wait for user approval before proceeding to Phase 3.
 
-## Phase 3: Parallel Proficiency Generation
+## Phase 3: Proficiency Level Generation
 
 Once the user approves:
 1. Use `get_table` to read the current skeleton
-2. For each category, call `delegate_task` with role `"proficiency_writer"`
-   - Include ALL metadata: category, cluster, skill_name, skill_description
-   - Specify the number of proficiency levels to generate
-3. Await all tasks one at a time (one `await_task` per step)
-4. After ALL awaits complete, use `get_table` to find rows with `level=0`
+2. Collect all skills into a JSON array with their metadata (skill_name, category, cluster, skill_description, role)
+3. Call `generate_proficiency_levels(skills_json: "[...]")` — this generates all levels in parallel server-side
+4. After generation completes, use `get_table` to find rows with `level=0`
 5. Delete only those placeholder rows by their IDs
 6. Report completion stats to user
 
