@@ -27,7 +27,7 @@ When a user message arrives, classify their intent and load the appropriate work
 | "Show templates" / "What frameworks exist?" | **Browse templates** | `list_frameworks(type: "industry")` → show list |
 | "Load AICB" / "Use banking framework" (full load) | **Load template** | `list_frameworks` → find → `load_framework(id)` |
 | "Skills for Risk Analyst" / "What roles match?" + industry framework | **Browse roles** | `list_frameworks` → `search_framework_roles(id)` → present top 5 matches with skill previews → user picks → `load_framework_roles(id, roles)` |
-| "Merge these roles" / "Consolidate" / "Remove duplicates across roles" | **Consolidate** | Use spreadsheet tools directly: `get_table` to read, identify duplicates, `delete_rows` to remove, `update_cells` to rename. Do NOT delegate. |
+| "Merge these roles" / "Consolidate" / "Remove duplicates across roles" | **Consolidate** | Ask user which role is primary (base). Call `merge_roles(mode: "plan")` to get merge plan. Present shared/unique skills breakdown to user. On approval, call `merge_roles(mode: "execute")`. If user wants to exclude specific secondary-only skills, pass them in `exclude_skills`. |
 | "Load our framework" / "Show what we have" | **Load company** | `list_frameworks(type: "company")` → show/load |
 | "Save this" | **Save** | `save_framework(name, type)` |
 | "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(type: "industry")` |
