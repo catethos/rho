@@ -270,6 +270,64 @@ defmodule RhoWeb.SpreadsheetLive do
     {:noreply, socket}
   end
 
+  def handle_info(
+        {:spreadsheet_merge_plan, {caller_pid, ref}, primary_role, secondary_role},
+        socket
+      ) do
+    rows = Map.values(socket.assigns.rows_map)
+
+    primary_skills =
+      rows
+      |> Enum.filter(&(&1[:role] == primary_role))
+      |> Enum.group_by(& &1[:skill_name])
+
+    secondary_skills =
+      rows
+      |> Enum.filter(&(&1[:role] == secondary_role))
+      |> Enum.group_by(& &1[:skill_name])
+
+    primary_skill_names = MapSet.new(Map.keys(primary_skills))
+    secondary_skill_names = MapSet.new(Map.keys(secondary_skills))
+
+    shared = MapSet.intersection(primary_skill_names, secondary_skill_names)
+    primary_only = MapSet.difference(primary_skill_names, secondary_skill_names)
+    secondary_only = MapSet.difference(secondary_skill_names, primary_skill_names)
+
+    # IDs to delete: secondary rows where skill_name is shared with primary
+    ids_to_delete =
+      rows
+      |> Enum.filter(fn row ->
+        row[:role] == secondary_role and MapSet.member?(shared, row[:skill_name])
+      end)
+      |> Enum.map(& &1[:id])
+
+    # IDs to rename: all rows that will remain (primary + secondary-only)
+    ids_to_rename =
+      rows
+      |> Enum.filter(fn row ->
+        row[:role] == primary_role or
+          (row[:role] == secondary_role and MapSet.member?(secondary_only, row[:skill_name]))
+      end)
+      |> Enum.map(& &1[:id])
+
+    plan = %{
+      shared_skills: MapSet.to_list(shared) |> Enum.sort(),
+      shared_count: MapSet.size(shared),
+      primary_only: MapSet.to_list(primary_only) |> Enum.sort(),
+      primary_only_count: MapSet.size(primary_only),
+      secondary_only: MapSet.to_list(secondary_only) |> Enum.sort(),
+      secondary_only_count: MapSet.size(secondary_only),
+      rows_to_delete: length(ids_to_delete),
+      rows_to_rename: length(ids_to_rename),
+      rows_after_merge: length(ids_to_rename),
+      delete_ids: ids_to_delete,
+      rename_ids: ids_to_rename
+    }
+
+    send(caller_pid, {ref, {:ok, plan}})
+    {:noreply, socket}
+  end
+
   # --- Signal bus events ---
 
   # --- File parsing results ---
