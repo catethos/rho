@@ -465,6 +465,20 @@ defmodule Rho.Mounts.Spreadsheet do
     end
   end
 
+  defp extract_proficiency_text(%ReqLLM.Response{message: %{content: content}})
+       when is_binary(content),
+       do: content
+
+  defp extract_proficiency_text(%ReqLLM.Response{message: %{content: parts}})
+       when is_list(parts) do
+    # gpt-oss-120b returns ContentParts list (text + thinking).
+    # Extract the :text part.
+    Enum.find_value(parts, "", fn
+      %{type: :text, text: text} when is_binary(text) -> text
+      _ -> nil
+    end)
+  end
+
   defp extract_proficiency_text(%{choices: [%{message: %{content: content}} | _]}), do: content
 
   defp extract_proficiency_text(%{"choices" => [%{"message" => %{"content" => content}} | _]}),
