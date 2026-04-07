@@ -55,6 +55,7 @@
   ],
   spreadsheet: [
     model: "openrouter:deepseek/deepseek-chat-v3.1",
+    proficiency_model: "openrouter:openai/gpt-oss-120b",
     description: "Skill framework editor with guided intake and parallel generation",
     skills: [],
     default_skills: ["framework-editor"],
@@ -66,90 +67,89 @@
     """,
     mounts: [
       :spreadsheet,
-      :skills,
-      {:multi_agent, only: [:delegate_task, :await_task, :list_agents]}
+      :skills
     ],
     reasoner: :structured,
     max_steps: 50
   ],
-  proficiency_writer: [
-    model: "openrouter:deepseek/deepseek-chat-v3.1",
-    description:
-      "Generates Dreyfus-model proficiency levels for skills in a competency framework",
-    skills: ["competency frameworks", "proficiency levels", "behavioral indicators"],
-    system_prompt: """
-    You are a proficiency level writer for competency frameworks. You receive a category
-    of skills and generate proficiency levels for each one.
-
-    ## Your Task
-    For each skill provided, generate proficiency levels and add them using
-    `add_proficiency_levels`. Do NOT call delete_rows — the primary agent handles cleanup.
-
-    ## Proficiency Level Model (Dreyfus-based)
-
-    Level 1 — Novice (Foundational):
-      Follows established procedures. Needs supervision for non-routine situations.
-      Verbs: identifies, follows, recognizes, describes, lists
-
-    Level 2 — Advanced Beginner (Developing):
-      Applies learned patterns to real situations. Handles routine tasks independently.
-      Verbs: applies, demonstrates, executes, implements, operates
-
-    Level 3 — Competent (Proficient):
-      Plans deliberately. Organizes work systematically. Takes ownership of outcomes.
-      Verbs: analyzes, organizes, prioritizes, troubleshoots, coordinates
-
-    Level 4 — Advanced (Senior):
-      Exercises judgment in ambiguous situations. Mentors others. Optimizes processes.
-      Verbs: evaluates, mentors, optimizes, integrates, influences
-
-    Level 5 — Expert (Master):
-      Innovates and shapes the field. Operates intuitively. Recognized authority.
-      Verbs: architects, transforms, pioneers, establishes, strategizes
-
-    ## Quality Rules
-    - Each description MUST be observable: what would you literally SEE this person doing?
-    - Format: [action verb] + [core activity] + [context or business outcome]
-    - GOOD: "Designs distributed architectures that maintain sub-100ms p99 latency under 10x traffic spikes"
-    - BAD: "Is good at system design"
-    - Each level assumes mastery of all prior levels — don't repeat lower-level behaviors
-    - Levels must be mutually exclusive — if two levels sound interchangeable, rewrite
-    - 1-2 sentences per level_description, max
-
-    ## Output Format
-    Use the `add_proficiency_levels` tool with levels_json. Include category, cluster,
-    and skill_description for each skill (these are provided in your task).
-
-    Format for levels_json:
-    [{"skill_name": "SQL", "category": "Data Engineering", "cluster": "Data Wrangling",
-      "skill_description": "...",
-      "levels": [
-        {"level": 1, "level_name": "Novice", "level_description": "..."},
-        {"level": 2, "level_name": "Advanced Beginner", "level_description": "..."},
-        ...
-    ]}, ...]
-
-    Include ALL skills in your assigned category in a single call.
-    """,
-    mounts: [:spreadsheet],
-    reasoner: :direct,
-    max_steps: 15
-  ],
-  data_extractor: [
-    model: "openrouter:anthropic/claude-sonnet-4",
-    description:
-      "Extracts data from uploaded files (Excel, CSV, PDF) into spreadsheet row format using Python",
-    skills: ["data extraction", "file parsing", "data transformation"],
-    default_skills: ["data-extractor"],
-    system_prompt: """
-    You are a data extraction specialist.
-    Use the data-extractor skill to guide your workflow.
-    Always check reference scripts for similar file patterns before writing your own.
-    """,
-    mounts: [:bash, :skills, :spreadsheet],
-    reasoner: :direct,
-    max_steps: 30
-  ],
+  # proficiency_writer: [
+  #   model: "openrouter:deepseek/deepseek-chat-v3.1",
+  #   description:
+  #     "Generates Dreyfus-model proficiency levels for skills in a competency framework",
+  #   skills: ["competency frameworks", "proficiency levels", "behavioral indicators"],
+  #   system_prompt: """
+  #   You are a proficiency level writer for competency frameworks. You receive a category
+  #   of skills and generate proficiency levels for each one.
+  #
+  #   ## Your Task
+  #   For each skill provided, generate proficiency levels and add them using
+  #   `add_proficiency_levels`. Do NOT call delete_rows — the primary agent handles cleanup.
+  #
+  #   ## Proficiency Level Model (Dreyfus-based)
+  #
+  #   Level 1 — Novice (Foundational):
+  #     Follows established procedures. Needs supervision for non-routine situations.
+  #     Verbs: identifies, follows, recognizes, describes, lists
+  #
+  #   Level 2 — Advanced Beginner (Developing):
+  #     Applies learned patterns to real situations. Handles routine tasks independently.
+  #     Verbs: applies, demonstrates, executes, implements, operates
+  #
+  #   Level 3 — Competent (Proficient):
+  #     Plans deliberately. Organizes work systematically. Takes ownership of outcomes.
+  #     Verbs: analyzes, organizes, prioritizes, troubleshoots, coordinates
+  #
+  #   Level 4 — Advanced (Senior):
+  #     Exercises judgment in ambiguous situations. Mentors others. Optimizes processes.
+  #     Verbs: evaluates, mentors, optimizes, integrates, influences
+  #
+  #   Level 5 — Expert (Master):
+  #     Innovates and shapes the field. Operates intuitively. Recognized authority.
+  #     Verbs: architects, transforms, pioneers, establishes, strategizes
+  #
+  #   ## Quality Rules
+  #   - Each description MUST be observable: what would you literally SEE this person doing?
+  #   - Format: [action verb] + [core activity] + [context or business outcome]
+  #   - GOOD: "Designs distributed architectures that maintain sub-100ms p99 latency under 10x traffic spikes"
+  #   - BAD: "Is good at system design"
+  #   - Each level assumes mastery of all prior levels — don't repeat lower-level behaviors
+  #   - Levels must be mutually exclusive — if two levels sound interchangeable, rewrite
+  #   - 1-2 sentences per level_description, max
+  #
+  #   ## Output Format
+  #   Use the `add_proficiency_levels` tool with levels_json. Include category, cluster,
+  #   and skill_description for each skill (these are provided in your task).
+  #
+  #   Format for levels_json:
+  #   [{"skill_name": "SQL", "category": "Data Engineering", "cluster": "Data Wrangling",
+  #     "skill_description": "...",
+  #     "levels": [
+  #       {"level": 1, "level_name": "Novice", "level_description": "..."},
+  #       {"level": 2, "level_name": "Advanced Beginner", "level_description": "..."},
+  #       ...
+  #   ]}, ...]
+  #
+  #   Include ALL skills in your assigned category in a single call.
+  #   """,
+  #   mounts: [:spreadsheet],
+  #   reasoner: :direct,
+  #   max_steps: 15
+  # ],
+  # data_extractor: [
+  #   model: "openrouter:anthropic/claude-sonnet-4",
+  #   description:
+  #     "Extracts data from uploaded files (Excel, CSV, PDF) into spreadsheet row format using Python",
+  #   skills: ["data extraction", "file parsing", "data transformation"],
+  #   default_skills: ["data-extractor"],
+  #   system_prompt: """
+  #   You are a data extraction specialist.
+  #   Use the data-extractor skill to guide your workflow.
+  #   Always check reference scripts for similar file patterns before writing your own.
+  #   """,
+  #   mounts: [:bash, :skills, :spreadsheet],
+  #   reasoner: :direct,
+  #   max_steps: 30
+  # ],
   coder: [
     model: "openrouter:anthropic/claude-sonnet-4",
     description: "Senior Elixir developer that writes clean, idiomatic code",
