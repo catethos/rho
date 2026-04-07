@@ -46,6 +46,7 @@ defmodule Rho.Mounts.Spreadsheet do
       add_proficiency_levels_tool(session_id, context),
       generate_proficiency_levels_tool(session_id, context),
       delete_rows_tool(context),
+      merge_roles_tool(session_id, context),
       replace_all_tool(context),
       import_from_file_tool(context),
       list_frameworks_tool(context),
@@ -607,6 +608,181 @@ defmodule Rho.Mounts.Spreadsheet do
         {:ok, "Deleted #{length(ids)} row(s)"}
       end
     }
+  end
+
+  defp merge_roles_tool(session_id, context) do
+    agent_id = context[:agent_id]
+
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "merge_roles",
+          description:
+            "Merge two roles into one. Use mode 'plan' first to see the merge plan, " <>
+              "then mode 'execute' to apply it. The primary role's skills are kept for " <>
+              "shared skills; unique secondary skills are added. All rows renamed to new_role_name.",
+          parameter_schema: [
+            primary_role: [
+              type: :string,
+              required: true,
+              doc:
+                "The role to keep as the base (its proficiency levels are preferred for shared skills)"
+            ],
+            secondary_role: [
+              type: :string,
+              required: true,
+              doc: "The role to merge in (duplicates removed, unique skills kept)"
+            ],
+            new_role_name: [
+              type: :string,
+              required: true,
+              doc: "Name for the merged role, e.g. 'Risk Analyst'"
+            ],
+            mode: [
+              type: :string,
+              required: true,
+              doc: "Either 'plan' (preview changes) or 'execute' (apply changes)"
+            ],
+            exclude_skills: [
+              type: :string,
+              required: false,
+              doc:
+                "JSON array of secondary-only skill names to exclude from merge, e.g. [\"Model Validation\"]"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        primary_role = args["primary_role"] || ""
+        secondary_role = args["secondary_role"] || ""
+        new_role_name = args["new_role_name"] || ""
+        mode = args["mode"] || "plan"
+
+        exclude =
+          case Jason.decode(args["exclude_skills"] || "[]") do
+            {:ok, list} when is_list(list) -> MapSet.new(list)
+            _ -> MapSet.new()
+          end
+
+        if primary_role == "" or secondary_role == "" or new_role_name == "" do
+          {:error, "primary_role, secondary_role, and new_role_name are all required"}
+        else
+          case mode do
+            "plan" ->
+              execute_merge_plan(session_id, primary_role, secondary_role, new_role_name)
+
+            "execute" ->
+              execute_merge(
+                session_id,
+                agent_id,
+                primary_role,
+                secondary_role,
+                new_role_name,
+                exclude
+              )
+
+            _ ->
+              {:error, "mode must be 'plan' or 'execute'"}
+          end
+        end
+      end
+    }
+  end
+
+  defp execute_merge_plan(session_id, primary_role, secondary_role, new_role_name) do
+    with_pid(session_id, fn pid ->
+      ref = make_ref()
+      send(pid, {:spreadsheet_merge_plan, {self(), ref}, primary_role, secondary_role})
+
+      receive do
+        {^ref, {:ok, plan}} ->
+          result = %{
+            primary_role: primary_role,
+            secondary_role: secondary_role,
+            new_role_name: new_role_name,
+            shared_skills: plan.shared_skills,
+            shared_count: plan.shared_count,
+            primary_only: plan.primary_only,
+            primary_only_count: plan.primary_only_count,
+            secondary_only: plan.secondary_only,
+            secondary_only_count: plan.secondary_only_count,
+            rows_to_delete: plan.rows_to_delete,
+            rows_to_keep: plan.rows_after_merge,
+            rows_after_merge: plan.rows_after_merge
+          }
+
+          {:ok, Jason.encode!(result)}
+      after
+        5_000 -> {:error, "Spreadsheet did not respond in time"}
+      end
+    end)
+  end
+
+  defp execute_merge(session_id, agent_id, primary_role, secondary_role, new_role_name, exclude) do
+    with_pid(session_id, fn pid ->
+      ref = make_ref()
+      send(pid, {:spreadsheet_merge_plan, {self(), ref}, primary_role, secondary_role})
+
+      receive do
+        {^ref, {:ok, plan}} ->
+          # Additional IDs to delete: excluded secondary-only skills
+          exclude_ids =
+            if MapSet.size(exclude) > 0 do
+              ref2 = make_ref()
+              send(pid, {:spreadsheet_get_table, {self(), ref2}, nil})
+
+              receive do
+                {^ref2, {:ok, rows}} ->
+                  rows
+                  |> Enum.filter(fn row ->
+                    row[:role] == secondary_role and MapSet.member?(exclude, row[:skill_name])
+                  end)
+                  |> Enum.map(& &1[:id])
+              after
+                5_000 -> []
+              end
+            else
+              []
+            end
+
+          all_delete_ids = plan.delete_ids ++ exclude_ids
+
+          # 1. Delete duplicate + excluded rows
+          if all_delete_ids != [] do
+            publish_spreadsheet_event(session_id, agent_id, :delete_rows, %{ids: all_delete_ids})
+          end
+
+          # 2. Rename remaining rows to new_role_name
+          rename_ids = plan.rename_ids -- exclude_ids
+
+          if rename_ids != [] do
+            changes =
+              Enum.map(rename_ids, fn id ->
+                %{"id" => id, "field" => "role", "value" => new_role_name}
+              end)
+
+            publish_spreadsheet_event(session_id, agent_id, :update_cells, %{changes: changes})
+          end
+
+          final_count = length(rename_ids)
+          deleted_count = length(all_delete_ids)
+
+          skill_count =
+            plan.primary_only_count + plan.shared_count +
+              (plan.secondary_only_count - MapSet.size(exclude))
+
+          {:ok,
+           Jason.encode!(%{
+             deleted_rows: deleted_count,
+             renamed_rows: final_count,
+             final_skill_count: skill_count,
+             final_row_count: final_count,
+             new_role_name: new_role_name
+           })}
+      after
+        5_000 -> {:error, "Spreadsheet did not respond in time"}
+      end
+    end)
   end
 
   defp replace_all_tool(context) do
