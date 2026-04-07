@@ -28,8 +28,8 @@ Get user approval before proceeding.
 
 **For proficiency level generation:**
 1. Read current data via `get_table`
-2. For each category needing levels, call `delegate_task` with role `"proficiency_writer"`
-3. Await all tasks
+2. Collect skills needing levels into a JSON array with metadata (skill_name, category, cluster, skill_description, role)
+3. Call `generate_proficiency_levels(skills_json: "[...]")` — generates all levels in parallel server-side
 4. Clean up placeholder rows (level=0)
 
 **For indicator improvement:**
