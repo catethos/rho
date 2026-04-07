@@ -27,6 +27,7 @@ When a user message arrives, classify their intent and load the appropriate work
 | "Show templates" / "What frameworks exist?" | **Browse templates** | `list_frameworks(type: "industry")` → show list |
 | "Load AICB" / "Use banking framework" (full load) | **Load template** | `list_frameworks` → find → `load_framework(id)` |
 | "Skills for Risk Analyst" / "What roles match?" + industry framework | **Browse roles** | `list_frameworks` → `search_framework_roles(id)` → present top 5 matches with skill previews → user picks → `load_framework_roles(id, roles)` |
+| "Merge these roles" / "Consolidate" / "Remove duplicates across roles" | **Consolidate** | Use spreadsheet tools directly: `get_table` to read, identify duplicates, `delete_rows` to remove, `update_cells` to rename. Do NOT delegate. |
 | "Load our framework" / "Show what we have" | **Load company** | `list_frameworks(type: "company")` → show/load |
 | "Save this" | **Save** | `save_framework(name, type)` |
 | "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(type: "industry")` |
@@ -83,14 +84,8 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 ### File Access
 - `get_uploaded_file` — read parsed content of uploaded file (paginated)
 
-### Multi-Agent
-- `delegate_task` — spawn sub-agent for specialized work
-- `await_task` — collect sub-agent results
-
-**Delegation rules:**
-- **Complex file extraction** → delegate to `data_extractor` role (has Python + spreadsheet access)
-- **Proficiency level generation** → delegate to `proficiency_writer` role (Phase 3 of generate-workflow)
-- **NEVER delegate to `coder` or `worker`** — they don't have spreadsheet access
+### Proficiency Generation
+- `generate_proficiency_levels` — generate Dreyfus-model proficiency levels for a list of skills using AI. Pass skill metadata (skill_name, category, cluster, skill_description, role) — the tool handles parallel LLM generation and streams results into the spreadsheet.
 
 ### Persistence
 - `list_frameworks` — see available industry templates and company frameworks
