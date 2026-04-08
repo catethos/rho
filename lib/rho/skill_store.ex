@@ -139,43 +139,203 @@ defmodule Rho.SkillStore do
             |> Repo.update!()
         end
 
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      row_maps = insert_rows(framework, attrs.rows)
+      update_counts(framework, row_maps)
+    end)
+  end
 
-      row_maps =
-        Enum.map(attrs.rows, fn row ->
-          %{
-            framework_id: framework.id,
-            role: row[:role] || row["role"] || "",
-            category: row[:category] || row["category"] || "",
-            cluster: row[:cluster] || row["cluster"] || "",
-            skill_name: row[:skill_name] || row["skill_name"] || "",
-            skill_description: row[:skill_description] || row["skill_description"] || "",
-            level: row[:level] || row["level"] || 0,
-            level_name: row[:level_name] || row["level_name"] || "",
-            level_description: row[:level_description] || row["level_description"] || "",
-            skill_code: row[:skill_code] || row["skill_code"] || "",
-            inserted_at: now,
-            updated_at: now
-          }
+  def save_role_framework(attrs) do
+    role_name = title_case(attrs.role_name || "")
+    company_id = attrs.company_id
+    year = attrs.year
+    action = attrs.action
+
+    case action do
+      :create ->
+        next_version =
+          from(f in Framework,
+            where:
+              f.company_id == ^company_id and f.role_name == ^role_name and
+                f.year == ^year and f.type == "company",
+            select: max(f.version)
+          )
+          |> Repo.one()
+          |> case do
+            nil -> 1
+            max_v -> max_v + 1
+          end
+
+        is_first =
+          from(f in Framework,
+            where:
+              f.company_id == ^company_id and f.role_name == ^role_name and
+                f.type == "company",
+            select: count(f.id)
+          )
+          |> Repo.one() == 0
+
+        name = generate_name(role_name, year, next_version)
+
+        Repo.transaction(fn ->
+          framework =
+            %Framework{}
+            |> Framework.changeset(%{
+              name: name,
+              type: "company",
+              company_id: company_id,
+              source: attrs[:source],
+              role_name: role_name,
+              year: year,
+              version: next_version,
+              is_default: is_first,
+              description: attrs[:description] || ""
+            })
+            |> Repo.insert!()
+
+          insert_rows(framework, attrs.rows)
+          update_counts(framework, attrs.rows)
         end)
 
-      row_maps
-      |> Enum.chunk_every(500)
-      |> Enum.each(fn chunk ->
-        Repo.insert_all(FrameworkRow, chunk)
-      end)
+      :update ->
+        existing_id = attrs.existing_id
 
-      # Update cached counts — use change/2, not cast/4 (internal computed data)
-      row_count = length(row_maps)
-      skill_count = row_maps |> Enum.map(& &1.skill_name) |> Enum.uniq() |> length()
+        Repo.transaction(fn ->
+          framework = Repo.get!(Framework, existing_id)
+          Repo.delete_all(from(r in FrameworkRow, where: r.framework_id == ^existing_id))
+
+          framework
+          |> Framework.changeset(%{
+            source: attrs[:source],
+            description: attrs[:description] || framework.description
+          })
+          |> Repo.update!()
+
+          insert_rows(framework, attrs.rows)
+          update_counts(framework, attrs.rows)
+        end)
+    end
+  end
+
+  def get_company_roles_summary(company_id) do
+    frameworks =
+      from(f in Framework,
+        where: f.company_id == ^company_id and f.type == "company" and not is_nil(f.role_name),
+        order_by: [asc: f.role_name, desc: f.year, desc: f.version]
+      )
+      |> Repo.all()
+
+    frameworks
+    |> Enum.group_by(& &1.role_name)
+    |> Enum.map(fn {role_name, versions} ->
+      default = Enum.find(versions, hd(versions), & &1.is_default)
+
+      %{
+        role_name: role_name,
+        default: %{
+          id: default.id,
+          year: default.year,
+          version: default.version,
+          skill_count: default.skill_count,
+          row_count: default.row_count,
+          description: default.description,
+          inserted_at: default.inserted_at
+        },
+        versions:
+          Enum.map(versions, fn v ->
+            %{
+              id: v.id,
+              year: v.year,
+              version: v.version,
+              is_default: v.is_default,
+              skill_count: v.skill_count,
+              inserted_at: v.inserted_at
+            }
+          end)
+      }
+    end)
+    |> Enum.sort_by(& &1.role_name)
+  end
+
+  def set_default_version(framework_id) do
+    framework = Repo.get!(Framework, framework_id)
+
+    Repo.transaction(fn ->
+      from(f in Framework,
+        where:
+          f.company_id == ^framework.company_id and
+            f.role_name == ^framework.role_name and
+            f.is_default == true
+      )
+      |> Repo.update_all(set: [is_default: false])
 
       framework
-      |> Ecto.Changeset.change(%{row_count: row_count, skill_count: skill_count})
+      |> Ecto.Changeset.change(%{is_default: true})
       |> Repo.update!()
     end)
   end
 
   # --- Helpers ---
+
+  defp insert_rows(framework, rows) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    row_maps =
+      Enum.map(rows, fn row ->
+        %{
+          framework_id: framework.id,
+          role: row[:role] || row["role"] || "",
+          category: row[:category] || row["category"] || "",
+          cluster: row[:cluster] || row["cluster"] || "",
+          skill_name: row[:skill_name] || row["skill_name"] || "",
+          skill_description: row[:skill_description] || row["skill_description"] || "",
+          level: row[:level] || row["level"] || 0,
+          level_name: row[:level_name] || row["level_name"] || "",
+          level_description: row[:level_description] || row["level_description"] || "",
+          skill_code: row[:skill_code] || row["skill_code"] || "",
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    row_maps
+    |> Enum.chunk_every(500)
+    |> Enum.each(fn chunk -> Repo.insert_all(FrameworkRow, chunk) end)
+
+    row_maps
+  end
+
+  defp update_counts(framework, row_maps) when is_list(row_maps) do
+    row_count = length(row_maps)
+    skill_names = Enum.map(row_maps, fn r -> r[:skill_name] || r["skill_name"] || "" end)
+    skill_count = skill_names |> Enum.uniq() |> length()
+
+    framework
+    |> Ecto.Changeset.change(%{row_count: row_count, skill_count: skill_count})
+    |> Repo.update!()
+  end
+
+  defp generate_name(role_name, year, version) do
+    slug =
+      role_name
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "_")
+      |> String.trim("_")
+
+    "#{slug}_#{year}_v#{version}"
+  end
+
+  defp title_case(str) do
+    str
+    |> String.split(~r/[\s_]+/)
+    |> Enum.map(fn word ->
+      case String.downcase(word) do
+        "" -> ""
+        w -> String.upcase(String.first(w)) <> String.slice(w, 1..-1//1)
+      end
+    end)
+    |> Enum.join(" ")
+    |> String.trim()
+  end
 
   defp row_to_map(%FrameworkRow{} = row) do
     %{

@@ -319,4 +319,194 @@ defmodule Rho.SkillStoreTest do
       assert SkillStore.get_framework_rows_for_roles(fw.id, ["Risk Analyst"]) == []
     end
   end
+
+  describe "save_role_framework/1" do
+    test "creates first version with is_default=true" do
+      SkillStore.ensure_company("test_co")
+
+      {:ok, fw} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :create,
+          source: "spreadsheet_editor",
+          rows: [
+            full_row(%{role: "Data Scientist", skill_name: "Python", level: 1}),
+            full_row(%{role: "Data Scientist", skill_name: "Python", level: 2})
+          ]
+        })
+
+      assert fw.role_name == "Data Scientist"
+      assert fw.year == 2026
+      assert fw.version == 1
+      assert fw.is_default == true
+      assert fw.name == "data_scientist_2026_v1"
+      assert fw.row_count == 2
+      assert fw.skill_count == 1
+    end
+
+    test "creates second version as draft (is_default=false)" do
+      SkillStore.ensure_company("test_co")
+
+      {:ok, _v1} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Data Scientist", skill_name: "Python", level: 1})]
+        })
+
+      {:ok, v2} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Data Scientist", skill_name: "SQL", level: 1})]
+        })
+
+      assert v2.version == 2
+      assert v2.is_default == false
+      assert v2.name == "data_scientist_2026_v2"
+    end
+
+    test "update mode overwrites existing rows" do
+      SkillStore.ensure_company("test_co")
+
+      {:ok, v1} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Data Scientist", skill_name: "Python", level: 1})]
+        })
+
+      {:ok, updated} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :update,
+          existing_id: v1.id,
+          source: "test",
+          rows: [
+            full_row(%{role: "Data Scientist", skill_name: "Python", level: 1}),
+            full_row(%{role: "Data Scientist", skill_name: "SQL", level: 1})
+          ]
+        })
+
+      assert updated.id == v1.id
+      rows = SkillStore.get_framework_rows(v1.id)
+      assert length(rows) == 2
+    end
+
+    test "normalizes role_name to title case" do
+      SkillStore.ensure_company("test_co")
+
+      {:ok, fw} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "data scientist",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "data scientist", skill_name: "Python", level: 1})]
+        })
+
+      assert fw.role_name == "Data Scientist"
+    end
+  end
+
+  describe "get_company_roles_summary/1" do
+    test "returns roles grouped with default and version history" do
+      SkillStore.ensure_company("test_co")
+
+      {:ok, _} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2025,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Data Scientist", skill_name: "Python", level: 1})]
+        })
+
+      {:ok, _} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [
+            full_row(%{role: "Data Scientist", skill_name: "Python", level: 1}),
+            full_row(%{role: "Data Scientist", skill_name: "SQL", level: 1})
+          ]
+        })
+
+      {:ok, _} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Risk Analyst",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Risk Analyst", skill_name: "Risk Mgmt", level: 1})]
+        })
+
+      summary = SkillStore.get_company_roles_summary("test_co")
+      assert length(summary) == 2
+
+      ds = Enum.find(summary, &(&1.role_name == "Data Scientist"))
+      assert ds.default.year == 2025
+      assert ds.default.version == 1
+      assert length(ds.versions) == 2
+
+      ra = Enum.find(summary, &(&1.role_name == "Risk Analyst"))
+      assert ra.default.year == 2026
+      assert ra.default.version == 1
+    end
+  end
+
+  describe "set_default_version/1" do
+    test "flips is_default in transaction" do
+      SkillStore.ensure_company("test_co")
+
+      {:ok, v1} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2025,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Data Scientist", skill_name: "Python", level: 1})]
+        })
+
+      {:ok, v2} =
+        SkillStore.save_role_framework(%{
+          company_id: "test_co",
+          role_name: "Data Scientist",
+          year: 2026,
+          action: :create,
+          source: "test",
+          rows: [full_row(%{role: "Data Scientist", skill_name: "SQL", level: 1})]
+        })
+
+      assert v1.is_default == true
+      assert v2.is_default == false
+
+      {:ok, _} = SkillStore.set_default_version(v2.id)
+
+      v1_reloaded = SkillStore.get_framework(v1.id)
+      v2_reloaded = SkillStore.get_framework(v2.id)
+      assert v1_reloaded.is_default == false
+      assert v2_reloaded.is_default == true
+    end
+  end
 end
