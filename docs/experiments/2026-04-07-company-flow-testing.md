@@ -260,6 +260,15 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 8. "yes"
 9. "can u set this version to be default for Data Scientist?" (requires `set_default_version` tool fix)
 
+**Set Default Version — follow-up test (after tool fix):**
+
+Tested in a clean session after adding `set_default_version` tool:
+1. User asked "hey, can u check what company frameworks we have?" → `get_company_overview` showed DS 2025 v1 as default
+2. User asked "can we set the 2026 version for Data Scientist to default?" → agent called `set_default_version(framework_id: 246)` → **Set Data Scientist 2026 v1 as default**
+3. DB confirmed: DS 2025 `is_default=0`, DS 2026 `is_default=1`
+
+Two tool calls, clean execution. No issues.
+
 ### Scenario 9: Browse roles on framework with NO roles
 
 **Priority: LOW** — edge case.
