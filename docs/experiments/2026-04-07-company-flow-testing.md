@@ -133,18 +133,51 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 ### Scenario 4: From scratch — create for one role
 
-**Priority: HIGH** — this is the generate-workflow, no template involved.
+**Status: PASS**
 
-1. Open `?company=bank_abc` (empty spreadsheet)
-2. "Help me create a skill framework for Software Engineer"
-3. Agent should follow generate-workflow: intake questions → skeleton → approval → proficiency levels
-4. Result: framework with `role="Software Engineer"` on all rows
+**Flow observed:**
+1. User opened `?company=bank_abc`, said "hello"
+2. Agent called `get_company_overview` → showed 3 company frameworks (DS 2025, DS 2026, RA 2026) + FSF template
+3. User asked to create Software Engineer framework
+4. Agent detected Generate intent → called `read_resource("generate-workflow")` → loaded workflow
+5. Agent asked intake questions (industry, purpose, proficiency levels)
+6. User confirmed → agent called `add_rows` with 26 skeleton skills (level=0, role="Software Engineer")
+7. Agent called `switch_view(mode: "role")` → paused for review
+8. User removed Innovation cluster (2 skills) via `delete_by_filter`
+9. User removed Junior Developer Mentoring (1 skill) via `delete_by_filter`
+10. User moved Technical Leadership to different cluster via `update_cells`
+11. Finch timeout hit once (auto-recovered)
+12. Agent called `get_table` → collected 23 skills → called `generate_proficiency_levels`
+13. **Generated 115 proficiency levels for 23 skills** (server-side parallel LLM)
+14. Agent called `delete_rows` to remove 23 placeholder rows
+15. Agent reported completion → user said "save this"
+16. Finch timeout hit 4x before save (auto-recovered each time)
+17. `save_framework(mode: "plan")` → Software Engineer 2026 v1 (new, first role = default)
+18. User confirmed → `save_framework(mode: "execute")` → **Saved: Software Engineer 2026 v1 (115 rows)**
 
-**What to watch for:**
-- Does the agent correctly detect "Generate" intent (no files, describes a role)?
-- Does it load the generate-workflow reference?
-- Does it use `add_rows` with role field populated?
-- Quality of generated skills and proficiency levels
+**Key wins:**
+- Generate workflow end-to-end: intake → skeleton → review → proficiency generation → save
+- `generate_proficiency_levels` produced 115 levels for 23 skills in one server-side call
+- Versioned save correctly created v1 with `is_default=true` (first version of this role)
+- User could edit skeleton before generating (remove/move skills)
+
+**Demo script (user messages to replicate):**
+1. "hello"
+2. "Data Scientist got how many version?"
+3. "Help me create a skill framework for Software Engineer from scratch?"
+4. "Industry: Technology; Purpose: career pathing; Proficiency level: use standard; Specific Competencies: JavaScript, AWS"
+5. "yes, u may"
+6. "I think can remove the entire Innovation skill?"
+7. "Remove Junior Developer Mentoring"
+8. "Move Technical Leadership to Stakeholder Communication category haha"
+9. "I think great, can proceed with generating detailed proficiency levels"
+10. "ya, i think can save this framework" (may need to retry 2-3x due to Finch timeouts)
+11. "yes" (confirm save plan)
+
+**Issues found:**
+- Finch pool exhaustion hit 5x total (Bug #4) — auto-recovers but burns turns and adds latency. User had to retry "save this" 4 times before agent recovered.
+- DeepSeek structured output format violation 2x — auto-recovered via system prompt retry
+- DeepSeek occasionally slow (~30s per turn on large context)
 
 ### Scenario 5: From scratch — create for entire company (multi-role)
 
@@ -269,7 +302,7 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 1. ~~**Scenario 2** (multi-role select + merge) — DONE~~
 2. ~~**Scenario 3** (load → edit → versioned save) — DONE~~
-3. **Scenario 4** (from scratch, one role) — validates generate-workflow with new `generate_proficiency_levels` tool
+3. ~~**Scenario 4** (from scratch, one role) — DONE~~
 4. **Scenario 8** (load → edit → save update in place) — validates overwrite mode of versioned save
 5. **Scenario 6** (template as reference) — validates reference-workflow
 6. **Scenario 10** (access control) — security check
