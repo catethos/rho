@@ -46,6 +46,7 @@ defmodule Rho.Mounts.Spreadsheet do
       add_proficiency_levels_tool(session_id, context),
       generate_proficiency_levels_tool(session_id, context),
       delete_rows_tool(context),
+      delete_by_filter_tool(session_id, context),
       merge_roles_tool(session_id, context),
       replace_all_tool(context),
       import_from_file_tool(context),
@@ -607,6 +608,64 @@ defmodule Rho.Mounts.Spreadsheet do
 
         publish_spreadsheet_event(session_id, agent_id, :delete_rows, %{ids: ids})
         {:ok, "Deleted #{length(ids)} row(s)"}
+      end
+    }
+  end
+
+  defp delete_by_filter_tool(session_id, context) do
+    agent_id = context[:agent_id]
+
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "delete_by_filter",
+          description:
+            "Delete all rows matching a field value. Use instead of get_table + delete_rows " <>
+              "when you need to remove rows by category, skill_name, role, or cluster.",
+          parameter_schema: [
+            field: [
+              type: :string,
+              required: true,
+              doc: "Column name: 'category', 'skill_name', 'role', 'cluster', etc."
+            ],
+            value: [
+              type: :string,
+              required: true,
+              doc: "Value to match, e.g. 'Power Skills'"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        field = args["field"] || ""
+        value = args["value"] || ""
+
+        if field == "" or value == "" do
+          {:error, "field and value are required"}
+        else
+          with_pid(session_id, fn pid ->
+            ref = make_ref()
+            filter = %{field => value}
+            send(pid, {:spreadsheet_get_table, {self(), ref}, filter})
+
+            receive do
+              {^ref, {:ok, rows}} ->
+                ids = Enum.map(rows, & &1[:id])
+
+                if ids == [] do
+                  {:ok, "No rows found where #{field} = '#{value}'"}
+                else
+                  skill_count = rows |> Enum.map(& &1[:skill_name]) |> Enum.uniq() |> length()
+                  publish_spreadsheet_event(session_id, agent_id, :delete_rows, %{ids: ids})
+
+                  {:ok,
+                   "Deleted #{length(ids)} row(s) where #{field} = '#{value}' (#{skill_count} skill(s) removed)"}
+                end
+            after
+              5_000 -> {:error, "Spreadsheet did not respond in time"}
+            end
+          end)
+        end
       end
     }
   end

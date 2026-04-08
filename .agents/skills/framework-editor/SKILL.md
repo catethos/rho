@@ -79,6 +79,7 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 - `add_rows` — add new rows (do NOT include "id" field)
 - `update_cells` — edit specific cells by row ID
 - `delete_rows` — remove rows by ID array
+- `delete_by_filter` — delete all rows matching a field value (e.g., `delete_by_filter(field: "category", value: "Power Skills")`). Use instead of get_table + delete_rows.
 - `replace_all` — replace the entire table
 
 ### File Access
