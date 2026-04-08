@@ -328,6 +328,94 @@ defmodule RhoWeb.SpreadsheetLive do
     {:noreply, socket}
   end
 
+  def handle_info({:spreadsheet_save_plan, {caller_pid, ref}, year, company_id}, socket) do
+    import Ecto.Query
+
+    rows =
+      socket.assigns.rows_map
+      |> Map.values()
+      |> Enum.sort_by(& &1[:id])
+      |> Enum.map(fn row -> Map.drop(row, [:id]) end)
+
+    # Group rows by role
+    roles_grouped =
+      rows
+      |> Enum.group_by(fn row -> row[:role] || "" end)
+      |> Enum.reject(fn {role, _} -> role == "" end)
+
+    # For each role, compute stats and check DB for existing
+    role_plans =
+      Enum.map(roles_grouped, fn {role_name, role_rows} ->
+        skill_names = role_rows |> Enum.map(& &1[:skill_name]) |> Enum.uniq()
+
+        # Check if this role+year exists
+        existing =
+          Rho.SkillStore.Repo.one(
+            from(f in Rho.SkillStore.Framework,
+              where:
+                f.company_id == ^company_id and
+                  f.role_name == ^role_name and
+                  f.year == ^year and
+                  f.type == "company",
+              order_by: [desc: f.version],
+              limit: 1
+            )
+          )
+
+        # Check if first-ever version of this role
+        any_exists =
+          Rho.SkillStore.Repo.exists?(
+            from(f in Rho.SkillStore.Framework,
+              where:
+                f.company_id == ^company_id and
+                  f.role_name == ^role_name and
+                  f.type == "company"
+            )
+          )
+
+        base = %{
+          role_name: role_name,
+          skill_count: length(skill_names),
+          row_count: length(role_rows),
+          is_first_role: !any_exists
+        }
+
+        if existing do
+          Map.merge(base, %{
+            status: "exists",
+            existing: %{
+              id: existing.id,
+              year: existing.year,
+              version: existing.version,
+              created_at: existing.inserted_at
+            }
+          })
+        else
+          Map.put(base, :status, "new")
+        end
+      end)
+
+    # Check for empty-role rows (mismatch)
+    empty_role_rows = Enum.filter(rows, fn row -> (row[:role] || "") == "" end)
+
+    mismatches =
+      if empty_role_rows != [] do
+        [%{role: "", count: length(empty_role_rows), note: "rows with no role assigned"}]
+      else
+        []
+      end
+
+    plan = %{
+      year: year,
+      roles: role_plans,
+      mismatches: mismatches,
+      total_rows: length(rows)
+    }
+
+    send(caller_pid, {ref, {:ok, plan}})
+    {:noreply, socket}
+  end
+
   # --- Signal bus events ---
 
   # --- File parsing results ---
