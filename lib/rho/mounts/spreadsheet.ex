@@ -987,23 +987,47 @@ defmodule Rho.Mounts.Spreadsheet do
   end
 
   defp save_framework_tool(session_id, context) do
+    agent_id = context[:agent_id]
+
     %{
       tool:
         ReqLLM.tool(
           name: "save_framework",
           description:
-            "Save the current spreadsheet to the database. Creates new or updates existing.",
+            "Save the current spreadsheet to the database. Uses two-phase flow: " <>
+              "call with mode 'plan' first to get a save plan, then 'execute' to apply. " <>
+              "For industry templates (admin only), use type 'industry' to bypass versioning.",
           parameter_schema: [
-            name: [type: :string, required: true, doc: "Framework name"],
+            mode: [
+              type: :string,
+              required: true,
+              doc: "'plan' (preview save plan) or 'execute' (apply save)"
+            ],
             type: [
               type: :string,
               required: false,
-              doc: "'industry' (admin only) or 'company' (default)"
+              doc: "'company' (default, versioned) or 'industry' (admin only, no versioning)"
             ],
-            framework_id: [
+            year: [
               type: :integer,
               required: false,
-              doc: "If provided, updates existing. If omitted, creates new."
+              doc: "Framework year (required for company type plan mode)"
+            ],
+            decisions: [
+              type: :string,
+              required: false,
+              doc:
+                ~s(JSON array for execute mode: [{"role_name":"Data Scientist","action":"create"},{"role_name":"Risk Analyst","action":"update","existing_id":92}])
+            ],
+            description: [
+              type: :string,
+              required: false,
+              doc: "Optional note for this version"
+            ],
+            name: [
+              type: :string,
+              required: false,
+              doc: "Framework name (only for industry type)"
             ]
           ],
           callback: fn _args -> :ok end
@@ -1014,43 +1038,175 @@ defmodule Rho.Mounts.Spreadsheet do
         is_admin = context.opts[:is_admin] || false
 
         cond do
-          type == "industry" and not is_admin ->
-            {:error, "Only Pulsifi admin can save industry templates"}
+          type == "industry" ->
+            if is_admin do
+              save_industry_template(session_id, args, company_id)
+            else
+              {:error, "Only admin can save industry templates"}
+            end
 
-          type == "company" and (company_id == nil or company_id == "") ->
+          company_id == nil or company_id == "" ->
             {:error, "Company context required. Open the editor with ?company=your_company_id"}
 
           true ->
-            save_company_id = if type == "industry", do: nil, else: company_id
+            mode = args["mode"] || "plan"
+            year = args["year"]
 
-            with_pid(session_id, fn pid ->
-              ref = make_ref()
-              send(pid, {:get_all_rows, {self(), ref}})
+            case mode do
+              "plan" ->
+                if year == nil do
+                  {:error, "year is required for plan mode"}
+                else
+                  execute_save_plan(session_id, year, company_id)
+                end
 
-              receive do
-                {^ref, {:ok, rows}} ->
-                  case Rho.SkillStore.save_framework(%{
-                         id: args["framework_id"],
-                         name: args["name"],
-                         type: type,
-                         company_id: save_company_id,
-                         source: "spreadsheet_editor",
-                         rows: rows
-                       }) do
-                    {:ok, framework} ->
-                      {:ok,
-                       "Saved '#{args["name"]}' (id: #{framework.id}) — #{length(rows)} rows"}
+              "execute" ->
+                decisions_raw = args["decisions"]
 
-                    {:error, reason} ->
-                      {:error, "Save failed: #{inspect(reason)}"}
+                if decisions_raw == nil do
+                  {:error, "decisions is required for execute mode. Call with mode 'plan' first."}
+                else
+                  decisions =
+                    case Jason.decode(decisions_raw) do
+                      {:ok, list} when is_list(list) -> list
+                      _ -> []
+                    end
+
+                  if decisions == [] do
+                    {:error, "No valid decisions. Pass a JSON array."}
+                  else
+                    execute_save(
+                      session_id,
+                      agent_id,
+                      year || DateTime.utc_now().year,
+                      company_id,
+                      decisions,
+                      args["description"] || ""
+                    )
                   end
-              after
-                5_000 -> {:error, "Spreadsheet did not respond in time"}
-              end
-            end)
+                end
+
+              _ ->
+                {:error, "mode must be 'plan' or 'execute'"}
+            end
         end
       end
     }
+  end
+
+  defp save_industry_template(session_id, args, _company_id) do
+    name = args["name"]
+
+    if name == nil or name == "" do
+      {:error, "name is required for industry templates"}
+    else
+      with_pid(session_id, fn pid ->
+        ref = make_ref()
+        send(pid, {:get_all_rows, {self(), ref}})
+
+        receive do
+          {^ref, {:ok, rows}} ->
+            case Rho.SkillStore.save_framework(%{
+                   id: args["framework_id"],
+                   name: name,
+                   type: "industry",
+                   company_id: nil,
+                   source: "spreadsheet_editor",
+                   rows: rows
+                 }) do
+              {:ok, framework} ->
+                {:ok,
+                 "Saved industry template '#{name}' (id: #{framework.id}) — #{length(rows)} rows"}
+
+              {:error, reason} ->
+                {:error, "Save failed: #{inspect(reason)}"}
+            end
+        after
+          5_000 -> {:error, "Spreadsheet did not respond in time"}
+        end
+      end)
+    end
+  end
+
+  defp execute_save_plan(session_id, year, company_id) do
+    with_pid(session_id, fn pid ->
+      ref = make_ref()
+      send(pid, {:spreadsheet_save_plan, {self(), ref}, year, company_id})
+
+      receive do
+        {^ref, {:ok, plan}} ->
+          {:ok, Jason.encode!(plan)}
+      after
+        5_000 -> {:error, "Spreadsheet did not respond in time"}
+      end
+    end)
+  end
+
+  defp execute_save(session_id, _agent_id, year, company_id, decisions, description) do
+    with_pid(session_id, fn pid ->
+      ref = make_ref()
+      send(pid, {:get_all_rows, {self(), ref}})
+
+      receive do
+        {^ref, {:ok, rows}} ->
+          rows_by_role = Enum.group_by(rows, fn row -> row[:role] || "" end)
+
+          results =
+            Enum.map(decisions, fn decision ->
+              role_name = decision["role_name"]
+
+              action =
+                case decision["action"] do
+                  "create" -> :create
+                  "update" -> :update
+                  _ -> :create
+                end
+
+              existing_id = decision["existing_id"]
+              role_rows = Map.get(rows_by_role, role_name, [])
+
+              if role_rows == [] do
+                {:error, "No rows found for role '#{role_name}'"}
+              else
+                Rho.SkillStore.save_role_framework(%{
+                  company_id: company_id,
+                  role_name: role_name,
+                  year: year,
+                  action: action,
+                  existing_id: existing_id,
+                  description: description,
+                  source: "spreadsheet_editor",
+                  rows: role_rows
+                })
+              end
+            end)
+
+          successes = Enum.filter(results, &match?({:ok, _}, &1))
+          failures = Enum.filter(results, &match?({:error, _}, &1))
+
+          summary =
+            successes
+            |> Enum.map(fn {:ok, fw} ->
+              "#{fw.role_name} #{fw.year} v#{fw.version} (#{fw.row_count} rows)"
+            end)
+            |> Enum.join(", ")
+
+          case {successes, failures} do
+            {[], fails} ->
+              {:error, "All saves failed: #{inspect(fails)}"}
+
+            {_, []} ->
+              {:ok, "Saved #{length(successes)} role(s): #{summary}"}
+
+            {_, fails} ->
+              {:ok,
+               "Saved #{length(successes)} role(s): #{summary}. " <>
+                 "#{length(fails)} failed: #{inspect(fails)}"}
+          end
+      after
+        5_000 -> {:error, "Spreadsheet did not respond in time"}
+      end
+    end)
   end
 
   defp switch_view_tool(context) do
