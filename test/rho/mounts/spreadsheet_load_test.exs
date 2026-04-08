@@ -36,4 +36,13 @@ defmodule Rho.Mounts.SpreadsheetLoadTest do
       assert :append in param_names
     end
   end
+
+  describe "get_company_view tool" do
+    test "tool is present in tools list" do
+      context = make_context("test_company_view")
+      tools = Spreadsheet.tools([], context)
+      tool_names = Enum.map(tools, fn t -> t.tool.name end)
+      assert "get_company_view" in tool_names
+    end
+  end
 end

@@ -256,6 +256,89 @@ defmodule Rho.SkillStore do
     |> Enum.sort_by(& &1.role_name)
   end
 
+  def get_company_view(company_id) do
+    # Get all default company frameworks
+    frameworks =
+      from(f in Framework,
+        where: f.company_id == ^company_id and f.type == "company" and f.is_default == true,
+        order_by: [asc: f.role_name]
+      )
+      |> Repo.all()
+
+    if frameworks == [] do
+      %{
+        company: company_id,
+        total_roles: 0,
+        total_unique_skills: 0,
+        roles: [],
+        shared_skills: [],
+        shared_count: 0
+      }
+    else
+      framework_ids = Enum.map(frameworks, & &1.id)
+
+      # Get all rows for default frameworks
+      rows =
+        from(r in FrameworkRow,
+          where: r.framework_id in ^framework_ids,
+          select: %{
+            framework_id: r.framework_id,
+            skill_name: r.skill_name,
+            category: r.category
+          },
+          distinct: [r.framework_id, r.skill_name]
+        )
+        |> Repo.all()
+
+      # Group skills by framework_id
+      skills_by_framework =
+        rows
+        |> Enum.group_by(& &1.framework_id)
+        |> Map.new(fn {fid, rs} -> {fid, MapSet.new(rs, & &1.skill_name)} end)
+
+      # Build role summaries
+      roles =
+        Enum.map(frameworks, fn f ->
+          skills = Map.get(skills_by_framework, f.id, MapSet.new())
+
+          %{
+            role: f.role_name,
+            year: f.year,
+            version: f.version,
+            skill_count: MapSet.size(skills)
+          }
+        end)
+
+      # Find shared skills (present in ALL roles)
+      all_skill_sets = Map.values(skills_by_framework)
+
+      shared_skills =
+        case all_skill_sets do
+          [] ->
+            []
+
+          [first | rest] ->
+            Enum.reduce(rest, first, &MapSet.intersection/2)
+            |> MapSet.to_list()
+            |> Enum.sort()
+        end
+
+      all_unique_skills =
+        all_skill_sets
+        |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+        |> MapSet.size()
+
+      %{
+        company: company_id,
+        total_roles: length(frameworks),
+        total_unique_skills: all_unique_skills,
+        roles: roles,
+        shared_skills: shared_skills,
+        shared_count: length(shared_skills)
+      }
+    end
+  end
+
   def set_default_version(framework_id) do
     framework = Repo.get!(Framework, framework_id)
 

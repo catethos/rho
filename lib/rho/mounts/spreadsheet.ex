@@ -56,6 +56,7 @@ defmodule Rho.Mounts.Spreadsheet do
       load_framework_roles_tool(session_id, context),
       save_framework_tool(session_id, context),
       get_company_overview_tool(context),
+      get_company_view_tool(context),
       switch_view_tool(context)
     ]
   end
@@ -1324,6 +1325,31 @@ defmodule Rho.Mounts.Spreadsheet do
              roles: roles_summary,
              industry_templates: industry_templates
            })}
+        end
+      end
+    }
+  end
+
+  defp get_company_view_tool(context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "get_company_view",
+          description:
+            "Get a computed cross-role summary of the company's skill framework. " <>
+              "Shows total roles, total unique skills, shared skills across all roles, " <>
+              "and per-role breakdowns. Uses default versions only.",
+          parameter_schema: [],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn _args ->
+        company_id = context.opts[:company_id]
+
+        if is_nil(company_id) or company_id == "" do
+          {:error, "No company specified. Open with ?company=your_company to use this tool."}
+        else
+          view = Rho.SkillStore.get_company_view(company_id)
+          {:ok, Jason.encode!(view, pretty: true)}
         end
       end
     }
