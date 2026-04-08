@@ -1632,7 +1632,7 @@ defmodule RhoWeb.SpreadsheetLive do
   end
 
   defp filter_rows(rows, nil), do: rows
-  defp filter_rows(rows, %{}), do: rows
+  defp filter_rows(rows, filter) when filter == %{}, do: rows
 
   defp filter_rows(rows, filter) when is_map(filter) do
     Enum.filter(rows, fn row ->
