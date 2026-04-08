@@ -28,11 +28,11 @@ When a user message arrives, classify their intent and load the appropriate work
 | "Load AICB" / "Use banking framework" (full load) | **Load template** | `list_frameworks` → find → `load_framework(id)` |
 | "Skills for Risk Analyst" / "What roles match?" + industry framework | **Browse roles** | `list_frameworks` → `search_framework_roles(id)` → present top 5 matches with skill previews → user picks → `load_framework_roles(id, roles)` |
 | "Merge these roles" / "Consolidate" / "Remove duplicates across roles" | **Consolidate** | Ask user which role is primary (base). Call `merge_roles(mode: "plan")` to get merge plan. Present shared/unique skills breakdown to user. On approval, call `merge_roles(mode: "execute")`. If user wants to exclude specific secondary-only skills, pass them in `exclude_skills`. |
-| "Load our framework" / "Show what we have" | **Load company** | `list_frameworks(type: "company")` → show/load |
-| "Save this" | **Save** | `save_framework(name, type)` |
-| "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(type: "industry")` |
+| "Load our framework" / "Show what we have" | **Load company** | `get_company_overview` → show roles with default versions and history → user picks role to load |
+| "Save this" | **Save** | Call `save_framework(mode: "plan", year: CURRENT_YEAR)` to get save plan. Present plan to user (roles, versions, new vs update). On approval, call `save_framework(mode: "execute", year: Y, decisions: "[...]")`. |
+| "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(mode: "plan", type: "industry", name: "...")` (bypasses versioning) |
 | "Create for [role]" but exists | **Duplicate** | Load `deduplication-workflow.md` |
-| First message, empty spreadsheet | **Welcome** | Offer: load existing, import, or build |
+| First message, empty spreadsheet | **Welcome** | Call `get_company_overview` → present company roles (with default/draft versions) + industry templates + capabilities. See Welcome Flow in spec. |
 | "Delete this framework" | **Not supported** | "I can't delete frameworks yet" |
 
 If intent is ambiguous, **always ask** — don't guess.
@@ -88,11 +88,12 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 - `generate_proficiency_levels` — generate Dreyfus-model proficiency levels for a list of skills using AI. Pass skill metadata (skill_name, category, cluster, skill_description, role) — the tool handles parallel LLM generation and streams results into the spreadsheet.
 
 ### Persistence
-- `list_frameworks` — see available industry templates and company frameworks
-- `search_framework_roles` — browse roles in a framework (skill counts + sample skills). Use for large industry frameworks instead of loading everything.
-- `load_framework` — load an entire framework into the spreadsheet
-- `load_framework_roles` — load only specific roles from a framework. Use after `search_framework_roles`.
-- `save_framework` — save spreadsheet to database
+- `get_company_overview` — get company's role frameworks (defaults + versions) and industry templates. Use on first message and when user asks "what do we have".
+- `list_frameworks` — list all visible frameworks (industry + company). Returns flat list with role_name, year, version, is_default fields.
+- `search_framework_roles` — browse roles in a framework (skill counts + sample skills)
+- `load_framework` — load a framework into the spreadsheet (replaces content)
+- `load_framework_roles` — load only specific roles from a framework
+- `save_framework` — save spreadsheet to database. Two-phase: mode "plan" returns save plan, mode "execute" applies it. For industry templates, use type "industry" (admin only).
 - `switch_view` — toggle between "By Role" and "By Category" view
 
 ### Skills
