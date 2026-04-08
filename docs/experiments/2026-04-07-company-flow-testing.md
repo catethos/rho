@@ -223,17 +223,42 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 ### Scenario 8: Load existing company framework → edit → save (update)
 
-**Priority: HIGH** — validates the edit + update-in-place flow.
+**Status: PASS**
 
-1. Open `?company=bank_abc`
-2. "Load our data_scientist_2025 framework"
-3. "Add a new skill: MLOps"
-4. "Save" (should update existing, not create new)
+**Flow observed:**
+1. User opened `?company=bank_abc`, said "hello"
+2. Agent called `get_company_overview` → showed DS 2025 (default), DS 2026, RA 2026, SE 2026
+3. User asked about Data Scientist versions → agent explained 2025 v1 (default, 28 skills) + 2026 v1 (draft, 25 skills)
+4. User asked to load 2026 version → `load_framework(246)` → 125 rows loaded
+5. User asked to add MLOps skill → agent called `get_table_summary` to check categories, then `add_rows` with skeleton row
+6. Agent auto-called `generate_proficiency_levels` for MLOps → generated 5 proficiency levels
+7. User asked to fix level names to match existing style (PL 1-5) and delete placeholder row
+8. Agent called `get_table` to check existing style, then `update_cells` (renamed levels) + `delete_rows` (removed placeholder)
+9. User said "save this" → `save_framework(mode: "plan", year: 2026)` → plan: update DS 2026 v1 (26 skills, 130 rows)
+10. User confirmed → `save_framework(mode: "execute", decisions: [{action: "update", existing_id: 246}])` → **Saved: updated DS 2026 v1 (130 rows)**
+11. User asked to set 2026 as default → agent said **"I don't have a direct tool to set the default version"** (Bug — tool was missing)
 
-**What to watch for:**
-- Does `save_framework(framework_id: 91)` update in place?
-- Are new rows correctly added alongside existing ones?
-- Is the row count accurate after save?
+**Key wins:**
+- Update-in-place worked correctly — same framework ID, same version, just updated rows
+- Agent auto-generated proficiency levels for the new skill without being asked
+- Agent checked existing level naming style before adding (good context awareness)
+- Save plan correctly identified "update existing" vs "create new"
+
+**Issues found:**
+- `set_default_version` tool was missing from mount — **FIXED** in commit `526218a`
+- Finch timeout hit once during conversation (auto-recovered)
+- Agent tried `read_resource("check-versions-workflow.md")` which doesn't exist — fell back gracefully
+
+**Demo script (user messages to replicate):**
+1. "hello"
+2. "Is there latest version for Data Scientist?"
+3. "Can u load the 2026 version?"
+4. "I am thinking to add a new skill: MLOps"
+5. "I think the Level name for MLOps should be follow the existing framework style. and delete the one with pending proficiency description"
+6. (retry same message if agent doesn't get it first time)
+7. "Save this"
+8. "yes"
+9. "can u set this version to be default for Data Scientist?" (requires `set_default_version` tool fix)
 
 ### Scenario 9: Browse roles on framework with NO roles
 
@@ -303,7 +328,7 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 1. ~~**Scenario 2** (multi-role select + merge) — DONE~~
 2. ~~**Scenario 3** (load → edit → versioned save) — DONE~~
 3. ~~**Scenario 4** (from scratch, one role) — DONE~~
-4. **Scenario 8** (load → edit → save update in place) — validates overwrite mode of versioned save
+4. ~~**Scenario 8** (load → edit → save update in place) — DONE~~
 5. **Scenario 6** (template as reference) — validates reference-workflow
 6. **Scenario 10** (access control) — security check
 7. Remaining scenarios as time permits
