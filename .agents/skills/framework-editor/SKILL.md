@@ -29,6 +29,8 @@ When a user message arrives, classify their intent and load the appropriate work
 | "Skills for Risk Analyst" / "What roles match?" + industry framework | **Browse roles** | `list_frameworks` → `search_framework_roles(id)` → present top 5 matches with skill previews → user picks → `load_framework_roles(id, roles)` |
 | "Merge these roles" / "Consolidate" / "Remove duplicates across roles" | **Consolidate** | Ask user which role is primary (base). Call `merge_roles(mode: "plan")` to get merge plan. Present shared/unique skills breakdown to user. On approval, call `merge_roles(mode: "execute")`. If user wants to exclude specific secondary-only skills, pass them in `exclude_skills`. |
 | "Load our framework" / "Show what we have" | **Load company** | `get_company_overview` → show roles with default versions and history → user picks role to load |
+| "Load both Data Scientist and Risk Analyst" / "Show all roles together" | **Multi-load** | `get_company_overview` → user picks roles → `load_framework(id)` for first, then `load_framework(id, append: true)` for rest. Switch to Role view. |
+| "Show company view" / "Summary across all roles" | **Company view** | Call `get_company_view` → present cross-role summary (total roles, shared skills, per-role breakdowns) |
 | "Save this" | **Save** | Call `save_framework(mode: "plan", year: CURRENT_YEAR)` to get save plan. Present plan to user (roles, versions, new vs update). On approval, call `save_framework(mode: "execute", year: Y, decisions: "[...]")`. |
 | "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(mode: "plan", type: "industry", name: "...")` (bypasses versioning) |
 | "Create for [role]" but exists | **Duplicate** | Load `deduplication-workflow.md` |
@@ -92,9 +94,10 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 - `get_company_overview` — get company's role frameworks (defaults + versions) and industry templates. Use on first message and when user asks "what do we have".
 - `list_frameworks` — list all visible frameworks (industry + company). Returns flat list with role_name, year, version, is_default fields.
 - `search_framework_roles` — browse roles in a framework (skill counts + sample skills)
-- `load_framework` — load a framework into the spreadsheet (replaces content)
-- `load_framework_roles` — load only specific roles from a framework
+- `load_framework` — load a framework into the spreadsheet (replaces content by default, set `append: true` to add to existing rows)
+- `load_framework_roles` — load only specific roles from a framework (replaces by default, set `append: true` to add to existing rows)
 - `save_framework` — save spreadsheet to database. Two-phase: mode "plan" returns save plan, mode "execute" applies it. For industry templates, use type "industry" (admin only).
+- `get_company_view` — computed cross-role summary: total roles, unique skills, shared skills across all default versions
 - `switch_view` — toggle between "By Role" and "By Category" view
 
 ### Skills

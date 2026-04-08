@@ -28,6 +28,22 @@
 4. Auto-detect view mode (role view if roles exist)
 5. Confirm: "Loaded Data Scientist 2026 v1 — 140 rows"
 
+## Multi-Role Load (Append Mode)
+
+1. User says "load Data Scientist and Risk Analyst together" or "show all our roles"
+2. Call `get_company_overview` → present available roles
+3. For the first role: `load_framework(id)` (replaces)
+4. For each additional role: `load_framework(id, append: true)` (adds to existing)
+5. Switch to Role view: `switch_view(mode: "role")`
+6. Confirm: "Loaded 2 roles — 280 rows total. Viewing by role."
+
+## Company View
+
+1. User says "show company view" or "summary across all roles"
+2. Call `get_company_view` → returns computed summary
+3. Present: total roles, unique skills, shared skills, per-role breakdowns
+4. This is read-only — doesn't change the spreadsheet
+
 ## Set Default Version
 
 1. User says "set Data Scientist 2025 v1 as default"
