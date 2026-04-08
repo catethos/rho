@@ -21,7 +21,8 @@ When a user message arrives, classify their intent and load the appropriate work
 | No files, describes a role/domain | **Generate** | `read_resource("framework-editor", "references/generate-workflow.md")` |
 | Uploads Excel/CSV + "import"/"load"/"use this" | **Import** | `read_resource("framework-editor", "references/import-workflow.md")` |
 | Uploads file + "improve"/"add levels"/"enhance" | **Enhance** | Load import-workflow first, then `read_resource("framework-editor", "references/enhance-workflow.md")` |
-| Uploads file + "like this"/"similar to"/"based on" | **Reference** | `read_resource("framework-editor", "references/reference-workflow.md")` |
+| Uploads file + "like this"/"similar to"/"based on" | **Reference** | `read_resource("framework-editor", "references/reference-workflow.md")`. Do NOT load/import — generate NEW skills inspired by reference. |
+| "Use FSF as reference" / "based on [template]" / "build something similar to [template]" | **Reference (DB template)** | `read_resource("framework-editor", "references/reference-workflow.md")`. Use `search_framework_roles` to browse, but do NOT call `load_framework` or `load_framework_roles`. Generate NEW framework inspired by the template. |
 | Already has data + edit request | **Edit** | Use spreadsheet tools directly (no workflow file needed) |
 | Ambiguous | **Ask** | "I see you uploaded [filename]. Would you like me to import it into the spreadsheet, or use it as a reference to build a new framework?" |
 | "Show templates" / "What frameworks exist?" | **Browse templates** | `list_frameworks(type: "industry")` → show list |
@@ -82,7 +83,7 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 - `add_rows` — add new rows (do NOT include "id" field)
 - `update_cells` — edit specific cells by row ID
 - `delete_rows` — remove rows by ID array
-- `delete_by_filter` — delete all rows matching a field value (e.g., `delete_by_filter(field: "category", value: "Power Skills")`). Use instead of get_table + delete_rows.
+- `delete_by_filter` — delete all rows matching field value(s). Supports one or two filters (AND). Examples: `delete_by_filter(field: "category", value: "Power Skills")` or `delete_by_filter(field: "category", value: "Power Skills", field2: "role", value2: "Legal Advisory")` for scoped deletion.
 - `replace_all` — replace the entire table
 
 ### File Access

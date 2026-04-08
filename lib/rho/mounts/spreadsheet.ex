@@ -622,8 +622,8 @@ defmodule Rho.Mounts.Spreadsheet do
         ReqLLM.tool(
           name: "delete_by_filter",
           description:
-            "Delete all rows matching a field value. Use instead of get_table + delete_rows " <>
-              "when you need to remove rows by category, skill_name, role, or cluster.",
+            "Delete all rows matching field value(s). Use instead of get_table + delete_rows. " <>
+              "Supports one or two filters — e.g. delete by category, or delete by category AND role.",
           parameter_schema: [
             field: [
               type: :string,
@@ -634,6 +634,17 @@ defmodule Rho.Mounts.Spreadsheet do
               type: :string,
               required: true,
               doc: "Value to match, e.g. 'Power Skills'"
+            ],
+            field2: [
+              type: :string,
+              required: false,
+              doc:
+                "Optional second column to filter on, e.g. 'role'. Both filters must match (AND)."
+            ],
+            value2: [
+              type: :string,
+              required: false,
+              doc: "Value for second filter, e.g. 'Legal Advisory'"
             ]
           ],
           callback: fn _args -> :ok end
@@ -645,9 +656,20 @@ defmodule Rho.Mounts.Spreadsheet do
         if field == "" or value == "" do
           {:error, "field and value are required"}
         else
+          filter =
+            case {args["field2"], args["value2"]} do
+              {f2, v2} when is_binary(f2) and f2 != "" and is_binary(v2) and v2 != "" ->
+                %{field => value, f2 => v2}
+
+              _ ->
+                %{field => value}
+            end
+
+          filter_desc =
+            filter |> Enum.map(fn {k, v} -> "#{k} = '#{v}'" end) |> Enum.join(" AND ")
+
           with_pid(session_id, fn pid ->
             ref = make_ref()
-            filter = %{field => value}
             send(pid, {:spreadsheet_get_table, {self(), ref}, filter})
 
             receive do
@@ -655,13 +677,13 @@ defmodule Rho.Mounts.Spreadsheet do
                 ids = Enum.map(rows, & &1[:id])
 
                 if ids == [] do
-                  {:ok, "No rows found where #{field} = '#{value}'"}
+                  {:ok, "No rows found where #{filter_desc}"}
                 else
                   skill_count = rows |> Enum.map(& &1[:skill_name]) |> Enum.uniq() |> length()
                   publish_spreadsheet_event(session_id, agent_id, :delete_rows, %{ids: ids})
 
                   {:ok,
-                   "Deleted #{length(ids)} row(s) where #{field} = '#{value}' (#{skill_count} skill(s) removed)"}
+                   "Deleted #{length(ids)} row(s) where #{filter_desc} (#{skill_count} skill(s) removed)"}
                 end
             after
               5_000 -> {:error, "Spreadsheet did not respond in time"}

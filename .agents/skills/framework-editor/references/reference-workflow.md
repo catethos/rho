@@ -1,10 +1,23 @@
-# Use File as Reference for New Framework
+# Use Reference to Build New Framework
 
-The uploaded file is NOT imported directly — it's used as context to inform a new framework.
+The reference is NOT imported directly — it's used as context to inform a NEW framework.
 
-## Step 1: Read the Reference
+**CRITICAL: Do NOT call `load_framework` or `load_framework_roles`.** The goal is to generate new skills inspired by the reference, not copy them.
 
-Call `get_uploaded_file(filename)` to read the full content.
+## Two Reference Sources
+
+### A. Database template (e.g. "use FSF as reference")
+
+1. Call `search_framework_roles(framework_id)` to browse roles in the template
+2. Present the top 5 most relevant roles to the user — let them pick which to reference
+3. For the selected roles, note the skill names, categories, and cluster structure
+4. Do NOT load them into the spreadsheet — use the search results as context only
+5. Proceed to Step 2 below
+
+### B. Uploaded file (e.g. user uploads a PDF/Excel)
+
+1. Call `get_uploaded_file(filename)` to read the full content
+2. Proceed to Step 2 below
 
 ## Step 2: Extract Patterns
 
