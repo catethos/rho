@@ -57,6 +57,7 @@ defmodule Rho.Mounts.Spreadsheet do
       save_framework_tool(session_id, context),
       get_company_overview_tool(context),
       get_company_view_tool(context),
+      set_default_version_tool(context),
       switch_view_tool(context)
     ]
   end
@@ -1350,6 +1351,50 @@ defmodule Rho.Mounts.Spreadsheet do
         else
           view = Rho.SkillStore.get_company_view(company_id)
           {:ok, Jason.encode!(view, pretty: true)}
+        end
+      end
+    }
+  end
+
+  defp set_default_version_tool(context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "set_default_version",
+          description:
+            "Set a specific framework version as the default for its role. " <>
+              "The previous default for that role will be unset. " <>
+              "Use get_company_overview to find framework IDs and current defaults.",
+          parameter_schema: [
+            framework_id: [
+              type: :integer,
+              required: true,
+              doc: "Framework ID to set as default"
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args ->
+        framework_id = args["framework_id"]
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+
+        case Rho.SkillStore.get_framework(framework_id) do
+          nil ->
+            {:error, "Framework not found"}
+
+          framework ->
+            if can_access?(framework, company_id, is_admin) do
+              case Rho.SkillStore.set_default_version(framework_id) do
+                {:ok, updated} ->
+                  {:ok, "Set #{updated.role_name} #{updated.year} v#{updated.version} as default"}
+
+                {:error, reason} ->
+                  {:error, "Failed to set default: #{inspect(reason)}"}
+              end
+            else
+              {:error, "Access denied"}
+            end
         end
       end
     }

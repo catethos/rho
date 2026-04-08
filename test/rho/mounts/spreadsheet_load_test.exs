@@ -37,6 +37,15 @@ defmodule Rho.Mounts.SpreadsheetLoadTest do
     end
   end
 
+  describe "set_default_version tool" do
+    test "tool is present in tools list" do
+      context = make_context("test_set_default")
+      tools = Spreadsheet.tools([], context)
+      tool_names = Enum.map(tools, fn t -> t.tool.name end)
+      assert "set_default_version" in tool_names
+    end
+  end
+
   describe "get_company_view tool" do
     test "tool is present in tools list" do
       context = make_context("test_company_view")

@@ -35,6 +35,7 @@ When a user message arrives, classify their intent and load the appropriate work
 | "Save as industry template" (admin) | **Save template** | Check admin → `save_framework(mode: "plan", type: "industry", name: "...")` (bypasses versioning) |
 | "Create for [role]" but exists | **Duplicate** | Load `deduplication-workflow.md` |
 | First message, empty spreadsheet | **Welcome** | Call `get_company_overview` → present company roles (with default/draft versions) + industry templates + capabilities. See Welcome Flow in spec. |
+| "Set this as default" / "Make 2026 v1 the default" | **Set default** | Call `set_default_version(framework_id)` — use `get_company_overview` to find the framework ID first |
 | "Delete this framework" | **Not supported** | "I can't delete frameworks yet" |
 
 If intent is ambiguous, **always ask** — don't guess.
@@ -97,6 +98,7 @@ When files are uploaded, the backend has already parsed them. You receive a stru
 - `load_framework` — load a framework into the spreadsheet (replaces content by default, set `append: true` to add to existing rows)
 - `load_framework_roles` — load only specific roles from a framework (replaces by default, set `append: true` to add to existing rows)
 - `save_framework` — save spreadsheet to database. Two-phase: mode "plan" returns save plan, mode "execute" applies it. For industry templates, use type "industry" (admin only).
+- `set_default_version` — set a specific framework version as the default for its role. Use `get_company_overview` to find framework IDs.
 - `get_company_view` — computed cross-role summary: total roles, unique skills, shared skills across all default versions
 - `switch_view` — toggle between "By Role" and "By Category" view
 

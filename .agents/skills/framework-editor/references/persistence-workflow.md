@@ -46,9 +46,10 @@
 
 ## Set Default Version
 
-1. User says "set Data Scientist 2025 v1 as default"
-2. Agent identifies the framework ID
-3. System flips is_default in a transaction
+1. User says "set Data Scientist 2026 v1 as default"
+2. Call `get_company_overview` to find the framework ID
+3. Call `set_default_version(framework_id)` — flips is_default in a transaction
+4. Confirm: "Set Data Scientist 2026 v1 as default"
 
 ## When to Remind About Saving
 
