@@ -54,6 +54,7 @@ defmodule Rho.Mounts.Spreadsheet do
       load_framework_tool(session_id, context),
       load_framework_roles_tool(session_id, context),
       save_framework_tool(session_id, context),
+      get_company_overview_tool(context),
       switch_view_tool(context)
     ]
   end
@@ -1207,6 +1208,49 @@ defmodule Rho.Mounts.Spreadsheet do
         5_000 -> {:error, "Spreadsheet did not respond in time"}
       end
     end)
+  end
+
+  defp get_company_overview_tool(context) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "get_company_overview",
+          description:
+            "Get an overview of the company's skill frameworks — roles, default versions, " <>
+              "version history, and available industry templates. Use on first message or " <>
+              "when user asks 'what do we have'.",
+          parameter_schema: [],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn _args ->
+        company_id = context.opts[:company_id]
+        is_admin = context.opts[:is_admin] || false
+
+        if company_id == nil or company_id == "" do
+          {:ok,
+           Jason.encode!(%{
+             company: nil,
+             roles: [],
+             industry_templates:
+               Rho.SkillStore.list_frameworks_for(nil, false, "industry")
+               |> Enum.map(&Map.take(&1, [:id, :name, :skill_count, :row_count]))
+           })}
+        else
+          roles_summary = Rho.SkillStore.get_company_roles_summary(company_id)
+
+          industry_templates =
+            Rho.SkillStore.list_frameworks_for(company_id, is_admin, "industry")
+            |> Enum.map(&Map.take(&1, [:id, :name, :skill_count, :row_count]))
+
+          {:ok,
+           Jason.encode!(%{
+             company: company_id,
+             roles: roles_summary,
+             industry_templates: industry_templates
+           })}
+        end
+      end
+    }
   end
 
   defp switch_view_tool(context) do
