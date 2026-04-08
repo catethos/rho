@@ -640,14 +640,29 @@ defmodule RhoWeb.SpreadsheetLive do
   end
 
   def handle_info({:load_framework_rows, rows, framework}, socket) do
+    handle_info({:load_framework_rows, rows, framework, append: false}, socket)
+  end
+
+  def handle_info({:load_framework_rows, rows, _framework, opts}, socket) do
+    append = Keyword.get(opts, :append, false)
+
+    start_id = if append, do: socket.assigns.next_id, else: 1
+
     {id_rows, next_id} =
-      Enum.map_reduce(rows, 1, fn row, id ->
+      Enum.map_reduce(rows, start_id, fn row, id ->
         {Map.put(row, :id, id), id + 1}
       end)
 
-    rows_map = Map.new(id_rows, fn row -> {row.id, row} end)
+    new_rows_map = Map.new(id_rows, fn row -> {row.id, row} end)
 
-    has_roles = Enum.any?(rows, fn r -> (r[:role] || "") != "" end)
+    rows_map =
+      if append do
+        Map.merge(socket.assigns.rows_map, new_rows_map)
+      else
+        new_rows_map
+      end
+
+    has_roles = Enum.any?(rows_map, fn {_id, r} -> (r[:role] || "") != "" end)
     view_mode = if has_roles, do: :role, else: :category
 
     socket =
@@ -655,8 +670,6 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:rows_map, rows_map)
       |> assign(:next_id, next_id)
       |> assign(:view_mode, view_mode)
-      |> assign(:loaded_framework_id, framework.id)
-      |> assign(:loaded_framework_name, framework.name)
 
     {:noreply, socket}
   end

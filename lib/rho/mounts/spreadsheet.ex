@@ -950,19 +950,27 @@ defmodule Rho.Mounts.Spreadsheet do
         ReqLLM.tool(
           name: "load_framework",
           description:
-            "Load a framework from the database into the spreadsheet. Replaces current " <>
-              "spreadsheet content. Does NOT change ownership.",
+            "Load a framework from the database into the spreadsheet. " <>
+              "By default replaces current content. Set append=true to add rows " <>
+              "to existing spreadsheet (for loading multiple roles together).",
           parameter_schema: [
             framework_id: [
               type: :integer,
               required: true,
               doc: "Framework ID from list_frameworks"
+            ],
+            append: [
+              type: :boolean,
+              required: false,
+              doc:
+                "If true, append rows to existing spreadsheet instead of replacing. Default: false."
             ]
           ],
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
         framework_id = args["framework_id"]
+        append = args["append"] in [true, "true"]
         company_id = context.opts[:company_id]
         is_admin = context.opts[:is_admin] || false
 
@@ -975,8 +983,10 @@ defmodule Rho.Mounts.Spreadsheet do
               rows = Rho.SkillStore.get_framework_rows(framework_id)
 
               with_pid(session_id, fn pid ->
-                send(pid, {:load_framework_rows, rows, framework})
-                {:ok, "Loaded '#{framework.name}' — #{length(rows)} rows"}
+                send(pid, {:load_framework_rows, rows, framework, append: append})
+
+                {:ok,
+                 "Loaded '#{framework.name}' — #{length(rows)} rows#{if append, do: " (appended)", else: ""}"}
               end)
             else
               {:error, "Access denied"}
@@ -994,7 +1004,7 @@ defmodule Rho.Mounts.Spreadsheet do
           description:
             "Load specific roles from a framework into the spreadsheet. Use after " <>
               "search_framework_roles — pass exact role names from the search results. " <>
-              "Replaces current spreadsheet content.",
+              "By default replaces current content. Set append=true to add to existing rows.",
           parameter_schema: [
             framework_id: [
               type: :integer,
@@ -1005,12 +1015,19 @@ defmodule Rho.Mounts.Spreadsheet do
               type: :string,
               required: true,
               doc: ~s(JSON array of role names, e.g. ["Risk Analyst", "Credit Risk Manager"])
+            ],
+            append: [
+              type: :boolean,
+              required: false,
+              doc:
+                "If true, append rows to existing spreadsheet instead of replacing. Default: false."
             ]
           ],
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
         framework_id = args["framework_id"]
+        append = args["append"] in [true, "true"]
         company_id = context.opts[:company_id]
         is_admin = context.opts[:is_admin] || false
 
@@ -1032,10 +1049,10 @@ defmodule Rho.Mounts.Spreadsheet do
                 rows = Rho.SkillStore.get_framework_rows_for_roles(framework_id, roles)
 
                 with_pid(session_id, fn pid ->
-                  send(pid, {:load_framework_rows, rows, framework})
+                  send(pid, {:load_framework_rows, rows, framework, append: append})
 
                   {:ok,
-                   "Loaded #{length(roles)} role(s) from '#{framework.name}' — #{length(rows)} rows"}
+                   "Loaded #{length(roles)} role(s) from '#{framework.name}' — #{length(rows)} rows#{if append, do: " (appended)", else: ""}"}
                 end)
               else
                 {:error, "Access denied"}
