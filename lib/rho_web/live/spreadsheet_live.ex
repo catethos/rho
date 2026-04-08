@@ -668,6 +668,8 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:rows_map, rows_map)
       |> assign(:next_id, next_id)
       |> assign(:view_mode, view_mode)
+      |> assign(:group_summary, [])
+      |> assign(:bulk_total, 0)
 
     {:noreply, socket}
   end

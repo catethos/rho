@@ -281,11 +281,7 @@ defmodule Rho.SkillStore do
       rows =
         from(r in FrameworkRow,
           where: r.framework_id in ^framework_ids,
-          select: %{
-            framework_id: r.framework_id,
-            skill_name: r.skill_name,
-            category: r.category
-          },
+          select: %{framework_id: r.framework_id, skill_name: r.skill_name},
           distinct: [r.framework_id, r.skill_name]
         )
         |> Repo.all()
@@ -294,7 +290,10 @@ defmodule Rho.SkillStore do
       skills_by_framework =
         rows
         |> Enum.group_by(& &1.framework_id)
-        |> Map.new(fn {fid, rs} -> {fid, MapSet.new(rs, & &1.skill_name)} end)
+        |> Map.new(fn {fid, rs} ->
+          skills = rs |> Enum.map(& &1.skill_name) |> Enum.reject(&is_nil/1) |> MapSet.new()
+          {fid, skills}
+        end)
 
       # Build role summaries
       roles =
@@ -309,8 +308,9 @@ defmodule Rho.SkillStore do
           }
         end)
 
-      # Find shared skills (present in ALL roles)
-      all_skill_sets = Map.values(skills_by_framework)
+      # Find shared skills (present in ALL roles, including empty ones)
+      all_skill_sets =
+        Enum.map(frameworks, fn f -> Map.get(skills_by_framework, f.id, MapSet.new()) end)
 
       shared_skills =
         case all_skill_sets do
