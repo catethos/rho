@@ -48,8 +48,6 @@ defmodule RhoWeb.SpreadsheetLive do
       |> assign(:view_mode, :role)
       |> assign(:company_id, params["company"])
       |> assign(:is_admin, params["company"] == "pulsifi_admin")
-      |> assign(:loaded_framework_id, nil)
-      |> assign(:loaded_framework_name, nil)
       |> assign(:group_summary, [])
       |> assign(:bulk_total, 0)
       |> assign(:user_avatar, load_avatar("avatar"))
