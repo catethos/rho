@@ -360,21 +360,39 @@ Two tool calls, clean execution. No issues.
 
 ### Scenario 9: Import fully structured Excel (all columns filled)
 
-**Priority: MEDIUM** — validates clean import with no generation needed.
+**Status: PASS** — 100% data match verified
 
 **Test file:** `complete_framework_import.xlsx` — single sheet with columns: Role, Category, Cluster, Skill Name, Skill Description, Level, Level Name, Level Description. HR Manager (3 skills × 5 levels = 15 rows) + Finance Analyst (2 skills × 5 levels = 10 rows). Total: 25 rows.
 
-1. Open `?company=fintech_xyz`
-2. Upload `complete_framework_import.xlsx`
-3. "Import this"
-4. Agent should: detect all columns match, import all 25 rows as-is (no generation needed)
-5. "Save" → should save HR Manager and Finance Analyst as separate frameworks
+**Flow observed:**
+1. User opened `?company=bank_abc`, uploaded file with message "import this"
+2. Agent called `get_uploaded_file` to read the sheet
+3. Agent used `replace_all` to import all 25 rows in one call — correct column mapping for all 8 fields
+4. No skeleton rows, no placeholders, no proficiency generation — imported as-is
+5. User said "save it" → `save_framework(mode: "plan", year: 2025)` — agent defaulted to 2025
+6. User corrected "should both be saved in 2026" → agent re-planned with year 2026
+7. Plan showed: Finance Analyst (new) + HR Manager (new) → user confirmed
+8. `save_framework(mode: "execute")` → **Saved: Finance Analyst 2026 v1 (10 rows), HR Manager 2026 v1 (15 rows)**
 
-**What to watch for:**
-- Does the agent correctly map all columns (including Level, Level Name, Level Description)?
-- Does it import rows as-is without adding skeleton/placeholder rows?
-- Does it skip proficiency generation since levels are already provided?
-- Does save correctly detect 2 roles?
+**Data verification:** Compared all 25 rows × 8 fields between source Excel and DB — **PERFECT MATCH**. Every role, category, cluster, skill_name, skill_description, level, level_name, and level_description identical.
+
+**Key wins:**
+- Agent correctly detected fully structured data — no unnecessary generation
+- Used `replace_all` for clean import (not `add_rows` with skeleton)
+- All 8 columns mapped correctly including proficiency level fields
+- Save correctly detected 2 roles and saved separately
+- 100% data fidelity from Excel → spreadsheet → DB
+
+**Minor issues:**
+- Agent defaulted save year to 2025 instead of 2026 — user had to correct
+- Framework `role_name` stored as "Hr Manager" (title-case normalization) instead of "HR Manager" — cosmetic bug in `save_role_framework` normalization logic
+
+**Demo script (user messages to replicate):**
+1. (Upload complete_framework_import.xlsx) "import this"
+2. "save it"
+3. "should both be saved in 2026"
+4. (confirm save)
+5. "list all frameworks our company have?"
 
 ### Scenario 10: Access control — company user can't see other company's frameworks
 
@@ -478,4 +496,5 @@ Two tool calls, clean execution. No issues.
 6. ~~**Scenario 10** (access control) — DONE~~
 7. ~~**Scenario 5** (multi-role from scratch) — DONE~~
 8. ~~**Scenario 7** (file import + enhance) — DONE~~
-9. Remaining scenarios (9, 11) as time permits
+9. ~~**Scenario 9** (fully structured import) — DONE~~
+10. Remaining scenario (11) as time permits
