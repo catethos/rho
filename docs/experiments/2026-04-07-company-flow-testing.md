@@ -269,17 +269,46 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 ### Scenario 7: Import from file → enhance with proficiency levels
 
-**Priority: MEDIUM** — file upload + enhance workflow.
+**Status: PASS**
 
-1. Open `?company=bank_abc`
-2. Upload an Excel/CSV with skill names (no proficiency levels)
-3. "Import this and add proficiency levels"
-4. Agent should: import → detect missing levels → run enhance-workflow
+**Test file:** `test_framework_import.xlsx` — 3 sheets (Product Manager: 6 skills, Data Engineer: 5 skills, CEO: 7 skills). Columns: Skill Name, Category, Description. No proficiency levels.
 
-**What to watch for:**
-- File parsing and column mapping
-- Correct use of `add_proficiency_levels` tool
-- Quality of generated behavioral indicators
+**Flow observed:**
+1. User opened `?company=fintech_xyz`, uploaded file with message "Import this"
+2. Agent detected Import intent → loaded `import-workflow.md`
+3. Agent read all 3 sheets via `get_uploaded_file` (one call per sheet)
+4. Presented summary of all 18 skills across 3 roles, offered options: A) import as skeleton, B) import with proficiency levels
+5. User chose Option A → agent called `add_rows` with 18 skeleton rows (level=0, level_description="⏳ Pending...")
+6. Correct column mapping: Skill Name → skill_name, Category → category, Description → skill_description, Sheet name → role
+7. User asked to generate proficiency levels → agent called `generate_proficiency_levels` with all 18 skills in one call → **90 proficiency levels generated**
+8. User reminded agent to delete placeholder rows → `delete_by_filter(level_description: "⏳ Pending...")` → cleaned up
+9. User asked to save → `save_framework(mode: "plan")` → plan showed:
+   - CEO: `status: "new"` 
+   - Data Engineer: `status: "exists"` (v1 from Scenario 10) — **asked user what to do**
+   - Product Manager: `status: "exists"` (v1 from Scenario 5) — **asked user what to do**
+10. User said "create all new versions" → agent correctly used `action: "create"` for all 3
+11. **Saved: CEO 2026 v1 (new), Data Engineer 2026 v2 (new version), Product Manager 2026 v2 (new version)**
+
+**Key wins:**
+- Multi-sheet Excel import worked cleanly — all 3 sheets read and imported
+- Column mapping correct without manual intervention
+- Single `generate_proficiency_levels` call for all 18 skills across 3 roles
+- **Save flow fix confirmed working** — agent asked about existing frameworks instead of auto-updating
+- User chose "create new versions" → v2 created for DE and PM, v1 for CEO
+
+**Issues found:**
+- Agent forgot to delete placeholder rows — user had to remind (step 8)
+- Agent leaked raw JSON thinking once (structured reasoner format blip) — recovered
+- Finch timeout hit once — user had to prompt "hello?"
+
+**Demo script (user messages to replicate):**
+1. (Upload test_framework_import.xlsx) "Import this"
+2. "Option A" (import as skeleton)
+3. "i think u can proceed to generate proficiency levels (1-5)"
+4. "i think u forget to delete those with pending level description"
+5. "if want to save all? how?"
+6. "create all new versions"
+7. "can u list all the frameworks that our company have?"
 
 ### Scenario 8: Load existing company framework → edit → save (update)
 
@@ -438,4 +467,5 @@ Two tool calls, clean execution. No issues.
 5. ~~**Scenario 6** (template as reference) — DONE~~
 6. ~~**Scenario 10** (access control) — DONE~~
 7. ~~**Scenario 5** (multi-role from scratch) — DONE~~
-8. Remaining scenarios as time permits
+8. ~~**Scenario 7** (file import + enhance) — DONE~~
+9. Remaining scenarios (9, 11) as time permits
