@@ -195,17 +195,45 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 ### Scenario 6: Use template as REFERENCE (not direct load)
 
-**Priority: HIGH** — this is the reference-workflow, different from loading.
+**Status: PASS** (with issues)
 
-1. Open `?company=bank_abc`
-2. Upload or describe a reference framework
-3. "Use the FSF as reference to build our company's skill framework"
-4. Agent should: NOT load FSF directly, but use it as inspiration to create a new tailored framework
+**Flow observed:**
+1. User opened `?company=bank_abc`, said "hello" → `get_company_overview` showed 4 company frameworks
+2. User asked "I want to build a skill framework for Compliance Officer, using the FSF as reference"
+3. Agent loaded `reference-workflow.md` → called `list_frameworks` → `search_framework_roles(243)` → presented top compliance roles
+4. Agent also tried `get_uploaded_file("FSF...")` — failed gracefully (FSF is a DB template, not a file upload)
+5. User picked "Regulatory Compliance" as the reference
+6. Agent generated **8 NEW skills** across 4 categories (Regulatory Knowledge, Compliance Operations, Risk & Governance, Professional Development) — NOT copied from FSF's 32 skills
+7. Agent called `generate_proficiency_levels` → **40 proficiency levels** for 8 skills
+8. User then asked to load Regulatory Compliance for comparison → `load_framework_roles(243, ["Regulatory Compliance"], append: true)` → 160 rows appended
+9. User asked to move Power Skills from RC to Compliance Officer → agent used `update_cells` to change role field on 74 rows, then `delete_by_filter(role: "Regulatory Compliance")` to remove remaining RC rows
+10. `save_framework(mode: "plan")` → Compliance Officer 2026 v1 (new, 26 skills)
+11. `save_framework(mode: "execute")` → **Saved: Compliance Officer 2026 v1 (114 rows)**
+12. Agent confirmed it was auto-set as default (first version)
 
-**What to watch for:**
-- Does the agent correctly detect "Reference" intent vs "Load template" intent?
-- Does it avoid dumping the entire FSF into the spreadsheet?
-- Does it use `search_framework_roles` to browse relevant roles first?
+**Key wins:**
+- Reference intent correctly detected — agent generated NEW skills, not loaded FSF
+- `search_framework_roles` used to browse template (not `load_framework`)
+- Append mode worked perfectly for side-by-side comparison
+- Move skills between roles via `update_cells` + `delete_by_filter` worked
+- Versioned save with auto-default for new role
+
+**Issues found:**
+- Agent tried `get_uploaded_file` on FSF (DB template, not uploaded file) — fell back gracefully but wasted a turn. Reference-workflow needs stronger disambiguation for DB templates.
+- Agent skipped skeleton review phase — went straight from intake to `generate_proficiency_levels` without showing skeleton for approval first. generate-workflow says MANDATORY but agent bypassed it.
+- Finch timeouts caused agent to be unresponsive 4+ times — user had to retry messages repeatedly
+- Agent didn't use the new `field2/value2` on `delete_by_filter` for scoped deletion — used update_cells + single filter instead (worked but less elegant)
+
+**Demo script (user messages to replicate):**
+1. "hello?"
+2. "I want to build a skill framework for Compliance Officer, using the FSF as reference"
+3. "I think u may just referencing Regulatory Compliance to draft the framework"
+4. "yes cool"
+5. "Can we load the Regulatory Compliance into the spreadsheet too?"
+6. "Can we move the Power Skills from Regulatory Compliance to the Compliance Officer? then, only delete the entire Regulatory Compliance from the spreadsheet?" (may need to retry due to Finch timeouts)
+7. "Can we move the Power Skills from Regulatory Compliance to the Compliance Officer?" (simpler prompt worked better)
+8. "save this framework" (may need to retry)
+9. "yup, this as default version"
 
 ### Scenario 7: Import from file → enhance with proficiency levels
 
@@ -338,6 +366,6 @@ Two tool calls, clean execution. No issues.
 2. ~~**Scenario 3** (load → edit → versioned save) — DONE~~
 3. ~~**Scenario 4** (from scratch, one role) — DONE~~
 4. ~~**Scenario 8** (load → edit → save update in place) — DONE~~
-5. **Scenario 6** (template as reference) — validates reference-workflow
+5. ~~**Scenario 6** (template as reference) — DONE~~
 6. **Scenario 10** (access control) — security check
 7. Remaining scenarios as time permits
