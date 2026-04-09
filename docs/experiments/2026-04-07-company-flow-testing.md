@@ -181,19 +181,49 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 ### Scenario 5: From scratch — create for entire company (multi-role)
 
-**Priority: MEDIUM** — complex flow, may need multiple delegation rounds.
+**Status: PASS** (with save bug found and fixed)
 
-1. Open `?company=bank_abc` (empty spreadsheet)
-2. "Help me create a skill framework for our entire company, we're a fintech with 5 departments"
-3. Agent should: ask about roles/departments → generate role-by-role
-4. Result: multiple role frameworks saved individually (each with role="Role Name")
+**Flow observed:**
+1. User opened `?company=fintech_xyz` (had existing Data Engineer 2026 v1 from Scenario 10)
+2. User asked to create frameworks for 3 roles: Product Manager, Data Engineer, Data Scientist
+3. Agent asked intake questions (purpose, proficiency levels, must-haves) → user chose career pathing, 5 levels, fintech focus
+4. Agent proposed 5 competency categories with fintech focus → user approved
+5. Agent generated **30 skeleton skills** (10 per role) via single `add_rows` call → switched to Role view
+6. User approved skeleton → asked to generate proficiency levels per role
+7. Agent generated levels role by role: Data Engineer (50 rows) → Data Scientist (50 rows) → Product Manager (50 rows)
+8. Agent auto-deleted placeholder rows after each generation
+9. **Total: 30 skills, 150 rows across 3 roles**
+10. User said "save all" → `save_framework(mode: "plan")` → plan showed:
+    - Data Engineer: `status: "exists"` (v1 already in DB)
+    - Data Scientist: `status: "new"`
+    - Product Manager: `status: "new"`
+11. **BUG: Agent auto-chose `action: "update"` for Data Engineer without asking user** → overwrote the existing v1 framework
+12. User noticed: "erm, u overwrite my previous Data Engineer version?" → agent admitted the mistake
 
-**What to watch for:**
-- Does the agent ask clarifying questions about departments/roles?
-- Does it generate each role separately with role field populated?
-- Does save_framework correctly detect multiple roles and save each as its own versioned framework?
-- Performance with many rows being added progressively
-- Does the agent handle shared skills across roles (e.g. Communication appears in multiple roles)?
+**Key wins:**
+- Multi-role skeleton generation in single add_rows call — clean
+- Per-role proficiency generation worked well
+- Save plan correctly detected the existing Data Engineer framework
+- Haiku handled the complex multi-role flow cleanly
+
+**Bug found and fixed:**
+- **Save auto-update bug** — agent chose `action: "update"` without asking the user. Should have asked "Data Engineer already exists. Update or create v2?" Fixed in commit `32ad3a3`: SKILL.md and persistence-workflow now explicitly require presenting the plan, waiting for approval, and defaulting to `action: "create"` for existing roles.
+
+**Issues found:**
+- Finch timeout hit twice — agent unresponsive, user had to prompt "hello"
+- Agent still tried `get_uploaded_file` on FSF template in reference flow (not relevant here, but pattern persists)
+
+**Demo script (user messages to replicate):**
+1. "hello"
+2. "Help me create a skill framework for our entire company. We're a fintech with 3 roles: Product Manager, Data Engineer, and Data Scientist"
+3. "1. Career pathing & progression 2.Yes, 5 levels 3.infer based on typical fintech role 4.start fresh"
+4. "ok" (approve proposed structure)
+5. "yes" (approve skeleton)
+6. "u can generate proficiency levels per role, can do for Data Engineer first"
+7. "hello" (nudge after Finch timeout)
+8. "now Data Scientist"
+9. "great, i think can save all"
+10. (verify save plan before confirming — check for update vs create on existing roles)
 
 ### Scenario 6: Use template as REFERENCE (not direct load)
 
@@ -407,4 +437,5 @@ Two tool calls, clean execution. No issues.
 4. ~~**Scenario 8** (load → edit → save update in place) — DONE~~
 5. ~~**Scenario 6** (template as reference) — DONE~~
 6. ~~**Scenario 10** (access control) — DONE~~
-7. Remaining scenarios as time permits
+7. ~~**Scenario 5** (multi-role from scratch) — DONE~~
+8. Remaining scenarios as time permits
