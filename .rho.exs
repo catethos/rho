@@ -54,7 +54,7 @@
     max_steps: 50
   ],
   spreadsheet: [
-    model: "openrouter:deepseek/deepseek-chat-v3.1",
+    model: "openrouter:anthropic/claude-haiku-4.5",
     proficiency_model: "openrouter:openai/gpt-oss-120b",
     description: "Skill framework editor with guided intake and parallel generation",
     skills: [],
