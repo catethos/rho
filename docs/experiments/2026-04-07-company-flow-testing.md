@@ -358,13 +358,23 @@ Tested in a clean session after adding `set_default_version` tool:
 
 Two tool calls, clean execution. No issues.
 
-### Scenario 9: Browse roles on framework with NO roles
+### Scenario 9: Import fully structured Excel (all columns filled)
 
-**Priority: LOW** — edge case.
+**Priority: MEDIUM** — validates clean import with no generation needed.
 
-1. Create a framework where all rows have `role=""`
-2. Try `search_framework_roles` on it
-3. Agent should get empty list and fall back to `load_framework`
+**Test file:** `complete_framework_import.xlsx` — single sheet with columns: Role, Category, Cluster, Skill Name, Skill Description, Level, Level Name, Level Description. HR Manager (3 skills × 5 levels = 15 rows) + Finance Analyst (2 skills × 5 levels = 10 rows). Total: 25 rows.
+
+1. Open `?company=fintech_xyz`
+2. Upload `complete_framework_import.xlsx`
+3. "Import this"
+4. Agent should: detect all columns match, import all 25 rows as-is (no generation needed)
+5. "Save" → should save HR Manager and Finance Analyst as separate frameworks
+
+**What to watch for:**
+- Does the agent correctly map all columns (including Level, Level Name, Level Description)?
+- Does it import rows as-is without adding skeleton/placeholder rows?
+- Does it skip proficiency generation since levels are already provided?
+- Does save correctly detect 2 roles?
 
 ### Scenario 10: Access control — company user can't see other company's frameworks
 
