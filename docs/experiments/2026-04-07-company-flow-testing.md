@@ -185,13 +185,15 @@ Plus supporting SkillStore queries and SKILL.md intent detection updates.
 
 1. Open `?company=bank_abc` (empty spreadsheet)
 2. "Help me create a skill framework for our entire company, we're a fintech with 5 departments"
-3. Agent should: ask about roles/departments → generate multi-role framework
-4. Result: framework with multiple roles + company-wide skills (role="")
+3. Agent should: ask about roles/departments → generate role-by-role
+4. Result: multiple role frameworks saved individually (each with role="Role Name")
 
 **What to watch for:**
 - Does the agent ask clarifying questions about departments/roles?
-- Does it generate company-wide skills (role="") alongside role-specific ones?
+- Does it generate each role separately with role field populated?
+- Does save_framework correctly detect multiple roles and save each as its own versioned framework?
 - Performance with many rows being added progressively
+- Does the agent handle shared skills across roles (e.g. Communication appears in multiple roles)?
 
 ### Scenario 6: Use template as REFERENCE (not direct load)
 
