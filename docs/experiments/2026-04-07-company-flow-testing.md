@@ -307,12 +307,49 @@ Two tool calls, clean execution. No issues.
 
 ### Scenario 10: Access control — company user can't see other company's frameworks
 
-**Priority: MEDIUM** — security validation.
+**Status: PASS**
 
-1. Open `?company=bank_abc`
-2. "Show all frameworks"
-3. Should see: industry templates + bank_abc's frameworks only
-4. Should NOT see other companies' frameworks
+**Setup:** Switched model from DeepSeek v3.1 to **Haiku 4.5** (`openrouter:anthropic/claude-haiku-4.5`) for this test onwards.
+
+**Flow observed:**
+1. Opened `?company=fintech_xyz` → agent showed "No role frameworks yet" + FSF template
+2. Built a Data Engineer framework from scratch (10 fintech-focused skills, 50 proficiency levels)
+3. Saved as **Data Engineer 2026 v1** for fintech_xyz (ID: 249)
+4. Opened `?company=bank_abc` in new tab → asked "what company frameworks available?"
+5. `get_company_overview` returned: Compliance Officer, Data Scientist, Risk Analyst, Software Engineer — **all bank_abc's**
+6. User asked "could u access Data Engineer 2026 v1?" → Agent: **"I don't see a Data Engineer framework in your company's available frameworks"**
+
+**Key wins:**
+- Access control works — fintech_xyz's Data Engineer not visible to bank_abc
+- `get_company_overview` and `list_frameworks` correctly scoped by company_id
+- Industry templates (FSF) visible to both companies
+
+**Haiku 4.5 vs DeepSeek v3.1 improvements:**
+- Zero JSON format violations (DeepSeek had 2-3 per session)
+- Better instruction following — cleaner intake, proper confirmations
+- More conversational responses with good formatting
+- Still hits Finch timeouts but recovers more gracefully
+- Slightly higher cost (~$0.10 vs ~$0.02 per session) but much better quality
+
+**Demo script (fintech_xyz session):**
+1. "hey?"
+2. "I wanna build a Data Engineer framework, can u check the FsF template to see if there is any closest role for us to use as reference?"
+3. "i think load as reference ba"
+4. "any suggestion? i dont want to categories them as Power Skills or Prime Skills"
+5. "i think is 1. and i want the skills to be more relevant to Fintech"
+6. "1. from junior to principal. 2.more in Payments & Settlement. 3.AI. 4.career progression"
+7. "yes"
+8. "proceed"
+9. (wait for proficiency generation to complete, may need to prompt "hello?" due to Finch timeout)
+10. "great, then i think u can remove the Data Engineering that we reference from the spreadsheet?"
+11. "i think can save it"
+12. "should be 2026 version"
+13. (confirm save — may need "hello?" to nudge)
+14. "yup, set as default"
+
+**Demo script (bank_abc access control check):**
+1. "hey, can u check what are the company frameworks available?"
+2. "could u access Data Engineer 2026 v1 framework?"
 
 ### Scenario 11: Admin flow — save as industry template
 
@@ -367,5 +404,5 @@ Two tool calls, clean execution. No issues.
 3. ~~**Scenario 4** (from scratch, one role) — DONE~~
 4. ~~**Scenario 8** (load → edit → save update in place) — DONE~~
 5. ~~**Scenario 6** (template as reference) — DONE~~
-6. **Scenario 10** (access control) — security check
+6. ~~**Scenario 10** (access control) — DONE~~
 7. Remaining scenarios as time permits
