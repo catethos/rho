@@ -5,14 +5,19 @@
 1. User says "save this" or agent detects significant edits
 2. Call `save_framework(mode: "plan", year: CURRENT_YEAR)` — returns:
    - Roles found in spreadsheet (grouped by role column)
-   - For each role: new (first-ever → auto-default) or exists (update vs new version?)
+   - For each role: `status: "new"` (first-ever → auto-default) or `status: "exists"` (update vs new version?)
    - Mismatches (rows with empty or unexpected role values)
-3. Present the save plan to user:
-   - "Saving 2 roles for year 2026: Data Scientist (new, will be default), Risk Analyst (exists — update v1 or create v2?)"
-4. User confirms (may adjust year, choose update vs new version per role)
+3. **ALWAYS present the full plan to the user and WAIT for their response.** Do NOT call execute in the same turn as plan.
+   - For `status: "new"`: "Data Scientist → 2026 v1 (new, will be default)"
+   - For `status: "exists"`: **ASK the user**: "Data Engineer already exists (2026 v1, created Apr 9). Update it or create a new version (v2)?"
+   - **Default to `action: "create"` (new version) unless user explicitly says "update" or "overwrite".**
+   - **NEVER auto-choose "update" — overwriting destroys the previous version permanently.**
+4. User confirms and makes choices for each existing role
 5. Call `save_framework(mode: "execute", year: Y, decisions: "[...]")`
    - Each decision: `{"role_name": "X", "action": "create"|"update", "existing_id": N}`
-6. Confirm: "Saved 2 roles: Data Scientist 2026 v1 (default), Risk Analyst 2026 v2 (draft)"
+   - Use `action: "create"` for new roles AND for existing roles where user chose "new version"
+   - Use `action: "update"` ONLY when user explicitly said to overwrite
+6. Confirm: "Saved 3 roles: Data Scientist 2026 v1 (default), Data Engineer 2026 v2 (draft), Product Manager 2026 v1 (default)"
 
 ## Admin: Industry Template Save
 
