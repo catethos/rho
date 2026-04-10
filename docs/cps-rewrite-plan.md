@@ -1,3 +1,7 @@
+> **Not implemented.** This was an exploratory design doc. Rho's architecture
+> took a different path (Runner + TurnStrategy + Transformer pipeline).
+> Retained for reference only.
+
 # Rho CPS Rewrite Plan (v2)
 
 *A unified foundation for agent execution, probabilistic programming, and simulation*

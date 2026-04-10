@@ -1,3 +1,7 @@
+> **Superseded.** The agent loop is now `Rho.Runner` (outer loop) +
+> `Rho.TurnStrategy` (inner turn). `Rho.Lifecycle` is deleted;
+> Runner calls `PluginRegistry.apply_stage/3` directly. See CLAUDE.md.
+
 # Agent Loop Refactor — Funx Functional Patterns
 
 ## Problem

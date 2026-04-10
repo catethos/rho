@@ -17,7 +17,7 @@ defmodule Rho.Stdlib.Tools.FsEditTest do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
 
     assert {:ok, _} =
-             tool.execute.(%{"path" => "edit.txt", "old" => "line 2", "new" => "LINE TWO"})
+             tool.execute.(%{path: "edit.txt", old: "line 2", new: "LINE TWO"}, %{})
 
     content = File.read!(Path.join(@workspace, "edit.txt"))
     assert content =~ "LINE TWO"
@@ -27,7 +27,7 @@ defmodule Rho.Stdlib.Tools.FsEditTest do
   test "replaces only first occurrence when text appears multiple times" do
     File.write!(Path.join(@workspace, "dup.txt"), "foo\nfoo\nfoo")
     [tool] = FsEdit.tools([], %{workspace: @workspace})
-    assert {:ok, _} = tool.execute.(%{"path" => "dup.txt", "old" => "foo", "new" => "bar"})
+    assert {:ok, _} = tool.execute.(%{path: "dup.txt", old: "foo", new: "bar"}, %{})
     content = File.read!(Path.join(@workspace, "dup.txt"))
     assert content == "bar\nfoo\nfoo"
   end
@@ -36,12 +36,10 @@ defmodule Rho.Stdlib.Tools.FsEditTest do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
 
     assert {:ok, _} =
-             tool.execute.(%{
-               "path" => "edit.txt",
-               "old" => "line",
-               "new" => "LINE",
-               "start" => 3
-             })
+             tool.execute.(
+               %{path: "edit.txt", old: "line", new: "LINE", start: 3},
+               %{}
+             )
 
     content = File.read!(Path.join(@workspace, "edit.txt"))
     # Lines 0-2 unchanged, first "line" after line 3 is replaced
@@ -53,14 +51,17 @@ defmodule Rho.Stdlib.Tools.FsEditTest do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
 
     assert {:error, msg} =
-             tool.execute.(%{"path" => "edit.txt", "old" => "nonexistent", "new" => "x"})
+             tool.execute.(%{path: "edit.txt", old: "nonexistent", new: "x"}, %{})
 
     assert msg =~ "Text not found"
   end
 
   test "returns error for path escape" do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
-    assert {:error, msg} = tool.execute.(%{"path" => "../../bad.txt", "old" => "x", "new" => "y"})
+
+    assert {:error, msg} =
+             tool.execute.(%{path: "../../bad.txt", old: "x", new: "y"}, %{})
+
     assert msg =~ "Path escapes workspace"
   end
 end

@@ -7,54 +7,54 @@ defmodule RhoWeb.SessionLive do
 
   import RhoWeb.CoreComponents
   import RhoWeb.ChatComponents
-  import RhoWeb.AgentComponents
+
   import RhoWeb.SignalComponents
 
-  alias RhoWeb.SessionProjection
+  alias RhoWeb.Session.SessionCore
+  alias RhoWeb.Session.Shell
+  alias RhoWeb.Session.SignalRouter
+  alias RhoWeb.Session.Snapshot
+  alias RhoWeb.Session.Threads
+  alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   @impl true
   def mount(params, _session, socket) do
-    session_id =
-      case params["session_id"] do
-        nil ->
-          nil
+    session_id = SessionCore.validate_session_id(params["session_id"])
+    live_action = socket.assigns[:live_action]
+    active_page = :chat
 
-        sid ->
-          case Rho.Agent.Primary.validate_session_id(sid) do
-            :ok -> sid
-            {:error, _} -> nil
-          end
-      end
+    workspaces = determine_workspaces(live_action)
+    # Always init projection state for the full registry so closed workspaces can project
+    ws_states =
+      Map.new(WorkspaceRegistry.all(), fn mod -> {mod.key(), mod.projection().init()} end)
+
+    agent_avatar = SessionCore.load_agent_avatar()
+
+    initial_keys = Map.keys(workspaces)
+    all_keys = Enum.map(WorkspaceRegistry.all(), & &1.key())
+
+    shell = Shell.init(initial_keys, all_keys)
 
     socket =
       socket
-      |> assign(:active_page, :chat)
+      |> SessionCore.init(active_page: active_page)
       |> assign(:session_id, session_id)
-      |> assign(:agents, %{})
-      |> assign(:active_tab, nil)
-      |> assign(:tab_order, [])
+      |> assign(:workspaces, workspaces)
+      |> assign(:ws_states, ws_states)
+      |> assign(:active_workspace_id, List.first(initial_keys))
+      |> assign(:shell, shell)
+      |> assign(:agent_avatar, agent_avatar)
+      |> assign(:threads, [])
+      |> assign(:active_thread_id, nil)
       |> assign(:selected_agent_id, nil)
       |> assign(:timeline_open, false)
       |> assign(:drawer_open, false)
-      |> assign(:total_input_tokens, 0)
-      |> assign(:total_output_tokens, 0)
-      |> assign(:total_cost, 0.0)
-      |> assign(:total_cached_tokens, 0)
-      |> assign(:total_reasoning_tokens, 0)
-      |> assign(:step_input_tokens, 0)
-      |> assign(:step_output_tokens, 0)
-      |> assign(:inflight, %{})
-      |> assign(:signals, [])
-      |> assign(:connected, connected?(socket))
       |> assign(:show_new_agent, false)
       |> assign(:uploaded_files, [])
-      |> assign(:agent_messages, %{})
-      |> assign(:ui_streams, %{})
-      |> assign(:pending_response, MapSet.new())
-      |> assign(:user_avatar, load_avatar())
-      |> assign(:agent_avatar, load_agent_avatar())
       |> assign(:debug_mode, false)
       |> assign(:debug_projections, %{})
+      |> assign(:command_palette_open, false)
+      |> assign(:chat_context, %{})
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 5,
@@ -68,32 +68,69 @@ defmodule RhoWeb.SessionLive do
       )
 
     socket =
-      if connected?(socket) && session_id do
-        subscribe_and_hydrate(socket, session_id)
+      if connected?(socket) do
+        ensure_opts = session_ensure_opts(live_action)
+
+        socket =
+          if session_id do
+            socket
+            |> SessionCore.subscribe_and_hydrate(session_id, ensure_opts)
+          else
+            {sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+            SessionCore.subscribe_and_hydrate(socket, sid, ensure_opts)
+          end
+
+        # Restore snapshot + tail replay for catch-up
+        socket
+        |> restore_from_snapshot()
+        |> refresh_threads()
       else
         socket
       end
 
-    {:ok, socket, layout: {RhoWeb.Layouts, :app}}
+    {:ok, socket}
   end
 
   @impl true
-  def handle_params(%{"session_id" => sid}, _uri, socket) do
+  def handle_params(params, _uri, socket) do
+    live_action = socket.assigns.live_action
+    sid = params["session_id"]
+    new_workspaces = determine_workspaces(live_action)
+    current_sid = socket.assigns.session_id
+
+    # Extract context query params for chat handoff
+    chat_context = extract_chat_context(params)
+
     socket =
-      with :ok <- Rho.Agent.Primary.validate_session_id(sid),
-           true <- socket.assigns.session_id != sid && connected?(socket) do
-        socket
-        |> unsubscribe_current()
-        |> assign(:session_id, sid)
-        |> subscribe_and_hydrate(sid)
-      else
-        _ -> socket
+      cond do
+        # Different session: full resubscribe
+        sid && sid != current_sid && connected?(socket) ->
+          case Rho.Agent.Primary.validate_session_id(sid) do
+            :ok ->
+              active_page = :chat
+
+              socket
+              |> SessionCore.unsubscribe()
+              |> assign(:session_id, sid)
+              |> assign(:active_page, active_page)
+              |> assign(:chat_context, chat_context)
+              |> merge_workspaces(new_workspaces)
+              |> SessionCore.subscribe_and_hydrate(sid, session_ensure_opts(live_action))
+
+            _ ->
+              socket
+          end
+
+        # Same session, different live_action: add workspace, switch to it (no remount)
+        sid == current_sid || is_nil(sid) ->
+          socket
+          |> assign(:chat_context, chat_context)
+          |> merge_workspaces(new_workspaces)
+
+        true ->
+          socket
       end
 
-    {:noreply, socket}
-  end
-
-  def handle_params(_params, _uri, socket) do
     {:noreply, socket}
   end
 
@@ -117,18 +154,17 @@ defmodule RhoWeb.SessionLive do
     if not has_text and not has_images do
       {:noreply, socket}
     else
-      sid = socket.assigns.session_id
-
       {sid, socket} =
-        if sid do
-          {sid, socket}
+        if socket.assigns.session_id do
+          {socket.assigns.session_id, socket}
         else
-          new_sid = "lv_#{System.unique_integer([:positive])}"
-          {:ok, _pid} = Rho.Agent.Primary.ensure_started(new_sid)
-          socket = subscribe_and_hydrate(socket, new_sid)
-          socket = assign(socket, :session_id, new_sid)
+          ensure_opts = session_ensure_opts(socket.assigns.live_action)
+          {new_sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+          socket = SessionCore.subscribe_and_hydrate(socket, new_sid, ensure_opts)
           {new_sid, socket}
         end
+
+      _ = sid
 
       # Build message content: text + images
       submit_content =
@@ -139,7 +175,7 @@ defmodule RhoWeb.SessionLive do
           content
         end
 
-      # Add user message to the active tab's message list
+      # Add user message to the active agent's message list
       display_text =
         if has_images do
           img_label = "#{length(image_parts)} image#{if length(image_parts) > 1, do: "s"}"
@@ -148,46 +184,14 @@ defmodule RhoWeb.SessionLive do
           content
         end
 
-      target_id = socket.assigns.active_tab
-
-      user_msg = %{
-        id: "user_#{System.unique_integer([:positive])}",
-        role: :user,
-        type: :text,
-        content: display_text,
-        agent_id: target_id
-      }
-
-      socket = append_message(socket, user_msg)
-
-      # Submit to the active tab's agent (or primary if none)
-      result =
-        if target_id do
-          case Rho.Agent.Worker.whereis(target_id) do
-            nil -> {:error, "Agent not found: #{target_id}"}
-            pid -> Rho.Agent.Worker.submit(pid, submit_content)
-          end
-        else
-          pid = Rho.Agent.Primary.whereis(sid)
-          Rho.Agent.Worker.submit(pid, submit_content)
-        end
-
-      case result do
-        {:ok, _turn_id} ->
-          pending_id = target_id || primary_agent_id(sid)
-          pending = MapSet.put(socket.assigns.pending_response, pending_id)
-          {:noreply, assign(socket, :pending_response, pending)}
-
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to send: #{inspect(reason)}")}
-      end
+      SessionCore.send_message(socket, display_text, submit_content: submit_content)
     end
   end
 
   # --- Tab selection ---
 
   def handle_event("select_tab", %{"agent-id" => agent_id}, socket) do
-    {:noreply, assign(socket, :active_tab, agent_id)}
+    {:noreply, assign(socket, :active_agent_id, agent_id)}
   end
 
   # --- Agent sidebar selection (opens drawer) ---
@@ -207,22 +211,27 @@ defmodule RhoWeb.SessionLive do
     {:noreply, assign(socket, :show_new_agent, !socket.assigns.show_new_agent)}
   end
 
-  def handle_event("create_agent", %{"role" => role}, socket) do
+  def handle_event("create_agent", %{"role" => role} = params, socket) do
     # Auto-create session if none exists
     {sid, socket} =
       case socket.assigns.session_id do
         nil ->
-          new_sid = "lv_#{System.unique_integer([:positive])}"
-          {:ok, _pid} = Rho.Agent.Primary.ensure_started(new_sid)
-          socket = subscribe_and_hydrate(socket, new_sid)
-          socket = assign(socket, :session_id, new_sid)
+          {new_sid, socket} = SessionCore.ensure_session(socket, nil)
+          socket = SessionCore.subscribe_and_hydrate(socket, new_sid)
           {new_sid, socket}
 
         sid ->
           {sid, socket}
       end
 
-    agent_id = Rho.Agent.Primary.new_agent_id(Rho.Agent.Primary.agent_id(sid))
+    parent_id =
+      case params["parent_id"] do
+        nil -> Rho.Agent.Primary.agent_id(sid)
+        "" -> sid
+        id -> id
+      end
+
+    agent_id = Rho.Agent.Primary.new_agent_id(parent_id)
 
     role_atom =
       try do
@@ -233,7 +242,7 @@ defmodule RhoWeb.SessionLive do
 
     # Give each UI-created agent its own tape so conversations are independent
     memory_mod = Rho.Config.tape_module()
-    agent_ref = memory_mod.tape_ref(agent_id, File.cwd!())
+    agent_ref = memory_mod.memory_ref(agent_id, File.cwd!())
     memory_mod.bootstrap(agent_ref)
 
     {:ok, _pid} =
@@ -243,15 +252,50 @@ defmodule RhoWeb.SessionLive do
         workspace: File.cwd!(),
         agent_name: role_atom,
         role: role_atom,
-        tape_ref: agent_ref
+        tape_ref: agent_ref,
+        user_id: get_in(socket.assigns, [:current_user, Access.key(:id)]),
+        organization_id: get_in(socket.assigns, [:current_organization, Access.key(:id)])
       )
 
     socket =
       socket
       |> assign(:show_new_agent, false)
-      |> assign(:active_tab, agent_id)
+      |> assign(:active_agent_id, agent_id)
 
     {:noreply, socket}
+  end
+
+  def handle_event("remove_agent", %{"agent-id" => agent_id}, socket) do
+    primary_id = SessionCore.primary_agent_id(socket.assigns.session_id)
+
+    # Never allow removing the primary agent
+    if agent_id == primary_id do
+      {:noreply, socket}
+    else
+      # Stop the worker process if alive
+      case Rho.Agent.Worker.whereis(agent_id) do
+        pid when is_pid(pid) -> GenServer.stop(pid, :normal, 5_000)
+        nil -> :ok
+      end
+
+      Rho.Agent.Registry.unregister(agent_id)
+
+      new_tab_order = Enum.reject(socket.assigns.agent_tab_order, &(&1 == agent_id))
+      new_agents = Map.delete(socket.assigns.agents, agent_id)
+
+      active =
+        if socket.assigns.active_agent_id == agent_id,
+          do: primary_id,
+          else: socket.assigns.active_agent_id
+
+      socket =
+        socket
+        |> assign(:agent_tab_order, new_tab_order)
+        |> assign(:agents, new_agents)
+        |> assign(:active_agent_id, active)
+
+      {:noreply, socket}
+    end
   end
 
   def handle_event("validate_upload", _params, socket) do
@@ -267,7 +311,7 @@ defmodule RhoWeb.SessionLive do
               {:ok, {File.read!(path), entry.client_type || "image/png"}}
             end)
 
-          save_avatar(binary, media_type)
+          SessionCore.save_avatar(binary, media_type)
           data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
           assign(socket, :user_avatar, data_uri)
         else
@@ -284,6 +328,320 @@ defmodule RhoWeb.SessionLive do
     {:noreply, cancel_upload(socket, :images, ref)}
   end
 
+  # --- Workspace tab events ---
+
+  def handle_event("switch_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) and Map.has_key?(socket.assigns.workspaces, key) do
+      socket =
+        socket
+        |> assign(:active_workspace_id, key)
+        |> assign(:shell, Shell.clear_activity(socket.assigns.shell, key))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("collapse_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) and Map.has_key?(socket.assigns.shell.workspaces, key) do
+      chrome = get_in(socket.assigns.shell, [:workspaces, key])
+      shell = Shell.set_collapsed(socket.assigns.shell, key, !chrome.collapsed)
+      {:noreply, assign(socket, :shell, shell)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("pin_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) do
+      ws_mod = WorkspaceRegistry.get(key)
+      shell = socket.assigns.shell |> Shell.pin_workspace(key) |> Shell.show_chat()
+
+      # Add to open workspaces map if not already there
+      workspaces =
+        if ws_mod && !Map.has_key?(socket.assigns.workspaces, key) do
+          Map.put(socket.assigns.workspaces, key, ws_mod)
+        else
+          socket.assigns.workspaces
+        end
+
+      socket =
+        socket
+        |> assign(:shell, shell)
+        |> assign(:workspaces, workspaces)
+        |> assign(:active_workspace_id, key)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("dismiss_overlay", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) do
+      shell = Shell.dismiss_overlay(socket.assigns.shell, key)
+      {:noreply, assign(socket, :shell, shell)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("add_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    cond do
+      !is_atom(key) ->
+        {:noreply, socket}
+
+      Map.has_key?(socket.assigns.workspaces, key) ->
+        # Already open — just switch to it
+        {:noreply, assign(socket, :active_workspace_id, key)}
+
+      true ->
+        case WorkspaceRegistry.get(key) do
+          nil ->
+            {:noreply, socket}
+
+          ws_mod ->
+            shell =
+              socket.assigns.shell
+              |> Shell.add_workspace(key)
+              |> Shell.show_chat()
+
+            socket =
+              socket
+              |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
+              |> assign(
+                :ws_states,
+                Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
+              )
+              |> assign(:active_workspace_id, key)
+              |> assign(:shell, shell)
+
+            # Hydrate from tape if session exists
+            socket =
+              if socket.assigns.session_id do
+                hydrate_workspace(socket, socket.assigns.session_id, key, ws_mod)
+              else
+                socket
+              end
+
+            {:noreply, socket}
+        end
+    end
+  end
+
+  def handle_event("close_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) and Map.has_key?(socket.assigns.workspaces, key) do
+      new_workspaces = Map.delete(socket.assigns.workspaces, key)
+      new_ws_states = Map.delete(socket.assigns.ws_states, key)
+
+      # If we closed the active tab, switch to next
+      active =
+        if socket.assigns.active_workspace_id == key do
+          new_workspaces |> Map.keys() |> List.first()
+        else
+          socket.assigns.active_workspace_id
+        end
+
+      socket =
+        socket
+        |> assign(:workspaces, new_workspaces)
+        |> assign(:ws_states, new_ws_states)
+        |> assign(:active_workspace_id, active)
+        |> assign(:shell, Shell.remove_workspace(socket.assigns.shell, key))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_chat", _params, socket) do
+    {:noreply, assign(socket, :shell, Shell.toggle_chat(socket.assigns.shell))}
+  end
+
+  def handle_event("switch_thread", %{"thread_id" => thread_id}, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+
+    # 1. Save current thread's snapshot
+    current_thread = Threads.active(sid, workspace)
+
+    if current_thread do
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+    end
+
+    # 2. Switch active thread in registry
+    case Threads.switch(sid, workspace, thread_id) do
+      :ok ->
+        target = Threads.get(sid, workspace, thread_id)
+
+        # 3. Stop the current primary agent
+        Rho.Agent.Primary.stop(sid)
+
+        # 4. Unsubscribe from current signals
+        socket = SessionCore.unsubscribe(socket)
+
+        # 5. Restart agent with new tape
+        start_opts = [tape_ref: target["tape_name"]]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+        # 6. Load target thread's snapshot (or start fresh)
+        socket =
+          case Snapshot.load(sid, workspace, thread_id: thread_id) do
+            {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
+            _ -> socket
+          end
+
+        {:noreply, refresh_threads(socket)}
+
+      {:error, _} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("fork_from_here", %{"message_index" => idx_str}, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+    tape_module = Rho.Config.tape_module()
+
+    # Ensure thread registry exists before forking
+    primary_id = Rho.Agent.Primary.agent_id(sid)
+
+    case Rho.Agent.Registry.get(primary_id) do
+      %{tape_ref: tape_name} when is_binary(tape_name) ->
+        Threads.init(sid, workspace, tape_name: tape_name)
+
+      _ ->
+        :ok
+    end
+
+    # message_index is a 0-based index into the active agent's message list
+    fork_point =
+      case Integer.parse(idx_str) do
+        {n, _} when n >= 0 -> n
+        _ -> nil
+      end
+
+    # Save snapshot of current thread before forking
+    current_thread = Threads.active(sid, workspace)
+
+    if current_thread do
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+    end
+
+    # Capture messages up to fork point before switching
+    active_agent_id = socket.assigns.active_agent_id
+    current_msgs = Map.get(socket.assigns.agent_messages, active_agent_id, [])
+
+    forked_msgs =
+      if fork_point do
+        Enum.take(current_msgs, fork_point)
+      else
+        current_msgs
+      end
+
+    case Threads.fork_thread(sid, workspace, tape_module, fork_point: fork_point) do
+      {:ok, thread} ->
+        # Restart agent on fork tape
+        Rho.Agent.Primary.stop(sid)
+        socket = SessionCore.unsubscribe(socket)
+        start_opts = [tape_ref: thread["tape_name"]]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+        # Restore forked messages into the new thread's agent
+        new_agent_id = socket.assigns.active_agent_id
+        agent_messages = Map.put(socket.assigns.agent_messages, new_agent_id, forked_msgs)
+        socket = assign(socket, :agent_messages, agent_messages)
+
+        # Persist the forked snapshot so it survives thread switches
+        fork_snapshot = Snapshot.build_snapshot(socket)
+        Snapshot.save(sid, workspace, fork_snapshot, thread_id: thread["id"])
+
+        {:noreply, refresh_threads(socket)}
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("fork_from_here failed: #{inspect(reason)}")
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("new_blank_thread", _params, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+    tape_module = Rho.Config.tape_module()
+
+    # Create a fresh tape for the blank thread
+    tape_name = "#{sid}_thread_#{:erlang.unique_integer([:positive])}"
+    tape_module.bootstrap(tape_name)
+
+    case Threads.create(sid, workspace, %{"name" => "New Thread", "tape_name" => tape_name}) do
+      {:ok, thread} ->
+        # Save current snapshot, then switch
+        current_thread = Threads.active(sid, workspace)
+
+        if current_thread do
+          snapshot = Snapshot.build_snapshot(socket)
+          Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+        end
+
+        :ok = Threads.switch(sid, workspace, thread["id"])
+
+        Rho.Agent.Primary.stop(sid)
+        socket = SessionCore.unsubscribe(socket)
+        start_opts = [tape_ref: tape_name]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+        {:noreply, refresh_threads(socket)}
+
+      {:error, _} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_thread", %{"thread_id" => thread_id}, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+
+    # If closing the active thread, switch to Main first
+    is_active = socket.assigns.active_thread_id == thread_id
+
+    socket =
+      if is_active do
+        Threads.switch(sid, workspace, "thread_main")
+        main = Threads.get(sid, workspace, "thread_main")
+
+        Rho.Agent.Primary.stop(sid)
+        socket = SessionCore.unsubscribe(socket)
+        start_opts = [tape_ref: main["tape_name"]]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+        case Snapshot.load(sid, workspace, thread_id: "thread_main") do
+          {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
+          _ -> socket
+        end
+      else
+        socket
+      end
+
+    Threads.delete(sid, workspace, thread_id)
+    {:noreply, refresh_threads(socket)}
+  end
+
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, :drawer_open, false)}
   end
@@ -296,6 +654,37 @@ defmodule RhoWeb.SessionLive do
     {:noreply, assign(socket, :debug_mode, !socket.assigns.debug_mode)}
   end
 
+  def handle_event("toggle_command_palette", _params, socket) do
+    {:noreply, assign(socket, :command_palette_open, !socket.assigns.command_palette_open)}
+  end
+
+  def handle_event("escape_pressed", _params, socket) do
+    shell = socket.assigns.shell
+
+    socket =
+      if shell.focus_workspace_id do
+        assign(socket, :shell, Shell.exit_focus(shell))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("enter_focus", _params, socket) do
+    active = socket.assigns.active_workspace_id
+
+    if active do
+      {:noreply, assign(socket, :shell, Shell.enter_focus(socket.assigns.shell, active))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("exit_focus", _params, socket) do
+    {:noreply, assign(socket, :shell, Shell.exit_focus(socket.assigns.shell))}
+  end
+
   def handle_event("stop_session", _params, socket) do
     if socket.assigns.session_id do
       Rho.Agent.Primary.stop(socket.assigns.session_id)
@@ -304,79 +693,205 @@ defmodule RhoWeb.SessionLive do
     {:noreply, socket}
   end
 
+  # --- Workspace-delegated handle_info ---
+
+  @impl true
+  def handle_info({:data_table_get_table, _, _} = msg, socket) do
+    dispatch_to_workspace(socket, RhoWeb.Workspaces.DataTable, msg)
+  end
+
+  # --- Shell activity pulse decay ---
+
+  def handle_info({:clear_pulse, key}, socket) do
+    {:noreply, assign(socket, :shell, Shell.clear_pulse(socket.assigns.shell, key))}
+  end
+
+  def handle_info({:command_palette_action, action_id}, socket) do
+    socket = assign(socket, :command_palette_open, false)
+
+    socket =
+      case action_id do
+        "toggle_chat" ->
+          assign(socket, :shell, Shell.toggle_chat(socket.assigns.shell))
+
+        "enter_focus" ->
+          active = socket.assigns.active_workspace_id
+
+          if active,
+            do: assign(socket, :shell, Shell.enter_focus(socket.assigns.shell, active)),
+            else: socket
+
+        "exit_focus" ->
+          assign(socket, :shell, Shell.exit_focus(socket.assigns.shell))
+
+        "open_workspace:" <> key_str ->
+          key = safe_to_existing_atom(key_str)
+          if is_atom(key), do: assign(socket, :active_workspace_id, key), else: socket
+
+        "switch_thread:" <> thread_id ->
+          # Delegate to existing handle_event
+          {:noreply, socket} = handle_event("switch_thread", %{"thread_id" => thread_id}, socket)
+          socket
+
+        _ ->
+          socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(:close_command_palette, socket) do
+    {:noreply, assign(socket, :command_palette_open, false)}
+  end
+
+  # --- Workspace state write-back from LiveComponents ---
+
+  def handle_info({:ws_state_update, key, new_state}, socket) do
+    {:noreply, SignalRouter.write_ws_state(socket, key, new_state)}
+  end
+
+  def handle_info({:lens_detail_request, _} = msg, socket) do
+    dispatch_to_workspace(socket, RhoWeb.Workspaces.LensDashboard, msg)
+  end
+
+  # --- Chatroom @mention routing ---
+
+  def handle_info({:chatroom_mention, target, text}, socket) do
+    sid = socket.assigns.session_id
+
+    if sid do
+      # Resolve target: try as agent_id first, then as role
+      target_agent_id =
+        case Rho.Agent.Worker.whereis(target) do
+          pid when is_pid(pid) ->
+            target
+
+          nil ->
+            role_atom =
+              try do
+                String.to_existing_atom(target)
+              rescue
+                ArgumentError -> nil
+              end
+
+            case role_atom && Rho.Agent.Registry.find_by_role(sid, role_atom) do
+              [agent | _] -> agent.agent_id
+              _ -> nil
+            end
+        end
+
+      if target_agent_id do
+        # Temporarily switch active_agent_id so send_message routes to the target
+        prev_agent_id = socket.assigns.active_agent_id
+        socket = assign(socket, :active_agent_id, target_agent_id)
+
+        case SessionCore.send_message(socket, text) do
+          {:noreply, socket} ->
+            {:noreply, assign(socket, :active_agent_id, prev_agent_id)}
+        end
+      else
+        {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:chatroom_broadcast, message}, socket) do
+    sid = socket.assigns.session_id
+
+    if sid do
+      # Send to the primary agent (broadcast appears in chatroom via signal bus)
+      SessionCore.send_message(socket, message)
+    else
+      {:noreply, socket}
+    end
+  end
+
   # --- Signal bus events ---
 
   @impl true
   def handle_info({:signal, %Jido.Signal{type: type, data: data} = signal}, socket) do
-    # Filter: only process signals for our session
     sid = socket.assigns.session_id
 
-    if signal_for_session?(data, sid) do
+    if SessionCore.signal_for_session?(data, sid) do
       correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
       data = Map.put(data, :correlation_id, correlation_id)
-      {:noreply, SessionProjection.project(socket, %{type: type, data: data})}
+      # Route through full registry so closed workspaces also project
+      {:noreply, SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())}
     else
       {:noreply, socket}
     end
   end
 
   def handle_info({:ui_spec_tick, message_id}, socket) do
-    ui_streams = socket.assigns.ui_streams
-
-    case Map.get(ui_streams, message_id) do
-      %{queue: [spec | rest]} = stream ->
-        socket = update_ui_message(socket, message_id, spec, true)
-        stream = %{stream | queue: rest}
-
-        if rest == [] and stream.final_spec do
-          # Queue drained and final spec ready — finalize
-          socket = update_ui_message(socket, message_id, stream.final_spec, false)
-          {:noreply, assign(socket, :ui_streams, Map.delete(ui_streams, message_id))}
-        else
-          ui_streams = Map.put(ui_streams, message_id, stream)
-          Process.send_after(self(), {:ui_spec_tick, message_id}, 40)
-          {:noreply, assign(socket, :ui_streams, ui_streams)}
-        end
-
-      %{queue: [], final_spec: final} when not is_nil(final) ->
-        socket = update_ui_message(socket, message_id, final, false)
-        {:noreply, assign(socket, :ui_streams, Map.delete(ui_streams, message_id))}
-
-      _ ->
-        {:noreply, socket}
-    end
+    SessionCore.handle_ui_spec_tick(socket, message_id)
   end
 
   def handle_info(_msg, socket) do
     {:noreply, socket}
   end
 
+  @impl true
+  def terminate(_reason, socket) do
+    if sid = socket.assigns[:session_id] do
+      # Save UI snapshot for resume
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, File.cwd!(), snapshot)
+
+      # Unregister data table PID if active
+      Rho.Stdlib.Plugins.DataTable.unregister(sid)
+    end
+
+    :ok
+  end
+
   # --- Render ---
 
   @impl true
   def render(assigns) do
-    active_tab = assigns.active_tab
-    active_messages = Map.get(assigns.agent_messages, active_tab, [])
-    active_agent = if active_tab, do: Map.get(assigns.agents, active_tab)
+    active_id = assigns.active_agent_id
+    active_messages = Map.get(assigns.agent_messages, active_id, [])
+    active_agent = if active_id, do: Map.get(assigns.agents, active_id)
 
-    # Filter inflight to only show streaming for the active tab
     active_inflight =
-      if active_tab do
-        Map.take(assigns.inflight, [active_tab])
+      if active_id do
+        Map.take(assigns.inflight, [active_id])
       else
-        # No tab selected — show primary agent's inflight
-        primary_id = primary_agent_id(assigns.session_id)
+        primary_id = SessionCore.primary_agent_id(assigns.session_id)
         Map.take(assigns.inflight, [primary_id])
       end
+
+    has_workspaces = map_size(assigns.workspaces) > 0
+    chat_mode = chat_panel_mode(assigns)
+    overlay_keys = Shell.overlay_keys(assigns.shell)
+
+    overlays =
+      Enum.map(overlay_keys, fn key ->
+        {key, WorkspaceRegistry.get(key)}
+      end)
+      |> Enum.reject(fn {_key, mod} -> is_nil(mod) end)
+
+    shared_ws_assigns = %{
+      session_id: assigns.session_id,
+      agents: assigns.agents,
+      streaming: MapSet.size(assigns.pending_response) > 0,
+      total_cost: assigns.total_cost
+    }
 
     assigns =
       assigns
       |> assign(:active_messages, active_messages)
       |> assign(:active_agent, active_agent)
       |> assign(:active_inflight, active_inflight)
+      |> assign(:has_workspaces, has_workspaces)
+      |> assign(:chat_mode, chat_mode)
+      |> assign(:overlays, overlays)
+      |> assign(:available_workspaces, available_workspaces(assigns))
+      |> assign(:shared_ws_assigns, shared_ws_assigns)
 
     ~H"""
-    <div class={"session-layout #{if @drawer_open, do: "drawer-pinned", else: ""} #{if @debug_mode, do: "debug-mode", else: ""}"}>
+    <div id="session-root" phx-hook="CommandPalette" class={"session-layout #{if @has_workspaces, do: "workspace-mode", else: ""} #{if @drawer_open, do: "drawer-pinned", else: ""} #{if @debug_mode, do: "debug-mode", else: ""} #{if @shell.focus_workspace_id, do: "focus-mode", else: ""}"}>
       <.session_header
         session_id={@session_id}
         agents={@agents}
@@ -392,42 +907,66 @@ defmodule RhoWeb.SessionLive do
         debug_mode={@debug_mode}
       />
 
+      <.workspace_tab_bar
+        :if={@has_workspaces}
+        workspaces={@workspaces}
+        active={@active_workspace_id}
+        available={@available_workspaces}
+        shell={@shell}
+        pending={MapSet.size(@pending_response) > 0}
+      />
+
       <div class="main-panels">
-        <div class="chat-panel">
-          <.tab_bar
-            tab_order={@tab_order}
-            agents={@agents}
-            active_tab={@active_tab}
-            inflight={@inflight}
+        <%!-- Workspace panels — all render continuously, only active is visible --%>
+        <%= for {key, _ws} <- @workspaces do %>
+          <% ws_mod = WorkspaceRegistry.get(key) %>
+          <% ws_assigns = ws_mod.component_assigns(@ws_states[key], @shared_ws_assigns) %>
+          <.live_component
+            module={ws_mod.component()}
+            id={"workspace-#{key}"}
+            class={if key == @active_workspace_id, do: "active", else: "hidden"}
+            {ws_assigns}
           />
-          <.chat_feed
-            messages={@active_messages}
-            session_id={@session_id || ""}
-            inflight={@active_inflight}
-            active_tab={@active_tab || ""}
-            user_avatar={@user_avatar}
-            agent_avatar={@agent_avatar}
-            pending={MapSet.member?(@pending_response, @active_tab || primary_agent_id(@session_id))}
-          />
-          <.chat_input_with_upload
-            session_id={@session_id || ""}
-            disabled={is_nil(@session_id) && !is_connected?(assigns)}
-            uploads={@uploads}
-            active_agent={@active_agent}
-          />
+        <% end %>
+
+        <%!-- Empty state when no workspaces are pinned --%>
+        <div :if={!@has_workspaces} class="workspace-empty-state">
+          <div class="workspace-empty-content">
+            <p class="workspace-empty-hint">Workspace panels will appear here</p>
+          </div>
         </div>
 
-        <.agent_sidebar agents={@agents} selected_agent_id={@selected_agent_id} />
+        <div :if={@has_workspaces} id="panel-resizer" phx-hook="PanelResizer" class="panel-resizer"></div>
+
+        <.chat_side_panel
+          chat_mode={@chat_mode}
+          compact={@has_workspaces}
+          messages={@active_messages}
+          session_id={@session_id || ""}
+          inflight={@active_inflight}
+          active_agent_id={@active_agent_id || ""}
+          user_avatar={@user_avatar}
+          agent_avatar={@agent_avatar}
+          pending={MapSet.member?(@pending_response, @active_agent_id || SessionCore.primary_agent_id(@session_id))}
+          agents={@agents}
+          agent_tab_order={@agent_tab_order}
+          chat_status={chat_status(assigns)}
+          uploads={@uploads}
+          active_agent={@active_agent}
+          connected={@connected}
+          threads={@threads}
+          active_thread_id={@active_thread_id}
+        />
 
         <.debug_panel
           :if={@debug_mode}
           projections={@debug_projections}
-          active_tab={@active_tab}
+          active_agent_id={@active_agent_id}
           session_id={@session_id}
         />
       </div>
 
-      <.new_agent_dialog :if={@show_new_agent} />
+      <.new_agent_dialog :if={@show_new_agent} session_id={@session_id} />
 
       <.signal_timeline open={@timeline_open} />
 
@@ -438,6 +977,44 @@ defmodule RhoWeb.SessionLive do
         agent={@agents[@selected_agent_id]}
         session_id={@session_id || ""}
       />
+
+      <%!-- Workspace overlays — slide-in panels for auto-opened workspaces --%>
+      <.workspace_overlay
+        :for={{key, ws_mod} <- @overlays}
+        key={key}
+        label={ws_mod.label()}
+        ws_mod={ws_mod}
+        ws_state={@ws_states[key]}
+        shared_ws_assigns={@shared_ws_assigns}
+      />
+      <div
+        :if={@overlays != []}
+        class="workspace-overlay-backdrop is-visible"
+        phx-click="dismiss_overlay"
+        phx-value-workspace={@overlays |> List.first() |> elem(0)}
+      />
+
+      <%!-- Command palette --%>
+      <.live_component
+        module={RhoWeb.CommandPaletteComponent}
+        id="command-palette-component"
+        open={@command_palette_open}
+        workspaces={@workspaces}
+        shell={@shell}
+        threads={@threads}
+      />
+
+      <%!-- Floating chat pill in focus mode --%>
+      <button
+        :if={@shell.focus_workspace_id}
+        class="chat-floating-pill"
+        phx-click="exit_focus"
+      >
+        Chat
+        <span :if={Shell.total_unseen_chat_count(@shell) > 0} class="pill-unseen-badge">
+          <%= Shell.total_unseen_chat_count(@shell) %>
+        </span>
+      </button>
 
       <div :if={!@connected} class="reconnect-banner">
         Reconnecting...
@@ -517,106 +1094,367 @@ defmodule RhoWeb.SessionLive do
 
   # --- Tab bar ---
 
-  attr(:tab_order, :list, required: true)
+  attr(:agent_tab_order, :list, required: true)
   attr(:agents, :map, required: true)
-  attr(:active_tab, :string, default: nil)
+  attr(:active_agent_id, :string, default: nil)
   attr(:inflight, :map, required: true)
 
   defp tab_bar(assigns) do
     ~H"""
-    <div class="chat-tab-bar" :if={length(@tab_order) > 0}>
-      <button
-        :for={agent_id <- @tab_order}
-        class={"chat-tab #{if @active_tab == agent_id, do: "active", else: ""} #{if agent_stopped?(@agents, agent_id), do: "stopped", else: ""}"}
-        phx-click="select_tab"
-        phx-value-agent-id={agent_id}
+    <div class="chat-tab-bar" :if={length(@agent_tab_order) > 0}>
+      <div
+        :for={agent_id <- @agent_tab_order}
+        class={"chat-tab #{if @active_agent_id == agent_id, do: "active", else: ""} #{if agent_stopped?(@agents, agent_id), do: "stopped", else: ""}"}
       >
-        <.status_dot :if={@agents[agent_id]} status={@agents[agent_id].status} />
-        <span class="tab-label"><%= tab_label(@agents, agent_id) %></span>
-        <span :if={Map.has_key?(@inflight, agent_id)} class="tab-typing">...</span>
+        <button class="tab-select-btn" phx-click="select_tab" phx-value-agent-id={agent_id}>
+          <.status_dot :if={@agents[agent_id]} status={@agents[agent_id].status} />
+          <span class="tab-label"><%= tab_label(@agents, agent_id) %></span>
+          <span :if={Map.has_key?(@inflight, agent_id)} class="tab-typing">...</span>
+        </button>
+        <button
+          :if={!is_primary_tab?(agent_id)}
+          class="tab-close-btn"
+          phx-click="remove_agent"
+          phx-value-agent-id={agent_id}
+          title="Remove agent"
+        >×</button>
+      </div>
+    </div>
+    """
+  end
+
+  defp is_primary_tab?(agent_id) do
+    case String.split(agent_id, "/") do
+      [_sid, "primary"] -> true
+      _ -> false
+    end
+  end
+
+  # --- Workspace tab bar ---
+
+  attr(:workspaces, :map, required: true)
+  attr(:active, :atom, default: nil)
+  attr(:available, :map, default: %{})
+  attr(:shell, :map, required: true)
+  attr(:pending, :boolean, default: false)
+
+  defp workspace_tab_bar(assigns) do
+    chat_expanded = assigns.shell.chat_mode == :expanded
+
+    assigns = assign(assigns, :chat_expanded, chat_expanded)
+
+    ~H"""
+    <div class="workspace-tab-bar">
+      <div class="workspace-tabs">
+        <button
+          :for={{key, ws} <- @workspaces}
+          class={"workspace-tab #{if @active == key, do: "active", else: ""}"}
+          phx-click="switch_workspace"
+          phx-value-workspace={key}
+        >
+          <span class="workspace-tab-label"><%= ws.label() %></span>
+          <% chrome = @shell.workspaces[key] %>
+          <span :if={chrome && chrome.pulse} class="workspace-tab-activity">
+            <span class="workspace-tab-pulse"></span>
+          </span>
+          <span :if={chrome && chrome.unseen_count > 0} class="workspace-tab-badge">
+            <%= chrome.unseen_count %>
+          </span>
+          <span
+            class="workspace-tab-close"
+            phx-click="close_workspace"
+            phx-value-workspace={key}
+          >
+            &times;
+          </span>
+        </button>
+      </div>
+
+      <div class="workspace-tab-actions">
+        <button
+          class={"workspace-tab-toggle-chat #{if @chat_expanded, do: "active", else: ""}"}
+          phx-click="toggle_chat"
+          title={if @chat_expanded, do: "Hide chat", else: "Show chat"}
+        >
+          Chat
+        </button>
+
+        <div :if={map_size(@available) > 0} class="workspace-add-picker">
+          <button class="workspace-add-btn" phx-click={Phoenix.LiveView.JS.toggle(to: "#workspace-picker-dropdown")}>
+            +
+          </button>
+          <div id="workspace-picker-dropdown" class="workspace-picker-dropdown" style="display: none;">
+            <button
+              :for={{key, ws} <- @available}
+              class="workspace-picker-item"
+              phx-click="add_workspace"
+              phx-value-workspace={key}
+            >
+              <%= ws.label() %>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # --- Workspace overlay ---
+
+  attr(:key, :atom, required: true)
+  attr(:label, :string, required: true)
+  attr(:ws_mod, :any, required: true)
+  attr(:ws_state, :map, default: nil)
+  attr(:shared_ws_assigns, :map, required: true)
+
+  defp workspace_overlay(assigns) do
+    overlay_assigns =
+      assigns.ws_mod.component_assigns(assigns.ws_state, assigns.shared_ws_assigns)
+
+    assigns = assign(assigns, :overlay_assigns, overlay_assigns)
+
+    ~H"""
+    <div class="workspace-overlay is-open">
+      <div class="workspace-overlay-header">
+        <span class="workspace-overlay-title"><%= @label %></span>
+        <div class="workspace-overlay-actions">
+          <button
+            class="workspace-overlay-btn pin-btn"
+            phx-click="pin_workspace"
+            phx-value-workspace={@key}
+            title="Pin to tab bar"
+          >
+            Pin
+          </button>
+          <button
+            class="workspace-overlay-close"
+            phx-click="dismiss_overlay"
+            phx-value-workspace={@key}
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <div class="workspace-overlay-body">
+        <.live_component
+          :if={@ws_state}
+          module={@ws_mod.component()}
+          id={"overlay-#{@key}"}
+          class="active"
+          {@overlay_assigns}
+        />
+      </div>
+    </div>
+    """
+  end
+
+  # --- Thread picker ---
+
+  attr(:threads, :list, required: true)
+  attr(:active_thread_id, :string, default: nil)
+
+  defp thread_picker(assigns) do
+    ~H"""
+    <div :if={length(@threads) > 0} class="thread-picker">
+      <div class="thread-picker-tabs">
+        <div
+          :for={thread <- @threads}
+          class={"thread-tab #{if thread["id"] == @active_thread_id, do: "active", else: ""}"}
+        >
+          <button
+            class="thread-tab-btn"
+            phx-click="switch_thread"
+            phx-value-thread_id={thread["id"]}
+            title={thread["summary"] || thread["name"]}
+          >
+            <span class="thread-tab-label"><%= thread["name"] %></span>
+          </button>
+          <button
+            :if={thread["id"] != "thread_main"}
+            class="thread-tab-close"
+            phx-click="close_thread"
+            phx-value-thread_id={thread["id"]}
+            title="Close thread"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <button class="thread-new-btn" phx-click="new_blank_thread" title="New thread">
+        +
       </button>
     </div>
     """
   end
 
-  # --- Chat input with image upload ---
+  # --- Chat side panel ---
 
+  attr(:chat_mode, :atom, default: :expanded)
+  attr(:compact, :boolean, default: false)
+  attr(:messages, :list, required: true)
   attr(:session_id, :string, required: true)
-  attr(:disabled, :boolean, default: false)
+  attr(:inflight, :map, required: true)
+  attr(:active_agent_id, :string, required: true)
+  attr(:user_avatar, :string, default: nil)
+  attr(:agent_avatar, :string, default: nil)
+  attr(:pending, :boolean, default: false)
+  attr(:agents, :map, required: true)
+  attr(:agent_tab_order, :list, required: true)
+  attr(:chat_status, :atom, default: :idle)
   attr(:uploads, :any, required: true)
   attr(:active_agent, :map, default: nil)
+  attr(:connected, :boolean, default: true)
+  attr(:threads, :list, default: [])
+  attr(:active_thread_id, :string, default: nil)
 
-  defp chat_input_with_upload(assigns) do
+  defp chat_side_panel(assigns) do
+    panel_class =
+      case assigns.chat_mode do
+        :expanded -> "dt-chat-panel"
+        :collapsed -> "dt-chat-panel is-collapsed"
+        :hidden -> "dt-chat-panel is-hidden"
+      end
+
+    assigns = assign(assigns, :panel_class, panel_class)
+
     ~H"""
-    <div class="chat-input-area">
-      <div :if={@uploads.images.entries != []} class="upload-previews">
-        <div :for={entry <- @uploads.images.entries} class="upload-preview">
-          <.live_img_preview entry={entry} width="60" height="60" />
-          <button type="button" class="upload-remove" phx-click="cancel_upload" phx-value-ref={entry.ref}>&times;</button>
-          <div :if={entry.progress > 0 and entry.progress < 100} class="upload-progress">
-            <%= entry.progress %>%
-          </div>
-        </div>
+    <div class={@panel_class}>
+      <div class="dt-chat-header">
+        <span class="dt-chat-title">Assistant</span>
+        <.status_dot :if={@chat_status != :idle} status={@chat_status} />
+        <.thread_picker threads={@threads} active_thread_id={@active_thread_id} />
       </div>
-      <form id="chat-input-form" phx-submit="send_message" phx-change="validate_upload" class="chat-input-form">
-        <label class="btn-attach" title="Attach images">
-          <.live_file_input upload={@uploads.images} class="sr-only" />
-          &#128247;
-        </label>
-        <textarea
-          name="content"
-          id="chat-input"
-          placeholder={"Message #{if @active_agent, do: @active_agent.role, else: "agent"}..."}
-          rows="1"
-          disabled={@disabled}
-          phx-hook="AutoResize"
-        ></textarea>
-        <button type="submit" class="btn-send" disabled={@disabled}>Send</button>
-      </form>
+
+      <.tab_bar
+        :if={length(@agent_tab_order) > 1}
+        agent_tab_order={@agent_tab_order}
+        agents={@agents}
+        active_agent_id={@active_agent_id}
+        inflight={@inflight}
+      />
+
+      <.chat_feed
+        messages={@messages}
+        session_id={@session_id}
+        inflight={@inflight}
+        active_agent_id={@active_agent_id}
+        user_avatar={@user_avatar}
+        agent_avatar={@agent_avatar}
+        pending={@pending}
+      />
+
+      <div class="chat-input-area">
+        <form id="chat-input-form" phx-submit="send_message" class="chat-input-form">
+          <textarea
+            name="content"
+            id="chat-input"
+            placeholder="Ask to generate skills, edit rows, etc..."
+            rows="1"
+            phx-hook="AutoResize"
+          ></textarea>
+          <button type="submit" class="btn-send">Send</button>
+        </form>
+      </div>
     </div>
     """
   end
 
   # --- New agent dialog ---
 
+  attr(:session_id, :string, default: nil)
+
   defp new_agent_dialog(assigns) do
     roles = Rho.CLI.Config.agent_names()
-    assigns = assign(assigns, :roles, roles)
+
+    # Build parent options from live agents in the session
+    parent_options =
+      if assigns.session_id do
+        Rho.Agent.Registry.list_all(assigns[:session_id])
+        |> Enum.map(fn info -> {info.agent_id, tab_label_from_info(info)} end)
+        |> Enum.sort_by(fn {id, _} -> id end)
+      else
+        []
+      end
+
+    assigns =
+      assigns
+      |> assign(:roles, roles)
+      |> assign(:parent_options, parent_options)
 
     ~H"""
-    <div class="modal-overlay" phx-click="toggle_new_agent">
+    <div class="modal-overlay">
       <div class="modal-dialog" phx-click-away="toggle_new_agent">
         <h3>Create New Agent</h3>
-        <div class="agent-role-list">
-          <button
-            :for={role <- @roles}
-            class="agent-role-btn"
-            phx-click="create_agent"
-            phx-value-role={role}
-          >
-            <%= role %>
-          </button>
-        </div>
+
+        <form phx-submit="create_agent" phx-hook="ParentPicker" id="new-agent-form">
+          <div :if={length(@parent_options) > 0} class="agent-parent-picker">
+            <label class="agent-parent-label">Parent agent</label>
+            <input type="hidden" name="parent_id" value="" id="new-agent-parent-input" />
+            <div class="agent-parent-list">
+              <button
+                type="button"
+                class="agent-parent-btn active"
+                data-parent-id=""
+                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: ""})}
+              >
+                None (top-level)
+              </button>
+              <button
+                :for={{id, label} <- @parent_options}
+                type="button"
+                class="agent-parent-btn"
+                data-parent-id={id}
+                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: id})}
+              >
+                <%= label %>
+              </button>
+            </div>
+          </div>
+
+          <div class="agent-role-list">
+            <button
+              :for={role <- @roles}
+              type="submit"
+              name="role"
+              value={role}
+              class="agent-role-btn"
+            >
+              <%= role %>
+            </button>
+          </div>
+        </form>
         <button class="modal-cancel" phx-click="toggle_new_agent">Cancel</button>
       </div>
     </div>
     """
   end
 
+  defp tab_label_from_info(info) do
+    name = info[:role] || info[:agent_id]
+    segments = String.split(to_string(info.agent_id), "/")
+
+    case segments do
+      [_sid, "primary"] -> "primary"
+      [_sid, "primary" | rest] -> List.last(rest) || to_string(name)
+      _ -> to_string(name)
+    end
+  end
+
   # --- Debug panel ---
 
   attr(:projections, :map, required: true)
-  attr(:active_tab, :string, default: nil)
+  attr(:active_agent_id, :string, default: nil)
   attr(:session_id, :string, default: nil)
 
   defp debug_panel(assigns) do
-    active_tab = assigns.active_tab || primary_agent_id(assigns.session_id)
-    projection = Map.get(assigns.projections, active_tab)
+    active_id = assigns.active_agent_id || SessionCore.primary_agent_id(assigns.session_id)
+    projection = Map.get(assigns.projections, active_id)
 
     assigns =
       assigns
       |> assign(:projection, projection)
-      |> assign(:active_agent_id, active_tab)
+      |> assign(:debug_agent_id, active_id)
 
     ~H"""
     <div class="debug-panel">
@@ -662,137 +1500,22 @@ defmodule RhoWeb.SessionLive do
   defp debug_content_string(content) when is_binary(content), do: content
   defp debug_content_string(other), do: inspect(other, limit: :infinity)
 
-  defp is_connected?(assigns) when is_map(assigns), do: Map.get(assigns, :connected, false)
+  defp chat_status(assigns) do
+    if MapSet.size(assigns.pending_response) > 0 or map_size(assigns.inflight) > 0 do
+      :busy
+    else
+      :idle
+    end
+  end
 
   # --- Private helpers ---
-
-  defp subscribe_and_hydrate(socket, session_id) do
-    # Ensure session exists
-    {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id)
-
-    # Subscribe to signal bus only (sole event delivery path)
-    {:ok, sub1} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
-    {:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
-    {:ok, sub3} = Rho.Comms.subscribe("rho.task.*")
-
-    # Hydrate agent list
-    agents =
-      Rho.Agent.Registry.list_all(session_id)
-      |> Enum.map(fn info ->
-        {info.agent_id,
-         %{
-           agent_id: info.agent_id,
-           session_id: info.session_id,
-           role: info.role,
-           status: info.status,
-           depth: info.depth,
-           capabilities: info.capabilities,
-           model: nil,
-           step: nil,
-           max_steps: nil
-         }}
-      end)
-      |> Map.new()
-
-    primary_id = primary_agent_id(session_id)
-    agent_ids = Map.keys(agents)
-    tab_order = [primary_id | agent_ids -- [primary_id]]
-    agent_messages = Map.new(agent_ids, fn id -> {id, []} end)
-
-    socket
-    |> assign(:session_id, session_id)
-    |> assign(:agents, agents)
-    |> assign(:tab_order, tab_order)
-    |> assign(:agent_messages, agent_messages)
-    |> assign(:active_tab, primary_id)
-    |> assign(:connected, true)
-    |> assign(:bus_subs, [sub1, sub2, sub3])
-  end
-
-  defp unsubscribe_current(socket) do
-    for sub <- socket.assigns[:bus_subs] || [] do
-      Rho.Comms.unsubscribe(sub)
-    end
-
-    socket
-  end
-
-  defp signal_for_session?(data, session_id) do
-    data_sid = data[:session_id] || data["session_id"]
-    is_nil(data_sid) or data_sid == session_id
-  end
 
   defp truncate_id(id) when byte_size(id) > 16, do: String.slice(id, 0, 16) <> "..."
   defp truncate_id(id), do: id
 
-  @avatar_dir Path.expand("~/.rho")
-
-  defp load_avatar do
-    case find_avatar_file() do
-      nil ->
-        nil
-
-      path ->
-        binary = File.read!(path)
-        ext = Path.extname(path) |> String.trim_leading(".")
-        media_type = ext_to_media_type(ext)
-        "data:#{media_type};base64,#{Base.encode64(binary)}"
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp save_avatar(binary, media_type) do
-    File.mkdir_p!(@avatar_dir)
-    # Remove any existing avatar files
-    for old <- Path.wildcard(Path.join(@avatar_dir, "avatar.*")), do: File.rm(old)
-    ext = media_type_to_ext(media_type)
-    File.write!(Path.join(@avatar_dir, "avatar.#{ext}"), binary)
-  end
-
-  defp find_avatar_file do
-    Path.wildcard(Path.join(@avatar_dir, "avatar.*"))
-    |> Enum.find(&(Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp)))
-  end
-
-  defp load_agent_avatar do
-    path =
-      Path.wildcard(Path.join(@avatar_dir, "agent_avatar.*"))
-      |> Enum.find(&(Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp)))
-
-    case path do
-      nil ->
-        nil
-
-      path ->
-        binary = File.read!(path)
-        ext = Path.extname(path) |> String.trim_leading(".")
-        media_type = ext_to_media_type(ext)
-        "data:#{media_type};base64,#{Base.encode64(binary)}"
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp media_type_to_ext("image/jpeg"), do: "jpg"
-  defp media_type_to_ext("image/png"), do: "png"
-  defp media_type_to_ext("image/gif"), do: "gif"
-  defp media_type_to_ext("image/webp"), do: "webp"
-  defp media_type_to_ext(_), do: "png"
-
-  defp ext_to_media_type("jpg"), do: "image/jpeg"
-  defp ext_to_media_type("jpeg"), do: "image/jpeg"
-  defp ext_to_media_type("png"), do: "image/png"
-  defp ext_to_media_type("gif"), do: "image/gif"
-  defp ext_to_media_type("webp"), do: "image/webp"
-  defp ext_to_media_type(_), do: "image/png"
-
   defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
   defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}K"
   defp format_tokens(n), do: "#{n}"
-
-  defp primary_agent_id(nil), do: nil
-  defp primary_agent_id(session_id), do: Rho.Agent.Primary.agent_id(session_id)
 
   defp tab_label(agents, agent_id) do
     case Map.get(agents, agent_id) do
@@ -811,24 +1534,176 @@ defmodule RhoWeb.SessionLive do
 
   @doc false
   def append_message(socket, msg) do
-    SessionProjection.append_message(socket, msg)
+    RhoWeb.Session.SignalRouter.append_message(socket, msg)
   end
 
-  defp update_ui_message(socket, msg_id, spec, streaming?) do
-    agent_messages = socket.assigns.agent_messages
+  # Attempt to load a snapshot and apply it, then tail-replay any signals
+  # emitted after the snapshot timestamp to catch up.
+  defp restore_from_snapshot(socket) do
+    sid = socket.assigns[:session_id]
 
-    updated =
-      Map.new(agent_messages, fn {agent_id, msgs} ->
-        {agent_id,
-         Enum.map(msgs, fn msg ->
-           if msg.id == msg_id do
-             %{msg | spec: spec, streaming: streaming?}
-           else
-             msg
-           end
-         end)}
+    if sid do
+      case Snapshot.load(sid, File.cwd!()) do
+        {:ok, snapshot} ->
+          socket
+          |> Snapshot.apply_snapshot(snapshot)
+          |> tail_replay(sid, snapshot[:snapshot_at])
+
+        _no_snapshot ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  # Replay EventLog entries emitted after `since_ms` through SignalRouter
+  # so workspace projections catch up to current state.
+  defp tail_replay(socket, _sid, nil), do: socket
+
+  defp tail_replay(socket, sid, since_ms) when is_integer(since_ms) do
+    {events, _last_seq} = Rho.Agent.EventLog.read(sid, limit: 10_000)
+
+    signals_since =
+      events
+      |> Enum.filter(fn evt ->
+        case evt["emitted_at"] do
+          ts when is_integer(ts) -> ts > since_ms
+          _ -> false
+        end
       end)
 
-    assign(socket, :agent_messages, updated)
+    Enum.reduce(signals_since, socket, fn evt, sock ->
+      signal = %{type: evt["type"], data: deserialize_event_data(evt["data"] || %{})}
+      SignalRouter.route(sock, signal, WorkspaceRegistry.all())
+    end)
+  end
+
+  # EventLog stores data with string keys; convert to atom keys for projections.
+  defp deserialize_event_data(data) when is_map(data) do
+    Map.new(data, fn {k, v} -> {safe_to_existing_atom(k), v} end)
+  end
+
+  defp safe_to_existing_atom(str) when is_binary(str) do
+    String.to_existing_atom(str)
+  rescue
+    ArgumentError -> str
+  end
+
+  defp safe_to_existing_atom(other), do: other
+
+  defp determine_workspaces(_live_action), do: %{}
+
+  # Smart chat panel mode from shell state:
+  # - :hidden when chatroom is the active workspace (redundant)
+  # - Uses shell.chat_mode otherwise
+  defp chat_panel_mode(assigns) do
+    cond do
+      assigns.active_workspace_id == :chatroom -> :hidden
+      map_size(assigns.workspaces) == 0 -> :expanded
+      true -> assigns.shell.chat_mode
+    end
+  end
+
+  # Dispatch a handle_info message to a workspace module's handle_info/3 callback.
+  defp dispatch_to_workspace(socket, ws_mod, message) do
+    key = ws_mod.key()
+    ws_state = SignalRouter.read_ws_state(socket, key)
+
+    context = %{
+      session_id: socket.assigns[:session_id],
+      organization_id: get_in(socket.assigns, [:current_organization, Access.key(:id)])
+    }
+
+    case ws_mod.handle_info(message, ws_state, context) do
+      {:noreply, new_ws_state} ->
+        {:noreply, SignalRouter.write_ws_state(socket, key, new_ws_state)}
+
+      :skip ->
+        {:noreply, socket}
+    end
+  end
+
+  # Available workspaces that aren't already open as tabs or overlays (for "+" picker)
+  defp available_workspaces(assigns) do
+    open_keys = Map.keys(assigns.workspaces)
+    overlay_keys = Shell.overlay_keys(assigns.shell)
+    all_visible = open_keys ++ overlay_keys
+
+    WorkspaceRegistry.all()
+    |> Enum.reject(fn mod -> mod.key() in all_visible end)
+    |> Map.new(fn mod -> {mod.key(), mod} end)
+  end
+
+  # Hydrate a single workspace from tape replay (for dynamically added tabs).
+  defp hydrate_workspace(socket, sid, key, ws_mod) do
+    {events, _last_seq} = Rho.Agent.EventLog.read(sid, limit: 10_000)
+    projection = ws_mod.projection()
+
+    state =
+      events
+      |> Enum.map(fn evt ->
+        %{type: evt["type"], data: deserialize_event_data(evt["data"] || %{})}
+      end)
+      |> Enum.filter(fn s -> projection.handles?(s.type) end)
+      |> Enum.reduce(projection.init(), fn s, st -> projection.reduce(st, s) end)
+
+    SignalRouter.write_ws_state(socket, key, state)
+  end
+
+  # Merge new workspaces into the socket, initializing any that don't exist yet.
+  defp merge_workspaces(socket, new_workspaces) do
+    current = socket.assigns.workspaces
+
+    added = Map.drop(new_workspaces, Map.keys(current))
+
+    if map_size(added) == 0 do
+      socket
+    else
+      merged_ws = Map.merge(current, added)
+
+      # Update shell to mark newly added workspaces as open tabs
+      shell =
+        Enum.reduce(Map.keys(added), socket.assigns.shell, fn key, sh ->
+          Shell.add_workspace(sh, key)
+        end)
+
+      socket
+      |> assign(:workspaces, merged_ws)
+      |> assign(:shell, shell)
+    end
+  end
+
+  # Options for ensure_session/subscribe_and_hydrate based on live_action.
+  defp session_ensure_opts(:data_table), do: [agent_name: :data_table, id_prefix: "sheet"]
+  defp session_ensure_opts(:chatroom), do: [id_prefix: "chat"]
+  defp session_ensure_opts(_), do: []
+
+  # Extract known context params from URL query string for chat handoff.
+  # Only whitelisted string keys are extracted — no atom conversion.
+  defp extract_chat_context(params) do
+    %{}
+    |> maybe_put("library_id", params["library_id"])
+    |> maybe_put("context", params["context"])
+    |> maybe_put("role_profile_name", params["role_profile_name"])
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value) when is_binary(value), do: Map.put(map, key, value)
+
+  defp refresh_threads(socket) do
+    sid = socket.assigns[:session_id]
+
+    if sid do
+      threads = Threads.list(sid, File.cwd!())
+      active = Threads.active(sid, File.cwd!())
+
+      socket
+      |> assign(:threads, threads)
+      |> assign(:active_thread_id, active && active["id"])
+    else
+      socket
+    end
   end
 end

@@ -10,11 +10,19 @@ defmodule RhoWeb.UserAuth do
   @doc "Logs the user in by putting the token in the session."
   def log_in_user(conn, user, _params \\ %{}) do
     token = Accounts.generate_user_session_token(user)
+    default_org = Accounts.get_default_organization(user)
+
+    redirect_to =
+      if default_org do
+        ~p"/orgs/#{default_org.slug}/chat"
+      else
+        ~p"/"
+      end
 
     conn
     |> renew_session()
     |> put_session(:user_token, token)
-    |> redirect(to: ~p"/spreadsheet")
+    |> redirect(to: redirect_to)
   end
 
   defp renew_session(conn) do
@@ -64,9 +72,20 @@ defmodule RhoWeb.UserAuth do
 
   @doc "Plug: redirect if user is already authenticated."
   def redirect_if_user_is_authenticated(conn, _opts) do
-    if conn.assigns[:current_user] do
+    user = conn.assigns[:current_user]
+
+    if user do
+      default_org = Accounts.get_default_organization(user)
+
+      redirect_to =
+        if default_org do
+          ~p"/orgs/#{default_org.slug}/chat"
+        else
+          ~p"/"
+        end
+
       conn
-      |> redirect(to: ~p"/spreadsheet")
+      |> redirect(to: redirect_to)
       |> halt()
     else
       conn
@@ -94,11 +113,42 @@ defmodule RhoWeb.UserAuth do
 
   def on_mount(:redirect_if_authenticated, _params, session, socket) do
     socket = mount_current_user(socket, session)
+    user = socket.assigns.current_user
 
-    if socket.assigns.current_user do
-      {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/spreadsheet")}
+    if user do
+      default_org = Accounts.get_default_organization(user)
+
+      redirect_to =
+        if default_org do
+          ~p"/orgs/#{default_org.slug}/chat"
+        else
+          ~p"/"
+        end
+
+      {:halt, Phoenix.LiveView.redirect(socket, to: redirect_to)}
     else
       {:cont, socket}
+    end
+  end
+
+  def on_mount(:ensure_org_member, %{"org_slug" => slug}, session, socket) do
+    socket = mount_current_user(socket, session)
+    user = socket.assigns.current_user
+
+    if user do
+      org = Accounts.get_organization_by_slug(slug)
+      membership = org && Accounts.get_membership(user.id, org.id)
+
+      if membership do
+        {:cont,
+         socket
+         |> Phoenix.Component.assign(:current_organization, org)
+         |> Phoenix.Component.assign(:current_membership, membership)}
+      else
+        {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/")}
+      end
+    else
+      {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/users/log_in")}
     end
   end
 

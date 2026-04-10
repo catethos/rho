@@ -13,14 +13,14 @@ defmodule Rho.Stdlib.Tools.FsWriteTest do
 
   test "writes a new file" do
     [tool] = FsWrite.tools([], %{workspace: @workspace})
-    assert {:ok, msg} = tool.execute.(%{"path" => "hello.txt", "content" => "hello world"})
+    assert {:ok, msg} = tool.execute.(%{path: "hello.txt", content: "hello world"}, %{})
     assert msg =~ "11 bytes"
     assert File.read!(Path.join(@workspace, "hello.txt")) == "hello world"
   end
 
   test "creates parent directories" do
     [tool] = FsWrite.tools([], %{workspace: @workspace})
-    assert {:ok, _} = tool.execute.(%{"path" => "sub/deep/file.txt", "content" => "nested"})
+    assert {:ok, _} = tool.execute.(%{path: "sub/deep/file.txt", content: "nested"}, %{})
     assert File.read!(Path.join(@workspace, "sub/deep/file.txt")) == "nested"
   end
 
@@ -28,13 +28,13 @@ defmodule Rho.Stdlib.Tools.FsWriteTest do
     path = Path.join(@workspace, "overwrite.txt")
     File.write!(path, "old content")
     [tool] = FsWrite.tools([], %{workspace: @workspace})
-    assert {:ok, _} = tool.execute.(%{"path" => "overwrite.txt", "content" => "new content"})
+    assert {:ok, _} = tool.execute.(%{path: "overwrite.txt", content: "new content"}, %{})
     assert File.read!(path) == "new content"
   end
 
   test "returns error for path escape" do
     [tool] = FsWrite.tools([], %{workspace: @workspace})
-    assert {:error, msg} = tool.execute.(%{"path" => "../../escape.txt", "content" => "bad"})
+    assert {:error, msg} = tool.execute.(%{path: "../../escape.txt", content: "bad"}, %{})
     assert msg =~ "Path escapes workspace"
   end
 end

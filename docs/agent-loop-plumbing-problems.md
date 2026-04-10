@@ -1,3 +1,7 @@
+> **Superseded.** These problems are resolved. The agent loop is now
+> `Rho.Runner` + `Rho.TurnStrategy`, with a single `Rho.Context` struct
+> and `Rho.Transformer` pipeline. See CLAUDE.md.
+
 # Agent Loop Plumbing Problems
 
 ## 1. Three Redundant Context Maps

@@ -63,12 +63,12 @@ The rewrite separates concerns into three planes. Each plane has a clear respons
 | `Rho.AgentLoop` | Core reasoning loop. Works well. No signals needed inside it. |
 | `Rho.AgentLoop.Runtime` | Immutable config per loop invocation. Clean design. |
 | `Rho.AgentLoop.Recorder` | Tape writes during loop. Stays internal. |
-| `Rho.Reasoner` behaviour + `Reasoner.Direct` | Strategy pattern for one reason+act iteration. Extend later with FSM/CoT. |
-| `Rho.Lifecycle` | Captures mount hooks as closures. Decouples hook dispatch from consumption. |
-| `Rho.Mount` behaviour | Plugin interface for tools, prompt sections, bindings, hooks. |
-| `Rho.MountRegistry` | GenServer + ETS registration. Stays as-is. |
-| `Rho.Mount.Context` | Typed struct for mount callbacks. Add `agent_id` field. |
-| `Rho.Memory` behaviour + `Rho.Memory.Tape` | Pluggable memory backend. Each agent keeps its own tape. |
+| `Rho.TurnStrategy` behaviour + `TurnStrategy.Direct` | Strategy pattern for one reason+act iteration. (Was `Rho.Reasoner`.) |
+| `Rho.PluginRegistry.apply_stage/3` | Transformer pipeline at 6 typed stages. (Was `Rho.Lifecycle`; deleted.) |
+| `Rho.Plugin` behaviour | Plugin interface for tools, prompt sections, bindings. (Was `Rho.Mount`; alias kept.) |
+| `Rho.PluginRegistry` | GenServer + ETS registration. (Was `Rho.MountRegistry`; delegate kept.) |
+| `Rho.Context` | Typed struct for plugin/transformer callbacks. (Was `Rho.Mount.Context`.) |
+| `Rho.Tape.Context` behaviour + `Rho.Tape.Context.Tape` | Pluggable tape-context backend. (Was `Rho.Memory`.) |
 | `Rho.Tape.*` (Store, Service, Entry, View, Compact, Fork) | Append-only event log with JSONL persistence. Battle-tested. |
 | `Rho.Config` | .rho.exs config with agent profiles. Extend with role definitions. |
 | `Rho.Tools.*` (Bash, FsRead, FsWrite, FsEdit, etc.) | LLM-facing tools. No changes needed. |
@@ -78,13 +78,13 @@ The rewrite separates concerns into three planes. Each plane has a clear respons
 
 | Current | Becomes | Why |
 |---------|---------|-----|
-| `Rho.Session.Worker` | `Rho.Agent.Worker` | Every agent is a peer worker, not just top-level sessions |
-| `Rho.Plugins.Subagent` | `Rho.Mounts.MultiAgent` | New mount providing `delegate_task`, `send_message`, `await_task`, `list_agents` |
-| `Rho.Plugins.Subagent.Worker` | Removed (absorbed into Agent.Worker) | No more "subagent" vs "real agent" distinction |
-| `Rho.Plugins.Subagent.Supervisor` | `Rho.Agent.Supervisor` | One DynamicSupervisor for all agent workers |
-| `Rho.Session` (facade) | `Rho.Session` (rewritten) | Manages session-scoped agent groups instead of single workers |
-| Subscriber maps in Worker | Signal bus subscriptions | Events flow through bus, not hand-rolled broadcast |
-| ETS status polling for subagent completion | Signal-based task completion | `rho.task.completed` signals replace polling |
+| `Rho.Session.Worker` | `Rho.Agent.Worker` | Every agent is a peer worker, not just top-level sessions. Done. |
+| `Rho.Plugins.Subagent` | `Rho.Mounts.MultiAgent` | Plugin providing `delegate_task`, `send_message`, `await_task`, `list_agents`, `find_capable`. Done. |
+| `Rho.Plugins.Subagent.Worker` | Removed (absorbed into Agent.Worker) | No more "subagent" vs "real agent" distinction. Done. |
+| `Rho.Plugins.Subagent.Supervisor` | `Rho.Agent.Supervisor` | One DynamicSupervisor for all agent workers. Done. |
+| `Rho.Session` (facade) | `Rho.Agent.Primary` | Thin helper for session's primary agent convention. Done. |
+| Subscriber maps in Worker | Signal bus via `Rho.Comms` | Events flow through bus, not hand-rolled broadcast. Done (Phase 5). |
+| ETS status polling for subagent completion | Signal-based task completion | `rho.task.completed` signals replace polling. Done. |
 
 ### Adapt (edge plane)
 
@@ -262,38 +262,20 @@ list_agents()
 
 Under the hood: query `Rho.Agent.Registry`.
 
-### 5. `Rho.Session` — Session management (rewritten)
+### 5. `Rho.Agent.Primary` — Session management (completed)
 
-**What:** A session is now a namespace for a group of cooperating agents, not a wrapper around a single worker.
+> **Completed.** `Rho.Session` was collapsed into `Rho.Agent.Primary` +
+> `Rho.Agent.Worker` + `Rho.Agent.Registry`. See CLAUDE.md.
 
-**Why:** Multi-agent means multiple agent workers per session. The session manages their collective lifecycle, the signal bus namespace, and the primary agent that the human talks to.
+A session is a `session_id` namespace. `Rho.Agent.Primary` centralises
+the primary-agent convention:
 
-**How:**
-
-```elixir
-defmodule Rho.Session do
-  @moduledoc """
-  Session = a namespace for a group of cooperating agents.
-  Every session has one primary agent (the human's interlocutor)
-  and zero or more peer agents spawned during the conversation.
-  """
-
-  def start(session_id, opts \\ [])
-  # Starts:
-  #   1. A session-scoped signal bus topic namespace
-  #   2. The primary Agent.Worker (role: :primary)
-  #   3. Returns {:ok, %{session_id, primary_agent_id}}
-
-  def submit(session_id, content, opts \\ [])
-  # Publishes a user message signal to the primary agent's inbox
-
-  def subscribe(session_id, subscriber_pid)
-  # Subscribes pid to rho.session.<sid>.events.** on the bus
-
-  def stop(session_id)
-  # Stops all agents in the session, cleans up bus subscriptions
-end
-```
+- `ensure_started/2` — find or start the primary agent + EventLog
+- `resume/2` — alias for `ensure_started` (tape context loads from disk)
+- `list_resumable/1` — discover sessions with event logs but no live agent
+- `stop/1` — stop all agents + EventLog in a session
+- `inject/4` — deliver a message to a specific agent or the primary
+- `list/1` — list live primary agents
 
 ---
 
@@ -305,11 +287,11 @@ All signals follow a hierarchical naming convention for pattern-matched routing.
 
 | Signal type | Payload | When |
 |-------------|---------|------|
-| `rho.task.requested` | `%{task_id, from_agent, to_agent, task, context_summary, max_steps}` | Agent delegates a task |
-| `rho.task.accepted` | `%{task_id, agent_id}` | Target agent begins work |
-| `rho.task.completed` | `%{task_id, agent_id, result}` | Agent finishes a task |
-| `rho.task.failed` | `%{task_id, agent_id, reason}` | Agent task errored |
-| `rho.message.sent` | `%{from_agent, to_agent, message, task_id?}` | Direct message between agents |
+| `rho.task.requested` | `%{task_id, session_id, agent_id, parent_agent_id, role, task, context_summary, max_steps}` | Agent delegates a task |
+| `rho.task.accepted` | `%{task_id, agent_id, session_id}` | Worker begins processing a delegated task |
+| `rho.task.completed` | `%{agent_id, session_id, result, task_id?}` | Delegated agent finishes (depth > 0). `result` is text or `"error: ..."` on failure. `task_id` present when correlated to a `rho.task.requested`. |
+| `rho.session.*.events.message_sent` | `%{session_id, agent_id, from, to, message}` | Direct message between agents |
+| `rho.session.*.events.broadcast` | `%{session_id, agent_id, from, message, target_count}` | Broadcast to all session agents |
 
 ### Runtime events (observability)
 
@@ -330,7 +312,7 @@ All signals follow a hierarchical naming convention for pattern-matched routing.
 | Signal type | Payload | When |
 |-------------|---------|------|
 | `rho.agent.started` | `%{agent_id, session_id, role, capabilities}` | Agent worker started |
-| `rho.agent.stopped` | `%{agent_id, session_id, reason}` | Agent worker stopped |
+| `rho.agent.stopped` | `%{agent_id, session_id}` | Agent worker stopped |
 | `rho.session.started` | `%{session_id}` | Session namespace created |
 | `rho.session.stopped` | `%{session_id}` | Session ended |
 
@@ -483,22 +465,21 @@ lib/rho/
 
 ```
 Rho.Supervisor (one_for_one)
-├── Registry (Rho.SessionRegistry)        # session_id → primary agent lookup
-├── Registry (Rho.AgentRegistry.ETS)      # agent discovery (or keep as plain ETS)
-├── Task.Supervisor (Rho.TaskSupervisor)  # async AgentLoop tasks
-├── Rho.MountRegistry                     # mount registration + ETS dispatch
-├── Rho.Comms.JidoSignal                  # starts Jido.Signal.Bus named :rho_bus
-├── Rho.Tape.Store                        # JSONL persistence
-├── Rho.Agent.Supervisor (DynamicSupervisor)
-│   ├── Rho.Agent.Worker (agent_abc)      # primary agent for session 1
-│   ├── Rho.Agent.Worker (agent_def)      # delegated researcher for session 1
-│   ├── Rho.Agent.Worker (agent_ghi)      # primary agent for session 2
-│   └── ...
-├── Rho.CLI                               # CLI adapter (subscribes to bus)
-└── Rho.Web.Endpoint                      # Web adapter (if enabled)
+├── Registry (Rho.AgentRegistry)          # agent_id → pid lookup
+├── Registry (Rho.PythonRegistry)         # Python interpreter tracking
+├── Task.Supervisor (Rho.TaskSupervisor)
+├── DynamicSupervisor (Python.Supervisor)
+├── Rho.PluginRegistry                    # plugin + transformer dispatch
+├── Rho.Comms.SignalBus                   # jido_signal bus (:rho_bus)
+├── [Tape children]                       # from memory_mod.children/1
+├── Rho.Agent.Supervisor                  # DynamicSupervisor for all agents
+├── Registry (Rho.EventLogRegistry)
+├── DynamicSupervisor (EventLog.Supervisor)
+├── Rho.CLI
+└── [Web children]                        # conditional
 ```
 
-Key change: one flat `Agent.Supervisor` instead of separate `Session.Supervisor` + `Subagent.Supervisor`. Session scoping is logical (via session_id), not structural (via separate supervisors).
+One flat `Agent.Supervisor` for all agents across all sessions. Session scoping is logical (via session_id), not structural.
 
 ---
 

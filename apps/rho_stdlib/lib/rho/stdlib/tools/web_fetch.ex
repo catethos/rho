@@ -20,7 +20,7 @@ defmodule Rho.Stdlib.Tools.WebFetch do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: &execute/1
+      execute: fn args, _ctx -> execute(args) end
     }
   end
 

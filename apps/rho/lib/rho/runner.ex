@@ -69,7 +69,8 @@ defmodule Rho.Runner do
       agent_id: opts[:agent_id],
       session_id: opts[:session_id],
       prompt_format: opts[:prompt_format] || :markdown,
-      user_id: opts[:user_id]
+      user_id: opts[:user_id],
+      organization_id: opts[:organization_id]
     }
 
     tape = %Tape{
@@ -124,7 +125,28 @@ defmodule Rho.Runner do
 
   # -- System prompt assembly --
 
-  defp build_system_prompt(base, true = _subagent, _ctx, _strategy, _tool_defs), do: base
+  defp build_system_prompt(base, true = _subagent, ctx, _strategy, _tool_defs) do
+    alias Rho.PromptSection
+
+    plugin_sections = Rho.PluginRegistry.collect_prompt_material(ctx)
+
+    if plugin_sections == [] do
+      base
+    else
+      format = ctx[:prompt_format] || :markdown
+
+      base_section =
+        PromptSection.new(
+          key: :base_prompt,
+          body: base,
+          priority: :high,
+          kind: :instructions,
+          position: :prelude
+        )
+
+      PromptSection.render([base_section | plugin_sections], format)
+    end
+  end
 
   defp build_system_prompt(base, _subagent, ctx, strategy, tool_defs) do
     alias Rho.PromptSection

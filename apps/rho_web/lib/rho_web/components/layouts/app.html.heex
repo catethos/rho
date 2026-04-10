@@ -1,12 +1,23 @@
 <nav class="global-nav">
   <div class="global-nav-left">
     <a href="/" class="global-nav-logo">rho</a>
-    <div class="global-nav-links">
-      <a href="/" class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :chat, do: "page"}>Chat</a>
-      <a href="/observatory" class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :observatory, do: "page"}>Observatory</a>
-      <a href="/spreadsheet" class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :editor, do: "page"}>Editor</a>
-      <a href="/frameworks" class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :frameworks, do: "page"}>Frameworks</a>
-    </div>
+    <%= if org = Map.get(assigns, :current_organization) do %>
+      <div class="org-switcher" phx-click={Phoenix.LiveView.JS.toggle(to: "#org-dropdown")} phx-click-away={Phoenix.LiveView.JS.hide(to: "#org-dropdown")}>
+        <span class="org-switcher-name"><%= if org.personal, do: "Personal", else: org.name %></span>
+        <span class="org-switcher-arrow">▾</span>
+      </div>
+      <div class="global-nav-links">
+        <a href={"/orgs/#{org.slug}/chat"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :chat, do: "page"}>Chat</a>
+        <a href={"/orgs/#{org.slug}/libraries"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :libraries, do: "page"}>Libraries</a>
+        <a href={"/orgs/#{org.slug}/roles"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :roles, do: "page"}>Roles</a>
+        <a href={"/orgs/#{org.slug}/settings"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :settings, do: "page"}>Settings</a>
+        <a href={"/orgs/#{org.slug}/members"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :members, do: "page"}>Members</a>
+      </div>
+    <% else %>
+      <div class="global-nav-links">
+        <a href="/" class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :chat, do: "page"}>Home</a>
+      </div>
+    <% end %>
   </div>
   <div class="global-nav-right">
     <%= if Map.get(assigns, :current_user) do %>
@@ -21,6 +32,19 @@
     <% end %>
   </div>
 </nav>
+<div id="org-dropdown" class="org-dropdown" style="display:none;">
+  <%= if user = Map.get(assigns, :current_user) do %>
+    <% orgs = RhoFrameworks.Accounts.list_user_organizations(user.id) %>
+    <%= for %{organization: o, role: role} <- orgs do %>
+      <a href={"/orgs/#{o.slug}/chat"} class="org-dropdown-item">
+        <span class="org-dropdown-name"><%= if o.personal, do: "Personal", else: o.name %></span>
+        <span class="org-dropdown-role"><%= role %></span>
+      </a>
+    <% end %>
+    <hr class="org-dropdown-divider" />
+    <a href="/" class="org-dropdown-item">All organizations</a>
+  <% end %>
+</div>
 <main>
   <.flash_group flash={@flash} />
   <%= @inner_content %>

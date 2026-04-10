@@ -170,12 +170,10 @@ defmodule Rho.Agent.EventLog do
   defp write_event(state, type, data, signal) do
     seq = state.seq + 1
 
+    extensions = signal.extensions || %{}
+
     # correlation_id is stored in extensions, not a top-level field
-    turn_id =
-      case signal do
-        %{extensions: %{"correlation_id" => cid}} -> cid
-        _ -> nil
-      end
+    turn_id = extensions["correlation_id"]
 
     event = %{
       seq: seq,
@@ -184,6 +182,8 @@ defmodule Rho.Agent.EventLog do
       agent_id: data[:agent_id] || data["agent_id"],
       session_id: state.session_id,
       turn_id: turn_id,
+      event_id: signal.id,
+      emitted_at: extensions["emitted_at"],
       data: truncate_data(data)
     }
 

@@ -16,12 +16,12 @@ defmodule Rho.Stdlib.Tools.RecallContext do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, tape_name) end
+      execute: fn args, _ctx -> execute(args, tape_name) end
     }
   end
 
   defp execute(args, tape_name) do
-    phase = args["phase"] || args[:phase]
+    phase = args[:phase]
     entries = Rho.Tape.Store.read(tape_name)
     anchors = Enum.filter(entries, &(&1.kind == :anchor))
 

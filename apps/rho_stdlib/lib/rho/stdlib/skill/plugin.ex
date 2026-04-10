@@ -77,12 +77,12 @@ defmodule Rho.Stdlib.Skill.Plugin do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute_skill_expand(args, workspace, skills) end
+      execute: fn args, _ctx -> execute_skill_expand(args, workspace, skills) end
     }
   end
 
   defp execute_skill_expand(args, _workspace, skills) do
-    name = args["name"] || args[:name] || ""
+    name = args[:name] || ""
 
     if String.trim(name) == "" do
       {:error, "name is required"}

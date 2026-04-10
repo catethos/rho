@@ -3,6 +3,10 @@
 Review of `reasoner-baml-plan.md`. Focuses on architectural risks, NIF pitfalls,
 migration blast radius, and alternative phasing.
 
+> **Vocabulary note (post-refactor).** "Reasoner" here = `Rho.TurnStrategy`
+> in current code. See `CLAUDE.md` §"Migration from Mount/Memory/Reasoner"
+> for the alias table.
+
 ---
 
 ## 1. Don't make BAML IR the canonical schema too early

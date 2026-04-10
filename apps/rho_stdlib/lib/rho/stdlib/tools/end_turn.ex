@@ -20,7 +20,7 @@ defmodule Rho.Stdlib.Tools.EndTurn do
           parameter_schema: [],
           callback: fn _args -> :ok end
         ),
-      execute: fn _args ->
+      execute: fn _args, _ctx ->
         {:ok, "turn ended"}
       end
     }

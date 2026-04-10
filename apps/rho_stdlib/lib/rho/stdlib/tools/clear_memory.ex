@@ -23,13 +23,13 @@ defmodule Rho.Stdlib.Tools.ClearMemory do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, tape_name) end
+      execute: fn args, _ctx -> execute(args, tape_name) end
     }
   end
 
   defp execute(args, tape_name) do
-    confirm = args["confirm"] || args[:confirm] || false
-    archive = if Map.has_key?(args, "archive"), do: args["archive"], else: true
+    confirm = args[:confirm] || false
+    archive = if Map.has_key?(args, :archive), do: args[:archive], else: true
 
     unless confirm do
       {:error, "Please set confirm: true to clear memory. This action cannot be undone."}

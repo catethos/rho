@@ -9,14 +9,14 @@ defmodule RhoWeb.ChatComponents do
   attr(:messages, :list, required: true)
   attr(:session_id, :string, required: true)
   attr(:inflight, :map, required: true)
-  attr(:active_tab, :string, default: "")
+  attr(:active_agent_id, :string, default: "")
   attr(:user_avatar, :string, default: nil)
   attr(:agent_avatar, :string, default: nil)
   attr(:pending, :boolean, default: false)
 
   def chat_feed(assigns) do
     ~H"""
-    <div class="chat-feed" id={"chat-feed-#{@active_tab}"} phx-hook="AutoScroll">
+    <div class="chat-feed" id={"chat-feed-#{@active_agent_id}"} phx-hook="AutoScroll">
       <div :if={@messages == [] and map_size(@inflight) == 0 and not @pending} class="chat-empty">
         <div class="empty-state">
           <div class="empty-state-icon">&#961;</div>
@@ -25,9 +25,9 @@ defmodule RhoWeb.ChatComponents do
         </div>
       </div>
 
-      <div id={"messages-#{@active_tab}"}>
-        <div :for={msg <- @messages} id={msg.id} class="message-wrapper">
-          <.message_row message={msg} user_avatar={@user_avatar} agent_avatar={@agent_avatar} />
+      <div id={"messages-#{@active_agent_id}"}>
+        <div :for={{msg, idx} <- Enum.with_index(@messages)} id={msg.id} class="message-wrapper">
+          <.message_row message={msg} user_avatar={@user_avatar} agent_avatar={@agent_avatar} message_index={idx} />
         </div>
       </div>
 
@@ -76,6 +76,7 @@ defmodule RhoWeb.ChatComponents do
   attr(:message, :map, required: true)
   attr(:user_avatar, :string, default: nil)
   attr(:agent_avatar, :string, default: nil)
+  attr(:message_index, :integer, default: nil)
 
   def message_row(assigns) do
     ~H"""
@@ -121,6 +122,15 @@ defmodule RhoWeb.ChatComponents do
             <div class="message-text markdown-body" id={"md-#{@message.id}"} phx-hook="Markdown" data-md={@message.content}></div>
         <% end %>
       </div>
+      <button
+        :if={@message_index != nil and @message.role == :user}
+        class="btn-fork-from-here"
+        phx-click="fork_from_here"
+        phx-value-message_index={@message_index}
+        title="Fork conversation from here"
+      >
+        Fork
+      </button>
       </div>
     </div>
     """

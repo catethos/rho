@@ -43,6 +43,7 @@ defmodule Rho.Agent.Worker do
     token_usage: %{input: 0, output: 0},
     last_activity_at: nil,
     user_id: nil,
+    organization_id: nil,
     subagent: false,
     last_result: nil,
     current_task_id: nil
@@ -177,7 +178,7 @@ defmodule Rho.Agent.Worker do
         {opts[:tape_ref], workspace, nil}
       else
         # Primary agent — bootstrap memory and maybe sandbox
-        ref = memory_mod.tape_ref(session_id, workspace)
+        ref = memory_mod.memory_ref(session_id, workspace)
         memory_mod.bootstrap(ref)
         {eff_ws, sb} = maybe_start_sandbox(session_id, workspace)
         {ref, eff_ws, sb}
@@ -202,6 +203,7 @@ defmodule Rho.Agent.Worker do
       agent_name: agent_name,
       capabilities: capabilities,
       user_id: Keyword.get(opts, :user_id),
+      organization_id: Keyword.get(opts, :organization_id),
       subagent: Keyword.get(opts, :subagent, false)
     }
 
@@ -603,7 +605,8 @@ defmodule Rho.Agent.Worker do
         prompt_format: config[:prompt_format] || :markdown,
         session_id: state.session_id,
         agent_id: state.agent_id,
-        user_id: state.user_id
+        user_id: state.user_id,
+        organization_id: state.organization_id
       ]
       |> maybe_put(:provider, config.provider)
       |> maybe_put(:task_id, task_id)
@@ -903,7 +906,8 @@ defmodule Rho.Agent.Worker do
       session_id: state.session_id,
       depth: depth,
       subagent: false,
-      user_id: state.user_id
+      user_id: state.user_id,
+      organization_id: state.organization_id
     }
   end
 
@@ -956,7 +960,8 @@ defmodule Rho.Agent.Worker do
         {:error, "Unknown tool: #{tool_name}. Available: #{available}"}
 
       tool_def ->
-        tool_def.execute.(args)
+        cast_args = Rho.ToolArgs.cast(args, tool_def.tool.parameter_schema)
+        tool_def.execute.(cast_args, build_context(state, agent_depth(state)))
     end
   end
 

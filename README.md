@@ -653,6 +653,121 @@ Rho.Skill.expanded_hints("Please $code-review my changes", skills)
 | `RHO_MAX_TOKENS` | Override max tokens |
 | `RHO_SANDBOX` | Set to `true` to enable sandboxed file operations via AgentFS |
 
+## Multi-Tenant Organizations
+
+The web application (`rho_web` + `rho_frameworks`) supports organization-based multi-tenancy. All framework data is scoped to an organization rather than a user.
+
+### Data Model
+
+```
+User ──has_many──→ Memberships ──belongs_to──→ Organization
+                       │                          │
+                       └─ role (owner/admin/       └─ has_many → Frameworks
+                          member/viewer)               has_many → Skills
+```
+
+- **Organizations** have a `name` (mutable), `slug` (immutable, used in URLs), and `personal` flag.
+- **Memberships** link users to organizations with a role.
+- **Frameworks** belong to an organization (not a user).
+
+### Roles
+
+```
+owner > admin > member > viewer
+```
+
+| Permission | owner | admin | member | viewer |
+|------------|-------|-------|--------|--------|
+| Delete organization | yes | | | |
+| Transfer ownership | yes | | | |
+| Rename organization | yes | | | |
+| Invite/remove members | yes | yes | | |
+| Change member roles | yes | yes | | |
+| Create/edit/delete frameworks | yes | yes | yes | |
+| View frameworks | yes | yes | yes | yes |
+
+### Personal vs Team Organizations
+
+Every user gets a **personal organization** automatically on registration. Personal orgs:
+- Cannot have members invited to them (single-user only)
+- Cannot be deleted
+- Show as "Personal" in the UI
+
+**Team organizations** are created by users for collaboration. They support multiple members with role-based access.
+
+### User Flows
+
+#### Registration
+
+1. User submits registration form (`/users/register`)
+2. `Accounts.register_user/1` creates the user **and** a personal org + owner membership in a single `Ecto.Multi` transaction
+3. After login, user is redirected to `/orgs/:slug/spreadsheet`
+
+#### Login
+
+1. User authenticates at `/users/log_in`
+2. `UserAuth.log_in_user/3` looks up the user's default (personal) org
+3. Redirects to `/orgs/:slug/spreadsheet`
+
+#### Creating a Team Organization
+
+1. Navigate to `/` (org picker)
+2. Click "+ New Organization"
+3. Enter a name — slug is auto-generated from the name
+4. `Accounts.create_organization/2` creates the org + owner membership in a transaction
+5. User is redirected to the new org's spreadsheet
+
+#### Adding Members
+
+1. Navigate to `/orgs/:slug/members` (admin+ required)
+2. Enter a user's email and select a role
+3. `Accounts.add_member/3` looks up the user by email and creates a membership
+4. The new member can now access the org at `/orgs/:slug/...`
+
+#### Transferring Ownership
+
+1. Navigate to `/orgs/:slug/members` (owner only)
+2. Click "Make Owner" on a member
+3. `Accounts.transfer_ownership/2` atomically demotes the old owner to admin and promotes the new owner — wrapped in `Ecto.Multi`
+
+#### Switching Organizations
+
+- The nav bar shows an org switcher dropdown listing all organizations the user belongs to
+- Click any org to navigate to its spreadsheet
+- Click "All organizations" to return to the picker at `/`
+
+### URL Structure
+
+All org-scoped routes live under `/orgs/:org_slug/`:
+
+| Route | Page |
+|-------|------|
+| `/` | Org picker (auto-redirects if only 1 org) |
+| `/orgs/:slug/spreadsheet` | Skill framework editor |
+| `/orgs/:slug/frameworks` | Framework list |
+| `/orgs/:slug/frameworks/:id` | Framework detail |
+| `/orgs/:slug/settings` | Org settings (rename, delete, org ID) |
+| `/orgs/:slug/members` | Member management |
+| `/orgs/:slug/observatory` | Agent observatory |
+
+The `LoadOrganization` plug and `ensure_org_member` LiveView on_mount hook resolve the org from the URL slug and verify the user's membership before granting access.
+
+### Key Modules
+
+| Module | Purpose |
+|--------|---------|
+| `RhoFrameworks.Accounts.Organization` | Org schema (name, slug, personal flag) |
+| `RhoFrameworks.Accounts.Membership` | User↔Org join with role |
+| `RhoFrameworks.Accounts.Authorization` | Centralized `can?/2` permission checks |
+| `RhoFrameworks.Accounts` | Context: org CRUD, membership management, ownership transfer |
+| `RhoFrameworks.Frameworks` | All queries scoped by `organization_id` |
+| `RhoWeb.Plugs.LoadOrganization` | Plug: resolve org from `:org_slug`, verify membership |
+| `RhoWeb.Plugs.RequireRole` | Plug: gate routes by minimum role |
+| `RhoWeb.UserAuth` | `on_mount(:ensure_org_member, ...)` for LiveViews |
+| `RhoWeb.OrgPickerLive` | Org selector / create-team-org flow |
+| `RhoWeb.OrgSettingsLive` | Rename, delete, display org ID |
+| `RhoWeb.OrgMembersLive` | Member list, invite, role change, remove, ownership transfer |
+
 ## Sandbox
 
 When `RHO_SANDBOX=true`, Rho creates an overlay filesystem for each session using [AgentFS](https://github.com/anthropics/agentfs). All file writes from the agent are captured in a SQLite database while the real workspace remains read-only. This prevents the agent from making unreviewed changes to your actual files.

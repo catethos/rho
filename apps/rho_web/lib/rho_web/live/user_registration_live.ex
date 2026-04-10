@@ -8,7 +8,7 @@ defmodule RhoWeb.UserRegistrationLive do
   def mount(_params, _session, socket) do
     changeset = Accounts.change_registration(%User{})
     socket = assign(socket, form: to_form(changeset, as: "user"), active_page: :auth)
-    {:ok, socket, temporary_assigns: [form: to_form(changeset, as: "user")]}
+    {:ok, socket}
   end
 
   def handle_event("save", %{"user" => user_params}, socket) do
@@ -48,7 +48,6 @@ defmodule RhoWeb.UserRegistrationLive do
               id="user_email"
               name="user[email]"
               value={@form[:email].value}
-              phx-debounce="blur"
               required
             />
             <.field_errors field={@form[:email]} />
@@ -71,7 +70,6 @@ defmodule RhoWeb.UserRegistrationLive do
               id="user_password"
               name="user[password]"
               value={@form[:password].value}
-              phx-debounce="blur"
               required
             />
             <.field_errors field={@form[:password]} />

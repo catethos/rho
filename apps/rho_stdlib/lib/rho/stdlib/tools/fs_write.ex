@@ -22,13 +22,13 @@ defmodule Rho.Stdlib.Tools.FsWrite do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, workspace) end
+      execute: fn args, _ctx -> execute(args, workspace) end
     }
   end
 
   defp execute(args, workspace) do
-    path = args["path"] || args[:path]
-    content = args["content"] || args[:content]
+    path = args[:path]
+    content = args[:content]
 
     full_path = Rho.Stdlib.Tools.PathUtils.resolve_path(workspace, path)
     File.mkdir_p!(Path.dirname(full_path))

@@ -51,6 +51,12 @@ defmodule RhoWeb.ObservatoryAPI do
       {"GET", ["sessions", session_id, "log"]} ->
         handle_event_log(conn, session_id)
 
+      {"GET", ["pool"]} ->
+        handle_pool_status(conn)
+
+      {"POST", ["pool", "reset"]} ->
+        handle_pool_reset(conn)
+
       {"GET", ["health"]} ->
         json(conn, 200, %{status: "ok", observatory: true})
 
@@ -279,6 +285,59 @@ defmodule RhoWeb.ObservatoryAPI do
       cursor: last_seq,
       has_more: has_more
     })
+  end
+
+  defp handle_pool_status(conn) do
+    metrics = RhoWeb.FinchTelemetry.metrics()
+
+    queue_wait_times = metrics.queue.wait_times_ms
+    request_durations = metrics.requests.durations_ms
+
+    summary = %{
+      pool: metrics.pool_status,
+      queue: %{
+        total_checkouts: metrics.queue.total_checkouts,
+        exceptions: metrics.queue.exceptions,
+        wait_time_stats: compute_stats(queue_wait_times)
+      },
+      requests: %{
+        in_flight: metrics.requests.in_flight,
+        total: metrics.requests.total,
+        duration_stats: compute_stats(request_durations)
+      },
+      connections: metrics.connections,
+      recent_exceptions: metrics.recent_exceptions
+    }
+
+    json(conn, 200, summary)
+  end
+
+  defp handle_pool_reset(conn) do
+    RhoWeb.FinchTelemetry.reset()
+    json(conn, 200, %{status: "reset"})
+  end
+
+  defp compute_stats([]), do: nil
+
+  defp compute_stats(samples) do
+    sorted = Enum.sort(samples)
+    count = length(sorted)
+    sum = Enum.sum(sorted)
+
+    %{
+      count: count,
+      min: Float.round(List.first(sorted), 1),
+      max: Float.round(List.last(sorted), 1),
+      mean: Float.round(sum / count, 1),
+      p50: Float.round(percentile(sorted, 50), 1),
+      p95: Float.round(percentile(sorted, 95), 1),
+      p99: Float.round(percentile(sorted, 99), 1)
+    }
+  end
+
+  defp percentile(sorted, p) do
+    k = (p / 100 * (length(sorted) - 1)) |> Float.round() |> trunc()
+    Enum.at(sorted, k)
   end
 
   # --- Helpers ---

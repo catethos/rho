@@ -37,7 +37,7 @@ Browser ──LiveView socket──▶ RhoWeb.SessionLive
                                  │   (rho.session.<sid>.events.*, rho.agent.*, rho.task.*)
                                  │
                                  ├─ handle_event/3  ← phx-submit / phx-click from browser
-                                 │   └─ Rho.Session.submit/2, Rho.Session.ensure_started/2
+                                 │   └─ Rho.Agent.Worker.submit/3, Rho.Agent.Primary.ensure_started/2
                                  │
                                  └─ handle_info({:signal, ...})
                                      └─ update assigns/streams → LiveView diff → browser
@@ -333,7 +333,7 @@ The existing `Rho.Web.*` modules stay untouched for API/CLI clients.
 
 1. **Phoenix bootstrap** — add deps, create `RhoWeb.Endpoint`, router, root layout
 2. **SessionLive shell** — mount, signal bus subscription, basic assigns
-3. **Chat panel** — message stream, input form, `Rho.Session.submit/2` integration
+3. **Chat panel** — message stream, input form, `Rho.Agent.Worker.submit/3` integration
 4. **Streaming text** — JS hook, push_event, buffered delta flushing
 5. **Agent sidebar** — tree rendering from `agents` assign, status dots
 6. **Tool call blocks** — collapsible inline tool calls in chat

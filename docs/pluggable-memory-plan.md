@@ -1,3 +1,6 @@
+> **Superseded.** `Rho.Memory` has been renamed to `Rho.Tape.Context`;
+> `Rho.Memory.Tape` is now `Rho.Tape.Context.Tape`. See CLAUDE.md migration appendix.
+
 # Pluggable Memory System
 
 ## Problem

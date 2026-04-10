@@ -18,7 +18,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   @behaviour Rho.Plugin
 
-  alias Rho.Agent.{Worker, Registry, Supervisor}
+  alias Rho.Agent.{Worker, Registry, Supervisor, LiteWorker, LiteTracker}
   alias Rho.Comms
 
   @max_depth 3
@@ -38,11 +38,22 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     workspace = ctx[:workspace]
     memory_mod = ctx[:tape_module] || Rho.Tape.Context.Tape
     parent_emit = get_in(ctx, [:opts, :emit])
+    identity = %{user_id: ctx[:user_id], organization_id: ctx[:organization_id]}
 
     [
-      delegate_task_tool(session_id, agent_id, workspace, depth, memory_mod, parent_emit),
+      delegate_task_tool(
+        session_id,
+        agent_id,
+        workspace,
+        depth,
+        memory_mod,
+        parent_emit,
+        identity
+      ),
+      delegate_task_lite_tool(session_id, agent_id, ctx),
       await_task_tool(session_id),
-      spawn_agent_tool(session_id, agent_id, workspace, depth, memory_mod, parent_emit),
+      await_all_tool(session_id),
+      spawn_agent_tool(session_id, agent_id, workspace, depth, memory_mod, parent_emit, identity),
       collect_results_tool(session_id),
       stop_agent_tool(session_id),
       send_message_tool(session_id, agent_id),
@@ -64,6 +75,45 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   def tools(_mount_opts, _context), do: []
 
+  @impl Rho.Plugin
+  def prompt_sections(_mount_opts, %{agent_name: self_name} = _ctx) do
+    other_agents =
+      Rho.Config.agent_names()
+      |> Enum.reject(&(&1 == self_name))
+      |> Enum.map(fn name ->
+        config = Rho.Config.agent_config(name)
+        desc = config[:description] || "no description"
+        skills = config[:skills] || []
+        skills_str = if skills != [], do: " | skills: #{Enum.join(skills, ", ")}", else: ""
+        "- **#{name}**: #{desc}#{skills_str}"
+      end)
+
+    if other_agents == [] do
+      []
+    else
+      [
+        %Rho.PromptSection{
+          key: :available_agents,
+          heading: "Available Specialist Agents",
+          body:
+            """
+            ## Delegation strategy
+            - **`delegate_task_lite`** — use for independent generation/data tasks (e.g. proficiency levels, summaries, evaluations). Lightweight, fast, parallel-friendly. Prefer this by default.
+            - **`delegate_task`** — use only when the subtask needs multi-turn reasoning, tool chaining, or conversation with other agents.
+            - **`await_all`** — collect results from multiple agents in one call instead of sequential `await_task`.
+
+            ## Available roles
+            """ <> Enum.join(other_agents, "\n"),
+          priority: :normal,
+          kind: :reference,
+          position: :prelude
+        }
+      ]
+    end
+  end
+
+  def prompt_sections(_mount_opts, _ctx), do: []
+
   # --- Tool definitions ---
 
   defp delegate_task_tool(
@@ -72,7 +122,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
          workspace,
          parent_depth,
          memory_mod,
-         parent_emit
+         parent_emit,
+         identity
        ) do
     %{
       tool:
@@ -107,7 +158,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_delegate(
           args,
           session_id,
@@ -115,7 +166,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           workspace,
           parent_depth,
           memory_mod,
-          parent_emit
+          parent_emit,
+          identity
         )
       end
     }
@@ -139,8 +191,63 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_await(args, session_id)
+      end
+    }
+  end
+
+  defp delegate_task_lite_tool(session_id, parent_agent_id, ctx) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "delegate_task_lite",
+          description:
+            "Spawn a lightweight agent for a single-purpose generation task. " <>
+              "Much faster than delegate_task — no persistent state, no multi-turn reasoning. " <>
+              "The agent gets a clean context window, makes 1-3 LLM calls, and returns. " <>
+              "Best for batch-parallel work like generating proficiency levels. " <>
+              "Use await_task or await_all to get the result.",
+          parameter_schema: [
+            task: [type: :string, required: true, doc: "The task prompt for the agent"],
+            role: [
+              type: :string,
+              doc: "Role for config lookup (model, system_prompt). Default: 'worker'"
+            ],
+            max_steps: [
+              type: :integer,
+              doc: "Max LLM round-trips (default: 3). Keep small for generation tasks."
+            ]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args, _ctx ->
+        execute_delegate_lite(args, session_id, parent_agent_id, ctx)
+      end
+    }
+  end
+
+  defp await_all_tool(session_id) do
+    %{
+      tool:
+        ReqLLM.tool(
+          name: "await_all",
+          description:
+            "Wait for multiple delegated agents to complete and return all results. " <>
+              "More efficient than calling await_task multiple times — collects in parallel. " <>
+              "Works with both delegate_task and delegate_task_lite agents.",
+          parameter_schema: [
+            agent_ids: [
+              type: :string,
+              required: true,
+              doc: "JSON array of agent_id strings, e.g. [\"id1\", \"id2\"]"
+            ],
+            timeout: [type: :integer, doc: "Timeout in seconds (default: 300)"]
+          ],
+          callback: fn _args -> :ok end
+        ),
+      execute: fn args, _ctx ->
+        execute_await_all(args, session_id)
       end
     }
   end
@@ -159,7 +266,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_send_message(args, session_id, self_agent_id)
       end
     }
@@ -176,7 +283,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_broadcast_message(args, session_id, self_agent_id)
       end
     }
@@ -192,7 +299,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           parameter_schema: [],
           callback: fn _args -> :ok end
         ),
-      execute: fn _args ->
+      execute: fn _args, _ctx ->
         execute_list_agents(session_id)
       end
     }
@@ -214,7 +321,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         cap = arg(args, :capability)
 
         cap_atom =
@@ -255,7 +362,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_get_agent_card(args, session_id)
       end
     }
@@ -267,7 +374,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
          workspace,
          parent_depth,
          memory_mod,
-         parent_emit
+         parent_emit,
+         identity
        ) do
     %{
       tool:
@@ -297,7 +405,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_spawn(
           args,
           session_id,
@@ -305,7 +413,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           workspace,
           parent_depth,
           memory_mod,
-          parent_emit
+          parent_emit,
+          identity
         )
       end
     }
@@ -326,7 +435,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_collect_results(args, session_id)
       end
     }
@@ -344,7 +453,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_stop_agent(args, session_id)
       end
     }
@@ -359,7 +468,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
          workspace,
          parent_depth,
          memory_mod,
-         parent_emit
+         parent_emit,
+         identity
        ) do
     task_prompt = arg(args, :task)
     role_str = arg(args, :role) || "worker"
@@ -392,7 +502,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
             role: role_atom,
             context_summary: context_summary,
             inherit_context: inherit_context,
-            max_steps: max_steps
+            max_steps: max_steps,
+            user_id: identity[:user_id],
+            organization_id: identity[:organization_id]
           })
       end
     end
@@ -461,7 +573,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
              parent_depth: params.parent_depth,
              tape_module: params.tape_module,
              max_steps: params.max_steps,
-             inherit_context: params.inherit_context
+             inherit_context: params.inherit_context,
+             user_id: params[:user_id],
+             organization_id: params[:organization_id]
            }) do
       task_id = "task_#{:erlang.unique_integer([:positive])}"
       config = prepared.config
@@ -488,7 +602,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           max_steps: params.max_steps,
           system_prompt: system_prompt,
           tools: prepared.tools,
-          model: config.model
+          model: config.model,
+          user_id: params[:user_id],
+          organization_id: params[:organization_id]
         )
 
       Comms.publish(
@@ -522,35 +638,169 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     unless agent_id do
       {:error, "agent_id parameter is required"}
     else
-      pid = Worker.whereis(agent_id)
+      # Check lite tracker first (lightweight agents)
+      case LiteTracker.lookup(agent_id) do
+        nil ->
+          await_full_worker(agent_id, timeout_ms, timeout_secs)
 
-      unless pid do
-        {:error, "unknown agent: #{agent_id}"}
-      else
-        try do
-          case Worker.collect(pid, timeout_ms) do
-            {:ok, text} ->
-              # Stop the delegated worker
-              try do
-                GenServer.stop(pid, :normal, 5_000)
-              catch
-                :exit, _ -> :ok
-              end
-
-              {:ok, text}
-
-            {:error, reason} ->
-              {:error, "agent #{agent_id} failed: #{inspect(reason)}"}
+        _lite_entry ->
+          case LiteWorker.await(agent_id, timeout_ms) do
+            {:ok, text} -> {:ok, text}
+            {:error, reason} -> {:error, "lite agent #{agent_id} failed: #{reason}"}
           end
-        catch
-          :exit, {:timeout, _} ->
-            {:error,
-             "agent #{agent_id} timed out after #{timeout_secs}s (still running in background)"}
-
-          :exit, reason ->
-            {:error, "agent #{agent_id} exited: #{inspect(reason)}"}
-        end
       end
+    end
+  end
+
+  defp await_full_worker(agent_id, timeout_ms, timeout_secs) do
+    pid = Worker.whereis(agent_id)
+
+    unless pid do
+      {:error, "unknown agent: #{agent_id}"}
+    else
+      try do
+        case Worker.collect(pid, timeout_ms) do
+          {:ok, text} ->
+            try do
+              GenServer.stop(pid, :normal, 5_000)
+            catch
+              :exit, _ -> :ok
+            end
+
+            {:ok, text}
+
+          {:error, reason} ->
+            {:error, "agent #{agent_id} failed: #{inspect(reason)}"}
+        end
+      catch
+        :exit, {:timeout, _} ->
+          {:error,
+           "agent #{agent_id} timed out after #{timeout_secs}s (still running in background)"}
+
+        :exit, reason ->
+          {:error, "agent #{agent_id} exited: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  # --- Delegate lite implementation ---
+
+  defp execute_delegate_lite(args, session_id, parent_agent_id, ctx) do
+    task_prompt = arg(args, :task)
+    role_str = arg(args, :role) || "worker"
+    max_steps = arg(args, :max_steps) || 3
+
+    unless task_prompt do
+      {:error, "task parameter is required"}
+    else
+      role_atom =
+        if role_str in known_roles_cache(),
+          do: String.to_existing_atom(role_str),
+          else: :worker
+
+      agent_name = if role_atom in Rho.Config.agent_names(), do: role_atom, else: :default
+
+      # Resolve tools once from context — lite workers reuse them directly
+      tools = Rho.PluginRegistry.collect_tools(ctx)
+      tools = tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
+
+      case LiteWorker.start(
+             task: task_prompt,
+             parent_agent_id: parent_agent_id,
+             tools: tools,
+             role: agent_name,
+             max_steps: max_steps
+           ) do
+        {:ok, agent_id} ->
+          Comms.publish(
+            "rho.task.requested",
+            %{
+              session_id: session_id,
+              agent_id: agent_id,
+              parent_agent_id: parent_agent_id,
+              role: role_str,
+              task: task_prompt,
+              lite: true
+            },
+            source: "/session/#{session_id}/agent/#{parent_agent_id}"
+          )
+
+          {:ok,
+           "Lite agent #{agent_id} spawned (role: #{role_str}). " <>
+             "Use await_task(agent_id: \"#{agent_id}\") or await_all to get the result."}
+      end
+    end
+  end
+
+  # --- Await all implementation ---
+
+  defp execute_await_all(args, session_id) do
+    ids_raw = arg(args, :agent_ids) || "[]"
+    timeout_secs = arg(args, :timeout) || 300
+    timeout_ms = min(timeout_secs * 1000, @await_timeout)
+
+    ids =
+      case Jason.decode(ids_raw) do
+        {:ok, list} when is_list(list) -> list
+        _ -> []
+      end
+
+    if ids == [] do
+      {:error, "agent_ids must be a non-empty JSON array of strings"}
+    else
+      tasks =
+        Enum.map(ids, fn id ->
+          Task.async(fn ->
+            result = do_await_single(id, session_id, timeout_ms)
+            {id, result}
+          end)
+        end)
+
+      results = Task.await_many(tasks, timeout_ms + 5_000)
+
+      summary =
+        Map.new(results, fn {id, result} ->
+          case result do
+            {:ok, text} -> {id, %{"status" => "ok", "result" => text}}
+            {:error, reason} -> {id, %{"status" => "error", "error" => reason}}
+          end
+        end)
+
+      {:ok, Jason.encode!(summary)}
+    end
+  end
+
+  defp do_await_single(agent_id, _session_id, timeout_ms) do
+    # Check lite tracker first
+    case LiteTracker.lookup(agent_id) do
+      nil ->
+        # Full worker path
+        pid = Worker.whereis(agent_id)
+
+        unless pid do
+          {:error, "unknown agent: #{agent_id}"}
+        else
+          try do
+            case Worker.collect(pid, timeout_ms) do
+              {:ok, text} ->
+                try do
+                  GenServer.stop(pid, :normal, 5_000)
+                catch
+                  :exit, _ -> :ok
+                end
+
+                {:ok, text}
+
+              {:error, reason} ->
+                {:error, inspect(reason)}
+            end
+          catch
+            :exit, _ -> {:error, "timeout"}
+          end
+        end
+
+      _lite_entry ->
+        LiteWorker.await(agent_id, timeout_ms)
     end
   end
 
@@ -565,7 +815,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
          workspace,
          parent_depth,
          memory_mod,
-         _parent_emit
+         _parent_emit,
+         identity
        ) do
     role_str = arg(args, :role) || "worker"
     system_prompt_extra = arg(args, :system_prompt_extra)
@@ -578,7 +829,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
              workspace: workspace,
              parent_depth: parent_depth,
              tape_module: memory_mod,
-             max_steps: max_steps
+             max_steps: max_steps,
+             user_id: identity[:user_id],
+             organization_id: identity[:organization_id]
            }) do
       config = prepared.config
       base_prompt = config.system_prompt
@@ -604,7 +857,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           max_steps: max_steps,
           system_prompt: spawn_prompt,
           tools: prepared.tools,
-          model: config.model
+          model: config.model,
+          user_id: identity[:user_id],
+          organization_id: identity[:organization_id]
         )
 
       Comms.publish(
@@ -872,7 +1127,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         agent_id: agent_id,
         session_id: session_id,
         depth: child_depth,
-        sandbox: nil
+        sandbox: nil,
+        user_id: params[:user_id],
+        organization_id: params[:organization_id]
       }
 
       mount_tools = Rho.PluginRegistry.collect_tools(tool_context)
@@ -894,7 +1151,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   # --- Helpers ---
 
   defp arg(args, key) when is_atom(key) do
-    args[Atom.to_string(key)] || args[key]
+    args[key] || args[Atom.to_string(key)]
   end
 
   defp with_validated_agent(args, session_id, fun) do

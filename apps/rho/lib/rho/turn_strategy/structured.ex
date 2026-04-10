@@ -232,13 +232,31 @@ defmodule Rho.TurnStrategy.Structured do
         {:error, {:halt, reason}}
 
       {:cont, %{args: new_args}} ->
+        cast_args = Rho.ToolArgs.cast(new_args, tool_def.tool.parameter_schema)
         t0 = System.monotonic_time(:millisecond)
-        result = tool_def.execute.(new_args)
+        result = tool_def.execute.(cast_args, ctx)
         latency_ms = System.monotonic_time(:millisecond) - t0
 
         call = %{name: name, args: new_args, call_id: call_id}
         handle_tool_result(result, call, latency_ms, runtime)
     end
+  end
+
+  defp handle_tool_result(%Rho.ToolResponse{} = resp, call, latency_ms, runtime) do
+    output_str = resp.text || ""
+    result = apply_tool_result_in(call.name, output_str, runtime.context)
+
+    runtime.emit.(%{
+      type: :tool_result,
+      name: call.name,
+      status: :ok,
+      output: result,
+      call_id: call.call_id,
+      latency_ms: latency_ms,
+      effects: resp.effects
+    })
+
+    {:continue, build_tool_step_from_result(call.name, call.args, result)}
   end
 
   defp handle_tool_result({:final, output}, call, latency_ms, runtime) do

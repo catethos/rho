@@ -115,58 +115,31 @@ defmodule Rho.TurnStrategy.Direct do
             throw({:rho_transformer_halt, reason})
 
           {:cont, %{args: new_args}} ->
-            call = %{name: name, args: new_args, call_id: call_id}
+            cast_args =
+              if tool_def,
+                do: Rho.ToolArgs.cast(new_args, tool_def.tool.parameter_schema),
+                else: new_args
+
+            call = %{name: name, args: cast_args, call_id: call_id}
 
             task =
               Task.async(fn ->
                 if tool_def do
                   t0 = System.monotonic_time(:millisecond)
 
-                  case tool_def.execute.(new_args) do
-                    {:final, output} ->
-                      latency_ms = System.monotonic_time(:millisecond) - t0
-                      output_str = to_string(output)
+                  result = tool_def.execute.(cast_args, ctx)
+                  latency_ms = System.monotonic_time(:millisecond) - t0
 
-                      {output_str,
-                       %{
-                         type: :tool_result,
-                         name: name,
-                         status: :ok,
-                         output: output_str,
-                         call_id: call_id,
-                         latency_ms: latency_ms
-                       }, :final}
+                  :telemetry.execute(
+                    [:rho, :tool, :execute],
+                    %{duration_ms: latency_ms},
+                    %{
+                      tool_name: name,
+                      status: if(match?({:error, _}, result), do: :error, else: :ok)
+                    }
+                  )
 
-                    {:ok, output} ->
-                      latency_ms = System.monotonic_time(:millisecond) - t0
-                      output_str = to_string(output)
-
-                      {output_str,
-                       %{
-                         type: :tool_result,
-                         name: name,
-                         status: :ok,
-                         output: output_str,
-                         call_id: call_id,
-                         latency_ms: latency_ms
-                       }, :normal}
-
-                    {:error, reason} ->
-                      latency_ms = System.monotonic_time(:millisecond) - t0
-                      error_str = "Error: #{reason}"
-                      error_type = classify_tool_error(reason)
-
-                      {error_str,
-                       %{
-                         type: :tool_result,
-                         name: name,
-                         status: :error,
-                         output: to_string(reason),
-                         call_id: call_id,
-                         latency_ms: latency_ms,
-                         error_type: error_type
-                       }, :normal}
-                  end
+                  normalize_tool_result(result, name, call_id, latency_ms)
                 else
                   error_str = "Error: unknown tool #{name}"
 
@@ -252,6 +225,67 @@ defmodule Rho.TurnStrategy.Direct do
     {:rho_transformer_halt, reason} ->
       runtime.emit.(%{type: :error, reason: {:halt, reason}})
       {:error, {:halt, reason}}
+  end
+
+  # -- Tool result normalization --
+
+  defp normalize_tool_result(%Rho.ToolResponse{} = resp, name, call_id, latency_ms) do
+    output_str = resp.text || ""
+
+    {output_str,
+     %{
+       type: :tool_result,
+       name: name,
+       status: :ok,
+       output: output_str,
+       call_id: call_id,
+       latency_ms: latency_ms,
+       effects: resp.effects
+     }, :normal}
+  end
+
+  defp normalize_tool_result({:final, output}, name, call_id, latency_ms) do
+    output_str = to_string(output)
+
+    {output_str,
+     %{
+       type: :tool_result,
+       name: name,
+       status: :ok,
+       output: output_str,
+       call_id: call_id,
+       latency_ms: latency_ms
+     }, :final}
+  end
+
+  defp normalize_tool_result({:ok, output}, name, call_id, latency_ms) do
+    output_str = to_string(output)
+
+    {output_str,
+     %{
+       type: :tool_result,
+       name: name,
+       status: :ok,
+       output: output_str,
+       call_id: call_id,
+       latency_ms: latency_ms
+     }, :normal}
+  end
+
+  defp normalize_tool_result({:error, reason}, name, call_id, latency_ms) do
+    error_str = "Error: #{reason}"
+    error_type = classify_tool_error(reason)
+
+    {error_str,
+     %{
+       type: :tool_result,
+       name: name,
+       status: :error,
+       output: to_string(reason),
+       call_id: call_id,
+       latency_ms: latency_ms,
+       error_type: error_type
+     }, :normal}
   end
 
   # -- Helpers --

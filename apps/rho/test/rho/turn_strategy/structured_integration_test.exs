@@ -64,7 +64,7 @@ defmodule Rho.TurnStrategy.StructuredIntegrationTest do
           parameter_schema: [msg: [type: :string, required: true, doc: "Message to echo"]],
           callback: fn _args -> :ok end
         ),
-      execute: fn %{"msg" => msg} -> {:ok, "echoed: #{msg}"} end
+      execute: fn %{msg: msg}, _ctx -> {:ok, "echoed: #{msg}"} end
     }
   end
 

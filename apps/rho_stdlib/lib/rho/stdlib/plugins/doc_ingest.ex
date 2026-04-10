@@ -38,8 +38,8 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
-        path = args["file_path"] || args[:file_path]
+      execute: fn args, _ctx ->
+        path = args[:file_path]
 
         if is_nil(path) or path == "" do
           {:error, "file_path is required"}
@@ -47,7 +47,7 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
           path = Path.expand(path)
 
           if File.exists?(path) do
-            format = detect_format(args["format"] || args[:format], path)
+            format = detect_format(args[:format], path)
             extract(format, path)
           else
             {:error, "File not found: #{path}"}
@@ -108,7 +108,9 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
 
   defp extract_excel(path) do
     case Xlsxir.multi_extract(path) do
-      {:ok, tables} ->
+      results when is_list(results) ->
+        tables = for {:ok, table} <- results, do: table
+
         sheets =
           Enum.map(tables, fn table ->
             rows = Xlsxir.get_list(table)
@@ -141,13 +143,35 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
     end
   end
 
-  # --- PDF via pdftotext ---
+  # --- PDF via liteparse (preferred) or pdftotext (fallback) ---
 
   defp extract_pdf(path) do
+    case System.find_executable("lit") do
+      nil -> extract_pdf_pdftotext(path)
+      lit -> extract_pdf_liteparse(lit, path)
+    end
+  end
+
+  defp extract_pdf_liteparse(lit, path) do
+    case System.cmd(lit, ["parse", path, "--output", "text"], stderr_to_stdout: true) do
+      {text, 0} ->
+        {:ok, String.trim(text)}
+
+      {err, _code} ->
+        # Fall back to pdftotext if liteparse fails
+        case extract_pdf_pdftotext(path) do
+          {:ok, _} = ok -> ok
+          {:error, _} -> {:error, "liteparse failed: #{String.slice(err, 0, 500)}"}
+        end
+    end
+  end
+
+  defp extract_pdf_pdftotext(path) do
     case System.find_executable("pdftotext") do
       nil ->
         {:error,
-         "pdftotext not found. Install poppler-utils (brew install poppler / apt install poppler-utils)."}
+         "No PDF parser found. Install liteparse (npm install -g @llamaindex/liteparse) " <>
+           "or poppler-utils (brew install poppler / apt install poppler-utils)."}
 
       pdftotext ->
         case System.cmd(pdftotext, ["-layout", path, "-"], stderr_to_stdout: true) do
@@ -157,9 +181,26 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
     end
   end
 
-  # --- Word (.docx) via ZIP + XML ---
+  # --- Word (.docx) via liteparse (preferred) or ZIP + XML (fallback) ---
 
   defp extract_docx(path) do
+    case System.find_executable("lit") do
+      nil -> extract_docx_zip(path)
+      lit -> extract_docx_liteparse(lit, path)
+    end
+  end
+
+  defp extract_docx_liteparse(lit, path) do
+    case System.cmd(lit, ["parse", path, "--output", "text"], stderr_to_stdout: true) do
+      {text, 0} ->
+        {:ok, String.trim(text)}
+
+      {_err, _code} ->
+        extract_docx_zip(path)
+    end
+  end
+
+  defp extract_docx_zip(path) do
     charlist_path = String.to_charlist(path)
 
     case :zip.unzip(charlist_path, [:memory]) do

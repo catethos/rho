@@ -45,17 +45,16 @@ defmodule Rho.Comms.SignalBus do
         subject -> Map.put(signal_attrs, :subject, subject)
       end
 
-    signal_attrs =
-      case {Keyword.get(opts, :correlation_id), Keyword.get(opts, :causation_id)} do
-        {nil, nil} ->
-          signal_attrs
+    # Build extensions with required metadata + optional correlation/causation
+    extensions = %{
+      "emitted_at" => System.system_time(:millisecond)
+    }
 
-        {cor, cau} ->
-          extensions = %{}
-          extensions = if cor, do: Map.put(extensions, "correlation_id", cor), else: extensions
-          extensions = if cau, do: Map.put(extensions, "causation_id", cau), else: extensions
-          Map.put(signal_attrs, :extensions, extensions)
-      end
+    {cor, cau} = {Keyword.get(opts, :correlation_id), Keyword.get(opts, :causation_id)}
+    extensions = if cor, do: Map.put(extensions, "correlation_id", cor), else: extensions
+    extensions = if cau, do: Map.put(extensions, "causation_id", cau), else: extensions
+
+    signal_attrs = Map.put(signal_attrs, :extensions, extensions)
 
     with {:ok, signal} <- Jido.Signal.new(type, payload, signal_attrs),
          {:ok, _recorded} <- Jido.Signal.Bus.publish(@bus_name, [signal]) do

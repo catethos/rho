@@ -34,7 +34,7 @@ defmodule Rho.TurnStrategy.StructuredCorpusTest do
           parameter_schema: schema ++ [{:__extra__, [type: :any, required: false]}],
           callback: fn _ -> :ok end
         ),
-      execute: fn _ -> {:ok, "ok"} end
+      execute: fn _, _ctx -> {:ok, "ok"} end
     }
   end
 

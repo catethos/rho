@@ -24,10 +24,12 @@ rho-*.tar
 
 .env
 
-# Rho runtime session data
-/_rho/
+# Rho runtime session data (root + every umbrella app)
+_rho/
 
-# SQLite runtime database files
-/priv/rho.db
-/priv/rho.db-shm
-/priv/rho.db-wal
+# SQLite runtime database files (any app's priv/)
+**/priv/*.db
+**/priv/*.db-shm
+**/priv/*.db-wal
+
+data.xlsx

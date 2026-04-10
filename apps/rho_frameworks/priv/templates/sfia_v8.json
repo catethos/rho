@@ -1,0 +1,267 @@
+{
+  "name": "SFIA v8",
+  "description": "Skills Framework for the Information Age v8 — representative subset of core skills",
+  "source": "SFIA Foundation, https://sfia-online.org",
+  "skills": [
+    {
+      "category": "Strategy and Architecture",
+      "cluster": "Strategy and Planning",
+      "name": "IT Strategy and Planning",
+      "description": "Creating and maintaining a strategy to align IT plans with business objectives",
+      "proficiency_levels": [
+        {"level": 4, "level_name": "Enable", "level_description": "Contributes to the development of IT strategy, ensuring alignment with business plans. Translates business strategies into operational IT plans."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Leads the development and review of IT strategy. Ensures alignment between business and IT roadmaps. Communicates strategy to senior stakeholders."},
+        {"level": 6, "level_name": "Initiate/Influence", "level_description": "Directs the creation and governance of organizational IT strategy. Shapes policy and investment priorities across the enterprise."},
+        {"level": 7, "level_name": "Set Strategy", "level_description": "Sets the strategic direction for IT across the organization. Influences board-level decisions on technology investment and digital transformation."}
+      ]
+    },
+    {
+      "category": "Strategy and Architecture",
+      "cluster": "Strategy and Planning",
+      "name": "Enterprise Architecture",
+      "description": "Aligning business strategy with technology infrastructure through architectural blueprints",
+      "proficiency_levels": [
+        {"level": 4, "level_name": "Enable", "level_description": "Supports the creation of architectural models and blueprints. Ensures solutions conform to agreed enterprise architecture."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Develops enterprise architecture frameworks and roadmaps. Evaluates emerging technologies for strategic fit. Advises on architecture governance."},
+        {"level": 6, "level_name": "Initiate/Influence", "level_description": "Leads enterprise architecture practice. Defines architectural principles and standards. Ensures technology investments align with the target state."}
+      ]
+    },
+    {
+      "category": "Change and Transformation",
+      "cluster": "Change Management",
+      "name": "Change Management",
+      "description": "Planning and managing organizational change to achieve business outcomes",
+      "proficiency_levels": [
+        {"level": 3, "level_name": "Apply", "level_description": "Executes change management activities within a defined scope. Supports stakeholder engagement and communication plans."},
+        {"level": 4, "level_name": "Enable", "level_description": "Develops and implements change management plans for projects. Assesses change readiness and identifies resistance. Coaches teams through transitions."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Leads change management strategy for programmes and large initiatives. Builds organizational change capability. Measures adoption and benefits realization."},
+        {"level": 6, "level_name": "Initiate/Influence", "level_description": "Directs organizational change management practice. Integrates change management into enterprise governance. Shapes culture transformation strategy."}
+      ]
+    },
+    {
+      "category": "Development and Implementation",
+      "cluster": "Systems Development",
+      "name": "Software Design",
+      "description": "Specifying and designing software to meet defined requirements using agreed standards and tools",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Creates simple software designs for well-defined components under guidance. Uses established design patterns and standards."},
+        {"level": 3, "level_name": "Apply", "level_description": "Designs software components and modules. Applies design patterns, considers non-functional requirements. Produces detailed technical specifications."},
+        {"level": 4, "level_name": "Enable", "level_description": "Designs complete systems or significant subsystems. Selects appropriate patterns and technologies. Reviews others' designs for quality and standards compliance."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Leads software design for complex systems. Defines design standards and best practices. Mentors designers and evaluates architectural decisions for long-term maintainability."}
+      ]
+    },
+    {
+      "category": "Development and Implementation",
+      "cluster": "Systems Development",
+      "name": "Programming/Software Development",
+      "description": "Designing, coding, verifying, testing, documenting, amending, and refactoring programs and scripts",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Writes code for simple components using established standards. Performs basic debugging and unit testing under supervision."},
+        {"level": 3, "level_name": "Apply", "level_description": "Develops moderately complex software components independently. Writes clean, testable code. Performs code reviews and contributes to development standards."},
+        {"level": 4, "level_name": "Enable", "level_description": "Develops complex software systems. Leads technical implementation of features. Establishes coding standards, mentors junior developers, and ensures code quality across the team."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Sets development strategy and technical direction. Evaluates and introduces new technologies and practices. Ensures engineering excellence across multiple teams."}
+      ]
+    },
+    {
+      "category": "Development and Implementation",
+      "cluster": "Systems Development",
+      "name": "Systems Integration and Build",
+      "description": "Planning, implementing, and controlling activities to integrate and build system components",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Performs routine integration tasks using established tools and processes. Follows build procedures and documents results."},
+        {"level": 3, "level_name": "Apply", "level_description": "Designs and implements integration solutions for defined system components. Configures build pipelines and resolves integration issues."},
+        {"level": 4, "level_name": "Enable", "level_description": "Leads integration strategy for complex systems. Designs CI/CD pipelines. Ensures integration testing coverage and manages cross-team dependencies."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines enterprise integration strategy and standards. Evaluates integration platforms and approaches. Governs integration practices across the organization."}
+      ]
+    },
+    {
+      "category": "Development and Implementation",
+      "cluster": "Systems Development",
+      "name": "Testing",
+      "description": "Planning, designing, managing, executing, and reporting tests using appropriate testing tools and techniques",
+      "proficiency_levels": [
+        {"level": 1, "level_name": "Follow", "level_description": "Executes scripted test cases. Records results and defects. Follows established test procedures under close supervision."},
+        {"level": 2, "level_name": "Assist", "level_description": "Designs test cases for defined requirements. Performs functional testing and identifies defects. Assists in test planning activities."},
+        {"level": 3, "level_name": "Apply", "level_description": "Designs and executes test plans for systems and components. Applies testing techniques including boundary analysis and equivalence partitioning. Performs non-functional testing."},
+        {"level": 4, "level_name": "Enable", "level_description": "Leads test strategy for projects. Designs test automation frameworks. Manages testing across multiple teams and ensures adequate coverage for releases."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines organizational testing strategy and standards. Introduces testing innovations. Ensures quality assurance practices are embedded across the development lifecycle."}
+      ]
+    },
+    {
+      "category": "Delivery and Operation",
+      "cluster": "Service Management",
+      "name": "Incident Management",
+      "description": "Coordinating responses to reported service incidents, minimizing impact and restoring service",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Follows established incident management procedures. Logs and categorizes incidents. Escalates unresolved issues according to defined criteria."},
+        {"level": 3, "level_name": "Apply", "level_description": "Manages the lifecycle of incidents. Coordinates resolution activities and communicates with affected users. Identifies patterns and contributes to problem management."},
+        {"level": 4, "level_name": "Enable", "level_description": "Leads major incident management. Coordinates cross-team response, manages executive communication, and drives post-incident reviews. Improves incident processes."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines incident management strategy and governance. Establishes SLAs and escalation frameworks. Ensures organizational readiness for major incidents."}
+      ]
+    },
+    {
+      "category": "Delivery and Operation",
+      "cluster": "Service Management",
+      "name": "Problem Management",
+      "description": "Managing the lifecycle of problems to prevent incidents and minimize impact of unavoidable incidents",
+      "proficiency_levels": [
+        {"level": 3, "level_name": "Apply", "level_description": "Investigates assigned problems using root cause analysis techniques. Documents known errors and workarounds. Coordinates resolution activities."},
+        {"level": 4, "level_name": "Enable", "level_description": "Leads problem management for complex or cross-system issues. Identifies systemic patterns. Drives permanent fixes and validates their effectiveness."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines problem management strategy. Integrates problem management with incident, change, and knowledge management. Measures and reports on problem trends."}
+      ]
+    },
+    {
+      "category": "Delivery and Operation",
+      "cluster": "Technology Management",
+      "name": "Database Administration",
+      "description": "Installing, configuring, monitoring, maintaining, and improving the performance of databases",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Performs routine database maintenance tasks. Executes backups and monitors alerts under supervision. Follows established operational procedures."},
+        {"level": 3, "level_name": "Apply", "level_description": "Administers databases across environments. Performs performance tuning, manages access controls, and implements backup/recovery procedures independently."},
+        {"level": 4, "level_name": "Enable", "level_description": "Designs database architectures for complex systems. Leads database platform selection. Implements high availability and disaster recovery solutions. Mentors junior DBAs."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Sets database strategy and standards across the enterprise. Evaluates emerging database technologies. Ensures data platform capabilities meet current and future business needs."}
+      ]
+    },
+    {
+      "category": "Skills and Quality",
+      "cluster": "People Management",
+      "name": "Performance Management",
+      "description": "Improving organizational performance by developing the performance of individuals and workgroups",
+      "proficiency_levels": [
+        {"level": 4, "level_name": "Enable", "level_description": "Manages performance of individuals and teams against agreed objectives. Provides regular feedback. Identifies development needs and implements improvement plans."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Designs performance management frameworks and processes. Coaches managers in effective performance management. Aligns individual objectives with organizational strategy."},
+        {"level": 6, "level_name": "Initiate/Influence", "level_description": "Shapes organizational performance management culture and strategy. Ensures performance systems drive the right behaviors and outcomes at enterprise scale."}
+      ]
+    },
+    {
+      "category": "Skills and Quality",
+      "cluster": "People Management",
+      "name": "Learning and Development Management",
+      "description": "Providing learning and development processes to develop the skills needed by the organization",
+      "proficiency_levels": [
+        {"level": 3, "level_name": "Apply", "level_description": "Designs and delivers learning programmes for defined skill areas. Evaluates training effectiveness. Maintains learning content and resources."},
+        {"level": 4, "level_name": "Enable", "level_description": "Manages L&D programmes across teams or departments. Identifies organizational skill gaps. Commissions or creates targeted learning interventions."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Leads organizational L&D strategy. Builds learning culture. Ensures L&D investments align with workforce planning and business strategy."}
+      ]
+    },
+    {
+      "category": "Relationships and Engagement",
+      "cluster": "Stakeholder Management",
+      "name": "Stakeholder Relationship Management",
+      "description": "Influencing stakeholder attitudes, decisions, and actions for mutual benefit",
+      "proficiency_levels": [
+        {"level": 3, "level_name": "Apply", "level_description": "Manages relationships with defined stakeholder groups. Identifies their needs and concerns. Ensures regular communication and feedback channels."},
+        {"level": 4, "level_name": "Enable", "level_description": "Builds strategic relationships with key stakeholders. Manages expectations across multiple stakeholder groups. Negotiates agreements and resolves conflicts."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Leads stakeholder management strategy for major programmes or organizational change. Influences senior stakeholders. Builds trust at executive level."},
+        {"level": 6, "level_name": "Initiate/Influence", "level_description": "Shapes the organization's approach to stakeholder engagement. Manages relationships at board and executive level. Represents the organization externally."}
+      ]
+    },
+    {
+      "category": "Security and Risk",
+      "cluster": "Information Security",
+      "name": "Information Security",
+      "description": "Selecting, designing, justifying, implementing, and operating controls to maintain the security, confidentiality, and integrity of information",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Applies basic security controls and procedures. Monitors for security events. Follows security policies and reports potential incidents."},
+        {"level": 3, "level_name": "Apply", "level_description": "Implements security controls for systems and data. Conducts vulnerability assessments. Responds to security incidents following established procedures."},
+        {"level": 4, "level_name": "Enable", "level_description": "Designs security architectures and control frameworks. Leads security assessments and penetration testing programmes. Develops security policies and standards."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines organizational information security strategy. Governs security risk management. Ensures compliance with regulations and industry standards. Reports to senior leadership on security posture."}
+      ]
+    },
+    {
+      "category": "Data and Analytics",
+      "cluster": "Data Management",
+      "name": "Data Management",
+      "description": "Managing practices for the governance, protection, and exploitation of data assets",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Performs routine data management tasks. Maintains data quality through validation checks. Follows data governance procedures."},
+        {"level": 3, "level_name": "Apply", "level_description": "Implements data management processes across defined domains. Designs data models. Ensures data quality and integrity standards are met."},
+        {"level": 4, "level_name": "Enable", "level_description": "Leads data management for organizational domains. Designs data governance frameworks. Implements data lifecycle management and quality assurance programmes."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines enterprise data management strategy. Governs data assets across the organization. Ensures regulatory compliance for data protection and privacy."}
+      ]
+    },
+    {
+      "category": "Data and Analytics",
+      "cluster": "Data Management",
+      "name": "Data Analysis and Statistics",
+      "description": "Applying statistical and analytical techniques to data to deliver insights and support decision-making",
+      "proficiency_levels": [
+        {"level": 2, "level_name": "Assist", "level_description": "Performs basic data analysis using standard tools and techniques. Creates simple reports and visualizations. Cleans and prepares data under guidance."},
+        {"level": 3, "level_name": "Apply", "level_description": "Applies statistical techniques to analyse complex datasets. Builds analytical models. Communicates insights and recommendations to stakeholders."},
+        {"level": 4, "level_name": "Enable", "level_description": "Leads analytical projects. Selects appropriate statistical methods and modelling techniques. Designs analytical frameworks. Mentors analysts and ensures quality of insights."},
+        {"level": 5, "level_name": "Ensure/Advise", "level_description": "Defines organizational analytics strategy. Evaluates and introduces advanced analytical capabilities. Ensures analytics outputs drive business decisions at executive level."}
+      ]
+    }
+  ],
+  "role_profiles": [
+    {
+      "name": "Software Engineer",
+      "role_family": "Engineering",
+      "seniority_level": 3,
+      "seniority_label": "Senior",
+      "purpose": "Designs, builds, and maintains software systems that meet business requirements",
+      "skills": [
+        {"skill_name": "Programming/Software Development", "min_expected_level": 4, "required": true},
+        {"skill_name": "Software Design", "min_expected_level": 4, "required": true},
+        {"skill_name": "Systems Integration and Build", "min_expected_level": 3, "required": true},
+        {"skill_name": "Testing", "min_expected_level": 3, "required": true},
+        {"skill_name": "Information Security", "min_expected_level": 2, "required": false}
+      ]
+    },
+    {
+      "name": "Data Engineer",
+      "role_family": "Engineering",
+      "seniority_level": 3,
+      "seniority_label": "Senior",
+      "purpose": "Designs and maintains data pipelines, storage, and infrastructure for analytics and operations",
+      "skills": [
+        {"skill_name": "Database Administration", "min_expected_level": 4, "required": true},
+        {"skill_name": "Data Management", "min_expected_level": 4, "required": true},
+        {"skill_name": "Data Analysis and Statistics", "min_expected_level": 3, "required": true},
+        {"skill_name": "Programming/Software Development", "min_expected_level": 3, "required": true},
+        {"skill_name": "Systems Integration and Build", "min_expected_level": 3, "required": false}
+      ]
+    },
+    {
+      "name": "IT Security Analyst",
+      "role_family": "Security",
+      "seniority_level": 2,
+      "seniority_label": "Mid",
+      "purpose": "Protects organizational information assets by implementing and monitoring security controls",
+      "skills": [
+        {"skill_name": "Information Security", "min_expected_level": 3, "required": true},
+        {"skill_name": "Incident Management", "min_expected_level": 3, "required": true},
+        {"skill_name": "Problem Management", "min_expected_level": 3, "required": false},
+        {"skill_name": "Stakeholder Relationship Management", "min_expected_level": 3, "required": false}
+      ]
+    },
+    {
+      "name": "Enterprise Architect",
+      "role_family": "Architecture",
+      "seniority_level": 4,
+      "seniority_label": "Staff",
+      "purpose": "Defines and governs enterprise technology strategy and architectural standards",
+      "skills": [
+        {"skill_name": "Enterprise Architecture", "min_expected_level": 5, "required": true},
+        {"skill_name": "IT Strategy and Planning", "min_expected_level": 5, "required": true},
+        {"skill_name": "Stakeholder Relationship Management", "min_expected_level": 4, "required": true},
+        {"skill_name": "Change Management", "min_expected_level": 4, "required": false},
+        {"skill_name": "Information Security", "min_expected_level": 3, "required": false}
+      ]
+    },
+    {
+      "name": "Engineering Manager",
+      "role_family": "Management",
+      "seniority_level": 4,
+      "seniority_label": "Staff",
+      "purpose": "Leads engineering teams, manages performance, and ensures delivery of quality software",
+      "skills": [
+        {"skill_name": "Performance Management", "min_expected_level": 4, "required": true},
+        {"skill_name": "Learning and Development Management", "min_expected_level": 4, "required": true},
+        {"skill_name": "Stakeholder Relationship Management", "min_expected_level": 4, "required": true},
+        {"skill_name": "Programming/Software Development", "min_expected_level": 3, "required": false},
+        {"skill_name": "Change Management", "min_expected_level": 3, "required": false}
+      ]
+    }
+  ]
+}

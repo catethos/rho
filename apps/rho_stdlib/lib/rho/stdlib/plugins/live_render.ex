@@ -119,15 +119,15 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
+      execute: fn args, _ctx ->
         execute_present_ui(args, context, catalog, max_bytes)
       end
     }
   end
 
   defp execute_present_ui(args, context, catalog, max_bytes) do
-    raw_spec = args["spec"] || args[:spec]
-    title = args["title"] || args[:title]
+    raw_spec = args[:spec]
+    title = args[:title]
 
     # Parse string-encoded specs (some models serialize nested objects as strings)
     # Check size before decoding to avoid redundant encode in validate_size

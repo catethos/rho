@@ -133,7 +133,7 @@ end
 - Reuse `ChatComponents.chat_feed/1`, `chat_input_with_upload/1`, `message_row/1`, `tool_call_row/1`
 - Subscribe to Rho signal bus for the session (same pattern as SessionLive)
 - Use `SessionProjection` for projecting agent events into chat assigns
-- `handle_event("send_message", ...)` → `Rho.Session.submit(session_id, message)`
+- `handle_event("send_message", ...)` → `Rho.Agent.Worker.submit(pid, message)` (pid via `Rho.Agent.Primary.whereis/1`)
 
 ### Step 5: Spreadsheet Mount
 

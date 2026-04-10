@@ -28,15 +28,15 @@ defmodule Rho.Stdlib.Tools.FsEdit do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, workspace) end
+      execute: fn args, _ctx -> execute(args, workspace) end
     }
   end
 
   defp execute(args, workspace) do
-    path = args["path"] || args[:path]
-    old = args["old"] || args[:old]
-    new_text = args["new"] || args[:new]
-    start = args["start"] || args[:start] || 0
+    path = args[:path]
+    old = args[:old]
+    new_text = args[:new]
+    start = args[:start] || 0
 
     full_path = Rho.Stdlib.Tools.PathUtils.resolve_path(workspace, path)
     content = File.read!(full_path)

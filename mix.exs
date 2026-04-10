@@ -6,6 +6,8 @@ defmodule Rho.Umbrella.MixProject do
       apps_path: "apps",
       version: "0.2.0",
       start_permanent: Mix.env() == :prod,
+      consolidate_protocols: Mix.env() != :dev,
+      listeners: [Phoenix.CodeReloader],
       deps: deps(),
       aliases: aliases()
     ]

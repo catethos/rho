@@ -141,14 +141,19 @@ defmodule Rho.Agent.Primary do
     result =
       case whereis(session_id) do
         nil ->
-          worker_opts = [
-            agent_id: agent_id(session_id),
-            session_id: session_id,
-            workspace: workspace,
-            agent_name: opts[:agent_name] || :default,
-            role: :primary,
-            user_id: opts[:user_id]
-          ]
+          worker_opts =
+            [
+              agent_id: agent_id(session_id),
+              session_id: session_id,
+              workspace: workspace,
+              agent_name: opts[:agent_name] || :default,
+              role: :primary,
+              user_id: opts[:user_id],
+              organization_id: opts[:organization_id]
+            ]
+            |> then(fn wo ->
+              if opts[:tape_ref], do: Keyword.put(wo, :tape_ref, opts[:tape_ref]), else: wo
+            end)
 
           case Rho.Agent.Supervisor.start_worker(worker_opts) do
             {:ok, pid} -> {:ok, pid}

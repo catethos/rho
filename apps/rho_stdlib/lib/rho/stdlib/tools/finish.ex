@@ -18,8 +18,8 @@ defmodule Rho.Stdlib.Tools.Finish do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args ->
-        {:final, args["result"] || args[:result] || "done"}
+      execute: fn args, _ctx ->
+        {:final, args[:result] || "done"}
       end
     }
   end

@@ -1,3 +1,9 @@
+> **Superseded.** This refactor is complete. Mounts are now `Rho.Plugin`,
+> lifecycle hooks are `Rho.Transformer` (6 typed stages), `Rho.MountInstance`
+> is `Rho.PluginInstance`, `Rho.MountRegistry` is `Rho.PluginRegistry`,
+> `Rho.Mount.Context` is `Rho.Context`, and `Rho.Lifecycle` is deleted.
+> See CLAUDE.md for current architecture.
+
 # Rho — Mount Architecture Refactor Plan
 
 ## Executive Summary
@@ -1145,8 +1151,8 @@ Key implementation detail: `innerHTML` doesn't execute `<script>` tags. When the
 
 Claude's widgets have a `sendPrompt(text)` function that lets interactive elements send messages to the chat. In Rho, this maps to the transport's existing submit path:
 
-- **Web**: `sendPrompt()` calls `window.glimpse?.send({type: 'prompt', text})` or the WebSocket directly, which routes to `Rho.Session.submit/2`
-- **CLI**: the native window sends a JSON message through the port, which the CLI GenServer routes to `Session.submit/2`
+- **Web**: `sendPrompt()` calls `window.glimpse?.send({type: 'prompt', text})` or the WebSocket directly, which routes to `Rho.Agent.Worker.submit/3`
+- **CLI**: the native window sends a JSON message through the port, which the CLI GenServer routes to `Rho.Agent.Worker.submit/3`
 
 This enables compound interactions: a widget showing analysis results with a "Dig deeper into section 3" button that automatically submits a follow-up prompt.
 

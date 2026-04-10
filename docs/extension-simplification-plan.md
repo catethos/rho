@@ -1,3 +1,6 @@
+> **Superseded.** Extensions are now unified under `Rho.Plugin` (contribution)
+> and `Rho.Transformer` (pipeline). See CLAUDE.md for current architecture.
+
 # Extension System Simplification Plan
 
 ## Problem Statement

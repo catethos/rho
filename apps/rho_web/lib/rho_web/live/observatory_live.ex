@@ -11,7 +11,7 @@ defmodule RhoWeb.ObservatoryLive do
   # Landing page — no session yet
   @impl true
   def mount(_params, _session, %{assigns: %{live_action: :new}} = socket) do
-    sessions = list_known_sessions()
+    sessions = if connected?(socket), do: list_known_sessions(), else: []
 
     {:ok,
      assign(socket,
@@ -25,7 +25,7 @@ defmodule RhoWeb.ObservatoryLive do
        round: 0,
        bus_subs: [],
        sessions: sessions
-     ), layout: {RhoWeb.Layouts, :app}}
+     )}
   end
 
   # Observatory with session
@@ -35,7 +35,7 @@ defmodule RhoWeb.ObservatoryLive do
         do_mount_with_session(sid, session, socket)
 
       {:error, _} ->
-        {:ok, push_navigate(socket, to: "/observatory"), layout: {RhoWeb.Layouts, :app}}
+        {:ok, push_navigate(socket, to: "/observatory")}
     end
   end
 
@@ -84,9 +84,9 @@ defmodule RhoWeb.ObservatoryLive do
         |> hydrate_from_registry(sid)
         |> hydrate_from_event_log(sid)
 
-      {:ok, socket, layout: {RhoWeb.Layouts, :app}}
+      {:ok, socket}
     else
-      {:ok, socket, layout: {RhoWeb.Layouts, :app}}
+      {:ok, socket}
     end
   end
 
@@ -324,7 +324,7 @@ defmodule RhoWeb.ObservatoryLive do
     if File.exists?(jsonl) do
       skip_types = ~w(llm_usage step_start llm_text text_delta ui_spec ui_spec_delta)
 
-      events =
+      queue =
         jsonl
         |> File.stream!()
         |> Stream.map(fn line ->
@@ -339,15 +339,13 @@ defmodule RhoWeb.ObservatoryLive do
           short = type |> String.split(".") |> List.last()
           short in skip_types
         end)
-        |> Enum.map(fn event ->
+        |> Enum.reduce(:queue.new(), fn event, q ->
           type = event["type"] || ""
           data = atomize_keys(event["data"] || %{})
-          {type, data}
+          :queue.in({type, data}, q)
         end)
 
-      Logger.info("[Observatory] Queued #{length(events)} events for replay")
-
-      queue = :queue.from_list(events)
+      Logger.info("[Observatory] Queued #{:queue.len(queue)} events for replay")
 
       # Start the replay timer
       Process.send_after(self(), :replay_tick, 50)
@@ -550,10 +548,9 @@ defmodule RhoWeb.ObservatoryLive do
       {:ok, %{size: 0}} ->
         0
 
-      {:ok, _} ->
-        path
-        |> File.stream!()
-        |> Enum.count()
+      {:ok, %{size: size}} ->
+        # Approximate event count; average JSONL line is ~120 bytes
+        div(size, 120)
 
       {:error, _} ->
         0

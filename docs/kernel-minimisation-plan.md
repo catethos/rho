@@ -1,3 +1,9 @@
+> **Partially superseded.** The execution plane cleanup is complete:
+> `Rho.Reasoner` is now `Rho.TurnStrategy`, `Rho.Lifecycle` is deleted,
+> `Rho.Mount.Context` is `Rho.Context`. Some kernel-minimisation goals
+> (removing hardcoded tool names, subagent special-casing) are done.
+> See CLAUDE.md.
+
 # Kernel Minimisation Plan
 
 ## Motivation
@@ -379,7 +385,7 @@ This was chosen over two alternatives:
 **Changes**:
 
 1. CLI and web adapters subscribe to the signal bus instead of calling `Worker.subscribe/2`.
-   - CLI: replace `Rho.Session.subscribe(session_id)` with `Comms.subscribe(Topics.events_topic(session_id))` (uses Phase 3's `Topics` module).
+   - CLI: subscribe via `Rho.Comms.subscribe("rho.session.#{session_id}.events.*")`.
    - Web (`session_live.ex`): same pattern.
 2. Remove `subscribers` map, `subscribe/unsubscribe` API, and process monitoring from Worker.
 3. Remove direct `send(pid, {:session_event, ...})` from the emit function.

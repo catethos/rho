@@ -7,6 +7,7 @@ defmodule RhoWeb.Application do
   def start(_type, _args) do
     children = [
       {Phoenix.PubSub, name: Rho.PubSub},
+      RhoWeb.FinchTelemetry,
       RhoWeb.Observatory,
       RhoWeb.Endpoint
     ]

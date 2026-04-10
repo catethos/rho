@@ -1,5 +1,14 @@
 # Schema-Aligned Parsing (SAP) — Implementation Plan
 
+> **Vocabulary note (post-refactor).** This plan was drafted when the
+> codebase used `Rho.Reasoner` / `MountRegistry` / "mount hook". Those
+> names have since moved: `Rho.Reasoner` → `Rho.TurnStrategy`,
+> `Rho.Reasoner.Structured` → `Rho.TurnStrategy.Structured`,
+> `MountRegistry` → `PluginRegistry`, and "mount hook" is now a typed
+> stage on `Rho.Transformer`. SAP emits `:sap_repairs` operational
+> signals on the bus. See `CLAUDE.md` §"Migration from Mount/Memory/Reasoner"
+> for the full alias table.
+
 Goal: make the structured reasoner competitive with native tool-use on weak
 models and strictly better on strong ones by treating parsing as a
 schema-guided *repair* problem, not a syntax-recovery problem.

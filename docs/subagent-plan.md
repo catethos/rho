@@ -1,3 +1,7 @@
+> **Superseded.** `Rho.Plugins.Subagent.Worker` and `.Supervisor` have been
+> absorbed into `Rho.Agent.Worker` and `Rho.Agent.Supervisor`. Multi-agent
+> coordination now lives in `Rho.Mounts.MultiAgent`. See CLAUDE.md.
+
 # Subagent Plugin Implementation Plan
 
 ## Overview

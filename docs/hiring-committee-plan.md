@@ -441,7 +441,7 @@ defmodule Rho.Demos.Hiring.Simulation do
 
     evaluators =
       Map.new(roles, fn role ->
-        agent_id = Rho.Session.new_agent_id()
+        agent_id = Rho.Agent.Primary.new_agent_id()
         config = Rho.Config.agent(role)
 
         # Build tools: multi-agent tools + submit_scores

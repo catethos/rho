@@ -12,6 +12,7 @@ defmodule RhoWeb.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      listeners: [Phoenix.CodeReloader],
       deps: deps()
     ]
   end
@@ -39,7 +40,8 @@ defmodule RhoWeb.MixProject do
       {:plug, "~> 1.16"},
       {:bcrypt_elixir, "~> 3.0"},
       {:jason, "~> 1.4"},
-      {:mimic, "~> 1.10", only: :test}
+      {:mimic, "~> 1.10", only: :test},
+      {:phoenix_live_reload, "~> 1.5", only: :dev}
     ]
   end
 end

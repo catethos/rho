@@ -207,7 +207,7 @@ mix test --app rho_stdlib                     # stdlib only
 | `:step_budget` | `Rho.Stdlib.Plugins.StepBudget` |
 | `:live_render` | `Rho.Stdlib.Plugins.LiveRender` |
 | `:py_agent` | `Rho.Stdlib.Plugins.PyAgent` |
-| `:spreadsheet` | `Rho.Stdlib.Plugins.Spreadsheet` |
+| `:data_table` | `Rho.Stdlib.Plugins.DataTable` |
 | `:doc_ingest` | `Rho.Stdlib.Plugins.DocIngest` |
 | `:tape` / `:journal` | `Rho.Stdlib.Plugins.Tape` |
 | `:control` | `Rho.Stdlib.Plugins.Control` |

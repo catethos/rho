@@ -7,7 +7,7 @@
     <title>Rho</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Fragment+Mono:wght@400&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
       <%= Phoenix.HTML.raw(RhoWeb.InlineCSS.css()) %>
     </style>
@@ -25,7 +25,16 @@
         var token = csrfToken ? csrfToken.getAttribute("content") : "";
         var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
           params: { _csrf_token: token },
-          hooks: window.RhoHooks || {}
+          hooks: window.RhoHooks || {},
+          dom: {
+            onBeforeElUpdated: function(from, to) {
+              if (from.getAttribute && from.getAttribute("phx-hook") === "Markdown") {
+                // Copy hook-rendered children to the target so morphdom preserves them.
+                // LiveView will still update attributes (data-md), triggering the hook's updated().
+                Array.from(from.childNodes).forEach(function(n) { to.appendChild(n.cloneNode(true)); });
+              }
+            }
+          }
         });
         liveSocket.connect();
         window.liveSocket = liveSocket;

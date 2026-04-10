@@ -9,10 +9,13 @@ defmodule RhoFrameworks.Accounts.User do
     field(:email, :string)
     field(:hashed_password, :string, redact: true)
     field(:display_name, :string)
+    field(:context, :string)
 
     field(:password, :string, virtual: true, redact: true)
 
-    has_many(:frameworks, RhoFrameworks.Frameworks.Framework)
+    has_many(:role_profiles, RhoFrameworks.Frameworks.RoleProfile, foreign_key: :created_by_id)
+    has_many(:memberships, RhoFrameworks.Accounts.Membership)
+    has_many(:organizations, through: [:memberships, :organization])
 
     timestamps(type: :utc_datetime)
   end
@@ -37,7 +40,7 @@ defmodule RhoFrameworks.Accounts.User do
     |> validate_required([:email])
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/, message: "must have the @ sign and no spaces")
     |> validate_length(:email, max: 160)
-    |> unsafe_validate_unique(:email, Rho.Repo)
+    |> unsafe_validate_unique(:email, RhoFrameworks.Repo)
     |> unique_constraint(:email)
   end
 
@@ -58,6 +61,12 @@ defmodule RhoFrameworks.Accounts.User do
     else
       changeset
     end
+  end
+
+  @doc "Changeset for updating profile fields."
+  def profile_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:display_name, :context])
   end
 
   @doc "Verifies the password against the hashed password."

@@ -1,3 +1,7 @@
+> **Superseded.** `Rho.Session` has been collapsed into `Rho.Agent.Primary` +
+> `Rho.Agent.Worker` + `Rho.Agent.Registry`. The session namespace no longer
+> exists as a module. See CLAUDE.md migration appendix.
+
 # Plan: Decouple Agents from Channels
 
 ## Inspiration: Bub's Architecture
@@ -533,10 +537,10 @@ defmodule Rho.CLI do
 
   def handle_cast({:start, session_id, stop_event, opts}, state) do
     # Ensure session exists
-    {:ok, _pid} = Rho.Session.ensure_started(session_id, opts)
+    {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, opts)
 
     # Subscribe this GenServer to session events
-    Rho.Session.subscribe(session_id)
+    Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
 
     # Start REPL loop
     gl = opts[:group_leader]
@@ -564,7 +568,8 @@ defmodule Rho.CLI do
 
   # REPL submitted a line
   def handle_info({:submit, content}, state) do
-    {:ok, turn_id} = Rho.Session.submit(state.session_id, content)
+    pid = Rho.Agent.Primary.whereis(state.session_id)
+    {:ok, turn_id} = Rho.Agent.Worker.submit(pid, content)
     {:noreply, %{state | current_turn_id: turn_id}}
   end
 
@@ -655,11 +660,12 @@ No `Channel.Manager`. No `listen_and_run`. Direct.
 
 ```elixir
 # On session.create / session.resume:
-Rho.Session.ensure_started(session_id, workspace: workspace)
-Rho.Session.subscribe(session_id)
+Rho.Agent.Primary.ensure_started(session_id, workspace: workspace)
+Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
 
 # On message:
-{:ok, turn_id} = Rho.Session.submit(session_id, content, opts)
+pid = Rho.Agent.Primary.whereis(session_id)
+{:ok, turn_id} = Rho.Agent.Worker.submit(pid, content, opts)
 # No Task spawn, no callbacks, no closures
 
 # In handle_info:
@@ -676,7 +682,8 @@ end
 ```elixir
 # Synchronous endpoint — uses ask/3
 post "/sessions/:id/messages" do
-  result = Rho.Session.ask(session_id, content)
+  pid = Rho.Agent.Primary.whereis(session_id)
+  result = Rho.Agent.Worker.ask(pid, content)
   case result do
     {:ok, text} -> json(conn, 200, %{response: text})
     {:error, reason} -> json(conn, 500, %{error: to_string(reason)})
@@ -772,7 +779,7 @@ working. New code can use `Rho.Session` API.
 
 ### Phase 3: Migrate Web Socket to `Rho.Session` API
 
-- Socket uses `Rho.Session.ensure_started` + `subscribe` + `submit`
+- Socket uses `Rho.Agent.Primary.ensure_started` + `Rho.Comms.subscribe` + `Rho.Agent.Worker.submit`
 - Handle `{:session_event, ...}` in `handle_info` for rendering
 - Remove Task spawn with callback closures
 - Remove `{:agent_text, ...}`, `{:agent_event, ...}`, `{:agent_done, ...}` handlers
@@ -781,7 +788,7 @@ working. New code can use `Rho.Session` API.
 
 **Files changed:**
 - `lib/rho/web/socket.ex`
-- `lib/rho/web/api_router.ex` (use `Rho.Session.ask` for sync endpoint)
+- `lib/rho/web/api_router.ex` (use `Rho.Agent.Worker.ask` for sync endpoint)
 
 ### Phase 4: Migrate CLI to `Rho.Session` API
 
@@ -898,7 +905,7 @@ mix rho.chat
 
 ```
 CLI / Web Socket / HTTP
-  → Rho.Session.submit (returns immediately)
+  → Rho.Agent.Worker.submit (returns immediately)
     → Session.Server starts Task
       → AgentLoop (single emit callback, no display logic)
         → events sent directly to subscriber pids

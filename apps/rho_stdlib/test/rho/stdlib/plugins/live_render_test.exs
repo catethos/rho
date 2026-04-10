@@ -18,7 +18,7 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
       assert length(tools) == 1
       assert %{tool: tool, execute: execute} = hd(tools)
       assert tool.name == "present_ui"
-      assert is_function(execute, 1)
+      assert is_function(execute, 2)
     end
 
     test "returns no tools at depth > 0" do
@@ -47,7 +47,7 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
     test "validates missing spec" do
       context = %{depth: 0, session_id: "s1", agent_id: "a1"}
       [%{execute: execute}] = LiveRender.tools([], context)
-      assert {:error, "spec parameter is required"} = execute.(%{})
+      assert {:error, "spec parameter is required"} = execute.(%{}, %{})
     end
 
     test "validates missing root" do
@@ -55,7 +55,7 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
       [%{execute: execute}] = LiveRender.tools([], context)
 
       bad_spec = %{"elements" => %{}}
-      assert {:error, "spec must contain a 'root' key"} = execute.(%{"spec" => bad_spec})
+      assert {:error, "spec must contain a 'root' key"} = execute.(%{spec: bad_spec}, %{})
     end
 
     test "validates missing elements" do
@@ -63,7 +63,9 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
       [%{execute: execute}] = LiveRender.tools([], context)
 
       bad_spec = %{"root" => "main"}
-      assert {:error, "spec must contain an 'elements' map"} = execute.(%{"spec" => bad_spec})
+
+      assert {:error, "spec must contain an 'elements' map"} =
+               execute.(%{spec: bad_spec}, %{})
     end
 
     test "validates unknown component types" do
@@ -77,21 +79,21 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
         }
       }
 
-      assert {:error, msg} = execute.(%{"spec" => bad_spec})
+      assert {:error, msg} = execute.(%{spec: bad_spec}, %{})
       assert msg =~ "unknown component types: nonexistent_widget"
     end
 
     test "validates spec size" do
       context = %{depth: 0, session_id: "s1", agent_id: "a1"}
       [%{execute: execute}] = LiveRender.tools([max_spec_bytes: 10], context)
-      assert {:error, msg} = execute.(%{"spec" => @valid_spec})
+      assert {:error, msg} = execute.(%{spec: @valid_spec}, %{})
       assert msg =~ "exceeds maximum size"
     end
 
     test "accepts valid spec without session (no signal emitted)" do
       context = %{depth: 0, session_id: nil, agent_id: "a1"}
       [%{execute: execute}] = LiveRender.tools([], context)
-      assert {:ok, "UI rendered successfully."} = execute.(%{"spec" => @valid_spec})
+      assert {:ok, "UI rendered successfully."} = execute.(%{spec: @valid_spec}, %{})
     end
   end
 end

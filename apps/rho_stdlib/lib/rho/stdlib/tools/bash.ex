@@ -16,7 +16,7 @@ defmodule Rho.Stdlib.Tools.Bash do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, workspace) end
+      execute: fn args, _ctx -> execute(args, workspace) end
     }
   end
 

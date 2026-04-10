@@ -45,26 +45,41 @@ defmodule RhoWeb.Router do
     delete("/users/log_out", UserSessionController, :delete)
   end
 
-  # Protected routes (require login)
+  pipeline :load_organization do
+    plug(RhoWeb.Plugs.LoadOrganization)
+  end
+
+  # Org-scoped protected routes
+  scope "/orgs/:org_slug", RhoWeb do
+    pipe_through([:browser, :require_authenticated_user, :load_organization])
+
+    live_session :org_authenticated,
+      layout: {RhoWeb.Layouts, :app},
+      on_mount: [
+        {RhoWeb.UserAuth, :ensure_authenticated},
+        {RhoWeb.UserAuth, :ensure_org_member}
+      ] do
+      live("/roles", RoleProfileListLive, :index)
+      live("/roles/:id", RoleProfileShowLive, :show)
+      live("/libraries", SkillLibraryLive, :index)
+      live("/libraries/:id", SkillLibraryShowLive, :show)
+      live("/chat/:session_id", SessionLive, :show)
+      live("/chat", SessionLive, :new)
+      live("/observatory/:session_id", ObservatoryLive, :show)
+      live("/observatory", ObservatoryLive, :new)
+      live("/settings", OrgSettingsLive, :index)
+      live("/members", OrgMembersLive, :index)
+    end
+  end
+
+  # Protected routes (no org context)
   scope "/", RhoWeb do
     pipe_through([:browser, :require_authenticated_user])
 
     live_session :authenticated,
+      layout: {RhoWeb.Layouts, :app},
       on_mount: [{RhoWeb.UserAuth, :ensure_authenticated}] do
-      live("/spreadsheet/:session_id", SpreadsheetLive, :show)
-      live("/spreadsheet", SpreadsheetLive, :new)
-      live("/frameworks", FrameworkListLive, :index)
-      live("/frameworks/:id", FrameworkShowLive, :show)
+      live("/", OrgPickerLive, :index)
     end
-  end
-
-  # Public routes (no auth required)
-  scope "/", RhoWeb do
-    pipe_through(:browser)
-
-    live("/observatory/:session_id", ObservatoryLive, :show)
-    live("/observatory", ObservatoryLive, :new)
-    live("/session/:session_id", SessionLive, :show)
-    live("/", SessionLive, :new)
   end
 end

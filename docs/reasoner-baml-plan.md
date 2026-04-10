@@ -12,6 +12,14 @@ and `Rho.Parse.Lenient` was redirected to streaming UX — see
 This plan remains as a historical record of the design
 intent and corpus-building work.
 
+> **Vocabulary note (post-refactor).** References to
+> `Rho.Reasoner` / `Rho.Reasoner.{Direct,Structured,Tagged}` in this
+> document predate the Reasoner → TurnStrategy rename. Current
+> canonical names: `Rho.TurnStrategy`, `Rho.TurnStrategy.Direct`,
+> `Rho.TurnStrategy.Structured`. `MountRegistry` → `PluginRegistry`.
+> See `CLAUDE.md` §"Migration from Mount/Memory/Reasoner" for the
+> alias table.
+
 ---
 
 ## Status — 2026-04-05 (late)

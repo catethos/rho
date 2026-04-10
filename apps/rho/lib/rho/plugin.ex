@@ -22,7 +22,7 @@ defmodule Rho.Plugin do
 
   @type tool_def :: %{
           tool: ReqLLM.Tool.t(),
-          execute: (map() -> {:ok, String.t()} | {:error, term()})
+          execute: (map(), context() -> {:ok, String.t()} | {:error, term()})
         }
 
   @type binding :: %{

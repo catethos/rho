@@ -10,6 +10,11 @@ defmodule RhoFrameworks.Application do
     ]
 
     opts = [strategy: :one_for_one, name: RhoFrameworks.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # Register identity plugin after Repo is up
+    Rho.PluginRegistry.register(RhoFrameworks.IdentityPlugin)
+
+    result
   end
 end

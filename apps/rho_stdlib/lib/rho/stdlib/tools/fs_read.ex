@@ -26,14 +26,14 @@ defmodule Rho.Stdlib.Tools.FsRead do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, workspace) end
+      execute: fn args, _ctx -> execute(args, workspace) end
     }
   end
 
   defp execute(args, workspace) do
-    path = args["path"] || args[:path]
-    offset = args["offset"] || args[:offset] || 0
-    limit = args["limit"] || args[:limit]
+    path = args[:path]
+    offset = args[:offset] || 0
+    limit = args[:limit]
 
     full_path = Rho.Stdlib.Tools.PathUtils.resolve_path(workspace, path)
 

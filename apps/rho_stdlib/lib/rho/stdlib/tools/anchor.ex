@@ -29,14 +29,14 @@ defmodule Rho.Stdlib.Tools.Anchor do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, tape_name) end
+      execute: fn args, _ctx -> execute(args, tape_name) end
     }
   end
 
   defp execute(args, tape_name) do
-    name = args["name"] || args[:name] || "checkpoint"
-    summary = args["summary"] || args[:summary] || ""
-    next_steps = args["next_steps"] || args[:next_steps] || []
+    name = args[:name] || "checkpoint"
+    summary = args[:summary] || ""
+    next_steps = args[:next_steps] || []
 
     case Rho.Tape.Service.handoff(tape_name, name, summary, next_steps: next_steps) do
       {:ok, _entry} ->

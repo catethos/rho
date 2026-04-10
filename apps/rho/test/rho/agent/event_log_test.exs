@@ -162,6 +162,55 @@ defmodule Rho.Agent.EventLogTest do
     end
   end
 
+  describe "signal metadata enrichment" do
+    test "persisted events include event_id and emitted_at", %{session_id: sid} do
+      before_ms = System.system_time(:millisecond)
+
+      publish_signal("rho.session.#{sid}.events.step_start", %{
+        session_id: sid,
+        agent_id: "agent_1"
+      })
+
+      Process.sleep(50)
+
+      {events, _} = EventLog.read(sid)
+      assert length(events) >= 1
+
+      event = hd(events)
+      # event_id is the signal's UUID
+      assert is_binary(event["event_id"])
+      assert byte_size(event["event_id"]) > 0
+
+      # emitted_at is a millisecond timestamp
+      assert is_integer(event["emitted_at"])
+      assert event["emitted_at"] >= before_ms
+    end
+
+    test "replay shape matches live signal shape for event_id and emitted_at", %{session_id: sid} do
+      # Subscribe to the same pattern the EventLog uses
+      {:ok, _sub_id} = Rho.Comms.subscribe("rho.session.#{sid}.events.*")
+
+      publish_signal("rho.session.#{sid}.events.tool_start", %{
+        session_id: sid,
+        agent_id: "agent_1",
+        name: "bash"
+      })
+
+      # Capture the live signal
+      assert_receive {:signal, %Jido.Signal{} = live_signal}, 1_000
+
+      Process.sleep(50)
+
+      # Read persisted event
+      {events, _} = EventLog.read(sid)
+      event = List.last(events)
+
+      # Both should carry the same event_id and emitted_at
+      assert event["event_id"] == live_signal.id
+      assert event["emitted_at"] == live_signal.extensions["emitted_at"]
+    end
+  end
+
   # --- Helpers ---
 
   defp publish_signal(type, data) do

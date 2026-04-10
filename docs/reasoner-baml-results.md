@@ -8,6 +8,11 @@ redirected to streaming UX (chat tool-args prettification + streaming
 envelope preview). See
 `docs/tagged-removal-and-lenient-streaming-plan.md`.
 
+> **Vocabulary note (post-refactor).** "Reasoner" in this document =
+> `Rho.TurnStrategy` in current code. `:structured` resolves to
+> `Rho.TurnStrategy.Structured`; `:tagged` was removed. See `CLAUDE.md`
+> §"Migration from Mount/Memory/Reasoner".
+
 ---
 
 ## Migration under test

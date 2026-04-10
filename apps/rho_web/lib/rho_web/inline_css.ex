@@ -1,7 +1,7 @@
 defmodule RhoWeb.InlineCSS do
   @moduledoc """
-  Inline CSS for the Rho LiveView UI — Light theme.
-  Clean, minimal aesthetic with white backgrounds and teal accents.
+  Inline CSS for the Rho LiveView UI — Warm ivory editorial theme.
+  Refined typography, warm backgrounds, copper accents.
   """
 
   def css do
@@ -10,63 +10,64 @@ defmodule RhoWeb.InlineCSS do
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      /* Light backgrounds */
-      --bg-abyss: #f5f5f5;
-      --bg-deep: #f0f0f0;
-      --bg-mid: #f5f5f5;
-      --bg-shelf: #fafafa;
-      --bg-surface: #ffffff;
-      --bg-hover: #f0f0f0;
+      /* Warm ivory backgrounds */
+      --bg-abyss: #F6F4F0;
+      --bg-deep: #EDEAE4;
+      --bg-mid: #F2F0EB;
+      --bg-shelf: #FAF9F7;
+      --bg-surface: #FFFFFF;
+      --bg-hover: #F0EDE8;
 
-      /* Borders */
-      --border: #e5e5e5;
-      --border-active: #ccc;
-      --border-violet: rgba(91, 138, 186, 0.2);
+      /* Borders — warm gray */
+      --border: #E2DFD8;
+      --border-active: #C9C5BC;
+      --border-violet: rgba(120, 100, 160, 0.18);
 
-      /* Text */
-      --text-primary: #1a1a1a;
-      --text-secondary: #6b6b6b;
-      --text-muted: #999999;
-      --text-teal: #4a9e8e;
-      --text-glow: #5BB5A2;
+      /* Text — ink-warm */
+      --text-primary: #1C1917;
+      --text-secondary: #57534E;
+      --text-muted: #A8A29E;
+      --text-teal: #B07640;
+      --text-glow: #C2855A;
 
-      /* Teal accent — matching the image */
-      --teal: #5BB5A2;
-      --teal-bright: #4da693;
-      --teal-dim: rgba(91, 181, 162, 0.08);
-      --teal-glow: rgba(91, 181, 162, 0.1);
-      --teal-glow-strong: rgba(91, 181, 162, 0.15);
+      /* Primary accent — warm copper */
+      --teal: #C2855A;
+      --teal-bright: #B07640;
+      --teal-dim: rgba(194, 133, 90, 0.07);
+      --teal-glow: rgba(194, 133, 90, 0.10);
+      --teal-glow-strong: rgba(194, 133, 90, 0.16);
 
-      /* Secondary — cool blue */
-      --violet: #5b8aba;
-      --violet-dim: rgba(91, 138, 186, 0.08);
-      --violet-glow: rgba(91, 138, 186, 0.1);
+      /* Secondary — slate blue */
+      --violet: #7C8DB5;
+      --violet-dim: rgba(124, 141, 181, 0.08);
+      --violet-glow: rgba(124, 141, 181, 0.1);
 
       /* Semantic */
-      --green: #5BB5A2;
-      --green-dim: rgba(91, 181, 162, 0.1);
-      --amber: #d4a855;
-      --amber-dim: rgba(212, 168, 85, 0.1);
-      --red: #e5534b;
-      --red-dim: rgba(229, 83, 75, 0.08);
-      --blue: #5b8aba;
-      --yellow: #d4a855;
+      --green: #6B9E78;
+      --green-dim: rgba(107, 158, 120, 0.10);
+      --amber: #C9A84C;
+      --amber-dim: rgba(201, 168, 76, 0.10);
+      --red: #C75C54;
+      --red-dim: rgba(199, 92, 84, 0.08);
+      --blue: #7C8DB5;
+      --yellow: #C9A84C;
 
       /* Typography */
-      --font-body: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-      --font-mono: 'Fragment Mono', 'JetBrains Mono', 'SF Mono', monospace;
+      --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
 
       /* Layout */
-      --nav-height: 44px;
+      --nav-height: 48px;
 
       /* Shape */
       --radius: 8px;
       --radius-sm: 5px;
       --radius-lg: 12px;
 
-      /* Shadows — subtle for light theme */
-      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-      --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+      /* Shadows — warm */
+      --shadow-sm: 0 1px 3px rgba(28, 25, 23, 0.04), 0 1px 2px rgba(28, 25, 23, 0.02);
+      --shadow-md: 0 4px 12px rgba(28, 25, 23, 0.06), 0 1px 3px rgba(28, 25, 23, 0.04);
+      --shadow-lg: 0 12px 32px rgba(28, 25, 23, 0.08), 0 4px 8px rgba(28, 25, 23, 0.04);
     }
 
     body.rho-body {
@@ -78,24 +79,37 @@ defmodule RhoWeb.InlineCSS do
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
       font-weight: 400;
-      letter-spacing: 0.005em;
+      letter-spacing: -0.006em;
+      font-optical-sizing: auto;
     }
 
     body.rho-body > * { position: relative; z-index: 1; }
+
+    /* Subtle grain texture overlay */
+    body.rho-body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.3;
+      pointer-events: none;
+      z-index: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    }
 
     /* === Flash messages === */
     .flash-container { position: fixed; top: 1rem; right: 1rem; z-index: 100; }
     .flash {
       padding: 0.75rem 1.25rem;
       border-radius: var(--radius);
-      font-size: 0.875rem;
+      font-size: 0.85rem;
       margin-bottom: 0.5rem;
       max-width: 400px;
       cursor: pointer;
       box-shadow: var(--shadow-md);
+      backdrop-filter: blur(8px);
     }
-    .flash-info { background: rgba(91, 138, 186, 0.1); color: var(--blue); border: 1px solid rgba(91, 138, 186, 0.3); }
-    .flash-error { background: var(--red-dim); color: var(--red); border: 1px solid rgba(229, 83, 75, 0.3); }
+    .flash-info { background: rgba(124, 141, 181, 0.12); color: var(--blue); border: 1px solid rgba(124, 141, 181, 0.25); }
+    .flash-error { background: var(--red-dim); color: var(--red); border: 1px solid rgba(199, 92, 84, 0.25); }
 
     /* === Session layout === */
     .session-layout {
@@ -119,10 +133,10 @@ defmodule RhoWeb.InlineCSS do
 
     .header-left { display: flex; align-items: center; gap: 0.75rem; }
     .header-title {
-      font-size: 1.1rem;
-      font-weight: 700;
+      font-size: 1.05rem;
+      font-weight: 600;
       color: var(--text-primary);
-      letter-spacing: -0.01em;
+      letter-spacing: -0.02em;
     }
     .header-session-id {
       font-family: var(--font-mono);
@@ -194,7 +208,7 @@ defmodule RhoWeb.InlineCSS do
     .header-avatar-placeholder {
       width: 100%;
       height: 100%;
-      background: #8b5cf6;
+      background: #78716C;
       color: white;
       display: flex;
       align-items: center;
@@ -207,18 +221,43 @@ defmodule RhoWeb.InlineCSS do
     .main-panels {
       flex: 1;
       display: grid;
-      grid-template-columns: 1fr 220px;
+      grid-template-columns: 1fr 6px 1fr;
       min-height: 0;
+      overflow: hidden;
+    }
+
+    /* When no workspaces, chat takes full width */
+    .session-layout:not(.workspace-mode) .main-panels {
+      grid-template-columns: 1fr;
     }
 
     .session-layout.drawer-pinned .main-panels {
-      grid-template-columns: 1fr 220px;
+      grid-template-columns: 1fr 6px 1fr;
     }
 
     @media (min-width: 1440px) {
       .session-layout.drawer-pinned .main-panels {
-        grid-template-columns: 1fr 220px 380px;
+        grid-template-columns: 1fr 6px 220px 1fr;
       }
+    }
+
+    /* === Panel resizer handle === */
+    .panel-resizer {
+      width: 6px;
+      cursor: col-resize;
+      background: var(--border);
+      transition: background 0.15s;
+      position: relative;
+      z-index: 10;
+    }
+    .panel-resizer:hover,
+    .panel-resizer:active {
+      background: var(--teal, #2dd4bf);
+    }
+
+    /* === Workspace empty state === */
+    .workspace-empty-state {
+      display: none;
     }
 
     /* === Chat panel === */
@@ -262,11 +301,370 @@ defmodule RhoWeb.InlineCSS do
       border-bottom-color: var(--teal);
     }
     .chat-tab.stopped { opacity: 0.45; }
+    .tab-select-btn {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      padding: 0;
+      color: inherit;
+      font: inherit;
+    }
+    .tab-close-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.1rem;
+      height: 1.1rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      border-radius: 3px;
+      opacity: 0;
+      transition: opacity 0.15s, background 0.15s, color 0.15s;
+      margin-left: 0.2rem;
+      padding: 0;
+      line-height: 1;
+    }
+    .chat-tab:hover .tab-close-btn { opacity: 1; }
+    .tab-close-btn:hover {
+      background: var(--border);
+      color: var(--text-primary);
+    }
     .tab-label { font-size: 0.825rem; }
     .tab-typing {
       font-size: 0.75rem;
       color: var(--teal);
       animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    /* Thread picker */
+    .thread-picker {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 0 0.5rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+    .thread-picker-tabs {
+      display: flex;
+      gap: 0;
+      overflow-x: auto;
+      flex: 1;
+      min-width: 0;
+    }
+    .thread-tab {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 0;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      white-space: nowrap;
+      transition: border-color 0.15s;
+    }
+    .thread-tab:hover .thread-tab-close { opacity: 0.6; }
+    .thread-tab.active {
+      border-bottom-color: var(--teal);
+    }
+    .thread-tab-btn {
+      display: flex;
+      align-items: center;
+      padding: 0.45rem 0.5rem 0.45rem 0.75rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      transition: color 0.15s;
+    }
+    .thread-tab-btn:hover { color: var(--text-primary); }
+    .thread-tab.active .thread-tab-btn {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+    .thread-tab-label { font-size: 0.75rem; }
+    .thread-tab-close {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.1rem;
+      height: 1.1rem;
+      border: none;
+      border-radius: 3px;
+      background: none;
+      cursor: pointer;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      opacity: 0;
+      margin-right: 0.25rem;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .thread-tab-close:hover {
+      opacity: 1 !important;
+      background: var(--bg-hover);
+    }
+    .thread-new-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.5rem;
+      height: 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+      margin-left: 0.25rem;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .thread-new-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--bg-hover);
+    }
+
+    /* Workspace tab bar */
+    .workspace-tab-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 0.5rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+    .workspace-tabs {
+      display: flex;
+      gap: 0;
+      overflow-x: auto;
+    }
+    .workspace-tab {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 0.75rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.825rem;
+      color: var(--text-secondary);
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .workspace-tab:hover { color: var(--text-primary); }
+    .workspace-tab.active {
+      color: var(--text-primary);
+      font-weight: 500;
+      border-bottom-color: var(--teal);
+    }
+    .workspace-tab-label { font-size: 0.825rem; }
+    .workspace-tab-close {
+      font-size: 0.7rem;
+      opacity: 0.4;
+      cursor: pointer;
+      margin-left: 0.25rem;
+      transition: opacity 0.15s;
+    }
+    .workspace-tab-close:hover { opacity: 1; }
+    .workspace-tab-activity {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .workspace-tab-pulse {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--teal);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+    .workspace-tab-badge {
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: var(--teal);
+      background: var(--teal-dim);
+      padding: 0.1rem 0.35rem;
+      border-radius: 8px;
+      line-height: 1;
+      font-family: var(--font-mono);
+    }
+    .workspace-tab-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .workspace-tab-toggle-chat {
+      padding: 0.35rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .workspace-tab-toggle-chat:hover { color: var(--text-primary); border-color: var(--text-muted); }
+    .workspace-tab-toggle-chat.active {
+      color: var(--text-primary);
+      border-color: var(--teal);
+    }
+    .workspace-add-picker { position: relative; }
+    .workspace-add-btn {
+      padding: 0.35rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .workspace-add-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+    .workspace-picker-dropdown {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 0.25rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      min-width: 140px;
+    }
+    .workspace-picker-item {
+      display: block;
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.825rem;
+      color: var(--text-secondary);
+      text-align: left;
+      transition: background 0.1s, color 0.1s;
+    }
+    .workspace-picker-item:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+    /* Workspace panel collapse */
+    .workspace-panel-wrapper {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      transition: flex 0.2s ease;
+    }
+    .workspace-panel-wrapper.is-collapsed {
+      flex: 0;
+      overflow: hidden;
+    }
+
+    /* Workspace overlay — slides in from right like agent drawer */
+    .workspace-overlay {
+      position: fixed;
+      right: 0;
+      top: 52px;
+      bottom: 0;
+      width: 560px;
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -8px 0 24px rgba(28, 25, 23, 0.08);
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      z-index: 25;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .workspace-overlay.is-open {
+      transform: translateX(0);
+    }
+    .workspace-overlay-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+    .workspace-overlay-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .workspace-overlay-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .workspace-overlay-btn {
+      padding: 0.3rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .workspace-overlay-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--text-muted);
+      background: var(--bg-hover);
+    }
+    .workspace-overlay-btn.pin-btn:hover {
+      color: var(--teal);
+      border-color: var(--teal);
+    }
+    .workspace-overlay-close {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .workspace-overlay-close:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+    .workspace-overlay-body {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .workspace-overlay-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(28, 25, 23, 0.08);
+      z-index: 24;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    .workspace-overlay-backdrop.is-visible {
+      opacity: 1;
+      pointer-events: auto;
     }
 
     /* Chat feed */
@@ -332,15 +730,15 @@ defmodule RhoWeb.InlineCSS do
       margin-top: 0.1rem;
     }
     .avatar-assistant { background: var(--teal); }
-    .avatar-user { background: #8b5cf6; }
-    .avatar-agent-msg { background: #f59e0b; }
+    .avatar-user { background: #78716C; }
+    .avatar-agent-msg { background: #B07640; }
     .message-sender-label {
       font-size: 0.7rem;
-      color: #f59e0b;
+      color: var(--teal);
       margin-bottom: 2px;
     }
     .message-from-agent .message-content {
-      border-left: 2px solid #f59e0b;
+      border-left: 2px solid var(--teal);
       padding-left: 8px;
     }
     .avatar-img {
@@ -356,7 +754,7 @@ defmodule RhoWeb.InlineCSS do
       padding-left: 0.75rem;
     }
     .message-user .message-content {
-      border-left: 2px solid #e2d8f3;
+      border-left: 2px solid var(--border-active);
       padding-left: 0.75rem;
     }
     .message.streaming .message-body::after {
@@ -368,6 +766,28 @@ defmodule RhoWeb.InlineCSS do
       border-radius: 1px;
       margin-left: 2px;
       animation: blink 0.8s step-end infinite;
+    }
+
+    .btn-fork-from-here {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.2rem 0.5rem;
+      margin-top: 0.35rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+      opacity: 0.4;
+      transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .message:hover .btn-fork-from-here { opacity: 1; }
+    .btn-fork-from-here:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--bg-hover);
     }
 
     .message-meta {
@@ -509,10 +929,10 @@ defmodule RhoWeb.InlineCSS do
       align-items: flex-start;
       gap: 0.5rem;
       padding: 0.5rem 0.75rem;
-      background: rgba(239, 68, 68, 0.1);
-      border: 1px solid rgba(239, 68, 68, 0.3);
+      background: var(--red-dim);
+      border: 1px solid rgba(199, 92, 84, 0.2);
       border-radius: var(--radius);
-      color: var(--red, #ef4444);
+      color: var(--red);
       font-size: 0.85rem;
     }
     .error-icon {
@@ -522,7 +942,7 @@ defmodule RhoWeb.InlineCSS do
       width: 1.2rem;
       height: 1.2rem;
       border-radius: 50%;
-      background: var(--red, #ef4444);
+      background: var(--red);
       color: white;
       font-weight: 700;
       font-size: 0.7rem;
@@ -550,7 +970,7 @@ defmodule RhoWeb.InlineCSS do
     .chat-input-area {
       max-width: 800px;
       margin: 0 auto;
-      padding: 1rem 2rem;
+      padding: 1rem 2rem 1.25rem;
       border-top: 1px solid var(--border);
       background: var(--bg-surface);
       flex-shrink: 0;
@@ -560,13 +980,16 @@ defmodule RhoWeb.InlineCSS do
       display: flex;
       align-items: flex-end;
       gap: 0.5rem;
-      background: var(--bg-surface);
-      border: 1px solid var(--border);
+      background: var(--bg-shelf);
+      border: 1.5px solid var(--border);
       border-radius: var(--radius-lg);
-      padding: 0.5rem 0.75rem;
-      transition: border-color 0.15s;
+      padding: 0.6rem 0.85rem;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .chat-input-form:focus-within { border-color: var(--teal); }
+    .chat-input-form:focus-within {
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px var(--teal-glow);
+    }
 
     .chat-input-form textarea {
       flex: 1;
@@ -580,7 +1003,8 @@ defmodule RhoWeb.InlineCSS do
       padding: 0.25rem 0;
       min-height: 1.5rem;
       max-height: 200px;
-      line-height: 1.5;
+      line-height: 1.55;
+      letter-spacing: -0.006em;
     }
     .chat-input-form textarea::placeholder { color: var(--text-muted); }
 
@@ -596,18 +1020,19 @@ defmodule RhoWeb.InlineCSS do
     .btn-attach:hover { color: var(--text-secondary); }
 
     .btn-send {
-      padding: 0.35rem 0.85rem;
+      padding: 0.4rem 0.9rem;
       border-radius: var(--radius);
       border: none;
-      background: var(--teal);
-      color: white;
+      background: var(--text-primary);
+      color: var(--bg-surface);
       font-size: 0.8rem;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.15s;
+      transition: all 0.2s ease;
+      letter-spacing: -0.01em;
     }
-    .btn-send:hover { background: var(--teal-bright); }
-    .btn-send:disabled { opacity: 0.4; cursor: default; }
+    .btn-send:hover { background: var(--text-secondary); }
+    .btn-send:disabled { opacity: 0.25; cursor: default; }
 
     /* Upload previews */
     .upload-previews {
@@ -775,7 +1200,7 @@ defmodule RhoWeb.InlineCSS do
       width: 380px;
       background: var(--bg-surface);
       border-left: 1px solid var(--border);
-      box-shadow: -4px 0 16px rgba(0,0,0,0.06);
+      box-shadow: -8px 0 24px rgba(28, 25, 23, 0.06);
       transform: translateX(100%);
       transition: transform 0.2s ease;
       z-index: 30;
@@ -854,12 +1279,12 @@ defmodule RhoWeb.InlineCSS do
     .modal-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.2);
+      background: rgba(28, 25, 23, 0.15);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 50;
-      backdrop-filter: blur(4px);
+      backdrop-filter: blur(6px);
     }
     .modal-dialog {
       background: var(--bg-surface);
@@ -868,12 +1293,46 @@ defmodule RhoWeb.InlineCSS do
       padding: 1.5rem;
       min-width: 320px;
       max-width: 480px;
-      box-shadow: 0 16px 48px rgba(0,0,0,0.1);
+      box-shadow: var(--shadow-lg);
     }
     .modal-dialog h3 {
       font-size: 1.1rem;
       font-weight: 600;
       margin-bottom: 1rem;
+    }
+    .agent-parent-picker {
+      margin-bottom: 1rem;
+    }
+    .agent-parent-label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.35rem;
+    }
+    .agent-parent-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+    .agent-parent-btn {
+      padding: 0.35rem 0.75rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .agent-parent-btn:hover {
+      border-color: var(--teal);
+      color: var(--teal);
+    }
+    .agent-parent-btn.active {
+      border-color: var(--teal);
+      background: var(--teal-dim);
+      color: var(--teal);
+      font-weight: 500;
     }
     .agent-role-list {
       display: flex;
@@ -968,56 +1427,59 @@ defmodule RhoWeb.InlineCSS do
     }
 
     /* === Markdown rendering === */
-    .markdown-body { line-height: 1.65; }
-    .markdown-body p { margin-bottom: 0.5em; }
+    .markdown-body { line-height: 1.7; letter-spacing: -0.006em; }
+    .markdown-body p { margin-bottom: 0.6em; }
     .markdown-body p:last-child { margin-bottom: 0; }
     .markdown-body code {
       background: var(--bg-deep);
-      padding: 0.15rem 0.35rem;
+      padding: 0.15rem 0.4rem;
       border-radius: 4px;
       font-family: var(--font-mono);
-      font-size: 0.85em;
-      color: var(--text-primary);
+      font-size: 0.82em;
+      color: var(--teal-bright);
     }
     .markdown-body pre {
       background: var(--bg-deep);
       border: 1px solid var(--border);
-      padding: 0.75rem 1rem;
+      padding: 0.85rem 1rem;
       border-radius: var(--radius);
       overflow-x: auto;
-      margin: 0.5rem 0;
+      margin: 0.6rem 0;
     }
     .markdown-body pre code {
       background: none;
       padding: 0;
       font-size: 0.8rem;
+      color: var(--text-primary);
     }
     .markdown-body ul, .markdown-body ol {
       padding-left: 1.5em;
       margin: 0.4em 0;
     }
-    .markdown-body li { margin-bottom: 0.2em; }
-    .markdown-body a { color: var(--teal); text-decoration: none; }
+    .markdown-body li { margin-bottom: 0.25em; }
+    .markdown-body a { color: var(--teal-bright); text-decoration: none; font-weight: 500; }
     .markdown-body a:hover { text-decoration: underline; }
     .markdown-body h1, .markdown-body h2, .markdown-body h3 {
-      margin: 0.75em 0 0.25em;
+      margin: 0.85em 0 0.3em;
       font-weight: 600;
       color: var(--text-primary);
+      letter-spacing: -0.02em;
     }
     .markdown-body blockquote {
-      border-left: 3px solid var(--border);
-      padding-left: 0.75rem;
+      border-left: 3px solid var(--teal);
+      padding-left: 0.85rem;
       color: var(--text-secondary);
       margin: 0.5em 0;
+      font-style: italic;
     }
     .markdown-body table {
       border-collapse: collapse;
-      margin: 0.5rem 0;
+      margin: 0.6rem 0;
       font-size: 0.85rem;
     }
     .markdown-body th, .markdown-body td {
       border: 1px solid var(--border);
-      padding: 0.35rem 0.6rem;
+      padding: 0.4rem 0.65rem;
     }
     .markdown-body th {
       background: var(--bg-deep);
@@ -1025,10 +1487,10 @@ defmodule RhoWeb.InlineCSS do
     }
 
     /* === JSON highlighting === */
-    .json-key { color: var(--blue); }
+    .json-key { color: var(--teal-bright); }
     .json-string { color: var(--green); }
     .json-number { color: var(--amber); }
-    .json-bool { color: var(--teal); }
+    .json-bool { color: var(--violet); }
     .json-null { color: var(--text-muted); }
 
     /* === Images === */
@@ -1036,10 +1498,10 @@ defmodule RhoWeb.InlineCSS do
     .message-images img { max-width: 100%; border-radius: var(--radius); margin: 0.5rem 0; }
 
     /* === Scrollbar === */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #ddd; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #ccc; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
 
     /* === Responsive === */
     @media (max-width: 1024px) {
@@ -1281,9 +1743,9 @@ defmodule RhoWeb.InlineCSS do
       font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
     }
     .obs-status-not_started { background: var(--bg-hover); color: var(--text-muted); }
-    .obs-status-running { background: rgba(91, 181, 162, 0.12); color: var(--teal); }
-    .obs-status-replaying { background: rgba(91, 138, 186, 0.12); color: #5B8ABA; animation: pulse 1.5s infinite; }
-    .obs-status-completed { background: rgba(39, 174, 96, 0.12); color: #27ae60; }
+    .obs-status-running { background: var(--teal-dim); color: var(--teal-bright); }
+    .obs-status-replaying { background: var(--violet-dim); color: var(--violet); animation: pulse 1.5s infinite; }
+    .obs-status-completed { background: var(--green-dim); color: var(--green); }
 
     /* Replay controls */
     .obs-replay-controls {
@@ -1327,9 +1789,10 @@ defmodule RhoWeb.InlineCSS do
 
     /* --- Buttons --- */
     .obs-btn {
-      background: var(--teal); color: white; border: none;
+      background: var(--text-primary); color: var(--bg-surface); border: none;
       border-radius: 6px; cursor: pointer;
       font-family: var(--font-body); font-weight: 600;
+      letter-spacing: -0.01em; transition: all 0.2s ease;
     }
     .obs-btn:hover { opacity: 0.9; }
     .obs-btn-lg { padding: 14px 36px; font-size: 16px; border-radius: 8px; margin-top: 24px; }
@@ -1400,9 +1863,9 @@ defmodule RhoWeb.InlineCSS do
     .obs-score-tbl td { text-align: center; padding: 4px 3px; border-bottom: 1px solid var(--border); }
     .obs-score-name { text-align: left !important; font-weight: 500; }
     .obs-score-avg { font-weight: 600; }
-    .sc-high { color: #27ae60; font-weight: 600; }
+    .sc-high { color: var(--green); font-weight: 600; }
     .sc-mid { color: var(--text-primary); }
-    .sc-low { color: #e74c3c; }
+    .sc-low { color: var(--red); }
     .sc-pending { color: var(--text-muted); }
 
     /* --- Token summary (sidebar) --- */
@@ -1425,16 +1888,16 @@ defmodule RhoWeb.InlineCSS do
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* Role color palette */
+    /* Role color palette — warm tones */
     --clr-default: var(--teal);
     --clr-coordinator: var(--teal);
-    .disc-role-default { --role-clr: var(--teal); --role-bg: rgba(91, 181, 162, 0.08); }
-    .disc-role-primary { --role-clr: var(--teal); --role-bg: rgba(91, 181, 162, 0.08); }
-    .disc-role-technical-evaluator { --role-clr: #5B8ABA; --role-bg: rgba(91, 138, 186, 0.08); }
-    .disc-role-culture-evaluator { --role-clr: #B55BA0; --role-bg: rgba(181, 91, 160, 0.08); }
-    .disc-role-compensation-evaluator { --role-clr: #D4A855; --role-bg: rgba(212, 168, 85, 0.08); }
-    .disc-role-coder { --role-clr: #7C6EE6; --role-bg: rgba(124, 110, 230, 0.08); }
-    .disc-role-researcher { --role-clr: #4ABFBF; --role-bg: rgba(74, 191, 191, 0.08); }
+    .disc-role-default { --role-clr: var(--teal); --role-bg: rgba(194, 133, 90, 0.06); }
+    .disc-role-primary { --role-clr: var(--teal); --role-bg: rgba(194, 133, 90, 0.06); }
+    .disc-role-technical-evaluator { --role-clr: #7C8DB5; --role-bg: rgba(124, 141, 181, 0.07); }
+    .disc-role-culture-evaluator { --role-clr: #A8708A; --role-bg: rgba(168, 112, 138, 0.07); }
+    .disc-role-compensation-evaluator { --role-clr: #C9A84C; --role-bg: rgba(201, 168, 76, 0.07); }
+    .disc-role-coder { --role-clr: #8B7EC8; --role-bg: rgba(139, 126, 200, 0.07); }
+    .disc-role-researcher { --role-clr: #6B9E78; --role-bg: rgba(107, 158, 120, 0.07); }
     .disc-role-unknown { --role-clr: var(--text-muted); --role-bg: var(--bg-hover); }
 
     /* --- Avatar --- */
@@ -1447,11 +1910,11 @@ defmodule RhoWeb.InlineCSS do
     .disc-avatar-sm { width: 24px; height: 24px; font-size: 11px; border-radius: 6px; }
     .disc-avatar-dim { opacity: 0.5; }
     .disc-avatar-default, .disc-avatar-primary { background: var(--teal); }
-    .disc-avatar-technical-evaluator { background: #5B8ABA; }
-    .disc-avatar-culture-evaluator { background: #B55BA0; }
-    .disc-avatar-compensation-evaluator { background: #D4A855; }
-    .disc-avatar-coder { background: #7C6EE6; }
-    .disc-avatar-researcher { background: #4ABFBF; }
+    .disc-avatar-technical-evaluator { background: #7C8DB5; }
+    .disc-avatar-culture-evaluator { background: #A8708A; }
+    .disc-avatar-compensation-evaluator { background: #C9A84C; }
+    .disc-avatar-coder { background: #8B7EC8; }
+    .disc-avatar-researcher { background: #6B9E78; }
     .disc-avatar-unknown { background: var(--text-muted); }
 
     /* --- Message bubble --- */
@@ -1569,8 +2032,8 @@ defmodule RhoWeb.InlineCSS do
       font-size: 12px; font-weight: 700; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
     }
-    .disc-marker-complete .disc-marker-line { background: #27ae60; }
-    .disc-marker-complete .disc-marker-text { color: #27ae60; }
+    .disc-marker-complete .disc-marker-line { background: var(--green); }
+    .disc-marker-complete .disc-marker-text { color: var(--green); }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -1595,17 +2058,17 @@ defmodule RhoWeb.InlineCSS do
       transition: opacity 0.3s, stroke-width 0.3s;
     }
     .igraph-edge-default, .igraph-edge-primary { stroke: var(--teal); opacity: 0.45; }
-    .igraph-edge-technical-evaluator { stroke: #5B8ABA; opacity: 0.45; }
-    .igraph-edge-culture-evaluator { stroke: #B55BA0; opacity: 0.45; }
-    .igraph-edge-compensation-evaluator { stroke: #D4A855; opacity: 0.45; }
-    .igraph-edge-coder { stroke: #7C6EE6; opacity: 0.45; }
-    .igraph-edge-researcher { stroke: #4ABFBF; opacity: 0.45; }
+    .igraph-edge-technical-evaluator { stroke: #7C8DB5; opacity: 0.45; }
+    .igraph-edge-culture-evaluator { stroke: #A8708A; opacity: 0.45; }
+    .igraph-edge-compensation-evaluator { stroke: #C9A84C; opacity: 0.45; }
+    .igraph-edge-coder { stroke: #8B7EC8; opacity: 0.45; }
+    .igraph-edge-researcher { stroke: #6B9E78; opacity: 0.45; }
 
     /* Edge status colors (task lifecycle) */
     .igraph-edge-pending { stroke-dasharray: 6 4; opacity: 0.4; }
     .igraph-edge-accepted { stroke-dasharray: none; opacity: 0.6; animation: edge-pulse 1.5s ease-in-out infinite; }
-    .igraph-edge-ok { stroke: #4ade80; opacity: 0.7; }
-    .igraph-edge-error { stroke: #f87171; opacity: 0.7; }
+    .igraph-edge-ok { stroke: var(--green); opacity: 0.7; }
+    .igraph-edge-error { stroke: var(--red); opacity: 0.7; }
     @keyframes edge-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 0.8; } }
 
     /* Nodes */
@@ -1614,11 +2077,11 @@ defmodule RhoWeb.InlineCSS do
       transition: filter 0.3s;
     }
     .igraph-node-default, .igraph-node-primary { fill: var(--teal); }
-    .igraph-node-technical-evaluator { fill: #5B8ABA; }
-    .igraph-node-culture-evaluator { fill: #B55BA0; }
-    .igraph-node-compensation-evaluator { fill: #D4A855; }
-    .igraph-node-coder { fill: #7C6EE6; }
-    .igraph-node-researcher { fill: #4ABFBF; }
+    .igraph-node-technical-evaluator { fill: #7C8DB5; }
+    .igraph-node-culture-evaluator { fill: #A8708A; }
+    .igraph-node-compensation-evaluator { fill: #C9A84C; }
+    .igraph-node-coder { fill: #8B7EC8; }
+    .igraph-node-researcher { fill: #6B9E78; }
     .igraph-node-unknown { fill: var(--text-muted); }
 
     .igraph-label {
@@ -1638,11 +2101,11 @@ defmodule RhoWeb.InlineCSS do
       animation: igraph-pulse 1.5s ease-out infinite;
     }
     .igraph-ring-default, .igraph-ring-primary { stroke: var(--teal); }
-    .igraph-ring-technical-evaluator { stroke: #5B8ABA; }
-    .igraph-ring-culture-evaluator { stroke: #B55BA0; }
-    .igraph-ring-compensation-evaluator { stroke: #D4A855; }
-    .igraph-ring-coder { stroke: #7C6EE6; }
-    .igraph-ring-researcher { stroke: #4ABFBF; }
+    .igraph-ring-technical-evaluator { stroke: #7C8DB5; }
+    .igraph-ring-culture-evaluator { stroke: #A8708A; }
+    .igraph-ring-compensation-evaluator { stroke: #C9A84C; }
+    .igraph-ring-coder { stroke: #8B7EC8; }
+    .igraph-ring-researcher { stroke: #6B9E78; }
 
     @keyframes igraph-pulse {
       0% { r: 16; opacity: 0.6; stroke-width: 2; }
@@ -1654,11 +2117,11 @@ defmodule RhoWeb.InlineCSS do
       fill: var(--teal);
     }
     .igraph-particle-default, .igraph-particle-primary { fill: var(--teal); }
-    .igraph-particle-technical-evaluator { fill: #5B8ABA; }
-    .igraph-particle-culture-evaluator { fill: #B55BA0; }
-    .igraph-particle-compensation-evaluator { fill: #D4A855; }
-    .igraph-particle-coder { fill: #7C6EE6; }
-    .igraph-particle-researcher { fill: #4ABFBF; }
+    .igraph-particle-technical-evaluator { fill: #7C8DB5; }
+    .igraph-particle-culture-evaluator { fill: #A8708A; }
+    .igraph-particle-compensation-evaluator { fill: #C9A84C; }
+    .igraph-particle-coder { fill: #8B7EC8; }
+    .igraph-particle-researcher { fill: #6B9E78; }
 
     /* Ambient looping particles for historical/idle view */
     .igraph-ambient { opacity: 0.6; }
@@ -1670,23 +2133,24 @@ defmodule RhoWeb.InlineCSS do
     .igraph-node-glow { stroke: none; }
 
     /* === Spreadsheet Layout === */
-    .spreadsheet-layout {
+    .dt-layout {
       display: flex;
       height: calc(100vh - var(--nav-height));
       overflow: hidden;
       background: var(--bg-abyss);
     }
 
-    .spreadsheet-panel {
+    .dt-panel {
       flex: 1;
       min-width: 0;
       min-height: 0;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
+      overflow: auto;
     }
+    .dt-panel.hidden { display: none; }
 
-    .spreadsheet-toolbar {
+    .dt-toolbar {
       display: flex;
       align-items: center;
       gap: 14px;
@@ -1697,15 +2161,15 @@ defmodule RhoWeb.InlineCSS do
       flex-shrink: 0;
     }
 
-    .spreadsheet-title {
+    .dt-title {
       font-size: 0.9375rem;
       font-weight: 600;
       color: var(--text-primary);
       letter-spacing: -0.01em;
     }
 
-    .spreadsheet-row-count,
-    .ss-row-count {
+    .dt-row-count-legacy,
+    .dt-row-count {
       font-size: 11px;
       color: var(--text-muted);
       font-family: 'Fragment Mono', monospace;
@@ -1714,7 +2178,7 @@ defmodule RhoWeb.InlineCSS do
       border-radius: 10px;
     }
 
-    .spreadsheet-cost {
+    .dt-cost {
       font-size: 11px;
       color: var(--teal);
       font-family: 'Fragment Mono', monospace;
@@ -1725,7 +2189,7 @@ defmodule RhoWeb.InlineCSS do
     }
 
     /* === Spreadsheet Table === */
-    .ss-table-wrap {
+    .dt-table-wrap {
       flex: 1;
       min-height: 0;
       overflow: auto;
@@ -1733,14 +2197,14 @@ defmodule RhoWeb.InlineCSS do
       scroll-behavior: smooth;
     }
 
-    .ss-table {
+    .dt-table {
       width: 100%;
       border-collapse: separate;
       border-spacing: 0;
       font-size: 12.5px;
       line-height: 1.5;
     }
-    .ss-th {
+    .dt-th {
       background: var(--bg-deep);
       color: var(--text-muted);
       padding: 6px 14px;
@@ -1754,73 +2218,73 @@ defmodule RhoWeb.InlineCSS do
       top: 0;
       z-index: 2;
     }
-    .ss-th:first-child { border-radius: 6px 0 0 0; }
-    .ss-th:last-child { border-radius: 0 6px 0 0; }
+    .dt-th:first-child { border-radius: 6px 0 0 0; }
+    .dt-th:last-child { border-radius: 0 6px 0 0; }
 
     /* Column proportions — no category/cluster since shown in group headers */
-    .ss-th-id, .ss-td-id { width: 44px; text-align: center; color: var(--text-muted); font-family: 'Fragment Mono', monospace; font-size: 11px; }
-    .ss-th-skill, .ss-td-skill_name { width: 18%; }
-    .ss-th-desc, .ss-td-skill_description { width: 26%; }
-    .ss-th-lvl, .ss-td-level { width: 44px; text-align: center; font-family: 'Fragment Mono', monospace; }
-    .ss-th-lvlname, .ss-td-level_name { width: 14%; }
-    .ss-th-lvldesc, .ss-td-level_description { }
+    .dt-th-id, .dt-td-id { width: 44px; text-align: center; color: var(--text-muted); font-family: 'Fragment Mono', monospace; font-size: 11px; }
+    .dt-th-skill, .dt-td-skill_name { width: 18%; }
+    .dt-th-desc, .dt-td-skill_description { width: 26%; }
+    .dt-th-lvl, .dt-td-level { width: 44px; text-align: center; font-family: 'Fragment Mono', monospace; }
+    .dt-th-lvlname, .dt-td-level_name { width: 14%; }
+    .dt-th-lvldesc, .dt-td-level_description { }
 
-    .ss-row {
+    .dt-row {
       transition: background 0.12s ease;
     }
-    .ss-row:hover {
+    .dt-row:hover {
       background: var(--teal-dim);
     }
-    .ss-row td:first-child { border-left: 3px solid transparent; }
-    .ss-row:hover td:first-child { border-left-color: var(--teal); }
+    .dt-row td:first-child { border-left: 3px solid transparent; }
+    .dt-row:hover td:first-child { border-left-color: var(--teal); }
 
-    .ss-td {
+    .dt-td {
       padding: 10px 14px;
       color: var(--text-primary);
       vertical-align: top;
       border-bottom: 1px solid var(--border);
       cursor: default;
     }
-    .ss-td-skill_name {
+    .dt-td-skill_name {
       font-weight: 500;
       color: var(--text-primary);
     }
-    .ss-td-skill_description,
-    .ss-td-level_description {
+    .dt-td-skill_description,
+    .dt-td-level_description {
       color: var(--text-secondary);
       line-height: 1.55;
       font-size: 12px;
     }
-    .ss-td-level {
+    .dt-td-level {
       font-weight: 600;
       color: var(--teal);
     }
-    .ss-td-level_name {
+    .dt-td-level_name {
       font-weight: 500;
     }
 
     /* Level badge coloring */
-    .ss-row:nth-child(odd) {
+    .dt-row:nth-child(odd) {
       background: var(--bg-surface);
     }
-    .ss-row:nth-child(even) {
+    .dt-row:nth-child(even) {
       background: var(--bg-shelf);
     }
-    .ss-row:hover {
+    .dt-row:hover {
       background: var(--teal-dim);
     }
 
     /* Streaming animation */
-    @keyframes ss-flash {
+    @keyframes dt-flash {
       0% { background: var(--teal-glow-strong); }
       100% { background: transparent; }
     }
-    .ss-row-new {
-      animation: ss-flash 1s ease-out;
+    .dt-row-new {
+      animation: dt-flash 1s ease-out;
     }
 
     /* Inline editing */
-    .ss-cell-input {
+    .dt-cell-input {
       width: 100%;
       background: var(--bg-surface);
       color: var(--text-primary);
@@ -1832,18 +2296,18 @@ defmodule RhoWeb.InlineCSS do
       outline: none;
       box-shadow: 0 0 0 3px var(--teal-glow);
     }
-    .ss-cell-input:focus {
+    .dt-cell-input:focus {
       border-color: var(--teal-bright);
       box-shadow: 0 0 0 3px var(--teal-glow-strong);
     }
-    textarea.ss-cell-input {
+    textarea.dt-cell-input {
       min-height: 60px;
       resize: vertical;
       line-height: 1.5;
     }
 
     /* Empty state */
-    .ss-empty {
+    .dt-empty {
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -1853,7 +2317,7 @@ defmodule RhoWeb.InlineCSS do
       color: var(--text-muted);
       font-size: 0.875rem;
     }
-    .ss-empty::before {
+    .dt-empty::before {
       content: '';
       display: block;
       width: 48px;
@@ -1864,18 +2328,18 @@ defmodule RhoWeb.InlineCSS do
     }
 
     /* === Collapsible Groups === */
-    .ss-cat-group {
+    .dt-group-l1 {
       margin-bottom: 12px;
       border-radius: 8px;
       background: var(--bg-surface);
       border: 1px solid var(--border);
       overflow: hidden;
     }
-    .ss-cat-group:last-child { margin-bottom: 0; }
+    .dt-group-l1:last-child { margin-bottom: 0; }
 
-    .ss-group { border: none; }
+    .dt-group { border: none; }
 
-    .ss-group-header {
+    .dt-group-header {
       display: flex;
       align-items: center;
       gap: 10px;
@@ -1884,10 +2348,10 @@ defmodule RhoWeb.InlineCSS do
       list-style: none;
       transition: background 0.12s ease;
     }
-    .ss-group-header::-webkit-details-marker { display: none; }
-    .ss-group-header::marker { content: ''; }
+    .dt-group-header::-webkit-details-marker { display: none; }
+    .dt-group-header::marker { content: ''; }
 
-    .ss-cat-header {
+    .dt-group-header-l1 {
       padding: 12px 16px;
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border);
@@ -1895,11 +2359,11 @@ defmodule RhoWeb.InlineCSS do
       font-size: 0.8125rem;
       color: var(--text-primary);
     }
-    .ss-cat-group.ss-collapsed > .ss-cat-header {
+    .dt-group-l1.dt-collapsed > .dt-group-header-l1 {
       border-bottom-color: transparent;
     }
 
-    .ss-cluster-header {
+    .dt-group-header-l2 {
       padding: 9px 16px 9px 20px;
       background: var(--bg-shelf);
       border-bottom: 1px solid var(--border);
@@ -1907,15 +2371,15 @@ defmodule RhoWeb.InlineCSS do
       font-size: 0.8125rem;
       color: var(--text-secondary);
     }
-    .ss-cluster-group.ss-collapsed:last-child > .ss-cluster-header {
+    .dt-group-l2.dt-collapsed:last-child > .dt-group-header-l2 {
       border-bottom-color: transparent;
     }
 
-    .ss-group-header:hover {
+    .dt-group-header:hover {
       background: var(--bg-hover);
     }
 
-    .ss-chevron {
+    .dt-chevron {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -1926,7 +2390,7 @@ defmodule RhoWeb.InlineCSS do
       flex-shrink: 0;
       transition: background 0.12s ease;
     }
-    .ss-chevron::after {
+    .dt-chevron::after {
       content: '';
       display: block;
       width: 0;
@@ -1936,21 +2400,21 @@ defmodule RhoWeb.InlineCSS do
       border-bottom: 3px solid transparent;
       transition: transform 0.2s ease;
     }
-    .ss-group:not(.ss-collapsed) > .ss-group-header .ss-chevron::after {
+    .dt-group:not(.dt-collapsed) > .dt-group-header .dt-chevron::after {
       transform: rotate(90deg);
     }
-    .ss-group-header:hover .ss-chevron {
+    .dt-group-header:hover .dt-chevron {
       background: var(--border);
     }
 
-    .ss-group-name {
+    .dt-group-name {
       flex: 1;
     }
-    .ss-cat-header .ss-group-name {
+    .dt-group-header-l1 .dt-group-name {
       letter-spacing: 0.01em;
     }
 
-    .ss-group-count {
+    .dt-group-count {
       font-size: 11px;
       color: var(--text-muted);
       font-weight: 400;
@@ -1960,32 +2424,49 @@ defmodule RhoWeb.InlineCSS do
       border-radius: 10px;
     }
 
-    .ss-group-content {
+    .dt-group-content {
       transition: none;
     }
-    .ss-hidden {
+    .dt-hidden {
       display: none;
     }
 
-    .ss-cluster-group .ss-table {
+    .dt-group-l2 .dt-table {
       margin: 0;
     }
-    .ss-cluster-group:last-child .ss-table tr:last-child td {
+    .dt-group-l2:last-child .dt-table tr:last-child td {
       border-bottom: none;
     }
 
-    /* Spreadsheet chat panel */
-    .spreadsheet-chat-panel {
-      width: 380px;
-      min-width: 320px;
-      max-width: 480px;
+    /* Spreadsheet chat panel — always mounted, visibility via classes */
+    .dt-chat-panel {
+      width: 100%;
       border-left: 1px solid var(--border);
       display: flex;
       flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
       background: var(--bg-surface);
     }
 
-    .spreadsheet-chat-header {
+    /* Full-width chat when no workspaces */
+    .session-layout:not(.workspace-mode) .dt-chat-panel {
+      max-width: 720px;
+      margin: 0 auto;
+      border-left: none;
+    }
+    .dt-chat-panel.is-collapsed {
+      width: 0;
+      min-width: 0;
+      opacity: 0;
+      border-left: none;
+      pointer-events: none;
+    }
+    .dt-chat-panel.is-hidden {
+      display: none;
+    }
+
+    .dt-chat-header {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -1995,23 +2476,30 @@ defmodule RhoWeb.InlineCSS do
       flex-shrink: 0;
     }
 
-    .spreadsheet-chat-title {
+    .dt-chat-title {
       font-size: 0.875rem;
       font-weight: 600;
       color: var(--text-primary);
     }
 
-    .spreadsheet-chat-panel .chat-feed {
+    .dt-chat-header .thread-picker {
+      border-bottom: none;
+      padding: 0;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .dt-chat-panel .chat-feed {
       flex: 1;
       overflow-y: auto;
     }
 
-    .spreadsheet-chat-panel .chat-input-area {
+    .dt-chat-panel .chat-input-area {
       border-top: 1px solid var(--border);
     }
 
     /* Streaming indicator on toolbar */
-    .spreadsheet-streaming {
+    .dt-streaming {
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -2023,7 +2511,7 @@ defmodule RhoWeb.InlineCSS do
       border-radius: 10px;
     }
 
-    .spreadsheet-streaming::before {
+    .dt-streaming::before {
       content: '';
       display: inline-block;
       width: 6px;
@@ -2037,6 +2525,108 @@ defmodule RhoWeb.InlineCSS do
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.3; transform: scale(0.8); }
     }
+
+    /* === Chatroom workspace === */
+    .chatroom-workspace {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      background: var(--bg-base);
+    }
+    .chatroom-workspace.hidden { display: none; }
+    .chatroom-timeline {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .chatroom-empty {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      text-align: center;
+      padding-top: 3rem;
+    }
+    .chatroom-msg {
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+    }
+    .chatroom-msg-streaming {
+      border-color: var(--teal-dim);
+    }
+    .chatroom-msg-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.25rem;
+    }
+    .chatroom-speaker {
+      font-weight: 600;
+      font-size: 0.825rem;
+    }
+    .chatroom-direction {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .chatroom-typing {
+      color: var(--teal);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .chatroom-timestamp {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-left: auto;
+      font-family: 'Fragment Mono', monospace;
+    }
+    .chatroom-msg-body {
+      font-size: 0.875rem;
+      color: var(--text-primary);
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .chatroom-streaming-text {
+      color: var(--text-secondary);
+    }
+    .chatroom-input-area {
+      padding: 0.75rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+    .chatroom-input-form {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .chatroom-input {
+      flex: 1;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .chatroom-input:focus {
+      border-color: var(--teal);
+    }
+    .chatroom-send-btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 6px;
+      background: var(--teal);
+      color: #fff;
+      font-size: 0.825rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .chatroom-send-btn:hover { opacity: 0.85; }
 
     /* === Auth pages (login / register) === */
     .auth-container {
@@ -2055,7 +2645,7 @@ defmodule RhoWeb.InlineCSS do
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
       padding: 2.5rem 2rem 2rem;
-      box-shadow: var(--shadow-md);
+      box-shadow: var(--shadow-lg);
     }
 
     .auth-title {
@@ -2104,21 +2694,22 @@ defmodule RhoWeb.InlineCSS do
 
     .auth-button {
       width: 100%;
-      padding: 0.6rem;
+      padding: 0.65rem;
       margin-top: 0.5rem;
       font-family: var(--font-body);
       font-size: 0.875rem;
       font-weight: 600;
       color: #fff;
-      background: var(--teal);
+      background: var(--text-primary);
       border: none;
       border-radius: var(--radius);
       cursor: pointer;
-      transition: background 0.15s;
+      transition: all 0.2s ease;
+      letter-spacing: -0.01em;
     }
 
     .auth-button:hover {
-      background: var(--teal-bright);
+      background: var(--text-secondary);
     }
 
     .auth-link {
@@ -2146,39 +2737,42 @@ defmodule RhoWeb.InlineCSS do
 
     /* === Global Navigation === */
     .global-nav {
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: space-between;
       height: var(--nav-height);
-      padding: 0 1.25rem;
+      padding: 0 1.5rem;
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
       z-index: 50;
     }
-    .global-nav-left { display: flex; align-items: center; gap: 1.5rem; }
+    .global-nav-left { display: flex; align-items: center; gap: 1.75rem; }
     .global-nav-logo {
-      font-family: var(--font-mono);
-      font-size: 1rem;
+      font-family: var(--font-body);
+      font-size: 1.1rem;
       font-weight: 700;
-      color: var(--teal);
+      color: var(--text-primary);
       text-decoration: none;
-      letter-spacing: -0.02em;
+      letter-spacing: -0.04em;
     }
-    .global-nav-links { display: flex; gap: 0.25rem; }
+    .global-nav-links { display: flex; gap: 0.15rem; }
     .global-nav-link {
-      padding: 0.3rem 0.65rem;
+      padding: 0.35rem 0.7rem;
       font-size: 0.8rem;
       font-weight: 500;
-      color: var(--text-secondary);
+      color: var(--text-muted);
       text-decoration: none;
       border-radius: var(--radius-sm);
-      transition: all 0.15s;
+      transition: all 0.2s ease;
+      letter-spacing: -0.01em;
     }
     .global-nav-link:hover { color: var(--text-primary); background: var(--bg-hover); }
     .global-nav-link[aria-current="page"] {
-      color: var(--teal);
+      color: var(--teal-bright);
       background: var(--teal-dim);
+      font-weight: 600;
     }
     .global-nav-right { display: flex; align-items: center; gap: 0.75rem; }
     .global-nav-user { font-size: 0.75rem; color: var(--text-muted); }
@@ -2192,19 +2786,60 @@ defmodule RhoWeb.InlineCSS do
     }
     .global-nav-logout:hover { color: var(--red); }
 
+    .org-switcher {
+      display: flex; align-items: center; gap: 0.35rem;
+      padding: 0.3rem 0.6rem;
+      font-size: 0.8rem; font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: background 0.15s;
+    }
+    .org-switcher:hover { background: var(--bg-hover); }
+    .org-switcher-arrow { font-size: 0.65rem; color: var(--text-muted); }
+
+    .org-dropdown {
+      position: absolute;
+      top: var(--nav-height);
+      left: 1.5rem;
+      min-width: 220px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      padding: 0.35rem 0;
+    }
+    .org-dropdown-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.5rem 0.85rem;
+      font-size: 0.8rem;
+      color: var(--text-primary);
+      text-decoration: none;
+      transition: background 0.12s;
+    }
+    .org-dropdown-item:hover { background: var(--bg-hover); }
+    .org-dropdown-name { font-weight: 500; }
+    .org-dropdown-role { font-size: 0.7rem; color: var(--text-muted); }
+    .org-dropdown-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0.3rem 0;
+    }
+
     @media (max-width: 640px) {
       .global-nav-links { display: none; }
     }
 
     /* === Auth logo === */
     .auth-logo {
-      font-family: var(--font-mono);
+      font-family: var(--font-body);
       font-size: 1.5rem;
       font-weight: 700;
-      color: var(--teal);
+      color: var(--text-primary);
       text-align: center;
       margin-bottom: 1.5rem;
-      letter-spacing: -0.03em;
+      letter-spacing: -0.04em;
     }
 
     /* === Page Shell (standard pages) === */
@@ -2268,12 +2903,12 @@ defmodule RhoWeb.InlineCSS do
       padding: 0.5rem 1rem;
       font-family: var(--font-body);
       font-size: 0.8rem; font-weight: 600;
-      color: #fff; background: var(--teal);
+      color: var(--bg-surface); background: var(--text-primary);
       border: none; border-radius: var(--radius);
-      cursor: pointer; transition: background 0.15s;
-      text-decoration: none;
+      cursor: pointer; transition: all 0.2s ease;
+      text-decoration: none; letter-spacing: -0.01em;
     }
-    .btn-primary:hover { background: var(--teal-bright); }
+    .btn-primary:hover { background: var(--text-secondary); }
 
     .btn-secondary {
       display: inline-flex; align-items: center; gap: 0.4rem;
@@ -2299,6 +2934,95 @@ defmodule RhoWeb.InlineCSS do
       cursor: pointer; transition: all 0.15s;
     }
     .btn-danger-sm:hover { background: rgba(229,83,75,0.15); }
+
+    /* === Forms === */
+    .form-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .form-card-title {
+      font-size: 1rem; font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 1rem;
+    }
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.8rem; font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.35rem;
+    }
+    .form-hint {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+    }
+    .form-input {
+      display: block;
+      width: 100%;
+      padding: 0.5rem 0.7rem;
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      color: var(--text-primary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      transition: border-color 0.15s;
+    }
+    .form-input:focus {
+      outline: none;
+      border-color: var(--teal);
+      box-shadow: 0 0 0 2px rgba(91, 138, 186, 0.15);
+    }
+    .form-input:disabled {
+      background: var(--bg-hover);
+      color: var(--text-muted);
+      cursor: not-allowed;
+    }
+    textarea.form-input {
+      resize: vertical;
+      min-height: 80px;
+    }
+    .form-error {
+      font-size: 0.75rem;
+      color: var(--red);
+      margin-top: 0.25rem;
+    }
+    .form-code {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+    .form-actions {
+      margin-top: 1.25rem;
+    }
+    .danger-zone {
+      border-color: rgba(229,83,75,0.3);
+    }
+    .danger-title {
+      font-size: 0.95rem; font-weight: 600;
+      color: var(--red);
+      margin-bottom: 0.5rem;
+    }
+    .danger-desc {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+    .btn-danger {
+      padding: 0.5rem 1rem;
+      font-family: var(--font-body);
+      font-size: 0.8rem; font-weight: 600;
+      color: #fff; background: var(--red);
+      border: none; border-radius: var(--radius);
+      cursor: pointer; transition: background 0.15s;
+    }
+    .btn-danger:hover { background: #a84840; }
 
     /* === Shared Table === */
     .rho-table {
@@ -2355,8 +3079,653 @@ defmodule RhoWeb.InlineCSS do
     .badge-muted { background: var(--bg-deep); color: var(--text-secondary); font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 999px; }
     .fw-section { margin-bottom: 2rem; }
     .fw-section-title { font-size: 1.1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
-    .fw-cluster { margin-bottom: 1.5rem; }
-    .fw-cluster-title { font-size: 0.9rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0.5rem; }
+    .fw-cluster { margin-bottom: 2rem; }
+    .fw-cluster-title { font-size: 1rem; font-weight: 600; color: var(--text-primary); }
+    .fw-category { margin-bottom: 1.25rem; margin-left: 0.75rem; }
+    .fw-category-title { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
+
+    /* === Collapsible sections === */
+    .fw-collapse { margin-bottom: 0.5rem; }
+    .fw-collapse-summary {
+      display: flex; align-items: center; gap: 0.5rem;
+      cursor: pointer; list-style: none;
+      padding: 0.5rem 0.25rem;
+      border-radius: var(--radius);
+      transition: background 0.15s;
+      user-select: none;
+    }
+    .fw-collapse-summary:hover { background: var(--bg-hover); }
+    .fw-collapse-summary::-webkit-details-marker { display: none; }
+
+    .fw-collapse-arrow {
+      display: inline-block;
+      width: 0; height: 0;
+      border-left: 5px solid var(--text-muted);
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transition: transform 0.15s;
+      flex-shrink: 0;
+    }
+    details[open] > .fw-collapse-summary > .fw-collapse-arrow {
+      transform: rotate(90deg);
+    }
+
+    .fw-collapse-body { padding-left: 0.75rem; }
+    .fw-collapse--nested { margin-bottom: 0.25rem; }
+    .fw-collapse--nested > .fw-collapse-summary { padding: 0.35rem 0.25rem; }
+    .fw-collapse--nested .fw-collapse-body { padding-left: 0.5rem; }
+
+    /* === Role Profile Styles === */
+    .role-description {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+    .role-field {
+      background: var(--bg-shelf);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+    }
+    .role-field-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+    .role-field p {
+      font-size: 0.85rem;
+      color: var(--text-primary);
+      line-height: 1.6;
+    }
+    .role-field--full { grid-column: 1 / -1; }
+
+    /* Fixed-width table columns for skill requirements */
+    .rho-table th:nth-child(2),
+    .rho-table td:nth-child(2) { width: 140px; text-align: center; }
+    .rho-table th:nth-child(3),
+    .rho-table td:nth-child(3) { width: 110px; text-align: center; }
+    .rho-table th:nth-child(4),
+    .rho-table td:nth-child(4) { width: 80px; text-align: center; }
+
+    /* Card top row badges */
+    .framework-card-badges { display: flex; gap: 0.4rem; align-items: center; flex-shrink: 0; }
+
+    /* Level badge with color */
+    .badge-level {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 24px; height: 24px;
+      font-size: 0.75rem; font-weight: 600;
+      border-radius: 6px; padding: 0 0.4rem;
+    }
+    .badge-level--required { background: var(--teal-dim); color: var(--teal); border: 1px solid rgba(91, 181, 162, 0.2); }
+    .badge-level--optional { background: var(--bg-deep); color: var(--text-secondary); border: 1px solid var(--border); }
+
+    /* Required dot indicator */
+    .required-dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; background: var(--teal);
+    }
+    .required-dot--no { background: var(--bg-deep); border: 1px solid var(--border); }
+
+    /* === Proficiency Levels === */
+    .proficiency-panel { padding: 0.75rem 1.5rem; background: var(--bg-deep); border-top: 1px solid var(--border); }
+    .skill-expand-arrow {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-left: 4.5px solid var(--text-muted);
+      border-top: 3.5px solid transparent;
+      border-bottom: 3.5px solid transparent;
+      margin-right: 0.5rem;
+      transition: transform 0.15s;
+      vertical-align: middle;
+    }
+    .skill-expanded .skill-expand-arrow {
+      transform: rotate(90deg);
+    }
+    .proficiency-hidden { display: none; }
+    .proficiency-list {
+      display: grid;
+      grid-template-columns: 2rem 9rem 1fr;
+      gap: 0;
+      align-items: baseline;
+    }
+    .proficiency-item {
+      display: contents;
+    }
+    .proficiency-item > * {
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .proficiency-item:last-child > * { border-bottom: none; }
+    .proficiency-level { font-size: 0.7rem; font-weight: 700; color: var(--teal-bright); background: var(--teal-dim); padding: 0.2rem 0.4rem; border-radius: 4px; justify-self: start; align-self: baseline; }
+    .proficiency-name { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); padding-left: 0.5rem; }
+    .proficiency-desc { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.45; padding-left: 0.5rem; }
+
+    /* === Command Palette === */
+    .command-palette-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(28, 25, 23, 0.18);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 18vh;
+      z-index: 60;
+      backdrop-filter: blur(6px);
+    }
+    .command-palette {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      width: 500px;
+      max-width: 90vw;
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+    }
+    .command-palette-input-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .command-palette-icon {
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      background: var(--bg-deep);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .command-palette-input {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      color: var(--text-primary);
+    }
+    .command-palette-input::placeholder { color: var(--text-muted); }
+    .command-palette-results {
+      max-height: 300px;
+      overflow-y: auto;
+      padding: 0.25rem 0;
+    }
+    .command-palette-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 0.5rem 1rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--text-primary);
+      text-align: left;
+      transition: background 0.1s;
+    }
+    .command-palette-item:hover {
+      background: var(--teal-dim);
+    }
+    .command-palette-item-label {
+      flex: 1;
+    }
+    .command-palette-item-shortcut {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      background: var(--bg-deep);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+    }
+    .command-palette-empty {
+      padding: 1rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    /* === Focus Mode === */
+    .session-layout.focus-mode .session-header {
+      display: none;
+    }
+    .session-layout.focus-mode .workspace-tab-bar {
+      display: none;
+    }
+    .session-layout.focus-mode .main-panels {
+      grid-template-columns: 1fr;
+    }
+    .session-layout.focus-mode .dt-chat-panel {
+      width: 0;
+      min-width: 0;
+      opacity: 0;
+      border-left: none;
+      pointer-events: none;
+    }
+    .session-layout.focus-mode .agent-sidebar {
+      display: none;
+    }
+    .session-layout.focus-mode {
+      height: 100vh;
+    }
+
+    /* === Floating Chat Pill === */
+    .chat-floating-pill {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow-md);
+      cursor: pointer;
+      font-size: 0.825rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      z-index: 20;
+      transition: all 0.2s ease;
+    }
+    .chat-floating-pill:hover {
+      box-shadow: var(--shadow-lg);
+      border-color: var(--teal);
+    }
+    .pill-unseen-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 0.3rem;
+      border-radius: 9px;
+      background: var(--teal);
+      color: white;
+      font-size: 0.65rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      line-height: 1;
+    }
+
+    /* === Lens Dashboard === */
+    .lens-dashboard {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 1.5rem;
+      gap: 1rem;
+    }
+    .lens-dashboard.hidden { display: none; }
+    .lens-dashboard-header { margin-bottom: 0.5rem; }
+    .lens-dashboard-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .lens-dashboard-desc {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      margin-top: 0.25rem;
+    }
+    .lens-dashboard-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+
+    /* Summary cards */
+    .lens-summary-cards {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .lens-summary-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.75rem 1rem;
+      min-width: 80px;
+      text-align: center;
+    }
+    .lens-summary-value {
+      font-size: 1.4rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+    }
+    .lens-summary-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-top: 0.15rem;
+    }
+
+    /* Charts container */
+    .lens-dashboard-charts { flex: 1; min-height: 0; }
+    .lens-chart-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    .lens-chart-placeholder {
+      color: var(--text-muted);
+      text-align: center;
+      padding: 3rem 1rem;
+    }
+
+    /* Matrix */
+    .lens-matrix { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
+    .lens-matrix-ylabel {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      writing-mode: vertical-lr;
+      transform: rotate(180deg);
+      align-self: center;
+    }
+    .lens-matrix-xlabel {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      text-align: center;
+    }
+    .lens-matrix-grid {
+      display: grid;
+      gap: 4px;
+      width: 100%;
+      max-width: 360px;
+    }
+    .lens-matrix-row-label, .lens-matrix-col-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-transform: capitalize;
+    }
+    .lens-matrix-cell {
+      border: 1px solid;
+      border-radius: var(--radius-sm);
+      padding: 0.75rem 0.5rem;
+      text-align: center;
+      min-height: 60px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      transition: opacity 0.15s;
+    }
+    .lens-matrix-cell:hover { opacity: 0.85; }
+    .lens-matrix-cell-label { font-size: 0.75rem; font-weight: 600; }
+    .lens-matrix-cell-count {
+      font-size: 1.1rem;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+    }
+
+    /* Scatter */
+    .lens-scatter-svg { width: 100%; height: auto; }
+
+    /* Bar chart */
+    .lens-bar-svg { width: 100%; height: auto; }
+
+    /* Detail panel */
+    .lens-detail-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+    .lens-detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .lens-detail-title {
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .lens-detail-close {
+      background: none;
+      border: none;
+      font-size: 1.2rem;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .lens-detail-meta {
+      display: flex;
+      gap: 0.5rem;
+      margin: 0.5rem 0;
+    }
+    .lens-detail-classification {
+      background: var(--teal-dim);
+      color: var(--teal);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .lens-detail-method {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+    .lens-detail-axes { display: flex; flex-direction: column; gap: 1rem; margin-top: 0.75rem; }
+    .lens-detail-axis-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+    }
+    .lens-detail-axis-name { font-weight: 600; color: var(--text-primary); }
+    .lens-detail-axis-composite { font-family: var(--font-mono); color: var(--teal); font-weight: 700; }
+    .lens-detail-axis-band { color: var(--text-muted); font-size: 0.75rem; text-transform: capitalize; }
+    .lens-detail-variables { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+    .lens-detail-var { padding-left: 0.75rem; }
+    .lens-detail-var-header { display: flex; justify-content: space-between; font-size: 0.8rem; }
+    .lens-detail-var-name { color: var(--text-secondary); }
+    .lens-detail-var-score { font-family: var(--font-mono); color: var(--text-primary); font-size: 0.75rem; }
+    .lens-detail-var-rationale {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.15rem;
+      font-style: italic;
+    }
+    .lens-detail-var-bar {
+      height: 4px;
+      background: var(--bg-deep);
+      border-radius: 2px;
+      margin-top: 0.25rem;
+      overflow: hidden;
+    }
+    .lens-detail-var-bar-fill {
+      height: 100%;
+      background: var(--teal);
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+
+    /* === Chat Overlay === */
+    .chat-overlay-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(28, 25, 23, 0.15);
+      z-index: 60;
+      backdrop-filter: blur(4px);
+    }
+    .chat-overlay-panel {
+      position: fixed;
+      right: 1.5rem;
+      bottom: 1.5rem;
+      width: 420px;
+      height: 560px;
+      max-height: calc(100vh - 3rem);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      z-index: 61;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-overlay-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+    .chat-overlay-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .chat-overlay-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .chat-overlay-close:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+    .chat-overlay-feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.75rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .chat-overlay-msg {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-start;
+    }
+    .chat-overlay-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .chat-overlay-avatar.avatar-user {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+    }
+    .chat-overlay-avatar.avatar-assistant {
+      background: var(--teal-dim);
+      color: var(--teal);
+    }
+    .chat-overlay-msg-body {
+      font-size: 0.85rem;
+      line-height: 1.5;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-width: 0;
+    }
+    .chat-overlay-input-area {
+      padding: 0.75rem 1rem;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .chat-overlay-input-form {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.5rem 0.75rem;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .chat-overlay-input-form:focus-within {
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px var(--teal-glow);
+    }
+    .chat-overlay-input-form textarea {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      resize: none;
+      max-height: 120px;
+    }
+    .chat-overlay-input-form textarea::placeholder {
+      color: var(--text-muted);
+    }
+    .chat-overlay-msg-content {
+      font-size: 0.85rem;
+      line-height: 1.5;
+      color: var(--text-primary);
+      min-width: 0;
+      flex: 1;
+    }
+    .chat-overlay-msg-content .markdown-body {
+      font-size: 0.85rem;
+    }
+    .chat-overlay-thinking {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+    .chat-overlay-thinking summary {
+      cursor: pointer;
+      font-style: italic;
+    }
+    .chat-overlay-thinking-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.75rem;
+      max-height: 120px;
+      overflow-y: auto;
+      margin-top: 0.25rem;
+      padding: 0.5rem;
+      background: var(--bg-deep);
+      border-radius: var(--radius);
+    }
+    .chat-overlay-tool {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      padding: 0.25rem 0;
+    }
     """
   end
 end

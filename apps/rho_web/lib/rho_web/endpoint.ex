@@ -1,5 +1,5 @@
 defmodule RhoWeb.Endpoint do
-  use Phoenix.Endpoint, otp_app: :rho
+  use Phoenix.Endpoint, otp_app: :rho_web
 
   @session_options [
     store: :cookie,
@@ -12,6 +12,12 @@ defmodule RhoWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: false
   )
+
+  if code_reloading? do
+    socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
+    plug(Phoenix.LiveReloader)
+    plug(Phoenix.CodeReloader)
+  end
 
   # Serve Phoenix client JS from the dep packages
   plug(Plug.Static,

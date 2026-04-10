@@ -16,13 +16,13 @@ defmodule Rho.Stdlib.Tools.SearchHistory do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args -> execute(args, tape_name) end
+      execute: fn args, _ctx -> execute(args, tape_name) end
     }
   end
 
   defp execute(args, tape_name) do
-    query = args["query"] || args[:query] || ""
-    limit = args["limit"] || args[:limit] || 10
+    query = args[:query] || ""
+    limit = args[:limit] || 10
 
     if String.trim(query) == "" do
       {:error, "query is required"}

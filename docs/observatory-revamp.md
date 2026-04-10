@@ -6,14 +6,14 @@
 
 The core infrastructure that makes the observatory possible:
 
-- **`Rho.Session.EventLog`** — GenServer per session that subscribes to the signal bus and writes filtered events to `{workspace}/_rho/sessions/{session_id}/events.jsonl`. Filters out `text_delta` and `structured_partial` (high-frequency, reconstructable). Truncates tool results at 4KB and tool args at 2KB.
-- **`Rho.Session.inject/4`** — Inject messages into any agent from external tools. Routes to primary agent or delivers signals to specific agents by ID. External messages are formatted differently from inter-agent messages.
-- **`Rho.Session.event_log_path/1`** — Returns the JSONL file path for direct reading.
+- **`Rho.Agent.EventLog`** — GenServer per session that subscribes to the signal bus and writes filtered events to `{workspace}/_rho/sessions/{session_id}/events.jsonl`. Filters out `text_delta` and `structured_partial` (high-frequency, reconstructable). Truncates tool results at 4KB and tool args at 2KB.
+- **`Rho.Agent.Primary.inject/4`** — Inject messages into any agent from external tools. Routes to primary agent or delivers signals to specific agents by ID. External messages are formatted differently from inter-agent messages.
+- **Event log path** — `{workspace}/_rho/sessions/{session_id}/events.jsonl` for direct reading.
 - **3 new HTTP endpoints** on the Observatory API:
   - `POST /sessions` — Create session with optional initial message
   - `POST /sessions/{id}/inject` — Inject messages to any agent
   - `GET /sessions/{id}/log` — Cursor-based event log pagination
-- **Supervision tree** — `Rho.EventLogRegistry` (unique Registry) and `Rho.Session.EventLog.Supervisor` (DynamicSupervisor) added to `application.ex`.
+- **Supervision tree** — `Rho.EventLogRegistry` (unique Registry) and `Rho.Agent.EventLog.Supervisor` (DynamicSupervisor) added to `application.ex`.
 
 ### Discussion-Centric Observatory (frontend)
 

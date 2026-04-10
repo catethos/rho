@@ -2219,7 +2219,7 @@ defmodule Rho.Web.Router do
         send_resp(conn, 404, Jason.encode!(%{error: "session not found"}))
 
       pid ->
-        info = Rho.Session.Worker.info(pid)
+        info = Rho.Agent.Worker.info(pid)
 
         conn
         |> put_resp_content_type("application/json")

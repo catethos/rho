@@ -6,6 +6,11 @@ skeleton phase, +17% tokens). Pivot: delete `:tagged`, keep
 `Rho.Parse.Lenient`, use it to prettify `:structured` streaming output.
 See `docs/reasoner-baml-results.md` for the eval findings.
 
+> **Vocabulary note (post-refactor).** "Reasoner" in this document =
+> `Rho.TurnStrategy` in current code. `:structured` resolves to
+> `Rho.TurnStrategy.Structured`. See `CLAUDE.md` §"Migration from
+> Mount/Memory/Reasoner".
+
 ## Scope
 
 ### Remove (tagged reasoner)

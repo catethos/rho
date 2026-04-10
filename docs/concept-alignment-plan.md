@@ -399,6 +399,15 @@ name aspects of the same append-only event log.
 **Deliverable.** Grep confirms zero `Memory` / `Journal` references
 outside documentation footnotes.
 
+**Status: shipped.** `Rho.Memory` / `Rho.Memory.Tape` /
+`Rho.Mounts.JournalTools` deleted outright (no delegated shim — all
+callers are internal). `Rho.Tape.Context.build/1` replaces the
+`memory_mod.build_context(tape)` callsites. `:memory_module` config
+key unchanged; default resolves to `Rho.Tape.Context.Tape`. Atom
+shorthand `:journal` now resolves to `Rho.Tools.TapeTools`.
+Variable/struct-field name `memory_mod` retained to minimise churn;
+its rename is out of scope for Phase 1. 336 tests green.
+
 ---
 
 ## Phase 2 — `Plugin` behaviour (Mount split, part 1)
@@ -445,6 +454,24 @@ continues to work.
 **Deliverable.** `Plugin` behaviour defined; all contribution-only
 modules migrated; `PluginRegistry` collects; per-instance opts flow
 through to callbacks; atom + tuple config forms both resolve.
+
+**Status: shipped.** `Rho.Plugin` (3 optional capability callbacks,
+`(opts, ctx)` signatures) and `Rho.PluginInstance`/`Rho.PluginRegistry`
+are in place. `Rho.Mount`, `Rho.MountInstance`, and `Rho.MountRegistry`
+are retained as delegated aliases. Migrated to `@behaviour Rho.Plugin`:
+`Bash`, `FsRead`, `FsWrite`, `FsEdit`, `WebFetch`, `MultiAgent`,
+`Python`, `Sandbox`, `Builtin`, `TapeTools`, plus the capability side of
+`StepBudget` and `Subagent` (hook functions retained as plain
+functions, dispatched via `function_exported?/3` until Phase 3).
+`Rho.Skills` decomposes into `Rho.Skill` (struct + parser),
+`Rho.Skill.Loader` (discovery + caching + rendering), and
+`Rho.Skill.Plugin` (the `tools/2` + `prompt_sections/2` adapter);
+`Rho.Skills` kept as a delegated shim. Same-turn skill-injection
+regression test added. `children/2` callback deleted from the
+`Rho.Mount` behaviour. Atom shorthands (`:bash`, `:fs_read`, …,
+`:skills`, `:journal`, `:step_budget`, `:subagent`) and tuple forms
+(`{:multi_agent, except: […]}`, `{:py_agent, module: …, name: …}`) all
+resolve. 341 tests green.
 
 ---
 
@@ -757,7 +784,7 @@ Every alias accepted during and after the refactor:
 | Config key | `plugins:` | `mounts:` |
 | Config key | `transformers:` | (new — no legacy) |
 | Config key | `turn_strategy:` | `reasoner:` |
-| Module | `Rho.Tape.Context` | `Rho.Memory` (delegated) |
+| Module | `Rho.Tape.Context` | `Rho.Memory` (removed in Phase 1 — internal-only rename, no delegated shim) |
 | Module | `Rho.Plugin` behaviour | `Rho.Mount` (delegated) |
 | Module | `Rho.PluginRegistry` | `Rho.MountRegistry` (delegated) |
 | Module | `Rho.PluginInstance` | `Rho.MountInstance` (delegated) |

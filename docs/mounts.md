@@ -1,3 +1,8 @@
+> **Superseded.** This doc predates the Plugin/Transformer refactor.
+> Mounts are now **plugins** (`Rho.Plugin` behaviour) and lifecycle hooks are
+> **transformers** (`Rho.Transformer` behaviour with 6 typed stages).
+> `Rho.Mount` is retained as a delegated alias. See CLAUDE.md for current architecture.
+
 # Writing Custom Mounts
 
 Mounts are the sole extension mechanism in Rho. Everything that contributes optional behavior to an agent — tools, prompt text, bindings, lifecycle hooks — is a mount implementing the `Rho.Mount` behaviour.

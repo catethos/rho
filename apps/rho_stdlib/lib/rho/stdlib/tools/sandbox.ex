@@ -47,7 +47,7 @@ defmodule Rho.Stdlib.Tools.Sandbox do
           parameter_schema: [],
           callback: fn _args -> :ok end
         ),
-      execute: fn _args -> Rho.Sandbox.diff(sandbox) end
+      execute: fn _args, _ctx -> Rho.Sandbox.diff(sandbox) end
     }
   end
 
@@ -63,7 +63,7 @@ defmodule Rho.Stdlib.Tools.Sandbox do
           parameter_schema: [],
           callback: fn _args -> :ok end
         ),
-      execute: fn _args ->
+      execute: fn _args, _ctx ->
         case Rho.Sandbox.commit(sandbox) do
           :ok -> {:ok, "Changes committed to #{sandbox.workspace}"}
           error -> error

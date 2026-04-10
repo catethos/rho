@@ -44,7 +44,10 @@ defmodule Rho.Context do
     :prompt_format,
     # purpose: owning user id (when auth is enabled); used by
     # user-scoped plugins like framework_persistence.
-    :user_id
+    :user_id,
+    # purpose: organization id for multi-tenant scoping; used by
+    # org-scoped plugins like framework_persistence.
+    :organization_id
   ]
 
   @type t :: %__MODULE__{
@@ -57,7 +60,8 @@ defmodule Rho.Context do
           agent_id: String.t() | nil,
           session_id: String.t() | nil,
           prompt_format: :markdown | :xml | nil,
-          user_id: String.t() | nil
+          user_id: String.t() | nil,
+          organization_id: String.t() | nil
         }
 
   @impl Access

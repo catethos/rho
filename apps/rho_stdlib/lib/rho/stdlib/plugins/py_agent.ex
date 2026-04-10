@@ -55,7 +55,7 @@ defmodule Rho.Stdlib.Plugins.PyAgent do
             ],
             callback: fn _args -> :ok end
           ),
-        execute: fn %{"message" => message} ->
+        execute: fn %{"message" => message}, _ctx ->
           session_id = context[:session_id] || context[:agent_id] || "default"
 
           case :py.call(py_module, :chat, [session_id, message]) do

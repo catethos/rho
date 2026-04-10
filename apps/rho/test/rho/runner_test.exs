@@ -111,7 +111,7 @@ defmodule Rho.RunnerTest do
             parameter_schema: [msg: [type: :string, required: true, doc: "Message"]],
             callback: fn _args -> :ok end
           ),
-        execute: fn %{"msg" => msg} -> {:ok, "echoed: #{msg}"} end
+        execute: fn %{msg: msg}, _ctx -> {:ok, "echoed: #{msg}"} end
       }
 
       events =
@@ -172,7 +172,27 @@ defmodule Rho.RunnerTest do
     test "loop exits immediately after create_anchor is invoked" do
       Service.ensure_bootstrap_anchor(@test_tape)
 
-      anchor_tool = Rho.Stdlib.Tools.Anchor.tool_def(@test_tape)
+      anchor_tool = %{
+        tool:
+          ReqLLM.tool(
+            name: "create_anchor",
+            description: "Mark a phase transition.",
+            parameter_schema: [
+              name: [type: :string, required: true, doc: "Phase name"],
+              summary: [type: :string, required: true, doc: "Summary"]
+            ],
+            callback: fn _args -> :ok end
+          ),
+        execute: fn args, _ctx ->
+          name = args[:name] || "checkpoint"
+          summary = args[:summary] || ""
+
+          case Rho.Tape.Service.handoff(@test_tape, name, summary, next_steps: []) do
+            {:ok, _entry} -> {:ok, "Anchor '#{name}' created."}
+            {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
+          end
+        end
+      }
 
       tool_resp =
         tool_call_response("Saving progress.", [
