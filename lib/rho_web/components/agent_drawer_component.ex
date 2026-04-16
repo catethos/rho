@@ -74,7 +74,6 @@ defmodule RhoWeb.AgentDrawerComponent do
     """
   end
 
-
   defp load_tape(socket, agent) do
     memory_mod = Rho.Config.memory_module()
 
@@ -118,6 +117,7 @@ defmodule RhoWeb.AgentDrawerComponent do
   defp truncate(text, max) when is_binary(text) and byte_size(text) > max do
     String.slice(text, 0, max) <> "…"
   end
+
   defp truncate(text, _max) when is_binary(text), do: text
   defp truncate(other, _max), do: inspect(other)
 end

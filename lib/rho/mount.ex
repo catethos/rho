@@ -13,7 +13,10 @@ defmodule Rho.Mount do
     shaping. Must be side-effect-free on the journal (projection is ephemeral).
   """
 
-  @type tool_def :: %{tool: ReqLLM.Tool.t(), execute: (map() -> {:ok, String.t()} | {:error, term()})}
+  @type tool_def :: %{
+          tool: ReqLLM.Tool.t(),
+          execute: (map() -> {:ok, String.t()} | {:error, term()})
+        }
   @type context :: map()
   @type mount_opts :: keyword()
 
@@ -95,7 +98,12 @@ defmodule Rho.Mount do
   @doc "Return OTP child specs for supervised resources this mount needs."
   @callback children(mount_opts(), context()) :: [Supervisor.child_spec()]
 
-  @optional_callbacks tools: 2, prompt_sections: 2, bindings: 2,
-                      before_llm: 3, before_tool: 3, after_tool: 4,
-                      after_step: 4, children: 2
+  @optional_callbacks tools: 2,
+                      prompt_sections: 2,
+                      bindings: 2,
+                      before_llm: 3,
+                      before_tool: 3,
+                      after_tool: 4,
+                      after_step: 4,
+                      children: 2
 end

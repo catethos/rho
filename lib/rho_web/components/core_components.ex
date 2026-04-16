@@ -4,7 +4,7 @@ defmodule RhoWeb.CoreComponents do
   """
   use Phoenix.Component
 
-  attr :flash, :map, required: true
+  attr(:flash, :map, required: true)
 
   def flash_group(assigns) do
     ~H"""
@@ -15,8 +15,8 @@ defmodule RhoWeb.CoreComponents do
     """
   end
 
-  attr :kind, :atom, required: true
-  attr :flash, :map, required: true
+  attr(:kind, :atom, required: true)
+  attr(:flash, :map, required: true)
 
   def flash(assigns) do
     msg = Phoenix.Flash.get(assigns.flash, assigns.kind)
@@ -29,10 +29,10 @@ defmodule RhoWeb.CoreComponents do
     """
   end
 
-  attr :class, :string, default: ""
-  attr :rest, :global
+  attr(:class, :string, default: "")
+  attr(:rest, :global)
 
-  slot :inner_block, required: true
+  slot(:inner_block, required: true)
 
   def badge(assigns) do
     ~H"""
@@ -40,7 +40,7 @@ defmodule RhoWeb.CoreComponents do
     """
   end
 
-  attr :status, :atom, required: true
+  attr(:status, :atom, required: true)
 
   def status_dot(assigns) do
     ~H"""

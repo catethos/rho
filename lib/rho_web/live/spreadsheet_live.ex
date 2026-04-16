@@ -1065,7 +1065,9 @@ defmodule RhoWeb.SpreadsheetLive do
         </div>
       </div>
 
-      <div class="spreadsheet-chat-panel">
+      <div class="resize-handle" id="panel-resize" phx-hook="PanelResize"></div>
+
+      <div class="spreadsheet-chat-panel" id="chat-panel">
         <div class="spreadsheet-chat-header">
           <span class="spreadsheet-chat-title">Assistant</span>
           <.status_dot :if={chat_status(assigns) != :idle} status={chat_status(assigns)} />

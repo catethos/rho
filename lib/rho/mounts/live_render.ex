@@ -110,7 +110,11 @@ defmodule Rho.Mounts.LiveRender do
               "Use for tables, metrics, cards, checklists, and other structured data. " <>
               "The spec is a JSON object with 'root' and 'elements' keys.",
           parameter_schema: [
-            spec: [type: :map, required: true, doc: "The LiveRender UI spec with 'root' and 'elements' keys"],
+            spec: [
+              type: :map,
+              required: true,
+              doc: "The LiveRender UI spec with 'root' and 'elements' keys"
+            ],
             title: [type: :string, doc: "Optional title displayed above the UI block"]
           ],
           callback: fn _args -> :ok end
@@ -134,7 +138,9 @@ defmodule Rho.Mounts.LiveRender do
             {:ok, parsed} when is_map(parsed) -> {parsed, byte_size(s)}
             _ -> {raw_spec, nil}
           end
-        other -> {other, nil}
+
+        other ->
+          {other, nil}
       end
 
     with :ok <- validate_spec(spec, catalog, max_bytes, pre_validated_size) do
@@ -169,8 +175,13 @@ defmodule Rho.Mounts.LiveRender do
 
           Comms.publish(
             "#{topic}.ui_spec_delta",
-            %{session_id: session_id, agent_id: agent_id, message_id: message_id,
-              title: title, spec: %{"root" => root_id, "elements" => trimmed}},
+            %{
+              session_id: session_id,
+              agent_id: agent_id,
+              message_id: message_id,
+              title: title,
+              spec: %{"root" => root_id, "elements" => trimmed}
+            },
             source: source
           )
         end
@@ -198,8 +209,13 @@ defmodule Rho.Mounts.LiveRender do
         # Final complete spec
         Comms.publish(
           "#{topic}.ui_spec",
-          %{session_id: session_id, agent_id: agent_id, message_id: message_id,
-            title: title, spec: spec},
+          %{
+            session_id: session_id,
+            agent_id: agent_id,
+            message_id: message_id,
+            title: title,
+            spec: spec
+          },
           source: source
         )
       end
@@ -210,7 +226,8 @@ defmodule Rho.Mounts.LiveRender do
 
   # --- Validation ---
 
-  defp validate_spec(nil, _catalog, _max_bytes, _pre_size), do: {:error, "spec parameter is required"}
+  defp validate_spec(nil, _catalog, _max_bytes, _pre_size),
+    do: {:error, "spec parameter is required"}
 
   defp validate_spec(spec, catalog, max_bytes, pre_validated_size) when is_map(spec) do
     with :ok <- validate_size(spec, max_bytes, pre_validated_size),
@@ -222,12 +239,16 @@ defmodule Rho.Mounts.LiveRender do
 
   defp validate_spec(spec, catalog, max_bytes, _pre_size) when is_binary(spec) do
     case Jason.decode(spec) do
-      {:ok, parsed} when is_map(parsed) -> validate_spec(parsed, catalog, max_bytes, byte_size(spec))
-      _ -> {:error, "spec must be a valid JSON object"}
+      {:ok, parsed} when is_map(parsed) ->
+        validate_spec(parsed, catalog, max_bytes, byte_size(spec))
+
+      _ ->
+        {:error, "spec must be a valid JSON object"}
     end
   end
 
-  defp validate_spec(_spec, _catalog, _max_bytes, _pre_size), do: {:error, "spec must be a JSON object"}
+  defp validate_spec(_spec, _catalog, _max_bytes, _pre_size),
+    do: {:error, "spec must be a JSON object"}
 
   defp validate_size(_spec, max_bytes, size) when is_integer(size) do
     if size > max_bytes do
@@ -272,7 +293,8 @@ defmodule Rho.Mounts.LiveRender do
     if unknown == [] do
       :ok
     else
-      {:error, "unknown component types: #{Enum.join(unknown, ", ")}. Available: #{catalog.components() |> Map.keys() |> Enum.join(", ")}"}
+      {:error,
+       "unknown component types: #{Enum.join(unknown, ", ")}. Available: #{catalog.components() |> Map.keys() |> Enum.join(", ")}"}
     end
   end
 

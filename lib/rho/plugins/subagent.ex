@@ -25,7 +25,18 @@ defmodule Rho.Plugins.Subagent do
 
     if depth >= @max_depth,
       do: [],
-      else: [spawn_tool(tape_name, workspace, depth, memory_mod, parent_emit, session_id, parent_agent_id), collect_tool(memory_mod)]
+      else: [
+        spawn_tool(
+          tape_name,
+          workspace,
+          depth,
+          memory_mod,
+          parent_emit,
+          session_id,
+          parent_agent_id
+        ),
+        collect_tool(memory_mod)
+      ]
   end
 
   def tools(_mount_opts, _context), do: []
@@ -51,7 +62,15 @@ defmodule Rho.Plugins.Subagent do
 
   # --- Tool definitions ---
 
-  defp spawn_tool(parent_tape, workspace, parent_depth, memory_mod, parent_emit, session_id, parent_agent_id) do
+  defp spawn_tool(
+         parent_tape,
+         workspace,
+         parent_depth,
+         memory_mod,
+         parent_emit,
+         session_id,
+         parent_agent_id
+       ) do
     %{
       tool:
         ReqLLM.tool(
@@ -61,14 +80,34 @@ defmodule Rho.Plugins.Subagent do
               "Returns a subagent_id immediately. Use collect_subagent to get the result later.",
           parameter_schema: [
             task: [type: :string, required: true, doc: "The task prompt for the subagent"],
-            tools: [type: {:list, :string}, doc: "Tool names for the subagent (default: bash, fs_read, fs_write, fs_edit). Use fewer tools for faster startup."],
-            inherit_context: [type: :boolean, doc: "If true, fork the parent tape so the child sees conversation history (default: false). Adds startup overhead."],
-            max_steps: [type: :integer, doc: "Max steps for the subagent (default: #{@default_max_steps})"]
+            tools: [
+              type: {:list, :string},
+              doc:
+                "Tool names for the subagent (default: bash, fs_read, fs_write, fs_edit). Use fewer tools for faster startup."
+            ],
+            inherit_context: [
+              type: :boolean,
+              doc:
+                "If true, fork the parent tape so the child sees conversation history (default: false). Adds startup overhead."
+            ],
+            max_steps: [
+              type: :integer,
+              doc: "Max steps for the subagent (default: #{@default_max_steps})"
+            ]
           ],
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
-        execute_spawn(args, parent_tape, workspace, parent_depth, memory_mod, parent_emit, session_id, parent_agent_id)
+        execute_spawn(
+          args,
+          parent_tape,
+          workspace,
+          parent_depth,
+          memory_mod,
+          parent_emit,
+          session_id,
+          parent_agent_id
+        )
       end
     }
   end
@@ -82,8 +121,15 @@ defmodule Rho.Plugins.Subagent do
             "Wait for a subagent to complete and return its result. " <>
               "Blocks until the subagent finishes or times out (10 min).",
           parameter_schema: [
-            subagent_id: [type: :string, required: true, doc: "The subagent_id returned by spawn_subagent"],
-            merge: [type: :boolean, doc: "If true, merge the subagent's tape entries back to parent (default: false)"]
+            subagent_id: [
+              type: :string,
+              required: true,
+              doc: "The subagent_id returned by spawn_subagent"
+            ],
+            merge: [
+              type: :boolean,
+              doc: "If true, merge the subagent's tape entries back to parent (default: false)"
+            ]
           ],
           callback: fn _args -> :ok end
         ),
@@ -95,7 +141,16 @@ defmodule Rho.Plugins.Subagent do
 
   # --- Spawn implementation ---
 
-  defp execute_spawn(args, parent_tape, workspace, parent_depth, memory_mod, parent_emit, session_id, parent_agent_id) do
+  defp execute_spawn(
+         args,
+         parent_tape,
+         workspace,
+         parent_depth,
+         memory_mod,
+         parent_emit,
+         session_id,
+         parent_agent_id
+       ) do
     task_prompt = args["task"] || args[:task]
     max_steps = args["max_steps"] || args[:max_steps] || @default_max_steps
     inherit_context = args["inherit_context"] || args[:inherit_context] || false
@@ -107,7 +162,8 @@ defmodule Rho.Plugins.Subagent do
       active_count = length(Worker.active_children_of(parent_tape))
 
       if active_count >= @max_concurrent do
-        {:error, "concurrency limit reached (#{@max_concurrent} active subagents). Collect some before spawning more."}
+        {:error,
+         "concurrency limit reached (#{@max_concurrent} active subagents). Collect some before spawning more."}
       else
         do_spawn(task_prompt, max_steps, parent_tape, workspace, parent_depth,
           inherit_context: inherit_context,

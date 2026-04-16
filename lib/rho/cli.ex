@@ -44,17 +44,20 @@ defmodule Rho.CLI do
 
     # Start REPL loop
     parent = self()
-    repl_pid = spawn_link(fn ->
-      if gl, do: Process.group_leader(self(), gl)
-      repl_loop(parent, stop_event)
-    end)
 
-    {:noreply, %__MODULE__{
-      session_id: session_id,
-      repl_pid: repl_pid,
-      stop_event: stop_event,
-      group_leader: gl
-    }}
+    repl_pid =
+      spawn_link(fn ->
+        if gl, do: Process.group_leader(self(), gl)
+        repl_loop(parent, stop_event)
+      end)
+
+    {:noreply,
+     %__MODULE__{
+       session_id: session_id,
+       repl_pid: repl_pid,
+       stop_event: stop_event,
+       group_leader: gl
+     }}
   end
 
   # --- Session events ---
@@ -102,8 +105,15 @@ defmodule Rho.CLI do
     case parsed do
       %{"action" => action} when is_binary(action) and action != "" ->
         input = parsed["action_input"]
-        suffix = if is_map(input) and map_size(input) > 0, do: "(#{format_args(input)})", else: "..."
-        IO.write("\r" <> IO.ANSI.clear_line() <> IO.ANSI.faint() <> "  [#{action}] #{suffix}" <> IO.ANSI.reset())
+
+        suffix =
+          if is_map(input) and map_size(input) > 0, do: "(#{format_args(input)})", else: "..."
+
+        IO.write(
+          "\r" <>
+            IO.ANSI.clear_line() <>
+            IO.ANSI.faint() <> "  [#{action}] #{suffix}" <> IO.ANSI.reset()
+        )
 
       _ ->
         :ok
@@ -137,7 +147,9 @@ defmodule Rho.CLI do
         if(cached > 0, do: "cached: #{cached}"),
         if(cache_created > 0, do: "cache_write: #{cache_created}"),
         if(reasoning > 0, do: "reasoning: #{reasoning}"),
-        if(is_number(cost) and cost > 0, do: "cost: $#{:erlang.float_to_binary(cost / 1, decimals: 4)}")
+        if(is_number(cost) and cost > 0,
+          do: "cost: $#{:erlang.float_to_binary(cost / 1, decimals: 4)}"
+        )
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -222,7 +234,11 @@ defmodule Rho.CLI do
       end
 
     preview = Enum.join(truncated, "\n")
-    IO.puts(IO.ANSI.faint() <> "  " <> String.replace(preview, "\n", "\n  ") <> suffix <> IO.ANSI.reset())
+
+    IO.puts(
+      IO.ANSI.faint() <>
+        "  " <> String.replace(preview, "\n", "\n  ") <> suffix <> IO.ANSI.reset()
+    )
   end
 
   defp safe_unsubscribe(session_id), do: Rho.Session.safe_unsubscribe(session_id)

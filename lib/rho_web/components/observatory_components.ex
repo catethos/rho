@@ -8,8 +8,8 @@ defmodule RhoWeb.ObservatoryComponents do
 
   # --- Discussion timeline ---
 
-  attr :discussion, :list, required: true
-  attr :agents, :map, required: true
+  attr(:discussion, :list, required: true)
+  attr(:agents, :map, required: true)
 
   def discussion_timeline(assigns) do
     ~H"""
@@ -122,9 +122,9 @@ defmodule RhoWeb.ObservatoryComponents do
 
   # --- Interaction graph (sidebar) ---
 
-  attr :agents, :map, required: true
-  attr :edges, :map, required: true
-  attr :recent_edges, :list, required: true
+  attr(:agents, :map, required: true)
+  attr(:edges, :map, required: true)
+  attr(:recent_edges, :list, required: true)
 
   def interaction_graph(assigns) do
     agent_list =
@@ -155,7 +155,9 @@ defmodule RhoWeb.ObservatoryComponents do
 
     edge_data =
       assigns.edges
-      |> Enum.filter(fn {{from, to}, _} -> Map.has_key?(pos_map, from) and Map.has_key?(pos_map, to) end)
+      |> Enum.filter(fn {{from, to}, _} ->
+        Map.has_key?(pos_map, from) and Map.has_key?(pos_map, to)
+      end)
       |> Enum.with_index()
       |> Enum.map(fn {{{from, to}, count}, idx} ->
         {fx, fy} = pos_map[from]
@@ -168,27 +170,46 @@ defmodule RhoWeb.ObservatoryComponents do
         len = :math.sqrt(dx * dx + dy * dy)
         nx = dx / max(len, 1)
         ny = dy / max(len, 1)
+
         %{
-          x1: fx + nx * 18, y1: fy + ny * 18,
-          x2: tx - nx * 18, y2: ty - ny * 18,
-          fx: fx, fy: fy, tx: tx, ty: ty,
-          count: count, thickness: thickness, idx: idx,
+          x1: fx + nx * 18,
+          y1: fy + ny * 18,
+          x2: tx - nx * 18,
+          y2: ty - ny * 18,
+          fx: fx,
+          fy: fy,
+          tx: tx,
+          ty: ty,
+          count: count,
+          thickness: thickness,
+          idx: idx,
           role: role_slug((from_agent || %{})[:agent_name])
         }
       end)
 
     # Recent edges for live particle animation
     now = System.monotonic_time(:millisecond)
+
     recent =
       assigns.recent_edges
-      |> Enum.filter(fn {from, to, _t} -> Map.has_key?(pos_map, from) and Map.has_key?(pos_map, to) end)
+      |> Enum.filter(fn {from, to, _t} ->
+        Map.has_key?(pos_map, from) and Map.has_key?(pos_map, to)
+      end)
       |> Enum.filter(fn {_, _, t} -> now - t < 3000 end)
       |> Enum.with_index()
       |> Enum.map(fn {{from, to, _t}, idx} ->
         {fx, fy} = pos_map[from]
         {tx, ty} = pos_map[to]
         from_agent = assigns.agents[from]
-        %{fx: fx, fy: fy, tx: tx, ty: ty, idx: idx, role: role_slug((from_agent || %{})[:agent_name])}
+
+        %{
+          fx: fx,
+          fy: fy,
+          tx: tx,
+          ty: ty,
+          idx: idx,
+          role: role_slug((from_agent || %{})[:agent_name])
+        }
       end)
 
     # For historical sessions with no recent edges, use looping ambient particles on all edges
@@ -270,7 +291,7 @@ defmodule RhoWeb.ObservatoryComponents do
 
   # --- Agent pill (sidebar) ---
 
-  attr :agent, :map, required: true
+  attr(:agent, :map, required: true)
 
   def agent_pill(assigns) do
     ~H"""
@@ -290,7 +311,7 @@ defmodule RhoWeb.ObservatoryComponents do
 
   # --- Score table (sidebar) ---
 
-  attr :scores, :map, required: true
+  attr(:scores, :map, required: true)
 
   def score_table(assigns) do
     ~H"""
@@ -313,11 +334,15 @@ defmodule RhoWeb.ObservatoryComponents do
 
   # --- Token summary (sidebar) ---
 
-  attr :agents, :map, required: true
+  attr(:agents, :map, required: true)
 
   def token_summary(assigns) do
-    total_in = assigns.agents |> Map.values() |> Enum.map(& &1[:token_usage][:input] || 0) |> Enum.sum()
-    total_out = assigns.agents |> Map.values() |> Enum.map(& &1[:token_usage][:output] || 0) |> Enum.sum()
+    total_in =
+      assigns.agents |> Map.values() |> Enum.map(&(&1[:token_usage][:input] || 0)) |> Enum.sum()
+
+    total_out =
+      assigns.agents |> Map.values() |> Enum.map(&(&1[:token_usage][:output] || 0)) |> Enum.sum()
+
     assigns = assign(assigns, :total_in, total_in) |> assign(:total_out, total_out)
 
     ~H"""
@@ -351,7 +376,9 @@ defmodule RhoWeb.ObservatoryComponents do
     researcher: "R"
   }
 
-  defp avatar(name) when is_atom(name), do: Map.get(@role_avatars, name, String.first(Atom.to_string(name)) |> String.upcase())
+  defp avatar(name) when is_atom(name),
+    do: Map.get(@role_avatars, name, String.first(Atom.to_string(name)) |> String.upcase())
+
   defp avatar(name) when is_binary(name) do
     cond do
       String.contains?(name, "technical") -> "T"
@@ -360,14 +387,17 @@ defmodule RhoWeb.ObservatoryComponents do
       true -> String.first(name) |> String.upcase()
     end
   end
+
   defp avatar(_), do: "?"
 
   defp role_slug(name) when is_atom(name) do
     name |> Atom.to_string() |> String.replace("_", "-")
   end
+
   defp role_slug(name) when is_binary(name) do
     name |> String.replace("_", "-")
   end
+
   defp role_slug(_), do: "unknown"
 
   defp format_name(name) when is_atom(name) do
@@ -379,6 +409,7 @@ defmodule RhoWeb.ObservatoryComponents do
     |> Enum.map(&String.capitalize/1)
     |> Enum.join(" ")
   end
+
   defp format_name(name) when is_binary(name) do
     if String.contains?(name, "_evaluator") do
       name |> String.replace("_evaluator", "") |> String.capitalize()
@@ -386,11 +417,13 @@ defmodule RhoWeb.ObservatoryComponents do
       if String.length(name) > 12, do: "..." <> String.slice(name, -8, 8), else: name
     end
   end
+
   defp format_name(name), do: to_string(name)
 
   defp truncate(text, max) when is_binary(text) and byte_size(text) > max do
     String.slice(text, 0, max) <> "..."
   end
+
   defp truncate(text, _max), do: text
 
   defp sorted_scores(scores) do

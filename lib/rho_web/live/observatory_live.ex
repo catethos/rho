@@ -335,7 +335,11 @@ defmodule RhoWeb.ObservatoryLive do
   rescue
     e ->
       require Logger
-      Logger.error("[Observatory] Event log replay failed: #{Exception.format(:error, e, __STACKTRACE__)}")
+
+      Logger.error(
+        "[Observatory] Event log replay failed: #{Exception.format(:error, e, __STACKTRACE__)}"
+      )
+
       socket
   end
 
@@ -355,6 +359,7 @@ defmodule RhoWeb.ObservatoryLive do
         {k, atomize_value(v)}
     end)
   end
+
   defp atomize_keys(other), do: other
 
   # Recursively atomize nested maps; convert known enum strings to atoms
@@ -396,7 +401,10 @@ defmodule RhoWeb.ObservatoryLive do
          |> Map.put(:current_tool, worker_meta[:current_tool])
          |> Map.put(:current_step, worker_meta[:current_step])
          |> Map.put(:status, worker_meta[:status] || agent.status)
-         |> Map.put(:token_usage, worker_meta[:token_usage] || agent[:token_usage] || %{input: 0, output: 0})
+         |> Map.put(
+           :token_usage,
+           worker_meta[:token_usage] || agent[:token_usage] || %{input: 0, output: 0}
+         )
          |> Map.put(:prev_reductions, Map.get(stats, :reductions, 0))
          |> Map.put(:reductions_per_sec, delta)
          |> Map.put(:alive, true)}
@@ -411,7 +419,12 @@ defmodule RhoWeb.ObservatoryLive do
     live =
       Rho.Session.list()
       |> Enum.map(fn info ->
-        %{id: info.session_id, live: true, agents: Rho.Agent.Registry.count(info.session_id), events: 0}
+        %{
+          id: info.session_id,
+          live: true,
+          agents: Rho.Agent.Registry.count(info.session_id),
+          events: 0
+        }
       end)
 
     live_ids = MapSet.new(live, & &1.id)
@@ -455,11 +468,14 @@ defmodule RhoWeb.ObservatoryLive do
   defp replay_interval(:turbo), do: 10
 
   defp project_batch(socket, 0), do: {socket, socket.assigns.replay_queue}
+
   defp project_batch(socket, n) do
     queue = socket.assigns.replay_queue
+
     case :queue.out(queue) do
       {:empty, queue} ->
         {socket, queue}
+
       {{:value, {type, data}}, rest} ->
         socket =
           try do
@@ -467,12 +483,14 @@ defmodule RhoWeb.ObservatoryLive do
           rescue
             _ -> socket
           end
+
         project_batch(assign(socket, :replay_queue, rest), n - 1)
     end
   end
 
   defp drain_replay_queue(socket) do
     queue = socket.assigns.replay_queue
+
     socket =
       :queue.to_list(queue)
       |> Enum.reduce(socket, fn {type, data}, sock ->
@@ -489,7 +507,8 @@ defmodule RhoWeb.ObservatoryLive do
   defp finish_replay(socket) do
     socket
     |> assign(:replay_active, false)
-    |> assign(:status,
+    |> assign(
+      :status,
       if map_size(socket.assigns.agents) > 0 and
            not Enum.any?(socket.assigns.agents, fn {_id, a} -> a[:alive] == true end) do
         :completed
@@ -501,12 +520,16 @@ defmodule RhoWeb.ObservatoryLive do
 
   defp count_lines(path) do
     case File.stat(path) do
-      {:ok, %{size: 0}} -> 0
+      {:ok, %{size: 0}} ->
+        0
+
       {:ok, _} ->
         path
         |> File.stream!()
         |> Enum.count()
-      {:error, _} -> 0
+
+      {:error, _} ->
+        0
     end
   rescue
     _ -> 0

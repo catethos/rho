@@ -13,7 +13,11 @@ defmodule Rho.Tools.FsWrite do
           name: "fs_write",
           description: "Write or create a text file. Creates parent directories if needed.",
           parameter_schema: [
-            path: [type: :string, required: true, doc: "File path (relative to workspace or absolute)"],
+            path: [
+              type: :string,
+              required: true,
+              doc: "File path (relative to workspace or absolute)"
+            ],
             content: [type: :string, required: true, doc: "Content to write to the file"]
           ],
           callback: fn _args -> :ok end

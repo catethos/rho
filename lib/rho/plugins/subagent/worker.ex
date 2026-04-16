@@ -106,8 +106,7 @@ defmodule Rho.Plugins.Subagent.Worker do
     ensure_status_table()
 
     spec = [
-      {{:"$1", :"$2", :"$3", :"$4"},
-       [{:==, :"$2", parent_tape}, {:==, :"$3", :done}],
+      {{:"$1", :"$2", :"$3", :"$4"}, [{:==, :"$2", parent_tape}, {:==, :"$3", :done}],
        [{{:"$1", :"$4"}}]}
     ]
 
@@ -147,15 +146,17 @@ defmodule Rho.Plugins.Subagent.Worker do
     # Publish agent started signal so the LiveView UI can discover subagents
     session_id = state.session_id
 
-    Rho.Comms.publish("rho.agent.started", %{
-      agent_id: state.subagent_id,
-      session_id: session_id,
-      role: :subagent,
-      depth: state.depth,
-      capabilities: [],
-      parent_agent_id: state.parent_agent_id,
-      model: state.model
-    }, source: "/subagent/#{state.subagent_id}")
+    Rho.Comms.publish(
+      "rho.agent.started",
+      %{
+        agent_id: state.subagent_id,
+        session_id: session_id,
+        role: :subagent,
+        depth: state.depth,
+        capabilities: [],
+        parent_agent_id: state.parent_agent_id,
+        model: state.model
+      }, source: "/subagent/#{state.subagent_id}")
 
     {:ok, state, {:continue, :run}}
   end
@@ -211,7 +212,11 @@ defmodule Rho.Plugins.Subagent.Worker do
     Process.demonitor(ref, [:flush])
 
     state = %{state | status: :done, result: result, task_ref: nil}
-    :ets.insert(@status_table, {state.subagent_id, state.parent_tape, :done, unwrap_result(result)})
+
+    :ets.insert(
+      @status_table,
+      {state.subagent_id, state.parent_tape, :done, unwrap_result(result)}
+    )
 
     # Reply to all waiting collectors
     for from <- state.waiters do
@@ -295,11 +300,13 @@ defmodule Rho.Plugins.Subagent.Worker do
     # Publish agent stopped signal
     session_id = state.session_id
 
-    Rho.Comms.publish("rho.agent.stopped", %{
-      agent_id: state.subagent_id,
-      session_id: session_id,
-      reason: inspect(reason)
-    }, source: "/subagent/#{state.subagent_id}")
+    Rho.Comms.publish(
+      "rho.agent.stopped",
+      %{
+        agent_id: state.subagent_id,
+        session_id: session_id,
+        reason: inspect(reason)
+      }, source: "/subagent/#{state.subagent_id}")
 
     try do
       :ets.delete(@status_table, state.subagent_id)

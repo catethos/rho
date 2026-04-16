@@ -47,10 +47,17 @@ defmodule Rho.AgentLoop.Recorder do
     if tool_calls == [] do
       # Structured reasoner: record as plain assistant + user messages
       %{assistant_msg: assistant_msg} = entries
-      mem.append(tape, :message, %{"role" => "assistant", "content" => extract_text(assistant_msg.content)})
+
+      mem.append(tape, :message, %{
+        "role" => "assistant",
+        "content" => extract_text(assistant_msg.content)
+      })
 
       for result_msg <- tool_results do
-        mem.append(tape, :message, %{"role" => "user", "content" => extract_text(result_msg.content)})
+        mem.append(tape, :message, %{
+          "role" => "user",
+          "content" => extract_text(result_msg.content)
+        })
       end
     else
       # Direct reasoner: record as tool_call/tool_result entries

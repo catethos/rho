@@ -34,14 +34,16 @@ defmodule Rho.MountRegistryTest do
 
     @impl true
     def bindings(_opts, _ctx) do
-      [%{
-        name: "journal_view",
-        kind: :text_corpus,
-        size: 1024,
-        access: :python_var,
-        persistence: :session,
-        summary: "Full journal"
-      }]
+      [
+        %{
+          name: "journal_view",
+          kind: :text_corpus,
+          size: 1024,
+          access: :python_var,
+          persistence: :session,
+          summary: "Full journal"
+        }
+      ]
     end
   end
 
@@ -56,13 +58,22 @@ defmodule Rho.MountRegistryTest do
 
     @impl true
     def bindings(_opts, _ctx) do
-      [%{name: "full_binding", kind: :structured_data, size: 256,
-         access: :tool, persistence: :turn, summary: "Data"}]
+      [
+        %{
+          name: "full_binding",
+          kind: :structured_data,
+          size: 256,
+          access: :tool,
+          persistence: :turn,
+          summary: "Data"
+        }
+      ]
     end
 
     @impl true
     def before_llm(projection, _opts, _ctx) do
-      {:replace, %{projection | prompt_sections: projection.prompt_sections ++ ["injected by before_llm"]}}
+      {:replace,
+       %{projection | prompt_sections: projection.prompt_sections ++ ["injected by before_llm"]}}
     end
 
     @impl true
@@ -73,12 +84,14 @@ defmodule Rho.MountRegistryTest do
     def after_tool(%{name: "bash"}, result, _opts, _ctx) do
       {:replace, "[filtered] " <> result}
     end
+
     def after_tool(_call, result, _opts, _ctx), do: {:ok, result}
 
     @impl true
     def after_step(step, max_steps, _opts, _ctx) when step >= max_steps - 1 do
       {:inject, "You're almost out of steps!"}
     end
+
     def after_step(_step, _max, _opts, _ctx), do: :ok
   end
 
@@ -243,14 +256,24 @@ defmodule Rho.MountRegistryTest do
 
     sections = MountRegistry.collect_prompt_material(%{})
     keys = Enum.map(sections, & &1.key)
-    assert :unknown in keys  # auto-wrapped string gets :unknown key
+    # auto-wrapped string gets :unknown key
+    assert :unknown in keys
     assert :bindings in keys
   end
 
   # --- render_binding_metadata (legacy) ---
 
   test "render_binding_metadata produces prompt-ready strings" do
-    bindings = [%{name: "journal", kind: :text_corpus, size: 2048, summary: "Full journal", access: :python_var}]
+    bindings = [
+      %{
+        name: "journal",
+        kind: :text_corpus,
+        size: 2048,
+        summary: "Full journal",
+        access: :python_var
+      }
+    ]
+
     [line] = MountRegistry.render_binding_metadata(bindings)
     assert line =~ "journal"
     assert line =~ "text_corpus"
@@ -280,7 +303,15 @@ defmodule Rho.MountRegistryTest do
   test "dispatch_before_llm passes through when no mount implements it" do
     MountRegistry.register(ToolMount)
 
-    projection = %{system_prompt: "test", messages: [], prompt_sections: [], bindings: [], tools: [], meta: %{}}
+    projection = %{
+      system_prompt: "test",
+      messages: [],
+      prompt_sections: [],
+      bindings: [],
+      tools: [],
+      meta: %{}
+    }
+
     assert ^projection = MountRegistry.dispatch_before_llm(projection, %{})
   end
 
@@ -329,7 +360,9 @@ defmodule Rho.MountRegistryTest do
 
   test "dispatch_after_step injects message near budget limit" do
     MountRegistry.register(FullMount)
-    assert {:inject, ["You're almost out of steps!"]} = MountRegistry.dispatch_after_step(9, 10, %{})
+
+    assert {:inject, ["You're almost out of steps!"]} =
+             MountRegistry.dispatch_after_step(9, 10, %{})
   end
 
   test "dispatch_after_step collects injections from multiple mounts" do
@@ -375,7 +408,15 @@ defmodule Rho.MountRegistryTest do
   test "crashing mount in dispatch_before_llm is caught, projection passes through" do
     MountRegistry.register(CrashingMount)
 
-    projection = %{system_prompt: "test", messages: [], prompt_sections: [], bindings: [], tools: [], meta: %{}}
+    projection = %{
+      system_prompt: "test",
+      messages: [],
+      prompt_sections: [],
+      bindings: [],
+      tools: [],
+      meta: %{}
+    }
+
     assert ^projection = MountRegistry.dispatch_before_llm(projection, %{})
   end
 

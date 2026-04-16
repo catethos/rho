@@ -97,11 +97,14 @@ defmodule Rho.Observatory do
       Rho.Agent.Registry.list(session_id)
       |> Enum.map(fn agent ->
         pid = agent.pid
-        live_info = try do
-          Rho.Agent.Worker.info(pid)
-        catch
-          :exit, _ -> nil
-        end
+
+        live_info =
+          try do
+            Rho.Agent.Worker.info(pid)
+          catch
+            :exit, _ -> nil
+          end
+
         {agent.agent_id, live_info}
       end)
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
@@ -110,19 +113,27 @@ defmodule Rho.Observatory do
     summary = %{
       session_id: session_id,
       agent_count: map_size(live_agents),
-      agents: Enum.map(session_data, fn {agent_id, m} ->
-        live = Map.get(live_agents, agent_id, %{})
-        Map.merge(m, %{
-          agent_id: agent_id,
-          status: live[:status],
-          current_step: live[:current_step],
-          current_tool: live[:current_tool],
-          queued: live[:queued]
-        })
-      end),
-      total_tokens: session_data |> Enum.reduce(0, fn {_, m}, acc -> acc + (m[:total_input_tokens] || 0) + (m[:total_output_tokens] || 0) end),
-      total_tool_calls: session_data |> Enum.reduce(0, fn {_, m}, acc -> acc + (m[:tool_call_count] || 0) end),
-      total_errors: session_data |> Enum.reduce(0, fn {_, m}, acc -> acc + (m[:error_count] || 0) end)
+      agents:
+        Enum.map(session_data, fn {agent_id, m} ->
+          live = Map.get(live_agents, agent_id, %{})
+
+          Map.merge(m, %{
+            agent_id: agent_id,
+            status: live[:status],
+            current_step: live[:current_step],
+            current_tool: live[:current_tool],
+            queued: live[:queued]
+          })
+        end),
+      total_tokens:
+        session_data
+        |> Enum.reduce(0, fn {_, m}, acc ->
+          acc + (m[:total_input_tokens] || 0) + (m[:total_output_tokens] || 0)
+        end),
+      total_tool_calls:
+        session_data |> Enum.reduce(0, fn {_, m}, acc -> acc + (m[:tool_call_count] || 0) end),
+      total_errors:
+        session_data |> Enum.reduce(0, fn {_, m}, acc -> acc + (m[:error_count] || 0) end)
     }
 
     {:reply, summary, state}
@@ -155,24 +166,30 @@ defmodule Rho.Observatory do
 
   def handle_call(:sessions, _from, state) do
     session_ids = Map.keys(state.metrics)
-    summaries = Enum.map(session_ids, fn sid ->
-      agents = Map.get(state.metrics, sid, %{})
-      %{
-        session_id: sid,
-        agent_count: map_size(agents),
-        live_agents: Rho.Agent.Registry.count(sid)
-      }
-    end)
+
+    summaries =
+      Enum.map(session_ids, fn sid ->
+        agents = Map.get(state.metrics, sid, %{})
+
+        %{
+          session_id: sid,
+          agent_count: map_size(agents),
+          live_agents: Rho.Agent.Registry.count(sid)
+        }
+      end)
+
     {:reply, summaries, state}
   end
 
   @impl true
   def handle_cast({:reset, session_id}, state) do
-    state = %{state |
-      metrics: Map.delete(state.metrics, session_id),
-      events: Map.delete(state.events, session_id),
-      flows: Map.delete(state.flows, session_id)
+    state = %{
+      state
+      | metrics: Map.delete(state.metrics, session_id),
+        events: Map.delete(state.events, session_id),
+        flows: Map.delete(state.flows, session_id)
     }
+
     {:noreply, state}
   end
 
@@ -191,7 +208,15 @@ defmodule Rho.Observatory do
         String.contains?(type, "events.tool_start") ->
           update_agent_metric(state, session_id, agent_id, fn m ->
             tools = Map.get(m, :tool_calls, [])
-            %{m | tool_calls: Enum.take([%{name: data[:name], args: data[:args], started_at: now()} | tools], @max_tool_calls)}
+
+            %{
+              m
+              | tool_calls:
+                  Enum.take(
+                    [%{name: data[:name], args: data[:args], started_at: now()} | tools],
+                    @max_tool_calls
+                  )
+            }
             |> Map.update(:tool_call_count, 1, &(&1 + 1))
           end)
 
@@ -201,31 +226,42 @@ defmodule Rho.Observatory do
             latencies = Map.get(m, :tool_latencies, [])
             error_bump = if data[:status] == :error, do: 1, else: 0
 
-            tool_name = case m[:tool_calls] do
-              [%{name: n} | _] -> n
-              _ -> "unknown"
-            end
+            tool_name =
+              case m[:tool_calls] do
+                [%{name: n} | _] -> n
+                _ -> "unknown"
+              end
 
             tool_stats = Map.get(m, :tool_stats, %{})
             ts = Map.get(tool_stats, tool_name, %{count: 0, errors: 0, total_ms: 0})
-            ts = %{ts | count: ts.count + 1, errors: ts.errors + error_bump, total_ms: ts.total_ms + latency}
 
-            %{m |
-              tool_latencies: Enum.take([latency | latencies], @max_latencies),
-              tool_stats: Map.put(tool_stats, tool_name, ts),
-              error_count: (m[:error_count] || 0) + error_bump
+            ts = %{
+              ts
+              | count: ts.count + 1,
+                errors: ts.errors + error_bump,
+                total_ms: ts.total_ms + latency
+            }
+
+            %{
+              m
+              | tool_latencies: Enum.take([latency | latencies], @max_latencies),
+                tool_stats: Map.put(tool_stats, tool_name, ts),
+                error_count: (m[:error_count] || 0) + error_bump
             }
           end)
 
         String.contains?(type, "events.llm_usage") ->
           usage = data[:usage] || %{}
+
           update_agent_metric(state, session_id, agent_id, fn m ->
-            %{m |
-              total_input_tokens: (m[:total_input_tokens] || 0) + (usage[:input_tokens] || 0),
-              total_output_tokens: (m[:total_output_tokens] || 0) + (usage[:output_tokens] || 0),
-              cached_tokens: (m[:cached_tokens] || 0) + (usage[:cached_tokens] || 0),
-              llm_calls: (m[:llm_calls] || 0) + 1,
-              cost: (m[:cost] || 0) + (data[:cost] || 0)
+            %{
+              m
+              | total_input_tokens: (m[:total_input_tokens] || 0) + (usage[:input_tokens] || 0),
+                total_output_tokens:
+                  (m[:total_output_tokens] || 0) + (usage[:output_tokens] || 0),
+                cached_tokens: (m[:cached_tokens] || 0) + (usage[:cached_tokens] || 0),
+                llm_calls: (m[:llm_calls] || 0) + 1,
+                cost: (m[:cost] || 0) + (data[:cost] || 0)
             }
           end)
 
@@ -237,9 +273,11 @@ defmodule Rho.Observatory do
         String.contains?(type, "events.error") ->
           update_agent_metric(state, session_id, agent_id, fn m ->
             errors = Map.get(m, :errors, [])
-            %{m |
-              errors: Enum.take([%{message: data[:message], at: now()} | errors], @max_errors),
-              error_count: (m[:error_count] || 0) + 1
+
+            %{
+              m
+              | errors: Enum.take([%{message: data[:message], at: now()} | errors], @max_errors),
+                error_count: (m[:error_count] || 0) + 1
             }
           end)
 
@@ -252,7 +290,12 @@ defmodule Rho.Observatory do
           update_agent_metric(state, session_id, agent_id, fn m ->
             started = m[:last_turn_started] || now()
             duration = now() - started
-            %{m | turn_durations: Enum.take([duration | Map.get(m, :turn_durations, [])], @max_turn_durations)}
+
+            %{
+              m
+              | turn_durations:
+                  Enum.take([duration | Map.get(m, :turn_durations, [])], @max_turn_durations)
+            }
           end)
 
         String.contains?(type, "task.requested") ->
@@ -262,6 +305,7 @@ defmodule Rho.Observatory do
             type: :delegation,
             at: now()
           }
+
           update_flows(state, session_id, flow_entry)
 
         String.contains?(type, "task.completed") ->
@@ -271,6 +315,7 @@ defmodule Rho.Observatory do
             type: :result,
             at: now()
           }
+
           update_flows(state, session_id, flow_entry)
 
         true ->
@@ -295,7 +340,12 @@ defmodule Rho.Observatory do
   end
 
   defp record_event(state, session_id, type, data) do
-    event = %{type: type, data: Map.take(data, [:agent_id, :name, :status, :message, :latency_ms]), at: now()}
+    event = %{
+      type: type,
+      data: Map.take(data, [:agent_id, :name, :status, :message, :latency_ms]),
+      at: now()
+    }
+
     events = Map.get(state.events, session_id, [])
     # Keep last 200 events per session
     events = [event | Enum.take(events, 199)]
@@ -358,13 +408,15 @@ defmodule Rho.Observatory do
     error_count = m[:error_count] || 0
 
     if tool_count > 0 and error_count / tool_count > 0.3 do
-      [%{
-        severity: :warning,
-        agent_id: agent_id,
-        issue: "high_error_rate",
-        detail: "#{Float.round(error_count / tool_count * 100, 1)}% of tool calls failed",
-        suggestion: "Check tool arguments and permissions"
-      }]
+      [
+        %{
+          severity: :warning,
+          agent_id: agent_id,
+          issue: "high_error_rate",
+          detail: "#{Float.round(error_count / tool_count * 100, 1)}% of tool calls failed",
+          suggestion: "Check tool arguments and permissions"
+        }
+      ]
     else
       []
     end
@@ -376,14 +428,17 @@ defmodule Rho.Observatory do
 
     if input > 50_000 and calls > 3 do
       avg = div(input, calls)
+
       if avg > 20_000 do
-        [%{
-          severity: :info,
-          agent_id: agent_id,
-          issue: "large_context",
-          detail: "Avg #{avg} input tokens/call (#{calls} calls)",
-          suggestion: "Consider enabling compaction or reducing prompt size"
-        }]
+        [
+          %{
+            severity: :info,
+            agent_id: agent_id,
+            issue: "large_context",
+            detail: "Avg #{avg} input tokens/call (#{calls} calls)",
+            suggestion: "Consider enabling compaction or reducing prompt size"
+          }
+        ]
       else
         []
       end
@@ -400,13 +455,16 @@ defmodule Rho.Observatory do
       total = Enum.reduce(tool_stats, 0, fn {_, s}, acc -> acc + s.count end)
 
       if total > 5 and hot_stats.count / total > 0.6 do
-        [%{
-          severity: :info,
-          agent_id: agent_id,
-          issue: "tool_hotspot",
-          detail: "#{hottest} accounts for #{round(hot_stats.count / total * 100)}% of tool calls",
-          suggestion: "Check if agent is stuck in a loop with this tool"
-        }]
+        [
+          %{
+            severity: :info,
+            agent_id: agent_id,
+            issue: "tool_hotspot",
+            detail:
+              "#{hottest} accounts for #{round(hot_stats.count / total * 100)}% of tool calls",
+            suggestion: "Check if agent is stuck in a loop with this tool"
+          }
+        ]
       else
         []
       end
@@ -420,13 +478,15 @@ defmodule Rho.Observatory do
 
     Enum.flat_map(tool_stats, fn {name, stats} ->
       if stats.count > 0 and stats.total_ms / stats.count > 5000 do
-        [%{
-          severity: :warning,
-          agent_id: agent_id,
-          issue: "slow_tool",
-          detail: "#{name} averages #{round(stats.total_ms / stats.count)}ms per call",
-          suggestion: "Consider timeouts or async execution"
-        }]
+        [
+          %{
+            severity: :warning,
+            agent_id: agent_id,
+            issue: "slow_tool",
+            detail: "#{name} averages #{round(stats.total_ms / stats.count)}ms per call",
+            suggestion: "Consider timeouts or async execution"
+          }
+        ]
       else
         []
       end
@@ -435,13 +495,15 @@ defmodule Rho.Observatory do
 
   defp check_step_count(agent_id, m) do
     if (m[:step_count] || 0) > 20 do
-      [%{
-        severity: :warning,
-        agent_id: agent_id,
-        issue: "many_steps",
-        detail: "#{m[:step_count]} steps taken",
-        suggestion: "May indicate agent is struggling; check system prompt clarity"
-      }]
+      [
+        %{
+          severity: :warning,
+          agent_id: agent_id,
+          issue: "many_steps",
+          detail: "#{m[:step_count]} steps taken",
+          suggestion: "May indicate agent is struggling; check system prompt clarity"
+        }
+      ]
     else
       []
     end

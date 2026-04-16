@@ -192,7 +192,12 @@ defmodule Rho.MountRegistry do
   def dispatch_after_tool(call, result, context) do
     active_mounts(context)
     |> Enum.reduce_while(result, fn %MountInstance{module: mod, opts: opts}, current_result ->
-      case safe_call(mod, :after_tool, [call, current_result, opts, context], {:ok, current_result}) do
+      case safe_call(
+             mod,
+             :after_tool,
+             [call, current_result, opts, context],
+             {:ok, current_result}
+           ) do
         {:ok, r} -> {:cont, r}
         {:replace, new_result} -> {:halt, new_result}
       end
@@ -211,17 +216,21 @@ defmodule Rho.MountRegistry do
           acc
 
         {:inject, msg} when is_binary(msg) ->
-          prev = case acc do
-            {:inject, list} -> list
-            _ -> []
-          end
+          prev =
+            case acc do
+              {:inject, list} -> list
+              _ -> []
+            end
+
           {:inject, prev ++ [msg]}
 
         {:inject, msgs} when is_list(msgs) ->
-          prev = case acc do
-            {:inject, list} -> list
-            _ -> []
-          end
+          prev =
+            case acc do
+              {:inject, list} -> list
+              _ -> []
+            end
+
           {:inject, prev ++ msgs}
       end
     end)
@@ -239,7 +248,10 @@ defmodule Rho.MountRegistry do
         apply(mod, callback, args)
       rescue
         e ->
-          Logger.warning("Mount #{inspect(mod)}.#{callback}/#{length(args)} crashed: #{inspect(e)}")
+          Logger.warning(
+            "Mount #{inspect(mod)}.#{callback}/#{length(args)} crashed: #{inspect(e)}"
+          )
+
           default
       end
     else

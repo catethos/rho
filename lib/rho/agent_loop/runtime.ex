@@ -17,8 +17,21 @@ defmodule Rho.AgentLoop.Runtime do
   alias Rho.Lifecycle
   alias Rho.Mount.Context
 
-  @enforce_keys [:model, :reasoner, :emit, :gen_opts, :tool_defs, :req_tools, :tool_map,
-                  :system_prompt, :subagent, :depth, :tape, :mount_context, :lifecycle]
+  @enforce_keys [
+    :model,
+    :reasoner,
+    :emit,
+    :gen_opts,
+    :tool_defs,
+    :req_tools,
+    :tool_map,
+    :system_prompt,
+    :subagent,
+    :depth,
+    :tape,
+    :mount_context,
+    :lifecycle
+  ]
   defstruct [
     :model,
     :reasoner,

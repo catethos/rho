@@ -13,8 +13,15 @@ defmodule Rho.Tools.FsRead do
           name: "fs_read",
           description: "Read a text file. Returns file contents with optional line slicing.",
           parameter_schema: [
-            path: [type: :string, required: true, doc: "File path (relative to workspace or absolute)"],
-            offset: [type: :integer, doc: "Line offset to start reading from (0-based, default 0)"],
+            path: [
+              type: :string,
+              required: true,
+              doc: "File path (relative to workspace or absolute)"
+            ],
+            offset: [
+              type: :integer,
+              doc: "Line offset to start reading from (0-based, default 0)"
+            ],
             limit: [type: :integer, doc: "Maximum number of lines to return"]
           ],
           callback: fn _args -> :ok end

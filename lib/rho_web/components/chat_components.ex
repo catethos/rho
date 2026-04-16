@@ -6,13 +6,13 @@ defmodule RhoWeb.ChatComponents do
 
   import RhoWeb.CoreComponents
 
-  attr :messages, :list, required: true
-  attr :session_id, :string, required: true
-  attr :inflight, :map, required: true
-  attr :active_tab, :string, default: ""
-  attr :user_avatar, :string, default: nil
-  attr :agent_avatar, :string, default: nil
-  attr :pending, :boolean, default: false
+  attr(:messages, :list, required: true)
+  attr(:session_id, :string, required: true)
+  attr(:inflight, :map, required: true)
+  attr(:active_tab, :string, default: "")
+  attr(:user_avatar, :string, default: nil)
+  attr(:agent_avatar, :string, default: nil)
+  attr(:pending, :boolean, default: false)
 
   def chat_feed(assigns) do
     ~H"""
@@ -65,9 +65,9 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :message, :map, required: true
-  attr :user_avatar, :string, default: nil
-  attr :agent_avatar, :string, default: nil
+  attr(:message, :map, required: true)
+  attr(:user_avatar, :string, default: nil)
+  attr(:agent_avatar, :string, default: nil)
 
   def message_row(assigns) do
     ~H"""
@@ -118,10 +118,11 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :call, :map, required: true
+  attr(:call, :map, required: true)
 
   def tool_call_row(assigns) do
-    assigns = assign(assigns, :formatted_args, format_tool_args(assigns.call.name, assigns.call[:args]))
+    assigns =
+      assign(assigns, :formatted_args, format_tool_args(assigns.call.name, assigns.call[:args]))
 
     ~H"""
     <details class="tool-call">
@@ -153,7 +154,7 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :delegation, :map, required: true
+  attr(:delegation, :map, required: true)
 
   def delegation_card(assigns) do
     ~H"""
@@ -171,8 +172,8 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :content, :string, required: true
-  attr :msg_id, :string, required: true
+  attr(:content, :string, required: true)
+  attr(:msg_id, :string, required: true)
 
   def thinking_block(assigns) do
     parsed = parse_thinking(assigns.content)
@@ -209,7 +210,7 @@ defmodule RhoWeb.ChatComponents do
     """
   end
 
-  attr :message, :map, required: true
+  attr(:message, :map, required: true)
 
   def ui_block(assigns) do
     ~H"""
@@ -237,9 +238,11 @@ defmodule RhoWeb.ChatComponents do
   end
 
   defp valid_spec?(nil), do: false
+
   defp valid_spec?(spec) when is_map(spec) do
     is_binary(spec["root"]) and is_map(spec["elements"])
   end
+
   defp valid_spec?(_), do: false
 
   defp tool_icon(:ok), do: "✓"
@@ -271,6 +274,7 @@ defmodule RhoWeb.ChatComponents do
   defp truncate(text, max) when byte_size(text) > max do
     String.slice(text, 0, max) <> "\n…(truncated)"
   end
+
   defp truncate(text, _max), do: text
 
   @image_pattern ~r/!\[.*?\]\((data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+)\)/
@@ -279,20 +283,25 @@ defmodule RhoWeb.ChatComponents do
   @doc "Extract data URIs from markdown image tags or file-based plot references in text."
   def extract_image_uris(text) when is_binary(text) do
     inline = Regex.scan(@image_pattern, text) |> Enum.map(fn [_full, uri] -> uri end)
-    from_files = Regex.scan(@file_image_pattern, text)
+
+    from_files =
+      Regex.scan(@file_image_pattern, text)
       |> Enum.flat_map(fn [_full, path] ->
         case File.read(path) do
           {:ok, data} -> ["data:image/png;base64," <> Base.encode64(data)]
           _ -> []
         end
       end)
+
     inline ++ from_files
   end
+
   def extract_image_uris(_), do: []
 
   defp split_image_segments(output) when is_binary(output) do
     # Combined pattern for both inline base64 and file-based images
-    combined = ~r/!\[.*?\]\(data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+\)|\[Plot saved: [^\]]+\.png\]/
+    combined =
+      ~r/!\[.*?\]\(data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+\)|\[Plot saved: [^\]]+\.png\]/
 
     parts = Regex.split(combined, output, include_captures: true, trim: true)
 
@@ -304,6 +313,7 @@ defmodule RhoWeb.ChatComponents do
 
         match = Regex.run(@file_image_pattern, part) ->
           [_full, path] = match
+
           case File.read(path) do
             {:ok, data} -> {:image, "data:image/png;base64," <> Base.encode64(data)}
             _ -> {:text, part}
@@ -322,6 +332,7 @@ defmodule RhoWeb.ChatComponents do
   defp split_image_segments(_), do: []
 
   defp truncate_summary(nil), do: nil
+
   defp truncate_summary(text) do
     if String.length(text) > 80, do: String.slice(text, 0, 80) <> "...", else: text
   end

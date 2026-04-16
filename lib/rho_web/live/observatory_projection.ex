@@ -74,7 +74,9 @@ defmodule RhoWeb.ObservatoryProjection do
     |> append_entry(
       :tool_result,
       find_agent_for_role(socket, role),
-      "Submitted scores: #{summary}", meta: %{tool: "submit_scores", status: :ok})
+      "Submitted scores: #{summary}",
+      meta: %{tool: "submit_scores", status: :ok}
+    )
   end
 
   def project(socket, "rho.hiring.round.started", data) do

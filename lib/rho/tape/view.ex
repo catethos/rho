@@ -180,11 +180,16 @@ defmodule Rho.Tape.View do
     )
   end
 
-  defp convert_group({:single, %Entry{kind: :message, payload: %{"role" => "user", "content" => content}}}) do
+  defp convert_group(
+         {:single, %Entry{kind: :message, payload: %{"role" => "user", "content" => content}}}
+       ) do
     [ReqLLM.Context.user(content)]
   end
 
-  defp convert_group({:single, %Entry{kind: :message, payload: %{"role" => "assistant", "content" => content}}}) do
+  defp convert_group(
+         {:single,
+          %Entry{kind: :message, payload: %{"role" => "assistant", "content" => content}}}
+       ) do
     [ReqLLM.Context.assistant(content)]
   end
 

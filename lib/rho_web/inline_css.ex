@@ -2020,12 +2020,24 @@ defmodule RhoWeb.InlineCSS do
     }
     .ss-th-role { width: 120px; }
 
+    /* Resize handle between spreadsheet and chat */
+    .resize-handle {
+      width: 5px;
+      cursor: col-resize;
+      background: var(--border);
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+    .resize-handle:hover,
+    .resize-handle:active {
+      background: var(--teal);
+    }
+
     /* Spreadsheet chat panel */
     .spreadsheet-chat-panel {
       width: 380px;
-      min-width: 320px;
-      max-width: 480px;
-      border-left: 1px solid var(--border);
+      min-width: 280px;
+      max-width: 60vw;
       display: flex;
       flex-direction: column;
       background: var(--bg-surface);

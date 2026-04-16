@@ -155,6 +155,38 @@ defmodule RhoWeb.InlineJS do
             self.el.scrollLeft = self.el.scrollWidth;
           });
         }
+      },
+
+      PanelResize: {
+        mounted() {
+          var handle = this.el;
+          var chatPanel = document.getElementById("chat-panel");
+          var isResizing = false;
+
+          handle.addEventListener("mousedown", function(e) {
+            isResizing = true;
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+            e.preventDefault();
+          });
+
+          document.addEventListener("mousemove", function(e) {
+            if (!isResizing) return;
+            var containerWidth = window.innerWidth;
+            var chatWidth = containerWidth - e.clientX;
+            if (chatWidth < 280) chatWidth = 280;
+            if (chatWidth > containerWidth * 0.6) chatWidth = containerWidth * 0.6;
+            chatPanel.style.width = chatWidth + "px";
+          });
+
+          document.addEventListener("mouseup", function() {
+            if (isResizing) {
+              isResizing = false;
+              document.body.style.cursor = "";
+              document.body.style.userSelect = "";
+            }
+          });
+        }
       }
     };
     """

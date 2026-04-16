@@ -9,7 +9,9 @@ defmodule Rho.Tools.Sandbox do
   @behaviour Rho.Mount
 
   @impl Rho.Mount
-  def tools(_mount_opts, %{sandbox: %Rho.Sandbox{} = sandbox}), do: [diff_tool(sandbox), commit_tool(sandbox)]
+  def tools(_mount_opts, %{sandbox: %Rho.Sandbox{} = sandbox}),
+    do: [diff_tool(sandbox), commit_tool(sandbox)]
+
   def tools(_mount_opts, _context), do: []
 
   @impl Rho.Mount

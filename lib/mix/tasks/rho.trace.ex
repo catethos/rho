@@ -28,15 +28,16 @@ defmodule Mix.Tasks.Rho.Trace do
   defp summary(tape_args, opts) do
     tapes = resolve_tapes(tape_args, opts)
 
-    header = String.pad_trailing("Session", 48) <>
-      String.pad_leading("Turns", 6) <>
-      String.pad_leading("Steps", 6) <>
-      String.pad_leading("Tools", 6) <>
-      String.pad_leading("Errors", 7) <>
-      String.pad_leading("In", 9) <>
-      String.pad_leading("Out", 9) <>
-      String.pad_leading("Cache%", 7) <>
-      String.pad_leading("Cost", 10)
+    header =
+      String.pad_trailing("Session", 48) <>
+        String.pad_leading("Turns", 6) <>
+        String.pad_leading("Steps", 6) <>
+        String.pad_leading("Tools", 6) <>
+        String.pad_leading("Errors", 7) <>
+        String.pad_leading("In", 9) <>
+        String.pad_leading("Out", 9) <>
+        String.pad_leading("Cache%", 7) <>
+        String.pad_leading("Cost", 10)
 
     IO.puts(header)
     IO.puts(String.duplicate("-", String.length(header)))
@@ -49,15 +50,16 @@ defmodule Mix.Tasks.Rho.Trace do
           do: Float.round(stats.cached_tokens / stats.input_tokens * 100, 0),
           else: 0.0
 
-      line = String.pad_trailing(truncate(name, 47), 48) <>
-        String.pad_leading("#{stats.turns}", 6) <>
-        String.pad_leading("#{stats.steps}", 6) <>
-        String.pad_leading("#{stats.tool_calls}", 6) <>
-        String.pad_leading("#{stats.tool_errors}", 7) <>
-        String.pad_leading("#{stats.input_tokens}", 9) <>
-        String.pad_leading("#{stats.output_tokens}", 9) <>
-        String.pad_leading("#{trunc(cache_pct)}%", 7) <>
-        String.pad_leading(format_cost(stats.total_cost), 10)
+      line =
+        String.pad_trailing(truncate(name, 47), 48) <>
+          String.pad_leading("#{stats.turns}", 6) <>
+          String.pad_leading("#{stats.steps}", 6) <>
+          String.pad_leading("#{stats.tool_calls}", 6) <>
+          String.pad_leading("#{stats.tool_errors}", 7) <>
+          String.pad_leading("#{stats.input_tokens}", 9) <>
+          String.pad_leading("#{stats.output_tokens}", 9) <>
+          String.pad_leading("#{trunc(cache_pct)}%", 7) <>
+          String.pad_leading(format_cost(stats.total_cost), 10)
 
       IO.puts(line)
     end)
@@ -82,16 +84,23 @@ defmodule Mix.Tasks.Rho.Trace do
           |> Enum.reject(&is_nil/1)
           |> Enum.frequencies()
 
-        %{name: name, calls: calls, errors: errors, avg_latency_ms: avg_latency, error_types: error_types}
+        %{
+          name: name,
+          calls: calls,
+          errors: errors,
+          avg_latency_ms: avg_latency,
+          error_types: error_types
+        }
       end)
       |> Enum.sort_by(& &1.calls, :desc)
 
-    header = String.pad_trailing("Tool", 24) <>
-      String.pad_leading("Calls", 7) <>
-      String.pad_leading("Errors", 7) <>
-      String.pad_leading("Error%", 8) <>
-      String.pad_leading("Avg ms", 8) <>
-      "  Error Types"
+    header =
+      String.pad_trailing("Tool", 24) <>
+        String.pad_leading("Calls", 7) <>
+        String.pad_leading("Errors", 7) <>
+        String.pad_leading("Error%", 8) <>
+        String.pad_leading("Avg ms", 8) <>
+        "  Error Types"
 
     IO.puts(header)
     IO.puts(String.duplicate("-", String.length(header) + 20))
@@ -104,12 +113,13 @@ defmodule Mix.Tasks.Rho.Trace do
         |> Enum.map(fn {type, count} -> "#{type}(#{count})" end)
         |> Enum.join(", ")
 
-      line = String.pad_trailing(t.name, 24) <>
-        String.pad_leading("#{t.calls}", 7) <>
-        String.pad_leading("#{t.errors}", 7) <>
-        String.pad_leading("#{error_pct}%", 8) <>
-        String.pad_leading("#{t.avg_latency_ms}", 8) <>
-        "  #{types_str}"
+      line =
+        String.pad_trailing(t.name, 24) <>
+          String.pad_leading("#{t.calls}", 7) <>
+          String.pad_leading("#{t.errors}", 7) <>
+          String.pad_leading("#{error_pct}%", 8) <>
+          String.pad_leading("#{t.avg_latency_ms}", 8) <>
+          "  #{types_str}"
 
       IO.puts(line)
     end)
@@ -123,18 +133,27 @@ defmodule Mix.Tasks.Rho.Trace do
       |> Enum.map(fn {name, entries} ->
         stats = compute_stats(entries)
         date = first_date(entries)
-        %{name: name, date: date, total_cost: stats.total_cost, input_cost: stats.input_cost,
-          output_cost: stats.output_cost, reasoning_cost: stats.reasoning_cost, turns: stats.turns}
+
+        %{
+          name: name,
+          date: date,
+          total_cost: stats.total_cost,
+          input_cost: stats.input_cost,
+          output_cost: stats.output_cost,
+          reasoning_cost: stats.reasoning_cost,
+          turns: stats.turns
+        }
       end)
       |> Enum.sort_by(& &1.date)
 
-    header = String.pad_trailing("Session", 48) <>
-      String.pad_leading("Turns", 6) <>
-      String.pad_leading("Input$", 9) <>
-      String.pad_leading("Output$", 9) <>
-      String.pad_leading("Reason$", 9) <>
-      String.pad_leading("Total$", 9) <>
-      String.pad_leading("$/Turn", 9)
+    header =
+      String.pad_trailing("Session", 48) <>
+        String.pad_leading("Turns", 6) <>
+        String.pad_leading("Input$", 9) <>
+        String.pad_leading("Output$", 9) <>
+        String.pad_leading("Reason$", 9) <>
+        String.pad_leading("Total$", 9) <>
+        String.pad_leading("$/Turn", 9)
 
     IO.puts(header)
     IO.puts(String.duplicate("-", String.length(header)))
@@ -145,13 +164,14 @@ defmodule Mix.Tasks.Rho.Trace do
       Enum.reduce(rows, total_cost, fn r, acc ->
         cost_per_turn = if r.turns > 0, do: Float.round(r.total_cost / r.turns, 4), else: 0.0
 
-        line = String.pad_trailing(truncate(r.name, 47), 48) <>
-          String.pad_leading("#{r.turns}", 6) <>
-          String.pad_leading(format_cost(r.input_cost), 9) <>
-          String.pad_leading(format_cost(r.output_cost), 9) <>
-          String.pad_leading(format_cost(r.reasoning_cost), 9) <>
-          String.pad_leading(format_cost(r.total_cost), 9) <>
-          String.pad_leading(format_cost(cost_per_turn), 9)
+        line =
+          String.pad_trailing(truncate(r.name, 47), 48) <>
+            String.pad_leading("#{r.turns}", 6) <>
+            String.pad_leading(format_cost(r.input_cost), 9) <>
+            String.pad_leading(format_cost(r.output_cost), 9) <>
+            String.pad_leading(format_cost(r.reasoning_cost), 9) <>
+            String.pad_leading(format_cost(r.total_cost), 9) <>
+            String.pad_leading(format_cost(cost_per_turn), 9)
 
         IO.puts(line)
         acc + r.total_cost
@@ -185,15 +205,22 @@ defmodule Mix.Tasks.Rho.Trace do
         Enum.each(tool_errors, fn e ->
           p = e["payload"]
           error_type = p["error_type"] || "unknown"
-          IO.puts("  #{IO.ANSI.red()}[tool_error]#{IO.ANSI.reset()} #{p["name"]} (#{error_type}): #{truncate(p["output"] || "", 80)}")
+
+          IO.puts(
+            "  #{IO.ANSI.red()}[tool_error]#{IO.ANSI.reset()} #{p["name"]} (#{error_type}): #{truncate(p["output"] || "", 80)}"
+          )
         end)
 
         Enum.each(max_steps, fn e ->
-          IO.puts("  #{IO.ANSI.red()}[max_steps]#{IO.ANSI.reset()} #{truncate(e["payload"]["reason"], 80)}")
+          IO.puts(
+            "  #{IO.ANSI.red()}[max_steps]#{IO.ANSI.reset()} #{truncate(e["payload"]["reason"], 80)}"
+          )
         end)
 
         Enum.each(retries, fn {tool_name, count} ->
-          IO.puts("  #{IO.ANSI.yellow()}[retry]#{IO.ANSI.reset()} #{tool_name} called #{count}x consecutively")
+          IO.puts(
+            "  #{IO.ANSI.yellow()}[retry]#{IO.ANSI.reset()} #{tool_name} called #{count}x consecutively"
+          )
         end)
       end
     end)
@@ -275,7 +302,9 @@ defmodule Mix.Tasks.Rho.Trace do
         IO.puts(total_line)
 
         savings = total_no_cache - total_cost
-        savings_pct = if total_no_cache > 0, do: Float.round(savings / total_no_cache * 100, 1), else: 0.0
+
+        savings_pct =
+          if total_no_cache > 0, do: Float.round(savings / total_no_cache * 100, 1), else: 0.0
 
         IO.puts("")
         IO.puts("  Actual cost:          #{format_cost(total_cost)}")
@@ -336,7 +365,8 @@ defmodule Mix.Tasks.Rho.Trace do
         |> Enum.filter(&String.ends_with?(&1, ".jsonl"))
         |> Enum.map(&String.trim_trailing(&1, ".jsonl"))
 
-      {:error, _} -> []
+      {:error, _} ->
+        []
     end
   end
 
@@ -362,13 +392,15 @@ defmodule Mix.Tasks.Rho.Trace do
   # -- Stats computation --
 
   defp compute_stats(entries) do
-    turns = Enum.count(entries, fn e ->
-      e["kind"] == "message" && e["payload"]["role"] == "user"
-    end)
+    turns =
+      Enum.count(entries, fn e ->
+        e["kind"] == "message" && e["payload"]["role"] == "user"
+      end)
 
-    usage_events = Enum.filter(entries, fn e ->
-      e["kind"] == "event" && e["payload"]["name"] == "llm_usage"
-    end)
+    usage_events =
+      Enum.filter(entries, fn e ->
+        e["kind"] == "event" && e["payload"]["name"] == "llm_usage"
+      end)
 
     steps = length(usage_events)
 
@@ -376,31 +408,40 @@ defmodule Mix.Tasks.Rho.Trace do
     tool_calls = length(tool_results)
     tool_errors = Enum.count(tool_results, &(&1["payload"]["status"] == "error"))
 
-    compactions = Enum.count(entries, fn e ->
-      e["kind"] == "event" && e["payload"]["name"] == "compact"
-    end)
+    compactions =
+      Enum.count(entries, fn e ->
+        e["kind"] == "event" && e["payload"]["name"] == "compact"
+      end)
 
     # Aggregate token/cost from usage events
     token_init = %{
-      input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
-      cached_tokens: 0, cache_creation_tokens: 0,
-      total_cost: 0.0, input_cost: 0.0, output_cost: 0.0, reasoning_cost: 0.0
+      input_tokens: 0,
+      output_tokens: 0,
+      reasoning_tokens: 0,
+      cached_tokens: 0,
+      cache_creation_tokens: 0,
+      total_cost: 0.0,
+      input_cost: 0.0,
+      output_cost: 0.0,
+      reasoning_cost: 0.0
     }
 
     token_stats =
       Enum.reduce(usage_events, token_init, fn e, acc ->
         p = e["payload"]
 
-        %{acc |
-          input_tokens: acc.input_tokens + safe_int(p["input_tokens"]),
-          output_tokens: acc.output_tokens + safe_int(p["output_tokens"]),
-          reasoning_tokens: acc.reasoning_tokens + safe_int(p["reasoning_tokens"]),
-          cached_tokens: acc.cached_tokens + safe_int(p["cached_tokens"]),
-          cache_creation_tokens: acc.cache_creation_tokens + safe_int(p["cache_creation_tokens"]),
-          total_cost: acc.total_cost + safe_float(p["total_cost"]),
-          input_cost: acc.input_cost + safe_float(p["input_cost"]),
-          output_cost: acc.output_cost + safe_float(p["output_cost"]),
-          reasoning_cost: acc.reasoning_cost + safe_float(p["reasoning_cost"])
+        %{
+          acc
+          | input_tokens: acc.input_tokens + safe_int(p["input_tokens"]),
+            output_tokens: acc.output_tokens + safe_int(p["output_tokens"]),
+            reasoning_tokens: acc.reasoning_tokens + safe_int(p["reasoning_tokens"]),
+            cached_tokens: acc.cached_tokens + safe_int(p["cached_tokens"]),
+            cache_creation_tokens:
+              acc.cache_creation_tokens + safe_int(p["cache_creation_tokens"]),
+            total_cost: acc.total_cost + safe_float(p["total_cost"]),
+            input_cost: acc.input_cost + safe_float(p["input_cost"]),
+            output_cost: acc.output_cost + safe_float(p["output_cost"]),
+            reasoning_cost: acc.reasoning_cost + safe_float(p["reasoning_cost"])
         }
       end)
 

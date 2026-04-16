@@ -844,6 +844,7 @@ defmodule Rho.Agent.Worker do
 
   defp resolve_all_tools(state, opts) do
     context = build_context(state, opts[:depth] || state.depth, opts)
+
     Rho.MountRegistry.collect_tools(context)
   end
 

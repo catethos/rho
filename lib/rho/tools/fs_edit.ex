@@ -11,12 +11,20 @@ defmodule Rho.Tools.FsEdit do
       tool:
         ReqLLM.tool(
           name: "fs_edit",
-          description: "Find and replace text in a file. Replaces the first occurrence of 'old' with 'new', searching from the given start line.",
+          description:
+            "Find and replace text in a file. Replaces the first occurrence of 'old' with 'new', searching from the given start line.",
           parameter_schema: [
-            path: [type: :string, required: true, doc: "File path (relative to workspace or absolute)"],
+            path: [
+              type: :string,
+              required: true,
+              doc: "File path (relative to workspace or absolute)"
+            ],
             old: [type: :string, required: true, doc: "Text to find (exact match)"],
             new: [type: :string, required: true, doc: "Replacement text"],
-            start: [type: :integer, doc: "Line number to start searching from (0-based, default 0)"]
+            start: [
+              type: :integer,
+              doc: "Line number to start searching from (0-based, default 0)"
+            ]
           ],
           callback: fn _args -> :ok end
         ),

@@ -29,13 +29,15 @@ defmodule Rho.Demos.Hiring.Tools do
 
         case Jason.decode(raw_scores) do
           {:ok, scores} when is_list(scores) ->
-            Comms.publish("rho.hiring.scores.submitted", %{
-              session_id: session_id,
-              agent_id: agent_id,
-              role: role,
-              round: round,
-              scores: scores
-            }, source: "/session/#{session_id}/agent/#{agent_id}")
+            Comms.publish(
+              "rho.hiring.scores.submitted",
+              %{
+                session_id: session_id,
+                agent_id: agent_id,
+                role: role,
+                round: round,
+                scores: scores
+              }, source: "/session/#{session_id}/agent/#{agent_id}")
 
             {:ok, "Scores submitted for round #{round}: #{length(scores)} candidates scored."}
 

@@ -93,8 +93,13 @@ defmodule Rho.StructuredOutput do
          :error <- try_if_different(stripped, escaped),
          extracted = extract_from_markdown(text),
          :error <- try_if_different(extracted, text),
-         :error <- try_if_different(extracted |> normalize_quotes() |> escape_control_chars(), text),
-         :error <- try_if_different(extracted |> normalize_quotes() |> escape_control_chars() |> strip_trailing_commas(), text),
+         :error <-
+           try_if_different(extracted |> normalize_quotes() |> escape_control_chars(), text),
+         :error <-
+           try_if_different(
+             extracted |> normalize_quotes() |> escape_control_chars() |> strip_trailing_commas(),
+             text
+           ),
          :error <- try_merge_objects(escaped),
          :error <- try_brace_scan(escaped),
          single_to_double = convert_single_quotes(text),
@@ -123,7 +128,7 @@ defmodule Rho.StructuredOutput do
     trimmed = String.trim(text)
 
     if (String.starts_with?(trimmed, "{") or String.starts_with?(trimmed, "[")) and
-       String.contains?(trimmed, "'") and not String.contains?(trimmed, "\"") do
+         String.contains?(trimmed, "'") and not String.contains?(trimmed, "\"") do
       # Simple heuristic: if no double quotes present, convert all single quotes to double
       String.replace(trimmed, "'", "\"")
     else
@@ -148,6 +153,7 @@ defmodule Rho.StructuredOutput do
 
         Enum.find_value(close_positions, :error, fn end_pos ->
           candidate = binary_part(text, start, end_pos - start + 1)
+
           case try_decode(candidate) do
             {:ok, _} = ok -> ok
             :error -> nil
@@ -189,6 +195,7 @@ defmodule Rho.StructuredOutput do
         found =
           Enum.find_value(close_positions, nil, fn end_pos ->
             candidate = binary_part(rest_from_open, 0, end_pos + 1)
+
             case Jason.decode(candidate) do
               {:ok, map} when is_map(map) -> {map, end_pos + 1}
               _ -> nil
@@ -365,6 +372,7 @@ defmodule Rho.StructuredOutput do
         case :binary.match(rest, "```") do
           {end_pos, _} ->
             content = binary_part(rest, 0, end_pos) |> String.trim()
+
             if String.starts_with?(content, "{") or String.starts_with?(content, "[") do
               content
             else
@@ -373,6 +381,7 @@ defmodule Rho.StructuredOutput do
 
           :nomatch ->
             content = String.trim(rest)
+
             if String.starts_with?(content, "{") or String.starts_with?(content, "[") do
               content
             else
@@ -520,7 +529,9 @@ defmodule Rho.StructuredOutput do
         matches ->
           {last_comma, _} = List.last(matches)
           truncated = binary_part(trimmed, 0, last_comma) |> String.trim()
-          truncated <> String.duplicate("]", missing_brackets) <> String.duplicate("}", missing_braces)
+
+          truncated <>
+            String.duplicate("]", missing_brackets) <> String.duplicate("}", missing_braces)
       end
 
     [s1, s2 | if(s3, do: [s3], else: [])]
