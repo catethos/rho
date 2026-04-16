@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Skills — Solution Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 40px; }
+  h1 { font-size: 24px; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #7d8590; margin-bottom: 32px; }
+  .subtitle a { color: #58a6ff; text-decoration: none; }
+  .diagram-section { margin-bottom: 48px; }
+  .diagram-section h2 { font-size: 16px; font-weight: 600; color: #e6edf3; margin-bottom: 4px; }
+  .diagram-section p { font-size: 13px; color: #7d8590; margin-bottom: 16px; }
+  .mermaid { background: #0d1117; border-radius: 8px; padding: 16px; }
+  .mermaid svg { max-width: 100%; }
+  hr { border: none; border-top: 1px solid #21262d; margin: 40px 0; }
+</style>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#0d1117',
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#388bfd',
+      secondaryColor: '#161b22',
+      tertiaryColor: '#21262d',
+      lineColor: '#484f58',
+      textColor: '#c9d1d9',
+      mainBkg: '#161b22',
+      nodeBorder: '#30363d',
+      clusterBkg: '#161b22',
+      clusterBorder: '#30363d',
+      fontSize: '13px'
+    }
+  });
+</script>
+</head>
+<body>
+
+<h1>Agent Skills — Solution Architecture</h1>
+<p class="subtitle">Based on <a href="https://agentskills.io/client-implementation/adding-skills-support">agentskills.io spec</a> · Applicable to any agent framework (Pydantic AI, LangGraph, Rho, etc.)</p>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 1. HIGH-LEVEL SYSTEM ARCHITECTURE            -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>1. System Architecture — Component Overview</h2>
+<p>All components and their relationships. Three planes: Storage, Runtime, LLM Context.</p>
+<pre class="mermaid">
+graph TB
+  subgraph STORAGE["📁 Storage Plane (Filesystem)"]
+    direction TB
+    PS["🗂 Project Skills<br/>.agents/skills/*/SKILL.md"]
+    US["🗂 User Skills<br/>~/.agents/skills/*/SKILL.md"]
+    RF["📄 Reference Files<br/>*.md, *.py, scripts/"]
+    PS --- RF
+    US --- RF
+  end
+
+  subgraph RUNTIME["⚙️ Runtime Plane (Your Agent Code)"]
+    direction TB
+    SD["Skill Discovery<br/>scan paths, parse YAML<br/>frontmatter, deduplicate"]
+    SR["Skill Registry<br/>dict[name] → Skill<br/>{name, desc, body, path, resources}"]
+    PA["Prompt Assembler<br/>build system prompt with<br/>catalog + discovery rules"]
+    TH["Tool Handler<br/>activate_skill(name) → body<br/>read_resource(skill, file) → content"]
+    CM["Context Manager<br/>track active skills,<br/>dedup, compaction protection"]
+
+    SD -->|"parse + cache"| SR
+    SR -->|"names + descs"| PA
+    SR -->|"full body lookup"| TH
+    TH -->|"mark active"| CM
+  end
+
+  subgraph LLM_CTX["🧠 LLM Context Window"]
+    direction TB
+    SP["System Prompt<br/>─────────────<br/>• Agent instructions<br/>• Skill catalog (names only)<br/>• Discovery rules<br/>• Tool schemas"]
+    MH["Message History<br/>─────────────<br/>• User messages<br/>• Assistant responses<br/>• Tool calls + results<br/>• ⭐ Activated skill content"]
+  end
+
+  STORAGE -->|"startup scan"| SD
+  PA -->|"inject catalog"| SP
+  TH -->|"tool result with<br/>full skill body"| MH
+  CM -->|"protect from<br/>compaction"| MH
+
+  style STORAGE fill:#0d2818,stroke:#238636,stroke-width:2px
+  style RUNTIME fill:#0d1832,stroke:#1f6feb,stroke-width:2px
+  style LLM_CTX fill:#2d1832,stroke:#8b5cf6,stroke-width:2px
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 2. SKILL DISCOVERY & REGISTRY                -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>2. Skill Discovery & Registry</h2>
+<p>Startup sequence: filesystem scan → parse → deduplicate → cache in registry.</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph SCAN["Filesystem Scan"]
+    P1["project/.agents/skills/"]
+    P2["project/.your-client/skills/"]
+    P3["~/.agents/skills/"]
+    P4["~/.your-client/skills/"]
+  end
+
+  subgraph PARSE["Parse Each SKILL.md"]
+    FP["Extract YAML Frontmatter<br/>─────────────<br/>name: string (required)<br/>description: string (required)<br/>metadata: dict (optional)<br/>allowed-tools: list (optional)"]
+    BD["Extract Markdown Body<br/>─────────────<br/>Full instructions content<br/>(everything below frontmatter)"]
+    RS["Enumerate Resources<br/>─────────────<br/>Sibling .md files<br/>scripts/ directory"]
+  end
+
+  subgraph REGISTRY["Skill Registry (In-Memory)"]
+    direction TB
+    REG["dict&lt;str, Skill&gt;<br/>━━━━━━━━━━━━━━━━━<br/>code-review → Skill(...)<br/>deploy → Skill(...)<br/>research → Skill(...)"]
+    DEDUP["Dedup Rule:<br/>project > user scope<br/>(same name = project wins)"]
+  end
+
+  P1 & P2 & P3 & P4 -->|"glob */SKILL.md"| FP
+  FP --> BD --> RS
+  RS -->|"Skill struct"| REG
+  REG --- DEDUP
+
+  style SCAN fill:#0d2818,stroke:#238636
+  style PARSE fill:#1a1a2e,stroke:#388bfd
+  style REGISTRY fill:#0d1832,stroke:#1f6feb
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 3. PROGRESSIVE DISCLOSURE — 3 TIERS          -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>3. Progressive Disclosure — Three-Tier Token Strategy</h2>
+<p>The core pattern: load minimum context first, expand only when needed.</p>
+<pre class="mermaid">
+graph TD
+  subgraph T1["TIER 1 — Catalog (Always Loaded)"]
+    T1_WHAT["• Skill name + description only<br/>• Injected into system prompt every turn<br/>• ~50 tokens per skill<br/>• 20 skills = ~1,000 tokens"]
+  end
+
+  subgraph T2["TIER 2 — Instructions (On Activation)"]
+    T2_WHAT["• Full SKILL.md body<br/>• Loaded via activate_skill() tool call<br/>• Returns as tool_result in message history<br/>• Recommended &lt;5,000 tokens per skill"]
+  end
+
+  subgraph T3["TIER 3 — Resources (On Demand)"]
+    T3_WHAT["• Reference files: guides, checklists, examples<br/>• Scripts: executed, only output enters context<br/>• Loaded via read_resource() or file-read tools<br/>• Unbounded size, only pay for what you read"]
+  end
+
+  T1 -->|"LLM matches user intent<br/>→ calls activate_skill(name)"| T2
+  T2 -->|"SKILL.md references a file<br/>→ LLM reads it on demand"| T3
+
+  style T1 fill:#0d2818,stroke:#238636,stroke-width:2px,color:#e6edf3
+  style T2 fill:#2d1f0d,stroke:#d29922,stroke-width:2px,color:#e6edf3
+  style T3 fill:#2d0d0d,stroke:#f85149,stroke-width:2px,color:#e6edf3
+  style T1_WHAT color:#c9d1d9
+  style T2_WHAT color:#c9d1d9
+  style T3_WHAT color:#c9d1d9
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 4. ACTIVATION FLOW — SEQUENCE DIAGRAM        -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>4. Skill Activation — Full Sequence</h2>
+<p>End-to-end flow: user message → skill activation → resource loading → response.</p>
+<pre class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant A as Agent Runtime
+  participant R as Skill Registry
+  participant LLM as LLM
+  participant FS as Filesystem
+
+  Note over A: Startup
+  A->>FS: Scan .agents/skills/*/SKILL.md
+  FS-->>A: Found: code-review, deploy, research
+  A->>R: Parse & cache all skills
+
+  Note over A: Build System Prompt
+  A->>R: Get catalog (names + descriptions)
+  R-->>A: [{name, desc}, ...]
+  A->>LLM: System prompt with catalog + tool schemas
+
+  Note over U,LLM: User Interaction
+  U->>A: "review this PR for security issues"
+  A->>LLM: Forward user message
+
+  Note over LLM: Intent Matching
+  LLM->>LLM: Catalog says "code-review: Review code for bugs and security"
+  LLM->>A: tool_call: activate_skill(name="code-review")
+
+  Note over A: Tier 2 — Load Instructions
+  A->>R: Lookup "code-review"
+  R-->>A: Skill{body: "## Code Review\n\n...", resources: ["security-rules.md", ...]}
+  A->>A: Mark "code-review" as active (dedup tracking)
+  A->>LLM: tool_result: {content: full_body, resources: [...]}
+
+  Note over LLM: Follow Skill Instructions
+  LLM->>LLM: Reads: "For security reviews → read security-rules.md"
+  LLM->>A: tool_call: read_resource(skill="code-review", file="security-rules.md")
+
+  Note over A: Tier 3 — Load Resource
+  A->>FS: Read .agents/skills/code-review/security-rules.md
+  FS-->>A: File content
+  A->>LLM: tool_result: security rules content
+
+  Note over LLM: Execute with Full Context
+  LLM->>LLM: Has: skill instructions + security rules
+  LLM->>U: Detailed security-focused code review
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 5. SKILL.MD STRUCTURE — DECISION TREE PATTERN -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>5. SKILL.md as Decision Tree (Router Pattern)</h2>
+<p>The SKILL.md body acts as a router — core rules inline, heavy content in reference files.</p>
+<pre class="mermaid">
+graph TD
+  SKILL["📄 SKILL.md<br/>━━━━━━━━━━━━<br/>• YAML frontmatter (name, desc)<br/>• Core rules (always applied)<br/>• Routing logic (if X → read Y)<br/>━━━━━━━━━━━━<br/>~200-500 lines max"]
+
+  SKILL -->|"user wants API review"| API["📄 api-checklist.md<br/>REST conventions, auth checks,<br/>rate limiting, error formats"]
+  SKILL -->|"user wants security review"| SEC["📄 security-rules.md<br/>OWASP top 10, injection checks,<br/>auth bypass patterns"]
+  SKILL -->|"user wants React review"| REACT["📄 react-patterns.md<br/>Hook rules, memo strategy,<br/>state management patterns"]
+  SKILL -->|"user wants to run linter"| SCRIPT["⚡ scripts/lint.py<br/>Executed via run_script tool<br/>Only stdout enters context"]
+  SKILL -->|"simple review<br/>(no routing needed)"| DONE["✅ Core rules in SKILL.md<br/>are sufficient — no files read"]
+
+  style SKILL fill:#1f2937,stroke:#388bfd,stroke-width:2px,color:#e6edf3
+  style API fill:#0d2818,stroke:#238636,color:#c9d1d9
+  style SEC fill:#2d0d0d,stroke:#f85149,color:#c9d1d9
+  style REACT fill:#0d1832,stroke:#1f6feb,color:#c9d1d9
+  style SCRIPT fill:#2d1f0d,stroke:#d29922,color:#c9d1d9
+  style DONE fill:#1a1a2e,stroke:#484f58,color:#7d8590
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 6. CONTEXT MANAGEMENT                        -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>6. Context Window Management</h2>
+<p>How skill content survives in long conversations — dedup, compaction protection, lifecycle.</p>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> Cataloged: Startup scan
+
+  Cataloged: 📋 Cataloged
+  Cataloged: name + desc in system prompt
+  Cataloged: 0 tokens in message history
+
+  Active: ⚡ Active
+  Active: Full body in message history
+  Active: Protected from compaction
+  Active: Tracked in active_skills set
+
+  ResourceLoaded: 📂 Resource Loaded
+  ResourceLoaded: Reference file content
+  ResourceLoaded: in message history
+  ResourceLoaded: May be compacted (not protected)
+
+  Cataloged --> Active: LLM calls activate_skill()
+  Active --> Active: LLM calls activate_skill() again\n(DEDUP — skip, already loaded)
+  Active --> ResourceLoaded: LLM reads reference file
+  ResourceLoaded --> ResourceLoaded: LLM reads another file
+
+  note right of Active
+    COMPACTION RULES:
+    ─────────────────
+    ✅ Compress: old user/assistant messages
+    ✅ Compress: resource file content (Tier 3)
+    ❌ Never compress: active skill body (Tier 2)
+    ❌ Never compress: system prompt catalog (Tier 1)
+  end note
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 7. DATA MODEL                                -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>7. Data Model (Pydantic / Any Language)</h2>
+<p>Core types for implementation. Framework-agnostic.</p>
+<pre class="mermaid">
+classDiagram
+  class Skill {
+    +str name
+    +str description
+    +str body
+    +Path location
+    +str source: "project" | "user"
+    +dict metadata
+    +list~str~ allowed_tools
+    +list~str~ resources
+  }
+
+  class SkillRegistry {
+    -dict~str,Skill~ _skills
+    -float _last_scan_ts
+    -float _cache_ttl
+    +discover(workspace: Path) list~Skill~
+    +get(name: str) Skill | None
+    +catalog() list~SkillSummary~
+    +list_resources(name: str) list~str~
+    +read_resource(name: str, file: str) str
+  }
+
+  class SkillSummary {
+    +str name
+    +str description
+  }
+
+  class ContextManager {
+    -set~str~ _active_skills
+    +is_active(name: str) bool
+    +mark_active(name: str) void
+    +should_compact(msg: Message) bool
+  }
+
+  class PromptAssembler {
+    +render_catalog(skills: list~SkillSummary~) str
+    +render_discovery_rules() str
+    +build_system_prompt(base: str, catalog: str) str
+  }
+
+  class ToolHandler {
+    +activate_skill(name: str) ToolResult
+    +read_resource(skill: str, file: str) ToolResult
+    +run_script(skill: str, script: str, args: dict) ToolResult
+  }
+
+  SkillRegistry "1" --> "*" Skill : stores
+  SkillRegistry --> SkillSummary : produces
+  ToolHandler --> SkillRegistry : queries
+  ToolHandler --> ContextManager : updates
+  PromptAssembler --> SkillRegistry : reads catalog
+  ContextManager --> PromptAssembler : informs compaction
+</pre>
+</div>
+
+<hr>
+
+<!-- ============================================ -->
+<!-- 8. TOOL SCHEMAS                              -->
+<!-- ============================================ -->
+<div class="diagram-section">
+<h2>8. Tool Definitions (Given to LLM)</h2>
+<p>Two tools registered — one required, one optional.</p>
+<pre class="mermaid">
+graph LR
+  subgraph TOOLS["Tool Schemas Registered with LLM"]
+    direction TB
+    T1["🔧 activate_skill<br/>━━━━━━━━━━━━━━━━━━━━━<br/>params: {name: string}<br/>returns: {content: string, resources: string[]}<br/>━━━━━━━━━━━━━━━━━━━━━<br/>REQUIRED — core activation mechanism"]
+    T2["🔧 read_resource<br/>━━━━━━━━━━━━━━━━━━━━━<br/>params: {skill: string, file: string}<br/>returns: {content: string}<br/>━━━━━━━━━━━━━━━━━━━━━<br/>OPTIONAL — for Tier 3 progressive loading"]
+    T3["🔧 run_script<br/>━━━━━━━━━━━━━━━━━━━━━<br/>params: {skill: string, script: string, args: dict}<br/>returns: {stdout: string, exit_code: int}<br/>━━━━━━━━━━━━━━━━━━━━━<br/>OPTIONAL — execute skill-bundled scripts"]
+  end
+
+  style TOOLS fill:#161b22,stroke:#30363d,stroke-width:2px
+  style T1 fill:#0d1832,stroke:#388bfd,color:#c9d1d9
+  style T2 fill:#1a1a2e,stroke:#484f58,color:#c9d1d9
+  style T3 fill:#1a1a2e,stroke:#484f58,color:#c9d1d9
+</pre>
+</div>
+
+<hr>
+<p style="font-size:12px; color:#484f58; margin-top:24px;">
+  Spec: <a href="https://agentskills.io/client-implementation/adding-skills-support" style="color:#58a6ff;">agentskills.io</a> ·
+  Python ref: <a href="https://github.com/DougTrajano/pydantic-ai-skills" style="color:#58a6ff;">pydantic-ai-skills</a> ·
+  Elixir ref: Rho (lib/rho/skills.ex)
+</p>
+
+</body>
+</html>
