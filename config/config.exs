@@ -5,11 +5,11 @@ import Config
 config :req_llm,
   # Increase receive timeout to handle slow LLM providers (e.g., OpenRouter + MiniMax)
   # that may pause >30s between text generation and tool call generation.
-  stream_receive_timeout: 120_000,
+  stream_receive_timeout: 240_000,
   finch: [
     name: ReqLLM.Finch,
     pools: %{
-      :default => [protocols: [:http1], size: 5, count: 25, conn_max_idle_time: 30_000]
+      :default => [protocols: [:http1], size: 10, count: 25, conn_max_idle_time: 5_000]
     }
   ]
 

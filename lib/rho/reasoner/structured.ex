@@ -542,7 +542,14 @@ defmodule Rho.Reasoner.Structured do
   # Extract metadata from stream response, detecting mid-stream errors.
   # Returns {:ok, usage} or {:error, reason}.
   defp get_stream_metadata(%ReqLLM.StreamResponse{metadata_handle: handle}) do
-    metadata = ReqLLM.StreamResponse.MetadataHandle.await(handle)
+    metadata =
+      try do
+        ReqLLM.StreamResponse.MetadataHandle.await(handle)
+      rescue
+        e in RuntimeError ->
+          Logger.warning("[reasoner.structured] metadata fetch failed (non-fatal): #{e.message}")
+          %{}
+      end
 
     case metadata do
       %{error: reason} -> {:error, reason}

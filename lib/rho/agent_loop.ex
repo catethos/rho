@@ -288,8 +288,16 @@ defmodule Rho.AgentLoop do
   defp handle_reasoner_result({:final, value, _entries}, _ctx, _opts, _step, _max),
     do: {:final, value}
 
-  defp handle_reasoner_result({:error, reason}, _ctx, _opts, _step, _max),
-    do: {:error, reason}
+  defp handle_reasoner_result({:error, reason}, context, runtime, step, max) do
+    if step_retryable?(reason) do
+      Logger.warning("[agent_loop] retryable error at step #{step}, retrying: #{inspect(reason)}")
+      runtime.emit.(%{type: :step_retry, step: step, reason: inspect(reason)})
+      Process.sleep(2_000)
+      do_loop(context, runtime, step: step, max_steps: max)
+    else
+      {:error, reason}
+    end
+  end
 
   defp handle_reasoner_result(
          {:continue, %{type: :subagent_nudge, text: text}},
@@ -379,4 +387,17 @@ defmodule Rho.AgentLoop do
         fn _event -> :ok end
     end
   end
+
+  # -- Retryable error detection (Finch pool exhaustion, transport errors) --
+
+  defp step_retryable?(reason) when is_binary(reason) do
+    String.contains?(reason, "Finch was unable to provide a connection") or
+      String.contains?(reason, "TransportError") or
+      String.contains?(reason, "timeout")
+  end
+
+  defp step_retryable?(%RuntimeError{message: msg}), do: step_retryable?(msg)
+  defp step_retryable?(%{message: msg}) when is_binary(msg), do: step_retryable?(msg)
+  defp step_retryable?({:error, inner}), do: step_retryable?(inner)
+  defp step_retryable?(_), do: false
 end
