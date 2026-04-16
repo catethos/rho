@@ -1,2 +1,0 @@
-{"data":{"type":"turn_started","session_id":"api_submit_836","agent_id":"primary_api_submit_836"},"type":"rho.session.api_submit_836.events.turn_started","seq":1,"session_id":"api_submit_836","agent_id":"primary_api_submit_836","ts":"2026-04-02T15:11:35.138280Z","turn_id":"932"}
-{"data":{"session_id":"api_submit_836","agent_id":"primary_api_submit_836","turn_id":"932"},"type":"rho.turn.started","seq":2,"session_id":"api_submit_836","agent_id":"primary_api_submit_836","ts":"2026-04-02T15:11:35.138403Z","turn_id":null}

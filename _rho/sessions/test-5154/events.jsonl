@@ -1,2 +1,0 @@
-{"data":{"role":"primary","session_id":"test-1285","capabilities":[],"agent_id":"primary_test-1285"},"type":"rho.agent.started","seq":1,"session_id":"test-5154","agent_id":"primary_test-1285","ts":"2026-04-02T14:44:23.911890Z","turn_id":null}
-{"data":{"session_id":"obs_test_1541","agent_id":"agent_1573","target_agent_id":"child_1"},"type":"rho.task.requested","seq":2,"session_id":"test-5154","agent_id":"agent_1573","ts":"2026-04-02T14:44:24.241007Z","turn_id":null}
