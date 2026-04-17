@@ -16,6 +16,10 @@ defmodule Rho.Agent.Worker do
 
   require Logger
 
+  @ask_inactivity_timeout 120_000
+  @turn_watchdog_interval 30_000
+  @turn_inactivity_limit 60_000
+
   alias Rho.Agent.Registry, as: AgentRegistry
   alias Rho.Comms
 
@@ -112,21 +116,37 @@ defmodule Rho.Agent.Worker do
 
   # Default: return after first turn completes
   defp await_reply(turn_id, :turn) do
-    receive do
-      {:signal, %Jido.Signal{data: %{type: :turn_finished, turn_id: ^turn_id} = data}} ->
-        unwrap_result(Map.get(data, :result))
-
-      {:signal, %Jido.Signal{}} ->
-        await_reply(turn_id, :turn)
-    end
+    await_reply_turn(turn_id, System.monotonic_time(:millisecond))
   end
 
   # Simulation mode: wait until the agent calls `finish` or goes idle
   # with no pending work.
   defp await_reply(_turn_id, :finish), do: await_reply_finish(nil)
 
+  defp await_reply_turn(turn_id, last_activity_at) do
+    remaining = @ask_inactivity_timeout - (System.monotonic_time(:millisecond) - last_activity_at)
+    remaining = max(remaining, 0)
+
+    receive do
+      {:signal, %Jido.Signal{data: %{type: :turn_finished, turn_id: ^turn_id} = data}} ->
+        unwrap_result(Map.get(data, :result))
+
+      {:signal, %Jido.Signal{}} ->
+        # Any signal is proof of life — reset the inactivity timer
+        await_reply_turn(turn_id, System.monotonic_time(:millisecond))
+    after
+      remaining ->
+        {:error, "ask timed out: no activity for #{div(@ask_inactivity_timeout, 1000)}s"}
+    end
+  end
+
   defp await_reply_finish(last_result) do
-    timeout = if last_result, do: 30_000, else: :infinity
+    timeout =
+      if last_result do
+        30_000
+      else
+        @ask_inactivity_timeout
+      end
 
     receive do
       {:signal, %Jido.Signal{data: %{type: :turn_finished} = data}} ->
@@ -140,7 +160,7 @@ defmodule Rho.Agent.Worker do
       {:signal, %Jido.Signal{}} ->
         await_reply_finish(last_result)
     after
-      timeout -> last_result || {:ok, "completed"}
+      timeout -> last_result || {:error, "ask timed out: no activity for #{div(timeout, 1000)}s"}
     end
   end
 
@@ -536,6 +556,29 @@ defmodule Rho.Agent.Worker do
     {:noreply, Map.put(state, key, value)}
   end
 
+  # Turn-level watchdog: kills stuck runner tasks
+  def handle_info(:turn_watchdog, %{status: :busy, task_pid: pid} = state) when is_pid(pid) do
+    idle_ms = System.monotonic_time(:millisecond) - (state.last_activity_at || 0)
+
+    if idle_ms >= @turn_inactivity_limit do
+      Logger.warning(
+        "[worker] Turn watchdog fired: no activity for #{div(idle_ms, 1000)}s, " <>
+          "killing runner task (step=#{state.current_step}, tool=#{state.current_tool})"
+      )
+
+      Process.exit(pid, :turn_inactive)
+    else
+      schedule_turn_watchdog()
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info(:turn_watchdog, state) do
+    # Not busy — ignore stale timer
+    {:noreply, state}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
@@ -576,96 +619,19 @@ defmodule Rho.Agent.Worker do
   defp start_turn(content, opts, state) do
     turn_id = new_turn_id()
     emit = build_emit(state, turn_id)
-
-    config = Rho.Config.agent_config(state.agent_name)
-    model = opts[:model] || config.model
-    is_delegated = opts[:delegated] || false
-    task_id = opts[:task_id]
-
-    # Use provided tools, or persisted tools from a prior turn, or resolve from mounts
-    tools =
-      cond do
-        opts[:tools] -> opts[:tools]
-        state.persistent_tools -> state.persistent_tools
-        true -> resolve_all_tools(state, depth: agent_depth(state), emit: emit)
-      end
-
-    agent_opts =
-      [
-        system_prompt: opts[:system_prompt] || config.system_prompt,
-        tools: tools,
-        agent_name: state.agent_name,
-        max_steps: opts[:max_steps] || config.max_steps,
-        tape_name: state.tape_ref,
-        tape_module: state.tape_module,
-        emit: emit,
-        workspace: state.workspace,
-        reasoner: config.turn_strategy,
-        depth: agent_depth(state),
-        prompt_format: config[:prompt_format] || :markdown,
-        session_id: state.session_id,
-        agent_id: state.agent_id,
-        user_id: state.user_id,
-        organization_id: state.organization_id
-      ]
-      |> maybe_put(:provider, config.provider)
-      |> maybe_put(:task_id, task_id)
-
-    # Subagent flag: respect explicit `subagent: true` set at worker
-    # start_link time; otherwise fall back to the delegated+depth
-    # heuristic used by MultiAgent-spawned workers.
-    subagent_flag =
-      state.subagent or (is_delegated and agent_depth(state) > 0)
-
-    agent_opts =
-      if subagent_flag do
-        Keyword.put(agent_opts, :subagent, true)
-      else
-        agent_opts
-      end
-
+    {model, agent_opts, task_id} = build_turn_opts(opts, state, emit)
     messages = [ReqLLM.Context.user(content)]
 
     task =
       Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
-        emit.(%{type: :turn_started})
-        publish_event(state, "rho.turn.started", %{turn_id: turn_id})
-
-        result =
-          try do
-            Rho.Runner.run(model, messages, agent_opts)
-          rescue
-            error ->
-              Logger.error(
-                "AgentLoop crashed: #{Exception.format(:error, error, __STACKTRACE__)}"
-              )
-
-              {:error, Exception.message(error)}
-          catch
-            kind, reason ->
-              Logger.error("AgentLoop crashed: #{Exception.format(kind, reason, __STACKTRACE__)}")
-              {:error, "#{kind}: #{inspect(reason)}"}
-          end
-
-        emit.(%{type: :turn_finished, result: result})
-        publish_event(state, "rho.turn.finished", %{turn_id: turn_id, result: inspect(result)})
-
-        result
+        run_turn(emit, state, turn_id, model, messages, agent_opts)
       end)
 
     AgentRegistry.update_status(state.agent_id, :busy)
+    maybe_publish_task_accepted(state, task_id)
 
-    # Publish task.accepted for delegated tasks with a task_id
-    if task_id do
-      Comms.publish(
-        "rho.task.accepted",
-        %{task_id: task_id, agent_id: state.agent_id, session_id: state.session_id},
-        source: "/session/#{state.session_id}/agent/#{state.agent_id}"
-      )
-    end
-
-    # Persist tools for future turns (message-triggered turns reuse them)
     persistent = if opts[:tools], do: opts[:tools], else: state.persistent_tools
+    schedule_turn_watchdog()
 
     %{
       state
@@ -674,8 +640,87 @@ defmodule Rho.Agent.Worker do
         task_pid: task.pid,
         current_turn_id: turn_id,
         persistent_tools: persistent,
-        current_task_id: task_id
+        current_task_id: task_id,
+        last_activity_at: System.monotonic_time(:millisecond)
     }
+  end
+
+  defp build_turn_opts(opts, state, emit) do
+    config = Rho.Config.agent_config(state.agent_name)
+    model = opts[:model] || config.model
+    task_id = opts[:task_id]
+    tools = resolve_turn_tools(opts, state, emit)
+
+    agent_opts =
+      build_agent_opts(opts, config, state, emit, tools)
+      |> maybe_put(:provider, config.provider)
+      |> maybe_put(:task_id, task_id)
+      |> maybe_add_subagent_flag(opts, state)
+
+    {model, agent_opts, task_id}
+  end
+
+  defp resolve_turn_tools(opts, state, emit) do
+    opts[:tools] || state.persistent_tools ||
+      resolve_all_tools(state, depth: agent_depth(state), emit: emit)
+  end
+
+  defp build_agent_opts(opts, config, state, emit, tools) do
+    [
+      system_prompt: opts[:system_prompt] || config.system_prompt,
+      tools: tools,
+      agent_name: state.agent_name,
+      max_steps: opts[:max_steps] || config.max_steps,
+      tape_name: state.tape_ref,
+      tape_module: state.tape_module,
+      emit: emit,
+      workspace: state.workspace,
+      reasoner: config.turn_strategy,
+      depth: agent_depth(state),
+      prompt_format: config[:prompt_format] || :markdown,
+      session_id: state.session_id,
+      agent_id: state.agent_id,
+      user_id: state.user_id,
+      organization_id: state.organization_id
+    ]
+  end
+
+  defp maybe_add_subagent_flag(agent_opts, opts, state) do
+    is_delegated = opts[:delegated] || false
+    subagent_flag = state.subagent or (is_delegated and agent_depth(state) > 0)
+    if subagent_flag, do: Keyword.put(agent_opts, :subagent, true), else: agent_opts
+  end
+
+  defp run_turn(emit, state, turn_id, model, messages, agent_opts) do
+    emit.(%{type: :turn_started})
+    publish_event(state, "rho.turn.started", %{turn_id: turn_id})
+
+    result =
+      try do
+        Rho.Runner.run(model, messages, agent_opts)
+      rescue
+        error ->
+          Logger.error("AgentLoop crashed: #{Exception.format(:error, error, __STACKTRACE__)}")
+          {:error, Exception.message(error)}
+      catch
+        kind, reason ->
+          Logger.error("AgentLoop crashed: #{Exception.format(kind, reason, __STACKTRACE__)}")
+          {:error, "#{kind}: #{inspect(reason)}"}
+      end
+
+    emit.(%{type: :turn_finished, result: result})
+    publish_event(state, "rho.turn.finished", %{turn_id: turn_id, result: inspect(result)})
+    result
+  end
+
+  defp maybe_publish_task_accepted(_state, nil), do: :ok
+
+  defp maybe_publish_task_accepted(state, task_id) do
+    Comms.publish(
+      "rho.task.accepted",
+      %{task_id: task_id, agent_id: state.agent_id, session_id: state.session_id},
+      source: "/session/#{state.session_id}/agent/#{state.agent_id}"
+    )
   end
 
   defp process_queue(state) do
@@ -727,45 +772,8 @@ defmodule Rho.Agent.Worker do
     from = data[:from] || data["from"]
 
     if message do
-      content =
-        cond do
-          from == "external" ->
-            """
-            [External message]
-            #{message}
-            """
-
-          from ->
-            {from_role, from_id} =
-              case AgentRegistry.get(from) do
-                %{role: role} -> {role, from}
-                _ -> {:unknown, from}
-              end
-
-            """
-            [Inter-agent message from #{from_role} (#{from_id})]
-            #{message}
-
-            ---
-            This message is from another agent, not a human user. \
-            To reply, use send_message with target: "#{from_id}". \
-            Do not use end_turn to reply — that only works for human conversations.\
-            """
-
-          true ->
-            message
-        end
-
-      # Ensure tools are resolved and persisted so subsequent message turns
-      # don't re-resolve from mounts each time
-      state =
-        if state.persistent_tools == nil do
-          tools = resolve_all_tools(state, depth: agent_depth(state))
-          %{state | persistent_tools: tools}
-        else
-          state
-        end
-
+      content = format_incoming_message(message, from)
+      state = ensure_persistent_tools(state)
       start_turn(content, [tools: state.persistent_tools], state)
     else
       state
@@ -774,48 +782,89 @@ defmodule Rho.Agent.Worker do
 
   defp process_signal(_signal, state), do: state
 
+  defp format_incoming_message(message, "external") do
+    """
+    [External message]
+    #{message}
+    """
+  end
+
+  defp format_incoming_message(message, from) when is_binary(from) do
+    {from_role, from_id} =
+      case AgentRegistry.get(from) do
+        %{role: role} -> {role, from}
+        _ -> {:unknown, from}
+      end
+
+    """
+    [Inter-agent message from #{from_role} (#{from_id})]
+    #{message}
+
+    ---
+    This message is from another agent, not a human user. \
+    To reply, use send_message with target: "#{from_id}". \
+    Do not use end_turn to reply — that only works for human conversations.\
+    """
+  end
+
+  defp format_incoming_message(message, _from), do: message
+
+  defp ensure_persistent_tools(state) do
+    if state.persistent_tools == nil do
+      tools = resolve_all_tools(state, depth: agent_depth(state))
+      %{state | persistent_tools: tools}
+    else
+      state
+    end
+  end
+
   defp build_emit(state, turn_id) do
     session_id = state.session_id
     agent_id = state.agent_id
     worker_pid = self()
 
-    emit = fn event ->
+    fn event ->
       tagged = Map.put(event, :turn_id, turn_id)
-
-      # Update worker runtime metadata
-      case event.type do
-        :step_start ->
-          send(worker_pid, {:meta_update, :current_step, event[:step]})
-
-        :tool_start ->
-          send(worker_pid, {:meta_update, :current_tool, event[:name]})
-
-        :tool_result ->
-          send(worker_pid, {:meta_update, :current_tool, nil})
-
-        :llm_usage ->
-          usage = event[:usage] || %{}
-
-          send(
-            worker_pid,
-            {:meta_update, :token_usage,
-             %{
-               input: usage[:input_tokens] || 0,
-               output: usage[:output_tokens] || 0
-             }}
-          )
-
-        _ ->
-          :ok
-      end
-
+      send_meta_updates(worker_pid, event)
       send(worker_pid, {:meta_update, :last_activity_at, System.monotonic_time(:millisecond)})
+      publish_emit_signal(tagged, session_id, agent_id, turn_id, event)
+      :ok
+    end
+  end
 
-      # Publish to signal bus (sole delivery path)
-      signal_type = event_to_signal_type(event)
+  defp send_meta_updates(worker_pid, event) do
+    case event.type do
+      :step_start ->
+        send(worker_pid, {:meta_update, :current_step, event[:step]})
 
-      if signal_type do
+      :tool_start ->
+        send(worker_pid, {:meta_update, :current_tool, event[:name]})
+
+      :tool_result ->
+        send(worker_pid, {:meta_update, :current_tool, nil})
+
+      :llm_usage ->
+        usage = event[:usage] || %{}
+
+        send(
+          worker_pid,
+          {:meta_update, :token_usage,
+           %{input: usage[:input_tokens] || 0, output: usage[:output_tokens] || 0}}
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp publish_emit_signal(tagged, session_id, agent_id, turn_id, event) do
+    case event_to_signal_type(event) do
+      nil ->
+        :ok
+
+      signal_type ->
         payload = Map.merge(tagged, %{agent_id: agent_id, session_id: session_id})
+        t_pub = System.monotonic_time(:millisecond)
 
         Comms.publish(
           "rho.session.#{session_id}.events.#{signal_type}",
@@ -823,12 +872,13 @@ defmodule Rho.Agent.Worker do
           source: "/session/#{session_id}/agent/#{agent_id}",
           correlation_id: turn_id
         )
-      end
 
-      :ok
+        pub_ms = System.monotonic_time(:millisecond) - t_pub
+
+        if pub_ms > 2_000 do
+          Logger.warning("[worker.emit] Comms.publish took #{pub_ms}ms for #{signal_type}")
+        end
     end
-
-    emit
   end
 
   @signal_event_types ~w(
@@ -885,6 +935,10 @@ defmodule Rho.Agent.Worker do
     end
 
     :ok
+  end
+
+  defp schedule_turn_watchdog do
+    Process.send_after(self(), :turn_watchdog, @turn_watchdog_interval)
   end
 
   defp new_turn_id do

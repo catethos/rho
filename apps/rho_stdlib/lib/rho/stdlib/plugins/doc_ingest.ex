@@ -111,36 +111,36 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
       results when is_list(results) ->
         tables = for {:ok, table} <- results, do: table
 
-        sheets =
-          Enum.map(tables, fn table ->
-            rows = Xlsxir.get_list(table)
-            Xlsxir.close(table)
-
-            case rows do
-              [headers | data_rows] ->
-                header_strs = Enum.map(headers, &to_string_safe/1)
-
-                data =
-                  Enum.map(data_rows, fn row ->
-                    row
-                    |> Enum.zip(header_strs)
-                    |> Enum.map(fn {val, hdr} -> "#{hdr}: #{to_string_safe(val)}" end)
-                    |> Enum.join(" | ")
-                  end)
-
-                "Headers: #{Enum.join(header_strs, " | ")}\n" <>
-                  Enum.join(data, "\n")
-
-              _ ->
-                "(empty sheet)"
-            end
-          end)
+        sheets = Enum.map(tables, &format_sheet/1)
 
         {:ok, Enum.join(sheets, "\n\n--- Sheet Break ---\n\n")}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp format_sheet(table) do
+    rows = Xlsxir.get_list(table)
+    Xlsxir.close(table)
+
+    case rows do
+      [headers | data_rows] ->
+        header_strs = Enum.map(headers, &to_string_safe/1)
+        data = Enum.map(data_rows, &format_data_row(&1, header_strs))
+
+        "Headers: #{Enum.join(header_strs, " | ")}\n" <>
+          Enum.join(data, "\n")
+
+      _ ->
+        "(empty sheet)"
+    end
+  end
+
+  defp format_data_row(row, header_strs) do
+    row
+    |> Enum.zip(header_strs)
+    |> Enum.map_join(" | ", fn {val, hdr} -> "#{hdr}: #{to_string_safe(val)}" end)
   end
 
   # --- PDF via liteparse (preferred) or pdftotext (fallback) ---
@@ -222,22 +222,18 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
   defp extract_text_from_docx_xml(xml) do
     # Simple regex-based extraction of text from Word XML
     # Extracts content between <w:t> tags and joins paragraphs
-    xml
-    |> to_string()
-    |> then(fn text ->
-      # Split on paragraph boundaries
-      paragraphs =
-        Regex.scan(~r/<w:p[ >].*?<\/w:p>/s, text)
-        |> Enum.map(fn [para] ->
-          # Extract all <w:t> content within this paragraph
-          Regex.scan(~r/<w:t[^>]*>([^<]*)<\/w:t>/, para)
-          |> Enum.map(fn [_, content] -> content end)
-          |> Enum.join("")
-        end)
-        |> Enum.reject(&(&1 == ""))
+    text = to_string(xml)
 
-      Enum.join(paragraphs, "\n")
-    end)
+    text
+    |> Regex.scan(~r/<w:p[ >].*?<\/w:p>/s)
+    |> Enum.map(&extract_paragraph_text/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+  end
+
+  defp extract_paragraph_text([para]) do
+    Regex.scan(~r/<w:t[^>]*>([^<]*)<\/w:t>/, para)
+    |> Enum.map_join("", fn [_, content] -> content end)
   end
 
   # --- Helpers ---

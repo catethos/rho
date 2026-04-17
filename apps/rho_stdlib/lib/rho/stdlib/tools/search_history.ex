@@ -28,19 +28,22 @@ defmodule Rho.Stdlib.Tools.SearchHistory do
       {:error, "query is required"}
     else
       results = Rho.Tape.Service.search(tape_name, query, limit)
-
-      if results == [] do
-        {:ok, "No messages found matching \"#{query}\"."}
-      else
-        formatted =
-          Enum.map_join(results, "\n---\n", fn entry ->
-            role = entry.payload["role"] || "unknown"
-            content = entry.payload["content"] || ""
-            "[#{role}] #{content}"
-          end)
-
-        {:ok, "Found #{length(results)} result(s):\n#{formatted}"}
-      end
+      format_search_results(results, query)
     end
+  end
+
+  defp format_search_results([], query) do
+    {:ok, "No messages found matching \"#{query}\"."}
+  end
+
+  defp format_search_results(results, _query) do
+    formatted =
+      Enum.map_join(results, "\n---\n", fn entry ->
+        role = entry.payload["role"] || "unknown"
+        content = entry.payload["content"] || ""
+        "[#{role}] #{content}"
+      end)
+
+    {:ok, "Found #{length(results)} result(s):\n#{formatted}"}
   end
 end

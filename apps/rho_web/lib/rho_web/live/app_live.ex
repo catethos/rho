@@ -1,0 +1,3393 @@
+defmodule RhoWeb.AppLive do
+  @moduledoc """
+  Unified root LiveView for all org-scoped pages.
+
+  Owns session state (agents, messages, signal subscriptions) across page
+  navigations. Uses `live_patch` so switching between Chat, Libraries,
+  Roles, Settings, etc. preserves the running session.
+
+  Page-specific rendering is delegated to live_components under
+  `RhoWeb.Pages.*`. Chat state is never cleaned on navigation — only
+  explicit user action clears it.
+  """
+  use Phoenix.LiveView
+  use Phoenix.VerifiedRoutes, endpoint: RhoWeb.Endpoint, router: RhoWeb.Router
+
+  import RhoWeb.CoreComponents
+  import RhoWeb.ChatComponents
+  import RhoWeb.SignalComponents
+
+  alias RhoWeb.Session.SessionCore
+  alias RhoWeb.Session.Shell
+  alias RhoWeb.Session.SignalRouter
+  alias RhoWeb.Session.Snapshot
+  alias RhoWeb.Session.Threads
+  alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
+
+  # ── Mount ──────────────────────────────────────────────────────────
+
+  @impl true
+  def mount(params, _session, socket) do
+    session_id = SessionCore.validate_session_id(params["session_id"])
+    live_action = socket.assigns[:live_action]
+    active_page = page_for_action(live_action)
+
+    workspaces = determine_workspaces(live_action)
+
+    ws_states =
+      Map.new(WorkspaceRegistry.all(), fn mod -> {mod.key(), mod.projection().init()} end)
+
+    agent_avatar = SessionCore.load_agent_avatar()
+
+    initial_keys = Map.keys(workspaces)
+    all_keys = Enum.map(WorkspaceRegistry.all(), & &1.key())
+
+    shell = Shell.init(initial_keys, all_keys)
+
+    socket =
+      socket
+      |> SessionCore.init(active_page: active_page)
+      |> assign(:session_id, session_id)
+      |> assign(:workspaces, workspaces)
+      |> assign(:ws_states, ws_states)
+      |> assign(:active_workspace_id, List.first(initial_keys))
+      |> assign(:shell, shell)
+      |> assign(:agent_avatar, agent_avatar)
+      |> assign(:threads, [])
+      |> assign(:active_thread_id, nil)
+      |> assign(:selected_agent_id, nil)
+      |> assign(:timeline_open, false)
+      |> assign(:drawer_open, false)
+      |> assign(:show_new_agent, false)
+      |> assign(:uploaded_files, [])
+      |> assign(:debug_mode, false)
+      |> assign(:debug_projections, %{})
+      |> assign(:command_palette_open, false)
+      |> assign(:chat_context, %{})
+      |> allow_upload(:images,
+        accept: ~w(.jpg .jpeg .png .gif .webp),
+        max_entries: 5,
+        max_file_size: 10_000_000
+      )
+      |> allow_upload(:avatar,
+        accept: ~w(.jpg .jpeg .png .gif .webp),
+        max_entries: 1,
+        max_file_size: 2_000_000,
+        auto_upload: true
+      )
+
+    socket =
+      if connected?(socket) do
+        ensure_opts = session_ensure_opts(live_action)
+
+        socket =
+          if session_id do
+            socket
+            |> SessionCore.subscribe_and_hydrate(session_id, ensure_opts)
+          else
+            {sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+            SessionCore.subscribe_and_hydrate(socket, sid, ensure_opts)
+          end
+
+        socket
+        |> restore_from_snapshot()
+        |> refresh_threads()
+        |> refresh_data_table_session()
+      else
+        socket
+      end
+
+    {:ok, socket}
+  end
+
+  # ── Handle Params (page switching) ─────────────────────────────────
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    live_action = socket.assigns.live_action
+    new_page = page_for_action(live_action)
+    sid = params["session_id"]
+    new_workspaces = determine_workspaces(live_action)
+    current_sid = socket.assigns.session_id
+
+    chat_context = extract_chat_context(params)
+
+    socket =
+      socket
+      |> cleanup_previous_page(new_page)
+      |> assign(:active_page, new_page)
+
+    socket =
+      cond do
+        # Different session: full resubscribe
+        sid && sid != current_sid && connected?(socket) ->
+          case Rho.Agent.Primary.validate_session_id(sid) do
+            :ok ->
+              socket
+              |> SessionCore.unsubscribe()
+              |> assign(:session_id, sid)
+              |> assign(:chat_context, chat_context)
+              |> merge_workspaces(new_workspaces)
+              |> SessionCore.subscribe_and_hydrate(sid, session_ensure_opts(live_action))
+              |> refresh_data_table_session()
+
+            _ ->
+              socket
+          end
+
+        # Same session or no session param
+        sid == current_sid || is_nil(sid) ->
+          socket
+          |> assign(:chat_context, chat_context)
+          |> merge_workspaces(new_workspaces)
+
+        true ->
+          socket
+      end
+
+    # Load page-specific data
+    socket = apply_page(socket, new_page, params)
+
+    {:noreply, socket}
+  end
+
+  # ── Page-specific data loading ─────────────────────────────────────
+
+  defp apply_page(socket, :libraries, _params) do
+    if connected?(socket) do
+      org = socket.assigns.current_organization
+      libraries = RhoFrameworks.Library.list_libraries(org.id)
+
+      socket
+      |> assign(:libraries, libraries)
+      |> assign(:library_groups, group_libraries(libraries))
+      |> assign_new(:chat_overlay_open, fn -> false end)
+      |> assign_new(:overlay_session_id, fn -> nil end)
+      |> assign_new(:bus_subs, fn -> [] end)
+    else
+      socket
+      |> assign(:libraries, [])
+      |> assign(:library_groups, [])
+      |> assign_new(:chat_overlay_open, fn -> false end)
+      |> assign_new(:overlay_session_id, fn -> nil end)
+      |> assign_new(:bus_subs, fn -> [] end)
+    end
+  end
+
+  defp apply_page(socket, :library_show, params) do
+    id = params["id"]
+
+    if connected?(socket) && id do
+      org = socket.assigns.current_organization
+      lib = RhoFrameworks.Library.get_visible_library!(org.id, id)
+      skills = RhoFrameworks.Library.browse_library(id)
+      grouped = group_skills(skills)
+
+      socket
+      |> assign(:library, lib)
+      |> assign(:skills, skills)
+      |> assign(:grouped, grouped)
+      |> assign(:highlight_skill, params["skill"])
+      |> then(fn s ->
+        if params["skill"],
+          do: push_event(s, "scroll_to_skill", %{skill_id: params["skill"]}),
+          else: s
+      end)
+      |> assign_new(:status_filter, fn -> nil end)
+      |> assign_new(:show_fork_modal, fn -> false end)
+      |> assign_new(:fork_name, fn -> "" end)
+      |> assign_new(:show_diff, fn -> false end)
+      |> assign_new(:diff_result, fn -> nil end)
+    else
+      socket
+      |> assign(:library, nil)
+      |> assign(:skills, [])
+      |> assign(:grouped, [])
+      |> assign(:highlight_skill, nil)
+      |> assign_new(:status_filter, fn -> nil end)
+      |> assign_new(:show_fork_modal, fn -> false end)
+      |> assign_new(:fork_name, fn -> "" end)
+      |> assign_new(:show_diff, fn -> false end)
+      |> assign_new(:diff_result, fn -> nil end)
+    end
+  end
+
+  defp apply_page(socket, :roles, _params) do
+    if connected?(socket) do
+      org = socket.assigns.current_organization
+      profiles = RhoFrameworks.Roles.list_role_profiles(org.id)
+      grouped = group_roles_by_family(profiles)
+      assign(socket, profiles: profiles, role_grouped: grouped)
+    else
+      assign(socket, profiles: [], role_grouped: [])
+    end
+  end
+
+  defp apply_page(socket, :role_show, params) do
+    id = params["id"]
+
+    if connected?(socket) && id do
+      org = socket.assigns.current_organization
+
+      rp =
+        RhoFrameworks.Roles.get_visible_role_profile!(org.id, id)
+        |> RhoFrameworks.Repo.preload(role_skills: :skill)
+
+      role_skills_grouped = group_role_skills(rp.role_skills)
+      assign(socket, profile: rp, role_skills_grouped: role_skills_grouped)
+    else
+      assign(socket, profile: nil, role_skills_grouped: %{})
+    end
+  end
+
+  defp apply_page(socket, :settings, _params) do
+    org = socket.assigns.current_organization
+    user = socket.assigns.current_user
+    membership = socket.assigns.current_membership
+    changeset = RhoFrameworks.Accounts.change_organization(org)
+    user_changeset = RhoFrameworks.Accounts.change_user_profile(user)
+
+    socket
+    |> assign(:org_changeset, to_form(changeset))
+    |> assign(:user_changeset, to_form(user_changeset, as: "user"))
+    |> assign(:is_owner, RhoFrameworks.Accounts.Authorization.can?(membership, :manage_org))
+  end
+
+  defp apply_page(socket, :members, _params) do
+    org = socket.assigns.current_organization
+    membership = socket.assigns.current_membership
+    members = RhoFrameworks.Accounts.list_members(org.id)
+    can_manage = RhoFrameworks.Accounts.Authorization.can?(membership, :manage_members)
+    is_owner = RhoFrameworks.Accounts.Authorization.can?(membership, :manage_org)
+
+    socket
+    |> assign(:members, members)
+    |> assign(:can_manage, can_manage)
+    |> assign(:is_owner, is_owner)
+    |> assign_new(:invite_email, fn -> "" end)
+    |> assign_new(:invite_role, fn -> "member" end)
+    |> assign_new(:invite_error, fn -> nil end)
+  end
+
+  defp apply_page(socket, :chat, params) do
+    library_id = params["library_id"]
+
+    if connected?(socket) && library_id do
+      load_library_into_data_table(socket, library_id)
+    else
+      socket
+    end
+  end
+
+  defp apply_page(socket, _page, _params), do: socket
+
+  # ── Page cleanup on navigation ─────────────────────────────────────
+
+  defp cleanup_previous_page(socket, new_page) do
+    prev = socket.assigns[:active_page]
+
+    if prev == new_page do
+      socket
+    else
+      case prev do
+        :libraries ->
+          # Clean up chat overlay subscriptions if any
+          for sub <- socket.assigns[:bus_subs] || [] do
+            Rho.Comms.unsubscribe(sub)
+          end
+
+          socket
+          |> assign(:libraries, nil)
+          |> assign(:chat_overlay_open, false)
+          |> assign(:overlay_session_id, nil)
+          |> assign(:bus_subs, [])
+
+        :library_show ->
+          socket
+          |> assign(:library, nil)
+          |> assign(:skills, nil)
+          |> assign(:grouped, nil)
+          |> assign(:show_diff, false)
+          |> assign(:diff_result, nil)
+
+        :roles ->
+          socket
+          |> assign(:profiles, nil)
+          |> assign(:role_grouped, nil)
+
+        :role_show ->
+          socket
+          |> assign(:profile, nil)
+          |> assign(:role_skills_grouped, nil)
+
+        :settings ->
+          socket
+          |> assign(:org_changeset, nil)
+          |> assign(:user_changeset, nil)
+
+        :members ->
+          socket
+          |> assign(:members, nil)
+          |> assign(:invite_error, nil)
+
+        _ ->
+          socket
+      end
+    end
+  end
+
+  # ── Render ─────────────────────────────────────────────────────────
+
+  @impl true
+  def render(assigns) do
+    case assigns.active_page do
+      page when page in [:chat, :chat_show] -> render_chat(assigns)
+      :libraries -> render_libraries(assigns)
+      :library_show -> render_library_show(assigns)
+      :roles -> render_roles(assigns)
+      :role_show -> render_role_show(assigns)
+      :settings -> render_settings(assigns)
+      :members -> render_members(assigns)
+      _ -> render_chat(assigns)
+    end
+  end
+
+  # ── Chat page render (from SessionLive) ────────────────────────────
+
+  defp render_chat(assigns) do
+    active_id = assigns.active_agent_id
+    active_messages = Map.get(assigns.agent_messages, active_id, [])
+    active_agent = if active_id, do: Map.get(assigns.agents, active_id)
+
+    active_inflight =
+      if active_id do
+        Map.take(assigns.inflight, [active_id])
+      else
+        primary_id = SessionCore.primary_agent_id(assigns.session_id)
+        Map.take(assigns.inflight, [primary_id])
+      end
+
+    has_workspaces = map_size(assigns.workspaces) > 0
+    chat_mode = chat_panel_mode(assigns)
+    overlay_keys = Shell.overlay_keys(assigns.shell)
+
+    overlays =
+      Enum.map(overlay_keys, fn key ->
+        {key, WorkspaceRegistry.get(key)}
+      end)
+      |> Enum.reject(fn {_key, mod} -> is_nil(mod) end)
+
+    shared_ws_assigns = %{
+      session_id: assigns.session_id,
+      agents: assigns.agents,
+      streaming: MapSet.size(assigns.pending_response) > 0,
+      total_cost: assigns.total_cost
+    }
+
+    assigns =
+      assigns
+      |> assign(:active_messages, active_messages)
+      |> assign(:active_agent, active_agent)
+      |> assign(:active_inflight, active_inflight)
+      |> assign(:has_workspaces, has_workspaces)
+      |> assign(:chat_mode, chat_mode)
+      |> assign(:overlays, overlays)
+      |> assign(:available_workspaces, available_workspaces(assigns))
+      |> assign(:shared_ws_assigns, shared_ws_assigns)
+
+    ~H"""
+    <div id="session-root" phx-hook="CommandPalette" class={"session-layout #{if @has_workspaces, do: "workspace-mode", else: ""} #{if @drawer_open, do: "drawer-pinned", else: ""} #{if @debug_mode, do: "debug-mode", else: ""} #{if @shell.focus_workspace_id, do: "focus-mode", else: ""}"}>
+      <.session_header
+        session_id={@session_id}
+        agents={@agents}
+        total_input_tokens={@total_input_tokens}
+        total_output_tokens={@total_output_tokens}
+        total_cost={@total_cost}
+        total_cached_tokens={@total_cached_tokens}
+        total_reasoning_tokens={@total_reasoning_tokens}
+        step_input_tokens={@step_input_tokens}
+        step_output_tokens={@step_output_tokens}
+        user_avatar={@user_avatar}
+        uploads={@uploads}
+        debug_mode={@debug_mode}
+      />
+
+      <.workspace_tab_bar
+        :if={@has_workspaces}
+        workspaces={@workspaces}
+        active={@active_workspace_id}
+        available={@available_workspaces}
+        shell={@shell}
+        pending={MapSet.size(@pending_response) > 0}
+      />
+
+      <div class="main-panels">
+        <%= for {key, _ws} <- @workspaces do %>
+          <% ws_mod = WorkspaceRegistry.get(key) %>
+          <% ws_assigns = ws_mod.component_assigns(@ws_states[key], @shared_ws_assigns) %>
+          <.live_component
+            module={ws_mod.component()}
+            id={"workspace-#{key}"}
+            class={if key == @active_workspace_id, do: "active", else: "hidden"}
+            {ws_assigns}
+          />
+        <% end %>
+
+        <div :if={!@has_workspaces} class="workspace-empty-state">
+          <div class="workspace-empty-content">
+            <p class="workspace-empty-hint">Workspace panels will appear here</p>
+          </div>
+        </div>
+
+        <div :if={@has_workspaces} id="panel-resizer" phx-hook="PanelResizer" class="panel-resizer"></div>
+
+        <.chat_side_panel
+          chat_mode={@chat_mode}
+          compact={@has_workspaces}
+          messages={@active_messages}
+          session_id={@session_id || ""}
+          inflight={@active_inflight}
+          active_agent_id={@active_agent_id || ""}
+          user_avatar={@user_avatar}
+          agent_avatar={@agent_avatar}
+          pending={MapSet.member?(@pending_response, @active_agent_id || SessionCore.primary_agent_id(@session_id))}
+          agents={@agents}
+          agent_tab_order={@agent_tab_order}
+          chat_status={chat_status(assigns)}
+          uploads={@uploads}
+          active_agent={@active_agent}
+          connected={@connected}
+          threads={@threads}
+          active_thread_id={@active_thread_id}
+        />
+
+        <.debug_panel
+          :if={@debug_mode}
+          projections={@debug_projections}
+          active_agent_id={@active_agent_id}
+          session_id={@session_id}
+        />
+      </div>
+
+      <.new_agent_dialog :if={@show_new_agent} session_id={@session_id} />
+
+      <.signal_timeline open={@timeline_open} />
+
+      <.live_component
+        module={RhoWeb.AgentDrawerComponent}
+        id="agent-drawer"
+        open={@drawer_open}
+        agent={@agents[@selected_agent_id]}
+        session_id={@session_id || ""}
+      />
+
+      <.workspace_overlay
+        :for={{key, ws_mod} <- @overlays}
+        key={key}
+        label={ws_mod.label()}
+        ws_mod={ws_mod}
+        ws_state={@ws_states[key]}
+        shared_ws_assigns={@shared_ws_assigns}
+      />
+      <div
+        :if={@overlays != []}
+        class="workspace-overlay-backdrop is-visible"
+        phx-click="dismiss_overlay"
+        phx-value-workspace={@overlays |> List.first() |> elem(0)}
+      />
+
+      <.live_component
+        module={RhoWeb.CommandPaletteComponent}
+        id="command-palette-component"
+        open={@command_palette_open}
+        workspaces={@workspaces}
+        shell={@shell}
+        threads={@threads}
+      />
+
+      <button
+        :if={@shell.focus_workspace_id}
+        class="chat-floating-pill"
+        phx-click="exit_focus"
+      >
+        Chat
+        <span :if={Shell.total_unseen_chat_count(@shell) > 0} class="pill-unseen-badge">
+          <%= Shell.total_unseen_chat_count(@shell) %>
+        </span>
+      </button>
+
+      <div :if={!@connected} class="reconnect-banner">
+        Reconnecting...
+      </div>
+    </div>
+    """
+  end
+
+  # ── Libraries page render ──────────────────────────────────────────
+
+  defp render_libraries(assigns) do
+    ~H"""
+    <.page_shell>
+      <.page_header title="Skill Libraries" subtitle="Browse and manage skill catalogs">
+        <:actions>
+          <button phx-click="open_chat_overlay" class="btn-primary">
+            + New Library
+          </button>
+        </:actions>
+      </.page_header>
+
+      <.empty_state :if={@library_groups == []}>
+        No libraries yet. Create one in the chat editor or load a standard template.
+      </.empty_state>
+
+      <div :if={@library_groups != []} class="lib-list">
+        <div class="lib-list-header">
+          <span class="lib-col-name">Name</span>
+          <span class="lib-col-version">Version</span>
+          <span class="lib-col-skills">Skills</span>
+          <span class="lib-col-updated">Updated</span>
+          <span class="lib-col-actions"></span>
+        </div>
+
+        <%= for group <- @library_groups do %>
+          <details class="lib-group" open={group.version_count == 1}>
+            <summary class="lib-row lib-row-primary">
+              <span class="lib-col-name">
+                <.link
+                  patch={~p"/orgs/#{@current_organization.slug}/libraries/#{group.primary.id}"}
+                  class="lib-name-link"
+                >
+                  <%= group.name %>
+                </.link>
+                <span :if={group.primary.visibility == "public"} class="badge-public">Public</span>
+                <span :if={group.version_count > 1} class="badge-muted">
+                  <%= group.version_count %> versions
+                </span>
+              </span>
+              <span class="lib-col-version">
+                <span :if={group.primary.version} class="badge-version">
+                  v<%= group.primary.version %>
+                </span>
+                <span :if={group.primary.is_default} class="badge-default">Default</span>
+                <span :if={!group.primary.version && !group.primary.immutable} class="badge-draft">
+                  Draft
+                </span>
+                <span :if={group.primary.immutable && !group.primary.version} class="badge-immutable">
+                  Standard
+                </span>
+              </span>
+              <span class="lib-col-skills"><%= group.primary.skill_count %></span>
+              <span class="lib-col-updated">
+                <%= if group.primary.published_at do %>
+                  <%= Calendar.strftime(group.primary.published_at, "%b %d, %Y %H:%M") %>
+                <% else %>
+                  <%= Calendar.strftime(group.primary.updated_at, "%b %d, %Y %H:%M") %>
+                <% end %>
+              </span>
+              <span class="lib-col-actions">
+                <button
+                  :if={group.primary.version && !group.primary.is_default && group.primary.visibility != "public"}
+                  phx-click="set_default_version"
+                  phx-value-id={group.primary.id}
+                  class="btn-secondary-sm"
+                >
+                  Set as Default
+                </button>
+                <button
+                  :if={group.primary.visibility != "public"}
+                  phx-click="delete_library"
+                  phx-value-id={group.primary.id}
+                  data-confirm={"Delete '#{group.name}' and all its skills?"}
+                  class="btn-danger-sm"
+                >
+                  Delete
+                </button>
+              </span>
+            </summary>
+
+            <%= for lib <- Enum.drop(group.versions, 1) do %>
+              <div class="lib-row lib-row-version">
+                <span class="lib-col-name lib-version-indent">
+                  <.link
+                    patch={~p"/orgs/#{@current_organization.slug}/libraries/#{lib.id}"}
+                    class="lib-name-link"
+                  >
+                    <%= lib.name %>
+                  </.link>
+                </span>
+                <span class="lib-col-version">
+                  <span :if={lib.version} class="badge-version">v<%= lib.version %></span>
+                  <span :if={lib.is_default} class="badge-default">Default</span>
+                  <span :if={!lib.version && !lib.immutable} class="badge-draft">Draft</span>
+                  <span :if={lib.immutable && !lib.version} class="badge-immutable">Standard</span>
+                </span>
+                <span class="lib-col-skills"><%= lib.skill_count %></span>
+                <span class="lib-col-updated">
+                  <%= if lib.published_at do %>
+                    <%= Calendar.strftime(lib.published_at, "%b %d, %Y %H:%M") %>
+                  <% else %>
+                    <%= Calendar.strftime(lib.updated_at, "%b %d, %Y %H:%M") %>
+                  <% end %>
+                </span>
+                <span class="lib-col-actions">
+                  <button
+                    :if={lib.version && !lib.is_default && lib.visibility != "public"}
+                    phx-click="set_default_version"
+                    phx-value-id={lib.id}
+                    class="btn-secondary-sm"
+                  >
+                    Set as Default
+                  </button>
+                  <button
+                    :if={lib.visibility != "public"}
+                    phx-click="delete_library"
+                    phx-value-id={lib.id}
+                    data-confirm={"Delete this version of '#{lib.name}'?"}
+                    class="btn-danger-sm"
+                  >
+                    Delete
+                  </button>
+                </span>
+              </div>
+            <% end %>
+          </details>
+        <% end %>
+      </div>
+
+      <.live_component
+        module={RhoWeb.ChatOverlayComponent}
+        id="chat-overlay"
+        open={@chat_overlay_open}
+        agent_name={:spreadsheet}
+        intent="I'd like to create a new skill library for this organization. Please help me define it."
+        current_user={@current_user}
+        current_organization={@current_organization}
+      />
+    </.page_shell>
+    """
+  end
+
+  # ── Library Show page render ───────────────────────────────────────
+
+  defp render_library_show(assigns) do
+    ~H"""
+    <.page_shell>
+      <div :if={@library} class="breadcrumb">
+        <.link patch={~p"/orgs/#{@current_organization.slug}/libraries"}>Libraries</.link>
+        <span class="breadcrumb-sep">/</span>
+        <span><%= @library.name %></span>
+      </div>
+
+      <.page_header :if={@library} title={@library.name} subtitle={@library.description}>
+        <:actions>
+          <span :if={@library.version} class="badge-version">v<%= @library.version %></span>
+          <span :if={@library.is_default} class="badge-default">Default</span>
+          <span :if={@library.immutable} class="badge-immutable">Standard (read-only)</span>
+          <button
+            :if={@library.version && !@library.is_default}
+            phx-click="set_default_version_from_show"
+            phx-value-id={@library.id}
+            class="btn-secondary"
+          >
+            Set as Default
+          </button>
+          <button :if={@library.immutable} phx-click="open_fork_modal" class="btn-primary">
+            Fork Library
+          </button>
+          <button :if={@library.derived_from_id} phx-click={if @show_diff, do: "hide_diff", else: "show_diff"} class="btn-secondary">
+            <%= if @show_diff, do: "Hide Diff", else: "Compare to Source" %>
+          </button>
+          <.link patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"} class="btn-secondary">
+            Open in Chat
+          </.link>
+        </:actions>
+      </.page_header>
+
+      <%= if @show_fork_modal do %>
+        <div class="modal-backdrop" phx-click="close_fork_modal">
+          <div class="modal-content" onclick="event.stopPropagation()">
+            <h2 class="modal-title">Fork Library</h2>
+            <p class="modal-desc">Create a mutable copy of "<%= @library.name %>" that you can customize.</p>
+            <form phx-submit="submit_fork">
+              <label class="form-label" for="fork_name">Library name</label>
+              <input
+                type="text"
+                name="fork_name"
+                id="fork_name"
+                value={@fork_name}
+                phx-change="update_fork_name"
+                class="form-input"
+                autofocus
+              />
+              <div class="modal-actions">
+                <button type="button" phx-click="close_fork_modal" class="btn-secondary">Cancel</button>
+                <button type="submit" class="btn-primary">Fork</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if @show_diff && @diff_result do %>
+        <div class="diff-panel">
+          <h3 class="diff-title">Changes from source</h3>
+          <div class="diff-stats">
+            <span class="diff-stat diff-added"><%= length(@diff_result.added) %> added</span>
+            <span class="diff-stat diff-removed"><%= length(@diff_result.removed) %> removed</span>
+            <span class="diff-stat diff-modified"><%= length(@diff_result.modified) %> modified</span>
+            <span class="diff-stat diff-unchanged"><%= @diff_result.unchanged_count %> unchanged</span>
+          </div>
+          <div :if={@diff_result.added != []} class="diff-section">
+            <h4>Added</h4>
+            <ul><li :for={name <- @diff_result.added}><%= name %></li></ul>
+          </div>
+          <div :if={@diff_result.removed != []} class="diff-section">
+            <h4>Removed</h4>
+            <ul><li :for={name <- @diff_result.removed}><%= name %></li></ul>
+          </div>
+          <div :if={@diff_result.modified != []} class="diff-section">
+            <h4>Modified</h4>
+            <ul><li :for={name <- @diff_result.modified}><%= name %></li></ul>
+          </div>
+        </div>
+      <% end %>
+
+      <div :if={@library} class="filter-bar">
+        <form phx-change="filter_status">
+          <select name="status" class="filter-select">
+            <option value="" selected={@status_filter == nil}>All statuses</option>
+            <option value="draft" selected={@status_filter == "draft"}>Draft</option>
+            <option value="published" selected={@status_filter == "published"}>Published</option>
+            <option value="archived" selected={@status_filter == "archived"}>Archived</option>
+          </select>
+        </form>
+        <span class="filter-count"><%= length(@skills) %> skills</span>
+      </div>
+
+      <div :for={{category, clusters} <- @grouped} class="fw-collapse"
+        id={"cat-#{category}"} phx-update="ignore">
+        <details>
+          <summary class="fw-collapse-summary">
+            <span class="fw-collapse-arrow"></span>
+            <span class="fw-cluster-title"><%= category %></span>
+            <span class="badge-muted"><%= Enum.sum(Enum.map(clusters, fn {_, s} -> length(s) end)) %> skills</span>
+          </summary>
+
+          <div class="fw-collapse-body">
+            <details :for={{cluster, cluster_skills} <- clusters} class="fw-collapse fw-collapse--nested">
+              <summary class="fw-collapse-summary">
+                <span class="fw-collapse-arrow"></span>
+                <span class="fw-category-title"><%= cluster %></span>
+                <span class="badge-muted"><%= length(cluster_skills) %></span>
+              </summary>
+
+              <div class="fw-collapse-body">
+                <table class="rho-table">
+                  <thead>
+                    <tr>
+                      <th>Skill</th>
+                      <th>Description</th>
+                      <th>Status</th>
+                      <th>Levels</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <%= for skill <- cluster_skills do %>
+                      <tr id={"skill-#{skill.id}"} class={"skill-row" <> if(@highlight_skill == skill.id, do: " skill-highlight", else: "")} onclick={"this.classList.toggle('skill-expanded');document.getElementById('prof-#{skill.id}').classList.toggle('proficiency-hidden')"} style="cursor: pointer;">
+                        <td><span class="skill-expand-arrow"></span><%= skill.name %></td>
+                        <td><%= skill.description %></td>
+                        <td>
+                          <span class={"badge-#{skill.status}"}><%= skill.status %></span>
+                        </td>
+                        <td><%= length(skill.proficiency_levels || []) %></td>
+                      </tr>
+                      <tr :if={(skill.proficiency_levels || []) != []}
+                        id={"prof-#{skill.id}"} class="proficiency-hidden">
+                        <td colspan="4" style="padding: 0;">
+                          <div class="proficiency-panel">
+                            <div class="proficiency-list">
+                              <div :for={level <- Enum.sort_by(skill.proficiency_levels, & &1["level"])} class="proficiency-item">
+                                <span class="proficiency-level">L<%= level["level"] %></span>
+                                <span class="proficiency-name"><%= level["level_name"] %></span>
+                                <span class="proficiency-desc"><%= level["level_description"] %></span>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    <% end %>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        </details>
+      </div>
+    </.page_shell>
+    """
+  end
+
+  # ── Roles page render ──────────────────────────────────────────────
+
+  defp render_roles(assigns) do
+    ~H"""
+    <.page_shell>
+      <.page_header title="Role Profiles" subtitle="Manage role profiles and skill requirements">
+        <:actions>
+          <.link patch={~p"/orgs/#{@current_organization.slug}/chat"} class="btn-primary">
+            + New Role Profile
+          </.link>
+        </:actions>
+      </.page_header>
+
+      <.empty_state :if={@profiles == []}>
+        No role profiles yet. Create one in the chat editor.
+      </.empty_state>
+
+      <div :if={@profiles != []} class="lib-list">
+        <div class="lib-list-header">
+          <span class="lib-col-name">Name</span>
+          <span class="lib-col-version">Seniority</span>
+          <span class="lib-col-skills">Skills</span>
+          <span class="lib-col-updated">Updated</span>
+          <span class="lib-col-actions"></span>
+        </div>
+
+        <%= for {family, family_profiles} <- @role_grouped do %>
+          <details class="lib-group" open={length(@role_grouped) <= 3}>
+            <summary class="lib-row lib-row-primary">
+              <span class="lib-col-name">
+                <span class="lib-name-link"><%= family || "Ungrouped" %></span>
+                <span class="badge-muted"><%= length(family_profiles) %> roles</span>
+              </span>
+              <span class="lib-col-version"></span>
+              <span class="lib-col-skills"></span>
+              <span class="lib-col-updated"></span>
+              <span class="lib-col-actions"></span>
+            </summary>
+
+            <%= for rp <- family_profiles do %>
+              <div class="lib-row lib-row-version">
+                <span class="lib-col-name lib-version-indent">
+                  <.link
+                    patch={~p"/orgs/#{@current_organization.slug}/roles/#{rp.id}"}
+                    class="lib-name-link"
+                  >
+                    <%= rp.name %>
+                  </.link>
+                  <span :if={rp.organization_id != @current_organization.id} class="badge-public">
+                    Public
+                  </span>
+                </span>
+                <span class="lib-col-version">
+                  <span :if={rp.seniority_label} class="badge-muted"><%= rp.seniority_label %></span>
+                </span>
+                <span class="lib-col-skills"><%= rp.skill_count %></span>
+                <span class="lib-col-updated">
+                  <%= Calendar.strftime(rp.updated_at, "%b %d, %Y %H:%M") %>
+                </span>
+                <span class="lib-col-actions">
+                  <button
+                    :if={rp.organization_id == @current_organization.id}
+                    phx-click="delete_role"
+                    phx-value-name={rp.name}
+                    data-confirm={"Delete role profile '#{rp.name}'?"}
+                    class="btn-danger-sm"
+                  >
+                    Delete
+                  </button>
+                </span>
+              </div>
+            <% end %>
+          </details>
+        <% end %>
+      </div>
+    </.page_shell>
+    """
+  end
+
+  # ── Role Show page render ──────────────────────────────────────────
+
+  defp render_role_show(assigns) do
+    ~H"""
+    <.page_shell>
+      <div :if={@profile} class="breadcrumb">
+        <.link patch={~p"/orgs/#{@current_organization.slug}/roles"}>Roles</.link>
+        <span class="breadcrumb-sep">/</span>
+        <span><%= @profile.name %></span>
+      </div>
+
+      <.page_header :if={@profile} title={@profile.name} subtitle={role_subtitle(@profile)}>
+        <:actions>
+          <.link patch={~p"/orgs/#{@current_organization.slug}/chat"} class="btn-secondary">
+            Edit in Chat
+          </.link>
+        </:actions>
+      </.page_header>
+
+      <%= if @profile do %>
+        <div :if={has_rich_fields?(@profile)} class="fw-section">
+          <h2 class="fw-section-title">Role Description</h2>
+          <div class="role-description">
+            <div :if={@profile.purpose} class="role-field role-field--full">
+              <h3 class="role-field-label">Purpose</h3>
+              <p><%= @profile.purpose %></p>
+            </div>
+            <div :if={@profile.accountabilities} class="role-field">
+              <h3 class="role-field-label">Accountabilities</h3>
+              <p><%= @profile.accountabilities %></p>
+            </div>
+            <div :if={@profile.success_metrics} class="role-field">
+              <h3 class="role-field-label">Success Metrics</h3>
+              <p><%= @profile.success_metrics %></p>
+            </div>
+            <div :if={@profile.qualifications} class="role-field">
+              <h3 class="role-field-label">Qualifications</h3>
+              <p><%= @profile.qualifications %></p>
+            </div>
+            <div :if={@profile.reporting_context} class="role-field">
+              <h3 class="role-field-label">Reporting Context</h3>
+              <p><%= @profile.reporting_context %></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="fw-section">
+          <h2 class="fw-section-title">Skill Requirements</h2>
+
+          <details :for={{category, clusters} <- @role_skills_grouped} class="fw-collapse">
+            <summary class="fw-collapse-summary">
+              <span class="fw-collapse-arrow"></span>
+              <span class="fw-cluster-title"><%= category %></span>
+              <span class="badge-muted"><%= Enum.sum(Enum.map(clusters, fn {_, s} -> length(s) end)) %> skills</span>
+            </summary>
+
+            <div class="fw-collapse-body">
+              <details :for={{cluster, skills} <- clusters} class="fw-collapse fw-collapse--nested">
+                <summary class="fw-collapse-summary">
+                  <span class="fw-collapse-arrow"></span>
+                  <span class="fw-category-title"><%= cluster %></span>
+                  <span class="badge-muted"><%= length(skills) %></span>
+                </summary>
+
+                <div class="fw-collapse-body">
+                  <table class="rho-table">
+                    <thead>
+                      <tr>
+                        <th>Skill</th>
+                        <th>Level</th>
+                        <th>Required</th>
+                        <th>Weight</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr :for={rs <- skills}>
+                        <td>
+                          <.link patch={~p"/orgs/#{@current_organization.slug}/libraries/#{rs.skill.library_id}?skill=#{rs.skill.id}"} class="skill-link">
+                            <%= rs.skill.name %>
+                          </.link>
+                        </td>
+                        <td>
+                          <span class={"badge-level #{if rs.required, do: "badge-level--required", else: "badge-level--optional"}"}>
+                            <%= rs.min_expected_level %>
+                          </span>
+                        </td>
+                        <td>
+                          <span class={"required-dot #{unless rs.required, do: "required-dot--no"}"} title={if rs.required, do: "Required", else: "Nice-to-have"} />
+                        </td>
+                        <td><%= rs.weight %></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+          </details>
+        </div>
+
+        <div :if={@profile.work_activities != []} class="fw-section">
+          <h2 class="fw-section-title">Work Activities</h2>
+          <table class="rho-table">
+            <thead>
+              <tr>
+                <th>Activity</th>
+                <th>Frequency</th>
+                <th>Time Allocation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={activity <- @profile.work_activities}>
+                <td><%= activity["description"] || activity[:description] %></td>
+                <td><%= activity["frequency"] || activity[:frequency] %></td>
+                <td><%= activity["time_allocation"] || activity[:time_allocation] %></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      <% end %>
+    </.page_shell>
+    """
+  end
+
+  # ── Settings page render ───────────────────────────────────────────
+
+  defp render_settings(assigns) do
+    ~H"""
+    <.page_shell>
+      <.page_header title="Organization Settings" subtitle={"Manage #{@current_organization.name}"}>
+        <:actions>
+          <.link patch={~p"/orgs/#{@current_organization.slug}/chat"} class="btn-secondary">
+            Back
+          </.link>
+        </:actions>
+      </.page_header>
+
+      <div class="form-card">
+        <.form for={@org_changeset} phx-submit="save_org">
+          <div class="form-group">
+            <label for="org_name" class="form-label">Name</label>
+            <input
+              type="text"
+              name="organization[name]"
+              id="org_name"
+              value={@org_changeset[:name].value}
+              class="form-input"
+              required
+              maxlength="100"
+            />
+            <p :if={@org_changeset[:name].errors != []} class="form-error">
+              <%= elem(hd(@org_changeset[:name].errors), 0) %>
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Slug (immutable)</label>
+            <input
+              type="text"
+              value={@current_organization.slug}
+              class="form-input"
+              disabled
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Organization ID</label>
+            <code class="form-code"><%= @current_organization.id %></code>
+          </div>
+
+          <div class="form-group">
+            <label for="org_context" class="form-label">Organization Context</label>
+            <p class="form-hint">Extra context the AI agent should know about this organization.</p>
+            <textarea
+              name="organization[context]"
+              id="org_context"
+              class="form-input"
+              rows="4"
+              placeholder="e.g. We are a machine learning research team focused on NLP..."
+            ><%= @org_changeset[:context].value %></textarea>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Save Changes</button>
+          </div>
+        </.form>
+      </div>
+
+      <div class="form-card">
+        <h3 class="form-card-title">Your Profile</h3>
+        <.form for={@user_changeset} phx-submit="save_profile">
+          <div class="form-group">
+            <label for="user_display_name" class="form-label">Display Name</label>
+            <input
+              type="text"
+              name="user[display_name]"
+              id="user_display_name"
+              value={@user_changeset[:display_name].value}
+              class="form-input"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="user_context" class="form-label">User Context</label>
+            <p class="form-hint">Extra context the AI agent should know about you.</p>
+            <textarea
+              name="user[context]"
+              id="user_context"
+              class="form-input"
+              rows="4"
+              placeholder="e.g. I'm a senior engineer, prefer concise answers..."
+            ><%= @user_changeset[:context].value %></textarea>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Save Profile</button>
+          </div>
+        </.form>
+      </div>
+
+      <div :if={@is_owner && !@current_organization.personal} class="form-card danger-zone">
+        <h3 class="danger-title">Danger Zone</h3>
+        <p class="danger-desc">
+          Deleting this organization will permanently remove all its data, including frameworks and memberships.
+        </p>
+        <button
+          phx-click="delete_org"
+          data-confirm={"Are you sure you want to delete '#{@current_organization.name}'? This cannot be undone."}
+          class="btn-danger"
+        >
+          Delete Organization
+        </button>
+      </div>
+    </.page_shell>
+    """
+  end
+
+  # ── Members page render ────────────────────────────────────────────
+
+  defp render_members(assigns) do
+    ~H"""
+    <.page_shell>
+      <.page_header title="Members" subtitle={"Manage members of #{@current_organization.name}"}>
+        <:actions>
+          <.link patch={~p"/orgs/#{@current_organization.slug}/chat"} class="btn-secondary">
+            Back
+          </.link>
+        </:actions>
+      </.page_header>
+
+      <div :if={@can_manage && !@current_organization.personal} class="form-card">
+        <h3 class="form-section-title">Add Member</h3>
+        <form phx-submit="invite" class="invite-form">
+          <div class="invite-row">
+            <input
+              type="email"
+              name="email"
+              value={@invite_email}
+              placeholder="user@example.com"
+              class="form-input"
+              required
+            />
+            <select name="role" class="form-select">
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+              <option value="viewer">Viewer</option>
+            </select>
+            <button type="submit" class="btn-primary">Add</button>
+          </div>
+          <p :if={@invite_error} class="form-error"><%= @invite_error %></p>
+        </form>
+      </div>
+
+      <div :if={@current_organization.personal} class="form-card">
+        <p class="muted-text">Personal organizations are single-user only. Create a team organization to collaborate.</p>
+      </div>
+
+      <table class="rho-table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Name</th>
+            <th>Role</th>
+            <th :if={@can_manage}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={member <- @members}>
+            <td><%= member.email %></td>
+            <td><%= member.display_name || "\u2014" %></td>
+            <td>
+              <%= if @can_manage && member.role != "owner" do %>
+                <form phx-change="change_role" class="inline-form">
+                  <input type="hidden" name="membership_id" value={member.id} />
+                  <select name="role" class="form-select-sm">
+                    <option value="admin" selected={member.role == "admin"}>Admin</option>
+                    <option value="member" selected={member.role == "member"}>Member</option>
+                    <option value="viewer" selected={member.role == "viewer"}>Viewer</option>
+                  </select>
+                </form>
+              <% else %>
+                <%= member.role %>
+              <% end %>
+            </td>
+            <td :if={@can_manage}>
+              <%= if member.role != "owner" do %>
+                <button
+                  phx-click="remove_member"
+                  phx-value-id={member.id}
+                  data-confirm={"Remove #{member.email} from this organization?"}
+                  class="btn-danger-sm"
+                >
+                  Remove
+                </button>
+                <%= if @is_owner do %>
+                  <button
+                    phx-click="transfer_ownership"
+                    phx-value-user-id={member.user_id}
+                    data-confirm={"Transfer ownership to #{member.email}? You will be demoted to admin."}
+                    class="btn-secondary-sm"
+                  >
+                    Make Owner
+                  </button>
+                <% end %>
+              <% else %>
+                <span class="badge-muted">Owner</span>
+              <% end %>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </.page_shell>
+    """
+  end
+
+  # ══════════════════════════════════════════════════════════════════
+  # Events — Chat / Session
+  # ══════════════════════════════════════════════════════════════════
+
+  @impl true
+  def handle_event("send_message", %{"content" => content}, socket) do
+    content = String.trim(content)
+
+    image_parts =
+      consume_uploaded_entries(socket, :images, fn %{path: path}, entry ->
+        binary = File.read!(path)
+        media_type = entry.client_type || "image/png"
+        {:ok, ReqLLM.Message.ContentPart.image(binary, media_type)}
+      end)
+
+    has_images = image_parts != []
+    has_text = content != ""
+
+    if not has_text and not has_images do
+      {:noreply, socket}
+    else
+      {sid, socket} =
+        if socket.assigns.session_id do
+          {socket.assigns.session_id, socket}
+        else
+          ensure_opts = session_ensure_opts(socket.assigns.live_action)
+          {new_sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+          socket = SessionCore.subscribe_and_hydrate(socket, new_sid, ensure_opts)
+          {new_sid, socket}
+        end
+
+      _ = sid
+
+      submit_content =
+        if has_images do
+          parts = if has_text, do: [ReqLLM.Message.ContentPart.text(content)], else: []
+          parts ++ image_parts
+        else
+          content
+        end
+
+      display_text =
+        if has_images do
+          img_label = "#{length(image_parts)} image#{if length(image_parts) > 1, do: "s"}"
+          if has_text, do: "#{content}\n[#{img_label} attached]", else: "[#{img_label} attached]"
+        else
+          content
+        end
+
+      SessionCore.send_message(socket, display_text, submit_content: submit_content)
+    end
+  end
+
+  def handle_event("select_tab", %{"agent-id" => agent_id}, socket) do
+    {:noreply, assign(socket, :active_agent_id, agent_id)}
+  end
+
+  def handle_event("select_agent", %{"agent-id" => agent_id}, socket) do
+    socket =
+      socket
+      |> assign(:selected_agent_id, agent_id)
+      |> assign(:drawer_open, true)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_new_agent", _params, socket) do
+    {:noreply, assign(socket, :show_new_agent, !socket.assigns.show_new_agent)}
+  end
+
+  def handle_event("create_agent", %{"role" => role} = params, socket) do
+    {sid, socket} =
+      case socket.assigns.session_id do
+        nil ->
+          {new_sid, socket} = SessionCore.ensure_session(socket, nil)
+          socket = SessionCore.subscribe_and_hydrate(socket, new_sid)
+          {new_sid, socket}
+
+        sid ->
+          {sid, socket}
+      end
+
+    parent_id =
+      case params["parent_id"] do
+        nil -> Rho.Agent.Primary.agent_id(sid)
+        "" -> sid
+        id -> id
+      end
+
+    agent_id = Rho.Agent.Primary.new_agent_id(parent_id)
+
+    role_atom =
+      try do
+        String.to_existing_atom(role)
+      rescue
+        ArgumentError -> :worker
+      end
+
+    memory_mod = Rho.Config.tape_module()
+    agent_ref = memory_mod.memory_ref(agent_id, File.cwd!())
+    memory_mod.bootstrap(agent_ref)
+
+    {:ok, _pid} =
+      Rho.Agent.Supervisor.start_worker(
+        agent_id: agent_id,
+        session_id: sid,
+        workspace: File.cwd!(),
+        agent_name: role_atom,
+        role: role_atom,
+        tape_ref: agent_ref,
+        user_id: get_in(socket.assigns, [:current_user, Access.key(:id)]),
+        organization_id: get_in(socket.assigns, [:current_organization, Access.key(:id)])
+      )
+
+    agent_entry = %{
+      agent_id: agent_id,
+      session_id: sid,
+      role: role_atom,
+      status: :idle,
+      depth: 0,
+      capabilities: [],
+      model: nil,
+      step: nil,
+      max_steps: nil
+    }
+
+    socket =
+      socket
+      |> assign(:show_new_agent, false)
+      |> assign(:active_agent_id, agent_id)
+      |> assign(:agents, Map.put(socket.assigns.agents, agent_id, agent_entry))
+      |> assign(:agent_tab_order, socket.assigns.agent_tab_order ++ [agent_id])
+      |> assign(:agent_messages, Map.put_new(socket.assigns.agent_messages, agent_id, []))
+
+    {:noreply, socket}
+  end
+
+  def handle_event("remove_agent", %{"agent-id" => agent_id}, socket) do
+    primary_id = SessionCore.primary_agent_id(socket.assigns.session_id)
+
+    if agent_id == primary_id do
+      {:noreply, socket}
+    else
+      case Rho.Agent.Worker.whereis(agent_id) do
+        pid when is_pid(pid) -> GenServer.stop(pid, :normal, 5_000)
+        nil -> :ok
+      end
+
+      Rho.Agent.Registry.unregister(agent_id)
+
+      new_tab_order = Enum.reject(socket.assigns.agent_tab_order, &(&1 == agent_id))
+      new_agents = Map.delete(socket.assigns.agents, agent_id)
+
+      active =
+        if socket.assigns.active_agent_id == agent_id,
+          do: primary_id,
+          else: socket.assigns.active_agent_id
+
+      socket =
+        socket
+        |> assign(:agent_tab_order, new_tab_order)
+        |> assign(:agents, new_agents)
+        |> assign(:active_agent_id, active)
+
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("validate_upload", _params, socket) do
+    socket =
+      if socket.assigns.uploads.avatar.entries != [] do
+        entries = socket.assigns.uploads.avatar.entries
+        entry = List.first(entries)
+
+        if entry && entry.done? do
+          [{binary, media_type}] =
+            consume_uploaded_entries(socket, :avatar, fn %{path: path}, entry ->
+              {:ok, {File.read!(path), entry.client_type || "image/png"}}
+            end)
+
+          SessionCore.save_avatar(binary, media_type)
+          data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
+          assign(socket, :user_avatar, data_uri)
+        else
+          socket
+        end
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :images, ref)}
+  end
+
+  # ── Workspace events ───────────────────────────────────────────────
+
+  def handle_event("switch_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) and Map.has_key?(socket.assigns.workspaces, key) do
+      socket =
+        socket
+        |> assign(:active_workspace_id, key)
+        |> assign(:shell, Shell.clear_activity(socket.assigns.shell, key))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("collapse_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) and Map.has_key?(socket.assigns.shell.workspaces, key) do
+      chrome = get_in(socket.assigns.shell, [:workspaces, key])
+      shell = Shell.set_collapsed(socket.assigns.shell, key, !chrome.collapsed)
+      {:noreply, assign(socket, :shell, shell)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("pin_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) do
+      ws_mod = WorkspaceRegistry.get(key)
+      shell = socket.assigns.shell |> Shell.pin_workspace(key) |> Shell.show_chat()
+
+      workspaces =
+        if ws_mod && !Map.has_key?(socket.assigns.workspaces, key) do
+          Map.put(socket.assigns.workspaces, key, ws_mod)
+        else
+          socket.assigns.workspaces
+        end
+
+      socket =
+        socket
+        |> assign(:shell, shell)
+        |> assign(:workspaces, workspaces)
+        |> assign(:active_workspace_id, key)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("dismiss_overlay", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) do
+      shell = Shell.dismiss_overlay(socket.assigns.shell, key)
+      {:noreply, assign(socket, :shell, shell)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("add_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    cond do
+      !is_atom(key) ->
+        {:noreply, socket}
+
+      Map.has_key?(socket.assigns.workspaces, key) ->
+        {:noreply, assign(socket, :active_workspace_id, key)}
+
+      true ->
+        case WorkspaceRegistry.get(key) do
+          nil ->
+            {:noreply, socket}
+
+          ws_mod ->
+            shell =
+              socket.assigns.shell
+              |> Shell.add_workspace(key)
+              |> Shell.show_chat()
+
+            socket =
+              socket
+              |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
+              |> assign(
+                :ws_states,
+                Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
+              )
+              |> assign(:active_workspace_id, key)
+              |> assign(:shell, shell)
+
+            socket =
+              if socket.assigns.session_id do
+                hydrate_workspace(socket, socket.assigns.session_id, key, ws_mod)
+              else
+                socket
+              end
+
+            {:noreply, socket}
+        end
+    end
+  end
+
+  def handle_event("close_workspace", %{"workspace" => ws}, socket) do
+    key = safe_to_existing_atom(ws)
+
+    if is_atom(key) and Map.has_key?(socket.assigns.workspaces, key) do
+      new_workspaces = Map.delete(socket.assigns.workspaces, key)
+      new_ws_states = Map.delete(socket.assigns.ws_states, key)
+
+      active =
+        if socket.assigns.active_workspace_id == key do
+          new_workspaces |> Map.keys() |> List.first()
+        else
+          socket.assigns.active_workspace_id
+        end
+
+      socket =
+        socket
+        |> assign(:workspaces, new_workspaces)
+        |> assign(:ws_states, new_ws_states)
+        |> assign(:active_workspace_id, active)
+        |> assign(:shell, Shell.remove_workspace(socket.assigns.shell, key))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_chat", _params, socket) do
+    {:noreply, assign(socket, :shell, Shell.toggle_chat(socket.assigns.shell))}
+  end
+
+  # ── Thread events ──────────────────────────────────────────────────
+
+  def handle_event("switch_thread", %{"thread_id" => thread_id}, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+
+    current_thread = Threads.active(sid, workspace)
+
+    if current_thread do
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+    end
+
+    case Threads.switch(sid, workspace, thread_id) do
+      :ok ->
+        target = Threads.get(sid, workspace, thread_id)
+
+        Rho.Agent.Primary.stop(sid)
+
+        socket = SessionCore.unsubscribe(socket)
+
+        start_opts = [tape_ref: target["tape_name"]]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+        socket =
+          case Snapshot.load(sid, workspace, thread_id: thread_id) do
+            {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
+            _ -> socket
+          end
+
+        {:noreply, refresh_threads(socket)}
+
+      {:error, _} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("fork_from_here", %{"message_index" => idx_str}, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+    tape_module = Rho.Config.tape_module()
+
+    primary_id = Rho.Agent.Primary.agent_id(sid)
+
+    case Rho.Agent.Registry.get(primary_id) do
+      %{tape_ref: tape_name} when is_binary(tape_name) ->
+        Threads.init(sid, workspace, tape_name: tape_name)
+
+      _ ->
+        :ok
+    end
+
+    fork_point =
+      case Integer.parse(idx_str) do
+        {n, _} when n >= 0 -> n
+        _ -> nil
+      end
+
+    current_thread = Threads.active(sid, workspace)
+
+    if current_thread do
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+    end
+
+    active_agent_id = socket.assigns.active_agent_id
+    current_msgs = Map.get(socket.assigns.agent_messages, active_agent_id, [])
+
+    forked_msgs =
+      if fork_point do
+        Enum.take(current_msgs, fork_point)
+      else
+        current_msgs
+      end
+
+    case Threads.fork_thread(sid, workspace, tape_module, fork_point: fork_point) do
+      {:ok, thread} ->
+        Rho.Agent.Primary.stop(sid)
+        socket = SessionCore.unsubscribe(socket)
+        start_opts = [tape_ref: thread["tape_name"]]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+        new_agent_id = socket.assigns.active_agent_id
+        agent_messages = Map.put(socket.assigns.agent_messages, new_agent_id, forked_msgs)
+        socket = assign(socket, :agent_messages, agent_messages)
+
+        fork_snapshot = Snapshot.build_snapshot(socket)
+        Snapshot.save(sid, workspace, fork_snapshot, thread_id: thread["id"])
+
+        {:noreply, refresh_threads(socket)}
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("fork_from_here failed: #{inspect(reason)}")
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("new_blank_thread", _params, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+    tape_module = Rho.Config.tape_module()
+
+    tape_name = "#{sid}_thread_#{:erlang.unique_integer([:positive])}"
+    tape_module.bootstrap(tape_name)
+
+    case Threads.create(sid, workspace, %{"name" => "New Thread", "tape_name" => tape_name}) do
+      {:ok, thread} ->
+        current_thread = Threads.active(sid, workspace)
+
+        if current_thread do
+          snapshot = Snapshot.build_snapshot(socket)
+          Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+        end
+
+        :ok = Threads.switch(sid, workspace, thread["id"])
+
+        Rho.Agent.Primary.stop(sid)
+        socket = SessionCore.unsubscribe(socket)
+        start_opts = [tape_ref: tape_name]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+        {:noreply, refresh_threads(socket)}
+
+      {:error, _} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_thread", %{"thread_id" => thread_id}, socket) do
+    sid = socket.assigns.session_id
+    workspace = File.cwd!()
+
+    is_active = socket.assigns.active_thread_id == thread_id
+
+    socket =
+      if is_active do
+        Threads.switch(sid, workspace, "thread_main")
+        main = Threads.get(sid, workspace, "thread_main")
+
+        Rho.Agent.Primary.stop(sid)
+        socket = SessionCore.unsubscribe(socket)
+        start_opts = [tape_ref: main["tape_name"]]
+        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+        case Snapshot.load(sid, workspace, thread_id: "thread_main") do
+          {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
+          _ -> socket
+        end
+      else
+        socket
+      end
+
+    Threads.delete(sid, workspace, thread_id)
+    {:noreply, refresh_threads(socket)}
+  end
+
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign(socket, :drawer_open, false)}
+  end
+
+  def handle_event("toggle_timeline", _params, socket) do
+    {:noreply, assign(socket, :timeline_open, !socket.assigns.timeline_open)}
+  end
+
+  def handle_event("toggle_debug", _params, socket) do
+    {:noreply, assign(socket, :debug_mode, !socket.assigns.debug_mode)}
+  end
+
+  def handle_event("toggle_command_palette", _params, socket) do
+    {:noreply, assign(socket, :command_palette_open, !socket.assigns.command_palette_open)}
+  end
+
+  def handle_event("escape_pressed", _params, socket) do
+    shell = socket.assigns.shell
+
+    socket =
+      if shell.focus_workspace_id do
+        assign(socket, :shell, Shell.exit_focus(shell))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("enter_focus", _params, socket) do
+    active = socket.assigns.active_workspace_id
+
+    if active do
+      {:noreply, assign(socket, :shell, Shell.enter_focus(socket.assigns.shell, active))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("exit_focus", _params, socket) do
+    {:noreply, assign(socket, :shell, Shell.exit_focus(socket.assigns.shell))}
+  end
+
+  def handle_event("stop_session", _params, socket) do
+    if socket.assigns.session_id do
+      Rho.Agent.Primary.stop(socket.assigns.session_id)
+    end
+
+    {:noreply, socket}
+  end
+
+  # ── Events — Libraries page ───────────────────────────────────────
+
+  def handle_event("set_default_version", %{"id" => id}, socket) do
+    org = socket.assigns.current_organization
+
+    case RhoFrameworks.Library.set_default_version(org.id, id) do
+      {:ok, lib} ->
+        libraries = RhoFrameworks.Library.list_libraries(org.id)
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Set v#{lib.version} as default for \"#{lib.name}\"")
+         |> assign(libraries: libraries, library_groups: group_libraries(libraries))}
+
+      {:error, :not_published, msg} ->
+        {:noreply, put_flash(socket, :error, msg)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to set default version")}
+    end
+  end
+
+  def handle_event("delete_library", %{"id" => id}, socket) do
+    org = socket.assigns.current_organization
+    RhoFrameworks.Library.delete_library(org.id, id)
+    libraries = RhoFrameworks.Library.list_libraries(org.id)
+    {:noreply, assign(socket, libraries: libraries, library_groups: group_libraries(libraries))}
+  end
+
+  def handle_event("open_chat_overlay", _params, socket) do
+    {:noreply, assign(socket, :chat_overlay_open, true)}
+  end
+
+  def handle_event("close_chat_overlay", _params, socket) do
+    {:noreply, close_overlay(socket)}
+  end
+
+  # ── Events — Library Show page ─────────────────────────────────────
+
+  def handle_event("set_default_version_from_show", %{"id" => id}, socket) do
+    org = socket.assigns.current_organization
+
+    case RhoFrameworks.Library.set_default_version(org.id, id) do
+      {:ok, lib} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Set v#{lib.version} as default for \"#{lib.name}\"")
+         |> assign(:library, lib)}
+
+      {:error, :not_published, msg} ->
+        {:noreply, put_flash(socket, :error, msg)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to set default version")}
+    end
+  end
+
+  def handle_event("filter_status", %{"status" => status}, socket) do
+    status = if status == "", do: nil, else: status
+    opts = if status, do: [status: status], else: []
+    skills = RhoFrameworks.Library.browse_library(socket.assigns.library.id, opts)
+
+    {:noreply,
+     assign(socket, skills: skills, grouped: group_skills(skills), status_filter: status)}
+  end
+
+  def handle_event("open_fork_modal", _params, socket) do
+    default_name = "#{socket.assigns.library.name} (Custom)"
+    {:noreply, assign(socket, show_fork_modal: true, fork_name: default_name)}
+  end
+
+  def handle_event("close_fork_modal", _params, socket) do
+    {:noreply, assign(socket, show_fork_modal: false)}
+  end
+
+  def handle_event("update_fork_name", %{"fork_name" => name}, socket) do
+    {:noreply, assign(socket, fork_name: name)}
+  end
+
+  def handle_event("submit_fork", %{"fork_name" => name}, socket) do
+    org = socket.assigns.current_organization
+    lib = socket.assigns.library
+
+    try do
+      case RhoFrameworks.Library.fork_library(org.id, lib.id, String.trim(name)) do
+        {:ok, %{library: forked}} ->
+          {:noreply,
+           socket
+           |> assign(:show_fork_modal, false)
+           |> put_flash(:info, "Forked \"#{lib.name}\" → \"#{forked.name}\"")
+           |> push_patch(to: ~p"/orgs/#{org.slug}/libraries/#{forked.id}")}
+
+        {:error, _step, reason, _changes} ->
+          {:noreply, put_flash(socket, :error, "Fork failed: #{inspect(reason)}")}
+      end
+    rescue
+      Ecto.NoResultsError ->
+        {:noreply, put_flash(socket, :error, "Cannot fork: library not found or not accessible.")}
+    end
+  end
+
+  def handle_event("show_diff", _params, socket) do
+    org = socket.assigns.current_organization
+    lib = socket.assigns.library
+
+    case RhoFrameworks.Library.diff_against_source(org.id, lib.id) do
+      {:ok, diff} ->
+        {:noreply, assign(socket, show_diff: true, diff_result: diff)}
+
+      {:error, _code, message} ->
+        {:noreply, put_flash(socket, :error, message)}
+    end
+  end
+
+  def handle_event("hide_diff", _params, socket) do
+    {:noreply, assign(socket, show_diff: false, diff_result: nil)}
+  end
+
+  # ── Events — Roles page ───────────────────────────────────────────
+
+  def handle_event("delete_role", %{"name" => name}, socket) do
+    org = socket.assigns.current_organization
+    RhoFrameworks.Roles.delete_role_profile(org.id, name)
+    profiles = RhoFrameworks.Roles.list_role_profiles(org.id)
+    {:noreply, assign(socket, profiles: profiles, role_grouped: group_roles_by_family(profiles))}
+  end
+
+  # ── Events — Settings page ────────────────────────────────────────
+
+  def handle_event("save_org", %{"organization" => params}, socket) do
+    org = socket.assigns.current_organization
+
+    case RhoFrameworks.Accounts.update_organization(org, params) do
+      {:ok, updated_org} ->
+        {:noreply,
+         socket
+         |> assign(:current_organization, updated_org)
+         |> assign(
+           :org_changeset,
+           to_form(RhoFrameworks.Accounts.change_organization(updated_org))
+         )
+         |> put_flash(:info, "Organization updated.")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :org_changeset, to_form(changeset))}
+    end
+  end
+
+  def handle_event("save_profile", %{"user" => params}, socket) do
+    user = socket.assigns.current_user
+
+    case RhoFrameworks.Accounts.update_user_profile(user, params) do
+      {:ok, updated_user} ->
+        {:noreply,
+         socket
+         |> assign(:current_user, updated_user)
+         |> assign(
+           :user_changeset,
+           to_form(RhoFrameworks.Accounts.change_user_profile(updated_user), as: "user")
+         )
+         |> put_flash(:info, "Profile updated.")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :user_changeset, to_form(changeset, as: "user"))}
+    end
+  end
+
+  def handle_event("delete_org", _params, socket) do
+    org = socket.assigns.current_organization
+    membership = socket.assigns.current_membership
+
+    cond do
+      !RhoFrameworks.Accounts.Authorization.can?(membership, :manage_org) ->
+        {:noreply, put_flash(socket, :error, "Only the owner can delete this organization.")}
+
+      org.personal ->
+        {:noreply, put_flash(socket, :error, "Personal organizations cannot be deleted.")}
+
+      true ->
+        case RhoFrameworks.Accounts.delete_organization(org) do
+          {:ok, _} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Organization deleted.")
+             |> push_navigate(to: ~p"/")}
+
+          {:error, _} ->
+            {:noreply, put_flash(socket, :error, "Failed to delete organization.")}
+        end
+    end
+  end
+
+  # ── Events — Members page ─────────────────────────────────────────
+
+  def handle_event("invite", %{"email" => email, "role" => role}, socket) do
+    org = socket.assigns.current_organization
+
+    if org.personal do
+      {:noreply,
+       assign(socket, :invite_error, "Cannot invite members to a personal organization.")}
+    else
+      case RhoFrameworks.Accounts.add_member(org.id, String.trim(email), role) do
+        {:ok, _membership} ->
+          members = RhoFrameworks.Accounts.list_members(org.id)
+
+          {:noreply,
+           socket
+           |> assign(:members, members)
+           |> assign(:invite_email, "")
+           |> assign(:invite_error, nil)
+           |> put_flash(:info, "Member added.")}
+
+        {:error, :user_not_found} ->
+          {:noreply, assign(socket, :invite_error, "No user found with that email.")}
+
+        {:error, changeset} ->
+          msg =
+            case changeset do
+              %Ecto.Changeset{} -> "Could not add member. They may already be a member."
+              _ -> "Could not add member."
+            end
+
+          {:noreply, assign(socket, :invite_error, msg)}
+      end
+    end
+  end
+
+  def handle_event("change_role", %{"membership_id" => membership_id, "role" => new_role}, socket) do
+    case RhoFrameworks.Accounts.update_member_role(membership_id, new_role) do
+      {:ok, _} ->
+        members = RhoFrameworks.Accounts.list_members(socket.assigns.current_organization.id)
+        {:noreply, assign(socket, :members, members)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to update role.")}
+    end
+  end
+
+  def handle_event("remove_member", %{"id" => membership_id}, socket) do
+    case RhoFrameworks.Accounts.remove_member(membership_id) do
+      {:ok, _} ->
+        members = RhoFrameworks.Accounts.list_members(socket.assigns.current_organization.id)
+
+        {:noreply,
+         socket
+         |> assign(:members, members)
+         |> put_flash(:info, "Member removed.")}
+
+      {:error, :cannot_remove_owner} ->
+        {:noreply,
+         put_flash(socket, :error, "Cannot remove the owner. Transfer ownership first.")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to remove member.")}
+    end
+  end
+
+  def handle_event("transfer_ownership", %{"user-id" => new_owner_id}, socket) do
+    org = socket.assigns.current_organization
+
+    case RhoFrameworks.Accounts.transfer_ownership(org.id, new_owner_id) do
+      :ok ->
+        members = RhoFrameworks.Accounts.list_members(org.id)
+        membership = RhoFrameworks.Accounts.get_membership(socket.assigns.current_user.id, org.id)
+
+        {:noreply,
+         socket
+         |> assign(:members, members)
+         |> assign(:current_membership, membership)
+         |> assign(:is_owner, false)
+         |> assign(
+           :can_manage,
+           RhoFrameworks.Accounts.Authorization.can?(membership, :manage_members)
+         )
+         |> put_flash(:info, "Ownership transferred.")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to transfer ownership.")}
+    end
+  end
+
+  # ══════════════════════════════════════════════════════════════════
+  # Handle Info — Signal Bus & Session Messages
+  # ══════════════════════════════════════════════════════════════════
+
+  @impl true
+  def handle_info({:clear_pulse, key}, socket) do
+    {:noreply, assign(socket, :shell, Shell.clear_pulse(socket.assigns.shell, key))}
+  end
+
+  def handle_info({:command_palette_action, action_id}, socket) do
+    socket = assign(socket, :command_palette_open, false)
+
+    socket =
+      case action_id do
+        "toggle_chat" ->
+          assign(socket, :shell, Shell.toggle_chat(socket.assigns.shell))
+
+        "enter_focus" ->
+          active = socket.assigns.active_workspace_id
+
+          if active,
+            do: assign(socket, :shell, Shell.enter_focus(socket.assigns.shell, active)),
+            else: socket
+
+        "exit_focus" ->
+          assign(socket, :shell, Shell.exit_focus(socket.assigns.shell))
+
+        "open_workspace:" <> key_str ->
+          key = safe_to_existing_atom(key_str)
+          if is_atom(key), do: assign(socket, :active_workspace_id, key), else: socket
+
+        "switch_thread:" <> thread_id ->
+          {:noreply, socket} = handle_event("switch_thread", %{"thread_id" => thread_id}, socket)
+          socket
+
+        _ ->
+          socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(:close_command_palette, socket) do
+    {:noreply, assign(socket, :command_palette_open, false)}
+  end
+
+  def handle_info({:ws_state_update, key, new_state}, socket) do
+    {:noreply, SignalRouter.write_ws_state(socket, key, new_state)}
+  end
+
+  def handle_info({:lens_detail_request, _} = msg, socket) do
+    dispatch_to_workspace(socket, RhoWeb.Workspaces.LensDashboard, msg)
+  end
+
+  def handle_info({:data_table_refresh, table_name}, socket) do
+    {:noreply, refresh_data_table_active(socket, table_name)}
+  end
+
+  def handle_info({:navigate_to_library, library_id}, socket) do
+    org = socket.assigns.current_organization
+    {:noreply, push_patch(socket, to: ~p"/orgs/#{org.slug}/libraries/#{library_id}")}
+  end
+
+  def handle_info({:data_table_switch_tab, name}, socket) do
+    sid = socket.assigns.session_id
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    new_state = %{state | active_table: name, view_key: nil, mode_label: nil}
+
+    new_state =
+      case sid && Rho.Stdlib.DataTable.get_table_snapshot(sid, name) do
+        {:ok, snap} ->
+          %{new_state | active_snapshot: snap, active_version: snap.version, error: nil}
+
+        {:error, :not_running} ->
+          %{new_state | active_snapshot: nil, active_version: nil, error: :not_running}
+
+        _ ->
+          %{new_state | active_snapshot: nil, active_version: nil}
+      end
+
+    {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_view_change, view_key, mode_label}, socket) do
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+    new_state = %{state | view_key: view_key, mode_label: mode_label}
+    {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_error, reason}, socket) do
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+    new_state = %{state | error: reason}
+    {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_save, table_name, new_name}, socket) do
+    {:noreply, RhoWeb.SessionLive.DataTableHelpers.handle_save(socket, table_name, new_name)}
+  end
+
+  def handle_info({:data_table_fork, table_name}, socket) do
+    {:noreply, RhoWeb.SessionLive.DataTableHelpers.handle_fork(socket, table_name)}
+  end
+
+  def handle_info({:data_table_publish, table_name, new_name, version_tag}, socket) do
+    {:noreply,
+     RhoWeb.SessionLive.DataTableHelpers.handle_publish(socket, table_name, new_name, version_tag)}
+  end
+
+  def handle_info({:data_table_flash, message}, socket) do
+    {:noreply, RhoWeb.SessionLive.DataTableHelpers.set_flash(socket, message)}
+  end
+
+  def handle_info({:chatroom_mention, target, text}, socket) do
+    sid = socket.assigns.session_id
+
+    if sid do
+      target_agent_id =
+        case Rho.Agent.Worker.whereis(target) do
+          pid when is_pid(pid) ->
+            target
+
+          nil ->
+            role_atom =
+              try do
+                String.to_existing_atom(target)
+              rescue
+                ArgumentError -> nil
+              end
+
+            case role_atom && Rho.Agent.Registry.find_by_role(sid, role_atom) do
+              [agent | _] -> agent.agent_id
+              _ -> nil
+            end
+        end
+
+      if target_agent_id do
+        prev_agent_id = socket.assigns.active_agent_id
+        socket = assign(socket, :active_agent_id, target_agent_id)
+
+        case SessionCore.send_message(socket, text) do
+          {:noreply, socket} ->
+            {:noreply, assign(socket, :active_agent_id, prev_agent_id)}
+        end
+      else
+        {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:chatroom_broadcast, message}, socket) do
+    sid = socket.assigns.session_id
+
+    if sid do
+      SessionCore.send_message(socket, message)
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # ── Chat overlay signals (Libraries page) ──────────────────────────
+
+  def handle_info({:chat_overlay_started, session_id}, socket) do
+    {:ok, sub1} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
+    {:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
+
+    Rho.Stdlib.DataTable.ensure_started(session_id)
+
+    {:noreply,
+     socket
+     |> assign(:overlay_session_id, session_id)
+     |> assign(:bus_subs, [sub1, sub2])}
+  end
+
+  def handle_info({:chat_overlay_closed, _session_id}, socket) do
+    {:noreply, close_overlay(socket)}
+  end
+
+  # ── Signal bus events ──────────────────────────────────────────────
+
+  @impl true
+  def handle_info({:signal, %Jido.Signal{type: type, data: data} = signal}, socket) do
+    sid = socket.assigns.session_id
+
+    # Forward to page-specific components when applicable
+    if socket.assigns.active_page == :libraries && socket.assigns[:chat_overlay_open] do
+      send_update(RhoWeb.ChatOverlayComponent, id: "chat-overlay", signal: {:signal, signal})
+    end
+
+    # Always update session state regardless of active page
+    cond do
+      sid && is_binary(type) && String.ends_with?(type, ".events.data_table") ->
+        {:noreply, apply_data_table_event(socket, data)}
+
+      sid && is_binary(type) && String.ends_with?(type, ".events.workspace_open") ->
+        {:noreply, apply_open_workspace_event(socket, data)}
+
+      SessionCore.signal_for_session?(data, sid) ->
+        correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
+        data = Map.put(data, :correlation_id, correlation_id)
+        {:noreply, SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())}
+
+      true ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:ui_spec_tick, message_id}, socket) do
+    SessionCore.handle_ui_spec_tick(socket, message_id)
+  end
+
+  def handle_info(_msg, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def terminate(_reason, socket) do
+    # Clean up overlay subscriptions
+    for sub <- socket.assigns[:bus_subs] || [] do
+      Rho.Comms.unsubscribe(sub)
+    end
+
+    if sid = socket.assigns[:session_id] do
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, File.cwd!(), snapshot)
+    end
+
+    :ok
+  end
+
+  # ══════════════════════════════════════════════════════════════════
+  # Private Component Functions
+  # ══════════════════════════════════════════════════════════════════
+
+  # --- Header component ---
+
+  attr(:session_id, :string, default: nil)
+  attr(:agents, :map, required: true)
+  attr(:total_input_tokens, :integer, required: true)
+  attr(:total_output_tokens, :integer, required: true)
+  attr(:total_cost, :float, required: true)
+  attr(:total_cached_tokens, :integer, required: true)
+  attr(:total_reasoning_tokens, :integer, required: true)
+  attr(:step_input_tokens, :integer, required: true)
+  attr(:step_output_tokens, :integer, required: true)
+  attr(:user_avatar, :string, default: nil)
+  attr(:uploads, :any, required: true)
+  attr(:debug_mode, :boolean, default: false)
+
+  defp session_header(assigns) do
+    ~H"""
+    <header class="session-header">
+      <div class="header-left">
+        <h1 class="header-title">Rho</h1>
+        <span :if={@session_id} class="header-session-id"><%= truncate_id(@session_id) %></span>
+        <.badge :if={map_size(@agents) > 0}>
+          <%= map_size(@agents) %> agent<%= if map_size(@agents) != 1, do: "s" %>
+        </.badge>
+      </div>
+      <div class="header-right">
+        <span class="header-tokens" title="Total input / output tokens (last step input / output)">
+          <%= format_tokens(@total_input_tokens) %> in / <%= format_tokens(@total_output_tokens) %> out
+          <span :if={@step_input_tokens > 0} class="header-step-tokens">
+            (step: <%= format_tokens(@step_input_tokens) %> in / <%= format_tokens(@step_output_tokens) %> out)
+          </span>
+        </span>
+        <span :if={@total_cached_tokens > 0} class="header-tokens header-cached" title="Cached tokens">
+          cached: <%= format_tokens(@total_cached_tokens) %>
+        </span>
+        <span :if={@total_reasoning_tokens > 0} class="header-tokens header-reasoning" title="Reasoning tokens">
+          reasoning: <%= format_tokens(@total_reasoning_tokens) %>
+        </span>
+        <span :if={@total_cost > 0} class="header-cost">
+          $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
+        </span>
+        <button class={"btn-new-agent #{if @debug_mode, do: "debug-active"}"} phx-click="toggle_debug" title="Toggle debug mode">
+          Debug
+        </button>
+        <button class="btn-new-agent" phx-click="toggle_new_agent" title="New agent">
+          + Agent
+        </button>
+        <button :if={@session_id} class="btn-stop" phx-click="stop_session" title="Stop session">
+          Stop
+        </button>
+        <form id="avatar-upload-form" phx-change="validate_upload" class="header-avatar-form">
+          <label class="header-avatar" title="Click to upload avatar">
+            <%= if @user_avatar do %>
+              <img src={@user_avatar} class="header-avatar-img" />
+            <% else %>
+              <span class="header-avatar-placeholder">Y</span>
+            <% end %>
+            <.live_file_input upload={@uploads.avatar} class="sr-only" />
+          </label>
+        </form>
+      </div>
+    </header>
+    """
+  end
+
+  # --- Tab bar ---
+
+  attr(:agent_tab_order, :list, required: true)
+  attr(:agents, :map, required: true)
+  attr(:active_agent_id, :string, default: nil)
+  attr(:inflight, :map, required: true)
+
+  defp tab_bar(assigns) do
+    ~H"""
+    <div class="chat-tab-bar" :if={length(@agent_tab_order) > 0}>
+      <div
+        :for={agent_id <- @agent_tab_order}
+        class={"chat-tab #{if @active_agent_id == agent_id, do: "active", else: ""} #{if agent_stopped?(@agents, agent_id), do: "stopped", else: ""}"}
+      >
+        <button class="tab-select-btn" phx-click="select_tab" phx-value-agent-id={agent_id}>
+          <.status_dot :if={@agents[agent_id]} status={@agents[agent_id].status} />
+          <span class="tab-label"><%= tab_label(@agents, agent_id) %></span>
+          <span :if={Map.has_key?(@inflight, agent_id)} class="tab-typing">...</span>
+        </button>
+        <button
+          :if={!is_primary_tab?(agent_id)}
+          class="tab-close-btn"
+          phx-click="remove_agent"
+          phx-value-agent-id={agent_id}
+          title="Remove agent"
+        >&times;</button>
+      </div>
+    </div>
+    """
+  end
+
+  defp is_primary_tab?(agent_id) do
+    case String.split(agent_id, "/") do
+      [_sid, "primary"] -> true
+      _ -> false
+    end
+  end
+
+  # --- Workspace tab bar ---
+
+  attr(:workspaces, :map, required: true)
+  attr(:active, :atom, default: nil)
+  attr(:available, :map, default: %{})
+  attr(:shell, :map, required: true)
+  attr(:pending, :boolean, default: false)
+
+  defp workspace_tab_bar(assigns) do
+    chat_expanded = assigns.shell.chat_mode == :expanded
+
+    assigns = assign(assigns, :chat_expanded, chat_expanded)
+
+    ~H"""
+    <div class="workspace-tab-bar">
+      <div class="workspace-tabs">
+        <button
+          :for={{key, ws} <- @workspaces}
+          class={"workspace-tab #{if @active == key, do: "active", else: ""}"}
+          phx-click="switch_workspace"
+          phx-value-workspace={key}
+        >
+          <span class="workspace-tab-label"><%= ws.label() %></span>
+          <% chrome = @shell.workspaces[key] %>
+          <span :if={chrome && chrome.pulse} class="workspace-tab-activity">
+            <span class="workspace-tab-pulse"></span>
+          </span>
+          <span :if={chrome && chrome.unseen_count > 0} class="workspace-tab-badge">
+            <%= chrome.unseen_count %>
+          </span>
+          <span
+            class="workspace-tab-close"
+            phx-click="close_workspace"
+            phx-value-workspace={key}
+          >
+            &times;
+          </span>
+        </button>
+      </div>
+
+      <div class="workspace-tab-actions">
+        <button
+          class={"workspace-tab-toggle-chat #{if @chat_expanded, do: "active", else: ""}"}
+          phx-click="toggle_chat"
+          title={if @chat_expanded, do: "Hide chat", else: "Show chat"}
+        >
+          Chat
+        </button>
+
+        <div :if={map_size(@available) > 0} class="workspace-add-picker">
+          <button class="workspace-add-btn" phx-click={Phoenix.LiveView.JS.toggle(to: "#workspace-picker-dropdown")}>
+            +
+          </button>
+          <div id="workspace-picker-dropdown" class="workspace-picker-dropdown" style="display: none;">
+            <button
+              :for={{key, ws} <- @available}
+              class="workspace-picker-item"
+              phx-click="add_workspace"
+              phx-value-workspace={key}
+            >
+              <%= ws.label() %>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # --- Workspace overlay ---
+
+  attr(:key, :atom, required: true)
+  attr(:label, :string, required: true)
+  attr(:ws_mod, :any, required: true)
+  attr(:ws_state, :map, default: nil)
+  attr(:shared_ws_assigns, :map, required: true)
+
+  defp workspace_overlay(assigns) do
+    overlay_assigns =
+      assigns.ws_mod.component_assigns(assigns.ws_state, assigns.shared_ws_assigns)
+
+    assigns = assign(assigns, :overlay_assigns, overlay_assigns)
+
+    ~H"""
+    <div class="workspace-overlay is-open">
+      <div class="workspace-overlay-header">
+        <span class="workspace-overlay-title"><%= @label %></span>
+        <div class="workspace-overlay-actions">
+          <button
+            class="workspace-overlay-btn pin-btn"
+            phx-click="pin_workspace"
+            phx-value-workspace={@key}
+            title="Pin to tab bar"
+          >
+            Pin
+          </button>
+          <button
+            class="workspace-overlay-close"
+            phx-click="dismiss_overlay"
+            phx-value-workspace={@key}
+            title="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      </div>
+      <div class="workspace-overlay-body">
+        <.live_component
+          :if={@ws_state}
+          module={@ws_mod.component()}
+          id={"overlay-#{@key}"}
+          class="active"
+          {@overlay_assigns}
+        />
+      </div>
+    </div>
+    """
+  end
+
+  # --- Thread picker ---
+
+  attr(:threads, :list, required: true)
+  attr(:active_thread_id, :string, default: nil)
+
+  defp thread_picker(assigns) do
+    ~H"""
+    <div :if={length(@threads) > 0} class="thread-picker">
+      <div class="thread-picker-tabs">
+        <div
+          :for={thread <- @threads}
+          class={"thread-tab #{if thread["id"] == @active_thread_id, do: "active", else: ""}"}
+        >
+          <button
+            class="thread-tab-btn"
+            phx-click="switch_thread"
+            phx-value-thread_id={thread["id"]}
+            title={thread["summary"] || thread["name"]}
+          >
+            <span class="thread-tab-label"><%= thread["name"] %></span>
+          </button>
+          <button
+            :if={thread["id"] != "thread_main"}
+            class="thread-tab-close"
+            phx-click="close_thread"
+            phx-value-thread_id={thread["id"]}
+            title="Close thread"
+          >
+            &times;
+          </button>
+        </div>
+      </div>
+      <button class="thread-new-btn" phx-click="new_blank_thread" title="New thread">
+        +
+      </button>
+    </div>
+    """
+  end
+
+  # --- Chat side panel ---
+
+  attr(:chat_mode, :atom, default: :expanded)
+  attr(:compact, :boolean, default: false)
+  attr(:messages, :list, required: true)
+  attr(:session_id, :string, required: true)
+  attr(:inflight, :map, required: true)
+  attr(:active_agent_id, :string, required: true)
+  attr(:user_avatar, :string, default: nil)
+  attr(:agent_avatar, :string, default: nil)
+  attr(:pending, :boolean, default: false)
+  attr(:agents, :map, required: true)
+  attr(:agent_tab_order, :list, required: true)
+  attr(:chat_status, :atom, default: :idle)
+  attr(:uploads, :any, required: true)
+  attr(:active_agent, :map, default: nil)
+  attr(:connected, :boolean, default: true)
+  attr(:threads, :list, default: [])
+  attr(:active_thread_id, :string, default: nil)
+
+  defp chat_side_panel(assigns) do
+    panel_class =
+      case assigns.chat_mode do
+        :expanded -> "dt-chat-panel"
+        :collapsed -> "dt-chat-panel is-collapsed"
+        :hidden -> "dt-chat-panel is-hidden"
+      end
+
+    assigns = assign(assigns, :panel_class, panel_class)
+
+    ~H"""
+    <div class={@panel_class}>
+      <div class="dt-chat-header">
+        <span class="dt-chat-title">Assistant</span>
+        <.status_dot :if={@chat_status != :idle} status={@chat_status} />
+        <.thread_picker threads={@threads} active_thread_id={@active_thread_id} />
+      </div>
+
+      <.tab_bar
+        :if={length(@agent_tab_order) > 1}
+        agent_tab_order={@agent_tab_order}
+        agents={@agents}
+        active_agent_id={@active_agent_id}
+        inflight={@inflight}
+      />
+
+      <.chat_feed
+        messages={@messages}
+        session_id={@session_id}
+        inflight={@inflight}
+        active_agent_id={@active_agent_id}
+        user_avatar={@user_avatar}
+        agent_avatar={@agent_avatar}
+        pending={@pending}
+        active_step={@active_agent && @active_agent[:step]}
+        active_max_steps={@active_agent && @active_agent[:max_steps]}
+      />
+
+      <div class="chat-input-area">
+        <form id="chat-input-form" phx-submit="send_message" class="chat-input-form">
+          <textarea
+            name="content"
+            id="chat-input"
+            placeholder="Ask to generate skills, edit rows, etc..."
+            rows="1"
+            phx-hook="AutoResize"
+          ></textarea>
+          <button type="submit" class="btn-send">Send</button>
+        </form>
+      </div>
+    </div>
+    """
+  end
+
+  # --- New agent dialog ---
+
+  attr(:session_id, :string, default: nil)
+
+  defp new_agent_dialog(assigns) do
+    roles = Rho.CLI.Config.agent_names()
+
+    parent_options =
+      if assigns.session_id do
+        Rho.Agent.Registry.list_all(assigns[:session_id])
+        |> Enum.map(fn info -> {info.agent_id, tab_label_from_info(info)} end)
+        |> Enum.sort_by(fn {id, _} -> id end)
+      else
+        []
+      end
+
+    assigns =
+      assigns
+      |> assign(:roles, roles)
+      |> assign(:parent_options, parent_options)
+
+    ~H"""
+    <div class="modal-overlay">
+      <div class="modal-dialog" phx-click-away="toggle_new_agent">
+        <h3>Create New Agent</h3>
+
+        <form phx-submit="create_agent" phx-hook="ParentPicker" id="new-agent-form">
+          <div :if={length(@parent_options) > 0} class="agent-parent-picker">
+            <label class="agent-parent-label">Parent agent</label>
+            <input type="hidden" name="parent_id" value="" id="new-agent-parent-input" />
+            <div class="agent-parent-list">
+              <button
+                type="button"
+                class="agent-parent-btn active"
+                data-parent-id=""
+                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: ""})}
+              >
+                None (top-level)
+              </button>
+              <button
+                :for={{id, label} <- @parent_options}
+                type="button"
+                class="agent-parent-btn"
+                data-parent-id={id}
+                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: id})}
+              >
+                <%= label %>
+              </button>
+            </div>
+          </div>
+
+          <div class="agent-role-list">
+            <button
+              :for={role <- @roles}
+              type="submit"
+              name="role"
+              value={role}
+              class="agent-role-btn"
+            >
+              <%= role %>
+            </button>
+          </div>
+        </form>
+        <button class="modal-cancel" phx-click="toggle_new_agent">Cancel</button>
+      </div>
+    </div>
+    """
+  end
+
+  defp tab_label_from_info(info) do
+    name = info[:role] || info[:agent_id]
+    segments = String.split(to_string(info.agent_id), "/")
+
+    case segments do
+      [_sid, "primary"] -> "primary"
+      [_sid, "primary" | rest] -> List.last(rest) || to_string(name)
+      _ -> to_string(name)
+    end
+  end
+
+  # --- Debug panel ---
+
+  attr(:projections, :map, required: true)
+  attr(:active_agent_id, :string, default: nil)
+  attr(:session_id, :string, default: nil)
+
+  defp debug_panel(assigns) do
+    active_id = assigns.active_agent_id || SessionCore.primary_agent_id(assigns.session_id)
+    projection = Map.get(assigns.projections, active_id)
+
+    assigns =
+      assigns
+      |> assign(:projection, projection)
+      |> assign(:debug_agent_id, active_id)
+
+    ~H"""
+    <div class="debug-panel">
+      <div class="debug-header">
+        <h3>Debug: LLM Context</h3>
+        <span :if={@projection} class="debug-meta">
+          <%= @projection.raw_message_count %> messages, <%= @projection.raw_tool_count %> tools, step <%= @projection.step || "?" %>
+        </span>
+      </div>
+      <div class="debug-body">
+        <%= if @projection do %>
+          <div class="debug-section">
+            <div class="debug-section-title">Tools (<%= length(@projection.tools) %>)</div>
+            <div class="debug-tools-list">
+              <span :for={tool <- @projection.tools} class="debug-tool-badge"><%= tool %></span>
+            </div>
+          </div>
+
+          <div class="debug-section">
+            <div class="debug-section-title">Context Messages (<%= length(@projection.context) %>)</div>
+            <div class="debug-messages">
+              <div :for={{msg, idx} <- Enum.with_index(@projection.context)} class={"debug-msg debug-msg-#{msg.role}"}>
+                <div class="debug-msg-header">
+                  <span class={"debug-msg-role debug-role-#{msg.role}"}><%= msg.role %></span>
+                  <span class="debug-msg-idx">#<%= idx %></span>
+                  <span :if={msg.cache_control} class="debug-msg-cache">cached</span>
+                </div>
+                <details class="debug-msg-details" open={String.length(debug_content_string(msg.content)) <= 5000}>
+                  <summary class="debug-msg-summary"><%= String.length(debug_content_string(msg.content)) %> chars</summary>
+                  <pre class="debug-msg-content"><%= debug_content_string(msg.content) %></pre>
+                </details>
+              </div>
+            </div>
+          </div>
+        <% else %>
+          <div class="debug-empty">No projection data yet. Send a message to see the LLM context.</div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp debug_content_string(content) when is_binary(content), do: content
+  defp debug_content_string(other), do: inspect(other, limit: :infinity)
+
+  # ══════════════════════════════════════════════════════════════════
+  # Private Helpers
+  # ══════════════════════════════════════════════════════════════════
+
+  defp page_for_action(:new), do: :chat
+  defp page_for_action(:show), do: :chat
+  defp page_for_action(:chat_new), do: :chat
+  defp page_for_action(:chat_show), do: :chat
+  defp page_for_action(:libraries), do: :libraries
+  defp page_for_action(:library_show), do: :library_show
+  defp page_for_action(:roles), do: :roles
+  defp page_for_action(:role_show), do: :role_show
+  defp page_for_action(:settings), do: :settings
+  defp page_for_action(:members), do: :members
+  defp page_for_action(_), do: :chat
+
+  defp chat_status(assigns) do
+    if MapSet.size(assigns.pending_response) > 0 or map_size(assigns.inflight) > 0 do
+      :busy
+    else
+      :idle
+    end
+  end
+
+  defp truncate_id(id) when byte_size(id) > 16, do: String.slice(id, 0, 16) <> "..."
+  defp truncate_id(id), do: id
+
+  defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}K"
+  defp format_tokens(n), do: "#{n}"
+
+  defp tab_label(agents, agent_id) do
+    case Map.get(agents, agent_id) do
+      nil -> "unknown"
+      %{role: role} -> to_string(role)
+    end
+  end
+
+  defp agent_stopped?(agents, agent_id) do
+    case Map.get(agents, agent_id) do
+      nil -> true
+      %{status: :stopped} -> true
+      _ -> false
+    end
+  end
+
+  @doc false
+  def append_message(socket, msg) do
+    RhoWeb.Session.SignalRouter.append_message(socket, msg)
+  end
+
+  defp restore_from_snapshot(socket) do
+    sid = socket.assigns[:session_id]
+
+    if sid do
+      case Snapshot.load(sid, File.cwd!()) do
+        {:ok, snapshot} ->
+          socket
+          |> Snapshot.apply_snapshot(snapshot)
+          |> tail_replay(sid, snapshot[:snapshot_at])
+
+        _no_snapshot ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp tail_replay(socket, _sid, nil), do: socket
+
+  defp tail_replay(socket, sid, since_ms) when is_integer(since_ms) do
+    {events, _last_seq} = Rho.Agent.EventLog.read(sid, limit: 10_000)
+
+    signals_since =
+      events
+      |> Enum.filter(fn evt ->
+        case evt["emitted_at"] do
+          ts when is_integer(ts) -> ts > since_ms
+          _ -> false
+        end
+      end)
+
+    Enum.reduce(signals_since, socket, fn evt, sock ->
+      signal = %{type: evt["type"], data: deserialize_event_data(evt["data"] || %{})}
+      SignalRouter.route(sock, signal, WorkspaceRegistry.all())
+    end)
+  end
+
+  defp deserialize_event_data(data) when is_map(data) do
+    Map.new(data, fn {k, v} -> {safe_to_existing_atom(k), v} end)
+  end
+
+  defp safe_to_existing_atom(str) when is_binary(str) do
+    String.to_existing_atom(str)
+  rescue
+    ArgumentError -> str
+  end
+
+  defp safe_to_existing_atom(other), do: other
+
+  # --- DataTable helpers ---
+
+  defp dt_initial_state, do: RhoWeb.Projections.DataTableProjection.init()
+
+  # Backfill keys added after initial state shape (e.g. :error, :metadata)
+  # so stale ws_state maps don't crash on struct-update syntax.
+  defp ensure_dt_keys(state) do
+    defaults = dt_initial_state()
+    Map.merge(defaults, state)
+  end
+
+  defp apply_data_table_event(socket, data) when is_map(data) do
+    case data[:event] do
+      :table_changed ->
+        table_name = data[:table_name]
+
+        state =
+          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+        cond do
+          is_nil(table_name) ->
+            refresh_data_table_session(socket)
+
+          table_name == state.active_table ->
+            version = data[:version]
+            current = state.active_version
+
+            if is_integer(version) and is_integer(current) and version <= current do
+              socket
+            else
+              refresh_data_table_active(socket, table_name)
+            end
+
+          true ->
+            refresh_data_table_tables(socket)
+        end
+
+      :table_created ->
+        refresh_data_table_session(socket)
+
+      :table_removed ->
+        removed = data[:table_name]
+
+        state =
+          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+        socket = refresh_data_table_tables(socket)
+
+        if state.active_table == removed do
+          new_state =
+            ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+          fallback = pick_fallback_active_table(new_state)
+          send(self(), {:data_table_switch_tab, fallback})
+        end
+
+        socket
+
+      :view_change ->
+        view_key = data[:view_key]
+        mode_label = data[:mode_label]
+        table_name = data[:table_name]
+
+        state =
+          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+        if is_binary(table_name) and table_name != state.active_table do
+          send(self(), {:data_table_switch_tab, table_name})
+        end
+
+        metadata = data[:metadata] || %{}
+        new_state = %{state | view_key: view_key, mode_label: mode_label, metadata: metadata}
+        SignalRouter.write_ws_state(socket, :data_table, new_state)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp apply_data_table_event(socket, _), do: socket
+
+  defp apply_open_workspace_event(socket, data) when is_map(data) do
+    key = data[:key]
+
+    cond do
+      not is_atom(key) or is_nil(key) ->
+        socket
+
+      Map.has_key?(socket.assigns.workspaces, key) ->
+        socket
+        |> assign(:active_workspace_id, key)
+        |> assign(:shell, Shell.clear_activity(socket.assigns.shell, key))
+
+      true ->
+        case WorkspaceRegistry.get(key) do
+          nil ->
+            socket
+
+          ws_mod ->
+            shell =
+              socket.assigns.shell
+              |> Shell.add_workspace(key)
+              |> Shell.show_chat()
+
+            socket =
+              socket
+              |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
+              |> assign(
+                :ws_states,
+                Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
+              )
+              |> assign(:active_workspace_id, key)
+              |> assign(:shell, shell)
+
+            socket =
+              if key == :data_table do
+                refresh_data_table_session(socket)
+              else
+                socket
+              end
+
+            socket
+        end
+    end
+  end
+
+  defp apply_open_workspace_event(socket, _), do: socket
+
+  defp refresh_data_table_session(socket) do
+    sid = socket.assigns[:session_id]
+
+    state =
+      ensure_dt_keys(
+        ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+      )
+
+    if is_nil(sid) do
+      SignalRouter.write_ws_state(socket, :data_table, state)
+    else
+      case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
+        %{tables: tables, table_order: order} ->
+          state = %{state | tables: tables, table_order: order, error: nil}
+          state = maybe_adopt_default_active(state)
+
+          state =
+            case Rho.Stdlib.DataTable.get_table_snapshot(sid, state.active_table) do
+              {:ok, snap} ->
+                %{state | active_snapshot: snap, active_version: snap.version}
+
+              {:error, :not_running} ->
+                %{state | active_snapshot: nil, active_version: nil, error: :not_running}
+
+              _ ->
+                state
+            end
+
+          SignalRouter.write_ws_state(socket, :data_table, state)
+
+        {:error, :not_running} ->
+          SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
+
+        _ ->
+          SignalRouter.write_ws_state(socket, :data_table, state)
+      end
+    end
+  end
+
+  defp refresh_data_table_tables(socket) do
+    sid = socket.assigns[:session_id]
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    if is_nil(sid) do
+      socket
+    else
+      case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
+        %{tables: tables, table_order: order} ->
+          SignalRouter.write_ws_state(socket, :data_table, %{
+            state
+            | tables: tables,
+              table_order: order
+          })
+
+        _ ->
+          socket
+      end
+    end
+  end
+
+  defp refresh_data_table_active(socket, table_name) do
+    sid = socket.assigns[:session_id]
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    cond do
+      is_nil(sid) ->
+        socket
+
+      state.active_table != table_name ->
+        socket
+
+      true ->
+        socket = refresh_data_table_tables(socket)
+
+        state =
+          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+        case Rho.Stdlib.DataTable.get_table_snapshot(sid, table_name) do
+          {:ok, snap} ->
+            new_state = %{
+              state
+              | active_snapshot: snap,
+                active_version: snap.version,
+                error: nil
+            }
+
+            SignalRouter.write_ws_state(socket, :data_table, new_state)
+
+          {:error, :not_running} ->
+            SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
+
+          {:error, :not_found} ->
+            SignalRouter.write_ws_state(socket, :data_table, %{
+              state
+              | active_snapshot: nil,
+                active_version: nil
+            })
+
+          _ ->
+            socket
+        end
+    end
+  end
+
+  defp load_library_into_data_table(socket, library_id) do
+    sid = socket.assigns[:session_id]
+    org_id = get_in(socket.assigns, [:current_organization, Access.key(:id)])
+
+    with lib when not is_nil(lib) <-
+           RhoFrameworks.Library.get_library(org_id, library_id) ||
+             RhoFrameworks.Library.get_visible_library!(org_id, library_id),
+         rows when rows != [] <- RhoFrameworks.Library.load_library_rows(lib.id) do
+      table_name = "library:" <> lib.name
+      schema = RhoFrameworks.DataTableSchemas.library_schema()
+
+      _ = Rho.Stdlib.DataTable.ensure_started(sid)
+      :ok = Rho.Stdlib.DataTable.ensure_table(sid, table_name, schema)
+      Rho.Stdlib.DataTable.replace_all(sid, rows, table: table_name)
+
+      version_label = if lib.version, do: " v#{lib.version}", else: " (draft)"
+
+      state =
+        ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+      new_state = %{
+        state
+        | active_table: table_name,
+          view_key: :skill_library,
+          mode_label: "Skill Library — #{lib.name}#{version_label}"
+      }
+
+      socket
+      |> open_data_table_workspace()
+      |> SignalRouter.write_ws_state(:data_table, new_state)
+      |> refresh_data_table_session()
+    else
+      _ -> socket
+    end
+  rescue
+    _ -> socket
+  end
+
+  defp open_data_table_workspace(socket) do
+    key = :data_table
+
+    if Map.has_key?(socket.assigns.workspaces, key) do
+      socket
+      |> assign(:active_workspace_id, key)
+    else
+      case WorkspaceRegistry.get(key) do
+        nil ->
+          socket
+
+        ws_mod ->
+          shell =
+            socket.assigns.shell
+            |> Shell.add_workspace(key)
+            |> Shell.show_chat()
+
+          socket
+          |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
+          |> assign(
+            :ws_states,
+            Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
+          )
+          |> assign(:active_workspace_id, key)
+          |> assign(:shell, shell)
+      end
+    end
+  end
+
+  defp maybe_adopt_default_active(%{active_table: active, table_order: order} = state) do
+    cond do
+      is_binary(active) and active in order -> state
+      "main" in order -> %{state | active_table: "main"}
+      order != [] -> %{state | active_table: hd(order)}
+      true -> state
+    end
+  end
+
+  defp pick_fallback_active_table(%{table_order: order}) do
+    cond do
+      "main" in order -> "main"
+      order != [] -> hd(order)
+      true -> "main"
+    end
+  end
+
+  defp determine_workspaces(_live_action), do: %{}
+
+  defp chat_panel_mode(assigns) do
+    cond do
+      assigns.active_workspace_id == :chatroom -> :hidden
+      map_size(assigns.workspaces) == 0 -> :expanded
+      true -> assigns.shell.chat_mode
+    end
+  end
+
+  defp dispatch_to_workspace(socket, ws_mod, message) do
+    key = ws_mod.key()
+    ws_state = SignalRouter.read_ws_state(socket, key)
+
+    context = %{
+      session_id: socket.assigns[:session_id],
+      organization_id: get_in(socket.assigns, [:current_organization, Access.key(:id)])
+    }
+
+    case ws_mod.handle_info(message, ws_state, context) do
+      {:noreply, new_ws_state} ->
+        {:noreply, SignalRouter.write_ws_state(socket, key, new_ws_state)}
+
+      :skip ->
+        {:noreply, socket}
+    end
+  end
+
+  defp available_workspaces(assigns) do
+    open_keys = Map.keys(assigns.workspaces)
+    overlay_keys = Shell.overlay_keys(assigns.shell)
+    all_visible = open_keys ++ overlay_keys
+
+    WorkspaceRegistry.all()
+    |> Enum.reject(fn mod -> mod.key() in all_visible end)
+    |> Map.new(fn mod -> {mod.key(), mod} end)
+  end
+
+  defp hydrate_workspace(socket, sid, key, ws_mod) do
+    {events, _last_seq} = Rho.Agent.EventLog.read(sid, limit: 10_000)
+    projection = ws_mod.projection()
+
+    state =
+      events
+      |> Enum.map(fn evt ->
+        %{type: evt["type"], data: deserialize_event_data(evt["data"] || %{})}
+      end)
+      |> Enum.filter(fn s -> projection.handles?(s.type) end)
+      |> Enum.reduce(projection.init(), fn s, st -> projection.reduce(st, s) end)
+
+    SignalRouter.write_ws_state(socket, key, state)
+  end
+
+  defp merge_workspaces(socket, new_workspaces) do
+    current = socket.assigns.workspaces
+
+    added = Map.drop(new_workspaces, Map.keys(current))
+
+    if map_size(added) == 0 do
+      socket
+    else
+      merged_ws = Map.merge(current, added)
+
+      shell =
+        Enum.reduce(Map.keys(added), socket.assigns.shell, fn key, sh ->
+          Shell.add_workspace(sh, key)
+        end)
+
+      socket
+      |> assign(:workspaces, merged_ws)
+      |> assign(:shell, shell)
+    end
+  end
+
+  defp session_ensure_opts(:data_table), do: [agent_name: :data_table, id_prefix: "sheet"]
+  defp session_ensure_opts(:chatroom), do: [id_prefix: "chat"]
+  defp session_ensure_opts(_), do: []
+
+  defp extract_chat_context(params) do
+    %{}
+    |> maybe_put("library_id", params["library_id"])
+    |> maybe_put("context", params["context"])
+    |> maybe_put("role_profile_name", params["role_profile_name"])
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value) when is_binary(value), do: Map.put(map, key, value)
+
+  defp refresh_threads(socket) do
+    sid = socket.assigns[:session_id]
+
+    if sid do
+      threads = Threads.list(sid, File.cwd!())
+      active = Threads.active(sid, File.cwd!())
+
+      socket
+      |> assign(:threads, threads)
+      |> assign(:active_thread_id, active && active["id"])
+    else
+      socket
+    end
+  end
+
+  defp close_overlay(socket) do
+    for sub <- socket.assigns[:bus_subs] || [] do
+      Rho.Comms.unsubscribe(sub)
+    end
+
+    org = socket.assigns.current_organization
+    libraries = RhoFrameworks.Library.list_libraries(org.id)
+
+    socket
+    |> assign(:chat_overlay_open, false)
+    |> assign(:overlay_session_id, nil)
+    |> assign(:bus_subs, [])
+    |> assign(:libraries, libraries)
+    |> assign(:library_groups, group_libraries(libraries))
+  end
+
+  # --- Page-specific grouping helpers ---
+
+  defp group_libraries(libraries) do
+    libraries
+    |> Enum.group_by(& &1.name)
+    |> Enum.map(fn {name, versions} ->
+      sorted = Enum.sort_by(versions, & &1.updated_at, {:desc, DateTime})
+      primary = hd(sorted)
+
+      %{
+        name: name,
+        description: primary.description,
+        type: primary.type,
+        primary: primary,
+        versions: sorted,
+        version_count: length(sorted)
+      }
+    end)
+    |> Enum.sort_by(& &1.primary.updated_at, {:desc, DateTime})
+  end
+
+  defp group_skills(skills) do
+    skills
+    |> Enum.sort_by(fn s -> {s.category, s.cluster, s.name} end)
+    |> Enum.group_by(fn s -> s.category || "Other" end)
+    |> Enum.sort_by(fn {cat, _} -> cat end)
+    |> Enum.map(fn {category, cat_skills} ->
+      clusters =
+        cat_skills
+        |> Enum.group_by(fn s -> s.cluster || "General" end)
+        |> Enum.sort_by(fn {cluster, _} -> cluster end)
+
+      {category, clusters}
+    end)
+  end
+
+  defp group_roles_by_family(profiles) do
+    profiles
+    |> Enum.group_by(& &1.role_family)
+    |> Enum.sort_by(fn {family, _} -> family || "" end)
+  end
+
+  defp group_role_skills(role_skills) do
+    role_skills
+    |> Enum.sort_by(fn rs -> {rs.skill.category, rs.skill.cluster, rs.skill.name} end)
+    |> Enum.group_by(fn rs -> rs.skill.category || "Other" end)
+    |> Enum.sort_by(fn {cat, _} -> cat end)
+    |> Enum.map(fn {category, skills} ->
+      clusters =
+        skills
+        |> Enum.group_by(fn rs -> rs.skill.cluster || "General" end)
+        |> Enum.sort_by(fn {cluster, _} -> cluster end)
+
+      {category, clusters}
+    end)
+  end
+
+  defp role_subtitle(profile) do
+    parts =
+      [profile.role_family, profile.seniority_label, profile.description]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if parts == [], do: nil, else: Enum.join(parts, " - ")
+  end
+
+  defp has_rich_fields?(profile) do
+    Enum.any?(
+      [
+        profile.purpose,
+        profile.accountabilities,
+        profile.success_metrics,
+        profile.qualifications,
+        profile.reporting_context
+      ],
+      &(&1 != nil && &1 != "")
+    )
+  end
+end

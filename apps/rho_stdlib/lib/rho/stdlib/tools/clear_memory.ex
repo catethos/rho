@@ -31,13 +31,13 @@ defmodule Rho.Stdlib.Tools.ClearMemory do
     confirm = args[:confirm] || false
     archive = if Map.has_key?(args, :archive), do: args[:archive], else: true
 
-    unless confirm do
-      {:error, "Please set confirm: true to clear memory. This action cannot be undone."}
-    else
+    if confirm do
       Rho.Tape.Service.reset(tape_name, archive)
 
       {:ok,
        "Memory cleared. All conversation history has been removed and a fresh session started."}
+    else
+      {:error, "Please set confirm: true to clear memory. This action cannot be undone."}
     end
   end
 end

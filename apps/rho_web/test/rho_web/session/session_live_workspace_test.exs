@@ -121,7 +121,7 @@ defmodule RhoWeb.SessionLiveWorkspaceTest do
       assert socket.assigns.active_workspace_id != :chatroom
     end
 
-    test "spreadsheet projection state is initialized" do
+    test "spreadsheet workspace state is initialized as snapshot cache" do
       ws_states = %{data_table: DataTableProjection.init()}
 
       socket =
@@ -132,9 +132,10 @@ defmodule RhoWeb.SessionLiveWorkspaceTest do
         })
 
       ss = socket.assigns.ws_states[:data_table]
-      assert ss.rows_map == %{}
-      assert ss.next_id == 1
-      assert ss.partial_streamed == %{}
+      assert ss.active_table == "main"
+      assert ss.active_snapshot == nil
+      assert ss.tables == []
+      assert ss.table_order == []
     end
   end
 
@@ -189,12 +190,9 @@ defmodule RhoWeb.SessionLiveWorkspaceTest do
       assert socket.assigns.active_workspace_id == :data_table
     end
 
-    test "switch preserves ws_states (projection data survives)" do
-      modified_state = %{
-        rows_map: %{1 => %{id: 1, skill: "Elixir"}},
-        next_id: 2,
-        partial_streamed: %{}
-      }
+    test "switch preserves ws_states (snapshot cache survives)" do
+      modified_state =
+        Map.put(DataTableProjection.init(), :active_snapshot, %{rows: [%{id: "1", skill: "Elixir"}], version: 1})
 
       workspaces = %{data_table: data_table_ws()}
 
@@ -236,7 +234,7 @@ defmodule RhoWeb.SessionLiveWorkspaceTest do
 
     test "adding already-open workspace just switches to it" do
       workspaces = %{data_table: data_table_ws()}
-      ws_states = %{data_table: %{rows_map: %{1 => %{id: 1}}, next_id: 2, partial_streamed: %{}}}
+      ws_states = %{data_table: Map.put(DataTableProjection.init(), :active_table, "library")}
 
       socket =
         build_socket(%{
@@ -386,11 +384,8 @@ defmodule RhoWeb.SessionLiveWorkspaceTest do
     end
 
     test "same session preserves existing ws_states on route change" do
-      modified_state = %{
-        rows_map: %{1 => %{id: 1, skill: "Elixir"}},
-        next_id: 2,
-        partial_streamed: %{}
-      }
+      modified_state =
+        Map.put(DataTableProjection.init(), :active_snapshot, %{rows: [%{id: "1", skill: "Elixir"}], version: 1})
 
       socket =
         build_socket(%{

@@ -83,8 +83,17 @@ defmodule Rho.Tool.DSL do
                 callback: fn _ -> :ok end
               ),
             execute: fn args, ctx ->
-              cast = Rho.ToolArgs.cast(args, unquote(param_schema))
-              unquote(run_ast).(cast, ctx)
+              schema = unquote(param_schema)
+              cast = Rho.ToolArgs.cast(args, schema)
+
+              case Rho.ToolArgs.validate_required(cast, schema) do
+                :ok ->
+                  unquote(run_ast).(cast, ctx)
+
+                {:error, missing} ->
+                  names = missing |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+                  {:error, "Missing required parameter(s): #{names}"}
+              end
             end
           }
         end

@@ -10,13 +10,16 @@ defmodule RhoFrameworks.Tools.RoleToolsTest do
 
       expected =
         [
+          "check_role_currency",
           "clone_role_skills",
           "find_similar_roles",
           "gap_analysis",
+          "get_org_view",
           "list_role_profiles",
           "load_role_profile",
           "save_role_profile",
-          "show_career_ladder"
+          "show_career_ladder",
+          "start_role_profile_draft"
         ]
 
       assert names == expected

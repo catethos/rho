@@ -12,9 +12,12 @@ defmodule RhoFrameworks.GapAnalysis do
   `skill_snapshot` is a map of `%{skill_id => current_level}`.
   Missing skills return `:unknown`, not zero.
   """
-  def individual_gap(skill_snapshot, role_profile_id) do
+  def individual_gap(skill_snapshot, role_profile_id) when is_binary(role_profile_id) do
     role = Repo.get!(RoleProfile, role_profile_id) |> Repo.preload(role_skills: :skill)
+    individual_gap(skill_snapshot, role)
+  end
 
+  def individual_gap(skill_snapshot, %RoleProfile{} = role) do
     Enum.map(role.role_skills, fn rs ->
       current = Map.get(skill_snapshot, rs.skill_id, :unknown)
 
@@ -42,9 +45,11 @@ defmodule RhoFrameworks.GapAnalysis do
   `snapshots_by_person` is a list of `{person_id, skill_snapshot}` tuples.
   """
   def team_gap(snapshots_by_person, role_profile_id) do
+    role = Repo.get!(RoleProfile, role_profile_id) |> Repo.preload(role_skills: :skill)
+
     individual_gaps =
       Enum.map(snapshots_by_person, fn {person_id, snapshot} ->
-        {person_id, individual_gap(snapshot, role_profile_id)}
+        {person_id, individual_gap(snapshot, role)}
       end)
 
     all_entries = Enum.flat_map(individual_gaps, fn {_, gaps} -> gaps end)

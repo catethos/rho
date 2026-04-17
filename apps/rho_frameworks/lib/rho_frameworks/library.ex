@@ -10,9 +10,10 @@ defmodule RhoFrameworks.Library do
   def list_libraries(org_id, opts \\ []) do
     type = Keyword.get(opts, :type)
     exclude_immutable = Keyword.get(opts, :exclude_immutable, false)
+    only = Keyword.get(opts, :only)
+    include_public = Keyword.get(opts, :include_public, true)
 
     from(l in Library,
-      where: l.organization_id == ^org_id,
       left_join: s in Skill,
       on: s.library_id == l.id,
       group_by: l.id,
@@ -25,21 +26,80 @@ defmodule RhoFrameworks.Library do
         immutable: l.immutable,
         derived_from_id: l.derived_from_id,
         source_key: l.source_key,
+        version: l.version,
+        published_at: l.published_at,
+        is_default: l.is_default,
+        visibility: l.visibility,
         skill_count: count(s.id),
         updated_at: l.updated_at
       }
     )
+    |> maybe_include_public(org_id, include_public)
     |> maybe_filter_type(type)
     |> maybe_exclude_immutable(exclude_immutable)
+    |> maybe_filter_version_scope(only)
     |> Repo.all()
   end
 
-  def get_library(org_id, id) do
+  @doc """
+  Returns a compact summary of all libraries and their skill names for an org.
+  Designed for prompt injection — lightweight query, no proficiency data.
+  """
+  def library_summary(org_id) do
+    libraries = list_libraries(org_id)
+
+    if libraries == [] do
+      []
+    else
+      library_ids = Enum.map(libraries, & &1.id)
+
+      skills_by_library =
+        from(s in Skill,
+          where: s.library_id in ^library_ids,
+          order_by: [s.category, s.cluster, s.name],
+          select: %{library_id: s.library_id, category: s.category, name: s.name}
+        )
+        |> Repo.all()
+        |> Enum.group_by(& &1.library_id)
+
+      Enum.map(libraries, fn lib ->
+        skills = Map.get(skills_by_library, lib.id, [])
+        by_category = Enum.group_by(skills, & &1.category)
+
+        %{
+          id: lib.id,
+          name: lib.name,
+          skill_count: lib.skill_count,
+          immutable: lib.immutable,
+          version: lib.version,
+          published_at: lib.published_at,
+          categories:
+            Enum.map(by_category, fn {cat, cat_skills} ->
+              %{category: cat, skills: Enum.map(cat_skills, & &1.name)}
+            end)
+        }
+      end)
+    end
+  end
+
+  def get_library(_org_id, nil), do: nil
+
+  def get_library(org_id, id) when is_binary(id) do
     Repo.get_by(Library, id: id, organization_id: org_id)
   end
 
   def get_library!(org_id, id) do
     Repo.get_by!(Library, id: id, organization_id: org_id)
+  end
+
+  @doc "Fetch a library visible to the org: own library or any public library."
+  def get_visible_library!(org_id, id) do
+    get_library(org_id, id) || get_public_library!(id)
+  end
+
+  @doc "Fetch a public library by id (no org scoping). Raises if not found or not public."
+  def get_public_library!(id) do
+    Repo.get_by!(Library, id: id, visibility: "public")
   end
 
   def delete_library(org_id, id) do
@@ -85,9 +145,294 @@ defmodule RhoFrameworks.Library do
 
   def ensure_mutable!(%Library{immutable: false}), do: :ok
 
+  # --- Versioning ---
+
+  @doc """
+  Compute the next version tag for a library: YYYY.N where N increments per year.
+  """
+  def next_version_tag(org_id, library_name) do
+    year = Date.utc_today().year
+
+    latest_n =
+      from(l in Library,
+        where:
+          l.organization_id == ^org_id and
+            l.name == ^library_name and
+            like(l.version, ^"#{year}.%"),
+        select: l.version
+      )
+      |> Repo.all()
+      |> Enum.map(fn v ->
+        case String.split(v, ".") do
+          [_year, n] -> String.to_integer(n)
+          _ -> 0
+        end
+      end)
+      |> Enum.max(fn -> 0 end)
+
+    "#{year}.#{latest_n + 1}"
+  end
+
+  @doc """
+  Publish the current draft as a versioned snapshot.
+  Freezes the library (immutable: true), stamps version + published_at.
+  If version_tag is nil, auto-generates the next YYYY.N version.
+  """
+  def publish_version(org_id, library_id, version_tag \\ nil, opts \\ []) do
+    notes = Keyword.get(opts, :notes)
+
+    with %Library{} = lib <- get_library(org_id, library_id),
+         true <- Library.draft?(lib) || {:error, :already_published, lib},
+         version_tag <- version_tag || next_version_tag(org_id, lib.name),
+         :ok <- validate_version_unique(org_id, lib.name, version_tag) do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      metadata =
+        if notes,
+          do: Map.put(lib.metadata || %{}, "publish_notes", notes),
+          else: lib.metadata
+
+      lib
+      |> Library.changeset(%{
+        version: version_tag,
+        published_at: now,
+        immutable: true,
+        metadata: metadata
+      })
+      |> Repo.update()
+    else
+      nil ->
+        {:error, :not_found}
+
+      {:error, :already_published, lib} ->
+        {:error, :already_published,
+         "Library is already published (version: #{lib.version}). Create a new draft to make changes."}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Create a new draft from the latest published version.
+  Deep-copies all skills. Fails if a draft already exists for this library name.
+  """
+  def create_draft_from_latest(org_id, library_name, opts \\ []) do
+    description = Keyword.get(opts, :description)
+
+    with nil <- get_draft(org_id, library_name),
+         %Library{} = source <- get_latest_version(org_id, library_name) do
+      Ecto.Multi.new()
+      |> Ecto.Multi.insert(:library, fn _ ->
+        Library.changeset(%Library{}, %{
+          name: library_name,
+          organization_id: org_id,
+          type: source.type,
+          immutable: false,
+          derived_from_id: source.id,
+          description: description || source.description,
+          metadata: source.metadata || %{}
+        })
+      end)
+      |> Ecto.Multi.run(:skills, fn _repo, %{library: draft} ->
+        source_skills = list_skills(source.id)
+
+        copied =
+          Enum.map(source_skills, fn skill ->
+            {:ok, new_skill} = copy_skill(skill, draft.id, source_skill_id: skill.id)
+            new_skill
+          end)
+
+        {:ok, copied}
+      end)
+      |> Ecto.Multi.run(:link_superseded, fn _repo, %{library: draft} ->
+        source
+        |> Library.changeset(%{superseded_by_id: draft.id})
+        |> Repo.update()
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{library: draft, skills: skills}} ->
+          {:ok, %{library: draft, skill_count: length(skills)}}
+
+        {:error, step, reason, _} ->
+          {:error, step, reason}
+      end
+    else
+      %Library{} = _existing_draft ->
+        {:error, :draft_exists,
+         "A draft already exists for '#{library_name}'. Edit or publish it first."}
+
+      nil ->
+        {:error, :no_published_version,
+         "No published version of '#{library_name}' found to create a draft from."}
+    end
+  end
+
+  @doc "List all published versions of a library by name, newest first."
+  def list_versions(org_id, library_name) do
+    from(l in Library,
+      where: l.organization_id == ^org_id and l.name == ^library_name and not is_nil(l.version),
+      left_join: s in Skill,
+      on: s.library_id == l.id,
+      group_by: l.id,
+      order_by: [desc: l.published_at],
+      select: %{
+        id: l.id,
+        version: l.version,
+        published_at: l.published_at,
+        skill_count: count(s.id),
+        superseded_by_id: l.superseded_by_id,
+        is_default: l.is_default
+      }
+    )
+    |> Repo.all()
+  end
+
+  @doc "Get the latest published version of a library by name."
+  def get_latest_version(org_id, library_name) do
+    from(l in Library,
+      where: l.organization_id == ^org_id and l.name == ^library_name and not is_nil(l.version),
+      order_by: [desc: l.published_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc "Get the default published version of a library by name, or nil."
+  def get_default_version(org_id, library_name) do
+    from(l in Library,
+      where:
+        l.organization_id == ^org_id and l.name == ^library_name and
+          l.is_default == true and not is_nil(l.version),
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Set a published version as the default for its library name.
+  Clears any previous default for the same (org, name).
+  """
+  def set_default_version(org_id, library_id) do
+    with %Library{} = lib <- get_library(org_id, library_id),
+         true <- Library.published?(lib) || {:error, :not_published} do
+      Ecto.Multi.new()
+      |> Ecto.Multi.update_all(
+        :clear_previous,
+        from(l in Library,
+          where:
+            l.organization_id == ^org_id and l.name == ^lib.name and
+              l.is_default == true and l.id != ^lib.id
+        ),
+        set: [is_default: false]
+      )
+      |> Ecto.Multi.update(:set_default, Library.changeset(lib, %{is_default: true}))
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{set_default: lib}} -> {:ok, lib}
+        {:error, _step, reason, _} -> {:error, reason}
+      end
+    else
+      nil ->
+        {:error, :not_found}
+
+      {:error, :not_published} ->
+        {:error, :not_published, "Only published versions can be set as default."}
+    end
+  end
+
+  @doc "Get the current draft for a library name, or nil."
+  def get_draft(org_id, library_name) do
+    from(l in Library,
+      where: l.organization_id == ^org_id and l.name == ^library_name and is_nil(l.version),
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Resolve a library by name + optional version.
+  nil version → draft if exists, else default version, else latest published.
+  """
+  def resolve_library(org_id, library_name, version \\ nil)
+
+  def resolve_library(org_id, library_name, nil) do
+    from(l in Library,
+      where: l.organization_id == ^org_id and l.name == ^library_name,
+      order_by: [
+        desc: is_nil(l.version),
+        desc: l.is_default,
+        desc: l.published_at
+      ],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  def resolve_library(org_id, library_name, version) do
+    Repo.get_by(Library,
+      organization_id: org_id,
+      name: library_name,
+      version: version
+    )
+  end
+
+  @doc "Diff two versions of the same library. Returns added/removed/modified skills."
+  def diff_versions(org_id, library_name, version_a, version_b) do
+    lib_a = resolve_library(org_id, library_name, version_a)
+    lib_b = resolve_library(org_id, library_name, version_b)
+
+    cond do
+      is_nil(lib_a) ->
+        {:error, :not_found, "Version '#{version_a || "draft"}' not found"}
+
+      is_nil(lib_b) ->
+        {:error, :not_found, "Version '#{version_b || "draft"}' not found"}
+
+      true ->
+        skills_a = list_skills(lib_a.id) |> Map.new(&{&1.slug, &1})
+        skills_b = list_skills(lib_b.id) |> Map.new(&{&1.slug, &1})
+
+        slugs_a = Map.keys(skills_a) |> MapSet.new()
+        slugs_b = Map.keys(skills_b) |> MapSet.new()
+
+        added = MapSet.difference(slugs_b, slugs_a) |> Enum.map(&skills_b[&1].name)
+        removed = MapSet.difference(slugs_a, slugs_b) |> Enum.map(&skills_a[&1].name)
+
+        modified =
+          MapSet.intersection(slugs_a, slugs_b)
+          |> Enum.filter(fn slug -> skill_modified?(skills_a[slug], skills_b[slug]) end)
+          |> Enum.map(&skills_a[&1].name)
+
+        {:ok,
+         %{
+           version_a: version_a || "draft",
+           version_b: version_b || "draft",
+           added: added,
+           removed: removed,
+           modified: modified,
+           unchanged_count: MapSet.size(MapSet.intersection(slugs_a, slugs_b)) - length(modified)
+         }}
+    end
+  end
+
+  defp validate_version_unique(org_id, name, version_tag) do
+    case resolve_library(org_id, name, version_tag) do
+      nil ->
+        :ok
+
+      _exists ->
+        {:error, :version_exists, "Version '#{version_tag}' already exists for '#{name}'."}
+    end
+  end
+
   # --- Skills ---
 
-  def list_skills(library_id, opts \\ []) do
+  def list_skills(library_id, opts \\ [])
+  def list_skills(nil, _opts), do: []
+
+  def list_skills(library_id, opts) when is_binary(library_id) do
     category = Keyword.get(opts, :category)
     categories = Keyword.get(opts, :categories)
     status = Keyword.get(opts, :status)
@@ -139,28 +484,113 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # --- Save to Library (structured skill maps) ---
+  # --- Batch upsert (private) ---
 
-  def save_to_library(library_id, skills) do
-    Ecto.Multi.new()
-    |> Ecto.Multi.run(:skills, fn _repo, _ ->
+  defp bulk_upsert_skills(library_id, skill_attr_list, opts \\ []) do
+    library = Repo.get!(Library, library_id)
+
+    with :ok <- maybe_check_mutable(library, opts) do
+      slugs = Enum.map(skill_attr_list, fn a -> Skill.slugify(a[:name] || a["name"]) end)
+
+      existing =
+        from(s in Skill, where: s.library_id == ^library_id and s.slug in ^slugs)
+        |> Repo.all()
+        |> Map.new(&{&1.slug, &1})
+
       results =
-        Enum.map(skills, fn skill_map ->
-          {:ok, skill} =
-            upsert_skill(library_id, %{
-              category: skill_map[:category] || skill_map["category"] || "",
-              cluster: skill_map[:cluster] || skill_map["cluster"] || "",
-              name: skill_map[:skill_name] || skill_map["skill_name"],
-              description: skill_map[:skill_description] || skill_map["skill_description"] || "",
-              proficiency_levels:
-                skill_map[:proficiency_levels] || skill_map["proficiency_levels"] || [],
-              status: "published"
-            })
+        Enum.map(skill_attr_list, fn attrs ->
+          name = attrs[:name] || attrs["name"]
+          slug = Skill.slugify(name)
+          merged = Map.merge(attrs, %{library_id: library_id})
 
-          skill
+          case Map.get(existing, slug) do
+            nil ->
+              {:ok, skill} = %Skill{} |> Skill.changeset(merged) |> Repo.insert()
+              skill
+
+            existing_skill ->
+              attrs = guard_status_downgrade(existing_skill, attrs)
+
+              {:ok, skill} =
+                existing_skill
+                |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
+                |> Repo.update()
+
+              skill
+          end
         end)
 
       {:ok, results}
+    end
+  end
+
+  defp guard_status_downgrade(%Skill{status: "published"}, attrs) do
+    Map.delete(attrs, :status) |> Map.delete("status")
+  end
+
+  defp guard_status_downgrade(_skill, attrs), do: attrs
+
+  defp normalize_skill_attrs(skill_map) do
+    %{
+      category: skill_map[:category] || skill_map["category"] || "",
+      cluster: skill_map[:cluster] || skill_map["cluster"] || "",
+      name:
+        skill_map[:skill_name] || skill_map["skill_name"] || skill_map[:name] ||
+          skill_map["name"],
+      description:
+        skill_map[:skill_description] || skill_map["skill_description"] ||
+          skill_map[:description] || skill_map["description"] || "",
+      proficiency_levels: skill_map[:proficiency_levels] || skill_map["proficiency_levels"] || [],
+      status: "published"
+    }
+  end
+
+  # --- Save to Library (structured skill maps) ---
+
+  def save_to_library(library_id, skills) do
+    do_save_to_library(library_id, skills)
+  end
+
+  def save_to_library(org_id, library_id, skills) do
+    lib = get_library(org_id, library_id)
+
+    cond do
+      is_nil(lib) ->
+        {:error, :not_found}
+
+      Library.draft?(lib) ->
+        do_save_to_library(library_id, skills)
+
+      true ->
+        # Published library — auto-create a draft and save there
+        case create_draft_from_latest(org_id, lib.name) do
+          {:ok, %{library: draft}} ->
+            case do_save_to_library(draft.id, skills) do
+              {:ok, result} -> {:ok, Map.put(result, :draft_library_id, draft.id)}
+              error -> error
+            end
+
+          {:error, :draft_exists, _msg} ->
+            # Draft already exists — save to the existing draft
+            draft = get_draft(org_id, lib.name)
+
+            case do_save_to_library(draft.id, skills) do
+              {:ok, result} -> {:ok, Map.put(result, :draft_library_id, draft.id)}
+              error -> error
+            end
+
+          error ->
+            error
+        end
+    end
+  end
+
+  defp do_save_to_library(library_id, skills) do
+    normalized = Enum.map(skills, &normalize_skill_attrs/1)
+
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:skills, fn _repo, _ ->
+      bulk_upsert_skills(library_id, normalized)
     end)
     |> Repo.transaction()
   end
@@ -307,8 +737,10 @@ defmodule RhoFrameworks.Library do
   defp copy_role_profile(role, org_id, skill_id_map, opts) do
     fork_name = Keyword.get(opts, :fork_name)
 
-    name =
+    base_name =
       if fork_name, do: "#{role.name} (#{fork_name})", else: role.name
+
+    name = unique_role_profile_name(org_id, base_name)
 
     Ecto.Multi.new()
     |> Ecto.Multi.run(:role_profile, fn _repo, _ ->
@@ -359,6 +791,31 @@ defmodule RhoFrameworks.Library do
     |> case do
       {:ok, %{role_profile: rp}} -> {:ok, rp}
       error -> error
+    end
+  end
+
+  defp unique_role_profile_name(org_id, base_name) do
+    existing =
+      from(rp in RoleProfile,
+        where: rp.organization_id == ^org_id and rp.name == ^base_name,
+        select: count()
+      )
+      |> Repo.one()
+
+    if existing == 0 do
+      base_name
+    else
+      # Find next available suffix
+      like_pattern = base_name <> " (%"
+
+      max_suffix =
+        from(rp in RoleProfile,
+          where: rp.organization_id == ^org_id and like(rp.name, ^like_pattern),
+          select: count()
+        )
+        |> Repo.one()
+
+      "#{base_name} (#{max_suffix + 2})"
     end
   end
 
@@ -413,9 +870,205 @@ defmodule RhoFrameworks.Library do
 
   # --- Combine Libraries ---
 
-  def combine_libraries(org_id, source_library_ids, new_name, opts \\ [])
+  @doc """
+  Preview what combining source libraries would produce, without writing to DB.
+
+  Returns `{:ok, preview}` where preview contains:
+  - `:clean` — skills unique across sources (no conflicts)
+  - `:conflicts` — duplicate pairs detected across source boundaries
+  - `:sources` — source library summaries
+  - `:stats` — `%{total: N, clean: N, conflicted: N}`
+  """
+  def combine_preview(org_id, source_library_ids) when is_list(source_library_ids) do
+    sources =
+      Enum.map(source_library_ids, fn id ->
+        case get_library(org_id, id) do
+          nil -> get_public_library!(id)
+          lib -> lib
+        end
+      end)
+
+    # Collect all skills tagged with their source library
+    tagged_skills =
+      Enum.flat_map(sources, fn src ->
+        list_skills(src.id)
+        |> Enum.map(fn skill -> {skill, src} end)
+      end)
+
+    # Build slug groups to find cross-source conflicts
+    slug_groups =
+      Enum.group_by(tagged_skills, fn {skill, _src} -> Skill.slugify(skill.name) end)
+
+    # Skills with slug collisions across different sources are conflicts
+    {clean_tagged, conflict_groups} =
+      Enum.split_with(slug_groups, fn {_slug, group} ->
+        source_ids = group |> Enum.map(fn {_s, src} -> src.id end) |> Enum.uniq()
+        length(source_ids) <= 1 or length(group) <= 1
+      end)
+
+    clean =
+      clean_tagged
+      |> Enum.flat_map(fn {_slug, group} -> group end)
+      |> Enum.map(fn {skill, src} ->
+        %{
+          skill_id: skill.id,
+          name: skill.name,
+          category: skill.category,
+          source_library_id: src.id,
+          source_library_name: src.name
+        }
+      end)
+
+    # For conflict groups, also run word-overlap detection within each group
+    slug_conflicts =
+      Enum.flat_map(conflict_groups, fn {_slug, group} ->
+        cross_source_pairs(group)
+      end)
+
+    # Additionally, run word-overlap across all source skills for non-slug matches
+    all_skills = Enum.map(tagged_skills, fn {skill, src} -> {skill, src} end)
+    word_conflicts = find_cross_source_word_overlaps(all_skills)
+
+    # Merge and deduplicate conflict pairs
+    all_conflicts =
+      (slug_conflicts ++ word_conflicts)
+      |> deduplicate_pairs()
+      |> enrich_preview_conflicts()
+
+    # Skills involved in conflicts
+    conflicted_ids =
+      all_conflicts
+      |> Enum.flat_map(fn c -> [c.skill_a.id, c.skill_b.id] end)
+      |> MapSet.new()
+
+    # Remove conflicted skills from clean list
+    clean = Enum.reject(clean, fn s -> MapSet.member?(conflicted_ids, s.skill_id) end)
+
+    source_summaries =
+      Enum.map(sources, fn src ->
+        %{
+          id: src.id,
+          name: src.name,
+          skill_count: Enum.count(tagged_skills, fn {_s, s} -> s.id == src.id end)
+        }
+      end)
+
+    total = length(tagged_skills)
+
+    {:ok,
+     %{
+       clean: clean,
+       conflicts: all_conflicts,
+       sources: source_summaries,
+       stats: %{total: total, clean: length(clean), conflicted: length(all_conflicts)}
+     }}
+  end
+
+  @doc """
+  Commit a combined library with pre-resolved conflicts.
+
+  `resolutions` is a list of maps:
+    - `%{"skill_a_id" => id, "skill_b_id" => id, "action" => "merge", "keep" => id}`
+    - `%{"skill_a_id" => id, "skill_b_id" => id, "action" => "keep_both"}`
+    - `%{"skill_a_id" => id, "skill_b_id" => id, "action" => "pick", "keep" => id}`
+  """
+  def combine_commit(org_id, source_library_ids, new_name, resolutions, opts \\ [])
       when is_list(source_library_ids) do
-    derive_library(org_id, source_library_ids, new_name, opts)
+    include_roles = Keyword.get(opts, :include_roles, true)
+    description = Keyword.get(opts, :description)
+
+    sources =
+      Enum.map(source_library_ids, fn id ->
+        case get_library(org_id, id) do
+          nil -> get_public_library!(id)
+          lib -> lib
+        end
+      end)
+
+    desc =
+      description ||
+        case sources do
+          [single] -> "Derived from #{single.name}"
+          many -> "Combined from: #{Enum.map_join(many, ", ", & &1.name)}"
+        end
+
+    # Build skip/merge sets from resolutions
+    {skip_ids, merge_map} = build_resolution_plan(resolutions)
+
+    Ecto.Multi.new()
+    |> Ecto.Multi.insert(:library, fn _ ->
+      Library.changeset(%Library{}, %{
+        name: new_name,
+        organization_id: org_id,
+        type: hd(sources).type,
+        immutable: false,
+        derived_from_id: hd(sources).id,
+        description: desc
+      })
+    end)
+    |> Ecto.Multi.run(:skills, fn _repo, %{library: lib} ->
+      all_skills =
+        Enum.flat_map(sources, fn src -> list_skills(src.id) end)
+
+      # First pass: copy non-skipped skills (dedup by slug, skip resolved-away skills)
+      {copied, _seen} =
+        Enum.reduce(all_skills, {[], %{}}, fn skill, {acc, slugs} ->
+          if MapSet.member?(skip_ids, skill.id) do
+            {acc, slugs}
+          else
+            slug = Skill.slugify(skill.name)
+
+            case Map.get(slugs, slug) do
+              nil ->
+                {:ok, new_skill} = copy_skill(skill, lib.id, source_skill_id: skill.id)
+                {[new_skill | acc], Map.put(slugs, slug, true)}
+
+              _ ->
+                # Already copied via slug dedup
+                {acc, slugs}
+            end
+          end
+        end)
+
+      # Second pass: apply merge resolutions (absorb proficiency levels from dropped skill)
+      copied_by_source = Map.new(copied, fn s -> {s.source_skill_id, s} end)
+
+      Enum.each(merge_map, fn {keep_id, absorb_id} ->
+        case {Map.get(copied_by_source, keep_id), Repo.get(Skill, absorb_id)} do
+          {%Skill{} = target, %Skill{} = source} ->
+            merge_proficiency_levels(source, target)
+
+          _ ->
+            :ok
+        end
+      end)
+
+      {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
+    end)
+    |> Ecto.Multi.run(:role_profiles, fn _repo, %{skills: skill_id_map} ->
+      if include_roles do
+        source_roles =
+          Enum.flat_map(sources, fn src ->
+            list_role_profiles_for_library(src.id)
+          end)
+
+        copied =
+          Enum.reduce_while(source_roles, {:ok, []}, fn role, {:ok, acc} ->
+            case copy_role_profile(role, org_id, skill_id_map, fork_name: new_name) do
+              {:ok, rp} -> {:cont, {:ok, [rp | acc]}}
+              {:error, _step, reason, _} -> {:halt, {:error, reason}}
+            end
+          end)
+
+        case copied do
+          {:ok, list} -> {:ok, Enum.reverse(list)}
+          {:error, reason} -> {:error, reason}
+        end
+      else
+        {:ok, []}
+      end
+    end)
+    |> Repo.transaction()
     |> case do
       {:ok, %{library: lib, skills: skill_map}} ->
         {:ok, %{library: lib, skill_count: map_size(skill_map)}}
@@ -423,6 +1076,137 @@ defmodule RhoFrameworks.Library do
       error ->
         error
     end
+  end
+
+  # Build skip set and merge map from resolutions.
+  # Accepts two formats:
+  #   1. %{"skill_a_id" => id, "skill_b_id" => id, "action" => ..., "keep" => id}
+  #   2. %{"conflict_id" => "id_a:id_b", "action" => ..., "keep_skill_id" => id}
+  defp build_resolution_plan(resolutions) do
+    resolutions
+    |> Enum.map(&normalize_resolution/1)
+    |> Enum.reduce({MapSet.new(), %{}}, fn res, {skip, merges} ->
+      action = res["action"]
+      keep_id = res["keep"]
+      a_id = res["skill_a_id"]
+      b_id = res["skill_b_id"]
+
+      case action do
+        "pick" ->
+          drop_id = if keep_id == a_id, do: b_id, else: a_id
+          {MapSet.put(skip, drop_id), merges}
+
+        "merge" ->
+          drop_id = if keep_id == a_id, do: b_id, else: a_id
+          {MapSet.put(skip, drop_id), Map.put(merges, keep_id, drop_id)}
+
+        "keep_both" ->
+          {skip, merges}
+
+        _ ->
+          {skip, merges}
+      end
+    end)
+  end
+
+  # Normalize agent format (conflict_id + keep_skill_id) to canonical format
+  defp normalize_resolution(%{"conflict_id" => conflict_id} = res) do
+    case String.split(conflict_id, ":") do
+      [a_id, b_id] ->
+        %{
+          "skill_a_id" => a_id,
+          "skill_b_id" => b_id,
+          "action" => res["action"],
+          "keep" => res["keep_skill_id"] || res["keep"]
+        }
+
+      _ ->
+        res
+    end
+  end
+
+  defp normalize_resolution(res), do: res
+
+  # Generate conflict pairs from skills that share a slug but come from different sources
+  defp cross_source_pairs(tagged_group) do
+    for {skill_a, src_a} <- tagged_group,
+        {skill_b, src_b} <- tagged_group,
+        skill_a.id < skill_b.id,
+        src_a.id != src_b.id do
+      %{
+        skill_a: preview_skill_summary(skill_a, src_a),
+        skill_b: preview_skill_summary(skill_b, src_b),
+        confidence: :high,
+        detection_method: :slug_prefix
+      }
+    end
+  end
+
+  # Find word-overlap duplicates across source boundaries (not caught by slug match)
+  defp find_cross_source_word_overlaps(tagged_skills) do
+    for {skill_a, src_a} <- tagged_skills,
+        {skill_b, src_b} <- tagged_skills,
+        skill_a.id < skill_b.id,
+        src_a.id != src_b.id,
+        Skill.slugify(skill_a.name) != Skill.slugify(skill_b.name),
+        jaccard_similarity(skill_a.name, skill_b.name) >= 0.5 do
+      %{
+        skill_a: preview_skill_summary(skill_a, src_a),
+        skill_b: preview_skill_summary(skill_b, src_b),
+        confidence: :medium,
+        detection_method: :word_overlap
+      }
+    end
+  end
+
+  defp preview_skill_summary(skill, source) do
+    level_count =
+      case skill.proficiency_levels do
+        levels when is_list(levels) -> length(levels)
+        _ -> 0
+      end
+
+    %{
+      id: skill.id,
+      name: skill.name,
+      category: skill.category,
+      description: skill.description,
+      source_library_id: source.id,
+      source_library_name: source.name,
+      level_count: level_count
+    }
+  end
+
+  defp enrich_preview_conflicts(conflicts) do
+    skill_ids =
+      Enum.flat_map(conflicts, fn c -> [c.skill_a.id, c.skill_b.id] end)
+      |> Enum.uniq()
+
+    role_counts =
+      if skill_ids == [] do
+        %{}
+      else
+        from(rs in RoleSkill,
+          where: rs.skill_id in ^skill_ids,
+          group_by: rs.skill_id,
+          select: {rs.skill_id, count(rs.id)}
+        )
+        |> Repo.all()
+        |> Map.new()
+      end
+
+    Enum.map(conflicts, fn c ->
+      %{
+        c
+        | skill_a: Map.put(c.skill_a, :role_count, Map.get(role_counts, c.skill_a.id, 0)),
+          skill_b: Map.put(c.skill_b, :role_count, Map.get(role_counts, c.skill_b.id, 0))
+      }
+    end)
+  end
+
+  def combine_libraries(org_id, source_library_ids, new_name, opts \\ [])
+      when is_list(source_library_ids) do
+    combine_commit(org_id, source_library_ids, new_name, [], opts)
   end
 
   # --- Derive Library (unified fork + combine) ---
@@ -437,10 +1221,16 @@ defmodule RhoFrameworks.Library do
   def derive_library(org_id, source_library_ids, new_name, opts \\ [])
       when is_list(source_library_ids) do
     categories = Keyword.get(opts, :categories, :all)
-    include_roles = Keyword.get(opts, :include_roles, true)
+    include_roles = Keyword.get(opts, :include_roles, false)
     description = Keyword.get(opts, :description)
 
-    sources = Enum.map(source_library_ids, &get_library!(org_id, &1))
+    sources =
+      Enum.map(source_library_ids, fn id ->
+        case get_library(org_id, id) do
+          nil -> get_public_library!(id)
+          lib -> lib
+        end
+      end)
 
     desc =
       description ||
@@ -502,12 +1292,17 @@ defmodule RhoFrameworks.Library do
           end)
 
         copied =
-          Enum.map(source_roles, fn role ->
-            {:ok, rp} = copy_role_profile(role, org_id, skill_id_map, fork_name: new_name)
-            rp
+          Enum.reduce_while(source_roles, {:ok, []}, fn role, {:ok, acc} ->
+            case copy_role_profile(role, org_id, skill_id_map, fork_name: new_name) do
+              {:ok, rp} -> {:cont, {:ok, [rp | acc]}}
+              {:error, _step, reason, _} -> {:halt, {:error, reason}}
+            end
           end)
 
-        {:ok, copied}
+        case copied do
+          {:ok, list} -> {:ok, Enum.reverse(list)}
+          {:error, reason} -> {:error, reason}
+        end
       else
         {:ok, []}
       end
@@ -520,71 +1315,37 @@ defmodule RhoFrameworks.Library do
   def import_library(org_id, skill_maps, opts \\ []) do
     name = Keyword.get(opts, :name, "Imported Library")
     description = Keyword.get(opts, :description)
+    visibility = Keyword.get(opts, :visibility, "private")
 
     Ecto.Multi.new()
     |> Ecto.Multi.run(:library, fn _repo, _ ->
-      create_library(org_id, %{name: name, description: description})
+      create_library(org_id, %{name: name, description: description, visibility: visibility})
     end)
     |> Ecto.Multi.run(:skills, fn _repo, %{library: lib} ->
-      results =
-        Enum.map(skill_maps, fn skill_map ->
-          {:ok, skill} =
-            upsert_skill(lib.id, %{
-              category: skill_map[:category] || skill_map["category"] || "",
-              cluster: skill_map[:cluster] || skill_map["cluster"] || "",
-              name:
-                skill_map[:skill_name] || skill_map["skill_name"] || skill_map[:name] ||
-                  skill_map["name"],
-              description:
-                skill_map[:skill_description] || skill_map["skill_description"] ||
-                  skill_map[:description] || skill_map["description"] || "",
-              proficiency_levels:
-                skill_map[:proficiency_levels] || skill_map["proficiency_levels"] || [],
-              status: "published"
-            })
-
-          skill
-        end)
-
-      {:ok, results}
+      normalized = Enum.map(skill_maps, &normalize_skill_attrs/1)
+      bulk_upsert_skills(lib.id, normalized)
     end)
     |> Repo.transaction()
   end
 
   # --- Template Loading ---
 
-  def load_template(org_id, source_key, template_data) do
+  def load_template(org_id, source_key, template_data, opts \\ []) do
+    visibility = Keyword.get(opts, :visibility, "private")
+
     Ecto.Multi.new()
     |> Ecto.Multi.run(:library, fn _repo, _ ->
       create_library(org_id, %{
         name: template_data.name,
         description: template_data[:description],
         immutable: true,
-        source_key: source_key
+        source_key: source_key,
+        visibility: visibility
       })
     end)
     |> Ecto.Multi.run(:skills, fn _repo, %{library: lib} ->
-      results =
-        Enum.map(template_data.skills, fn skill_map ->
-          {:ok, skill} =
-            upsert_skill(
-              lib.id,
-              %{
-                category: skill_map[:category] || skill_map["category"] || "",
-                cluster: skill_map[:cluster] || skill_map["cluster"] || "",
-                name: skill_map[:name] || skill_map["name"],
-                description: skill_map[:description] || skill_map["description"] || "",
-                proficiency_levels:
-                  skill_map[:proficiency_levels] || skill_map["proficiency_levels"] || [],
-                status: "published"
-              },
-              skip_mutability: true
-            )
-
-          skill
-        end)
-
-      {:ok, results}
+      normalized = Enum.map(template_data.skills, &normalize_skill_attrs/1)
+      bulk_upsert_skills(lib.id, normalized, skip_mutability: true)
     end)
     |> Ecto.Multi.run(:role_profiles, fn _repo, %{library: lib, skills: skills} ->
       role_profile_defs = template_data[:role_profiles] || template_data["role_profiles"] || []
@@ -998,6 +1759,14 @@ defmodule RhoFrameworks.Library do
     %{filled: gaps, total: map_size(merged)}
   end
 
+  defp maybe_include_public(query, org_id, true) do
+    from(l in query, where: l.organization_id == ^org_id or l.visibility == "public")
+  end
+
+  defp maybe_include_public(query, org_id, false) do
+    from(l in query, where: l.organization_id == ^org_id)
+  end
+
   defp maybe_filter_type(query, nil), do: query
 
   defp maybe_filter_type(query, type) do
@@ -1008,6 +1777,21 @@ defmodule RhoFrameworks.Library do
 
   defp maybe_exclude_immutable(query, true) do
     from(l in query, where: l.immutable == false)
+  end
+
+  defp maybe_filter_version_scope(query, nil), do: query
+
+  defp maybe_filter_version_scope(query, :drafts) do
+    from(l in query, where: is_nil(l.version))
+  end
+
+  defp maybe_filter_version_scope(query, :published) do
+    from(l in query, where: not is_nil(l.version))
+  end
+
+  defp maybe_filter_version_scope(query, :latest) do
+    # Show drafts + latest published per name (no superseded versions)
+    from(l in query, where: is_nil(l.version) or is_nil(l.superseded_by_id))
   end
 
   defp maybe_filter(query, _field, nil), do: query

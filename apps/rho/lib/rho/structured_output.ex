@@ -52,46 +52,44 @@ defmodule Rho.StructuredOutput do
       {:partial, nil}
     else
       case try_parse_strategies(trimmed) do
-        {:ok, _} = ok ->
-          ok
-
-        :error ->
-          # Try auto-closing incomplete structures
-          escaped = trimmed |> normalize_quotes() |> escape_control_chars()
-
-          # Try markdown extraction + auto-close
-          extracted = extract_from_markdown(trimmed)
-
-          results =
-            if extracted != trimmed do
-              norm_extracted = extracted |> normalize_quotes() |> escape_control_chars()
-              generate_completions(norm_extracted) ++ generate_completions(escaped)
-            else
-              generate_completions(escaped)
-            end
-
-          Enum.find_value(results, {:partial, nil}, fn attempt ->
-            case Jason.decode(attempt) do
-              {:ok, map} when is_map(map) -> {:ok, map}
-              {:ok, list} when is_list(list) -> {:ok, list}
-              _ -> nil
-            end
-          end)
+        {:ok, _} = ok -> ok
+        :error -> try_auto_close(trimmed)
       end
     end
+  end
+
+  defp try_auto_close(trimmed) do
+    escaped = trimmed |> normalize_quotes() |> escape_control_chars()
+    extracted = extract_from_markdown(trimmed)
+
+    results =
+      if extracted != trimmed do
+        norm_extracted = extracted |> normalize_quotes() |> escape_control_chars()
+        generate_completions(norm_extracted) ++ generate_completions(escaped)
+      else
+        generate_completions(escaped)
+      end
+
+    Enum.find_value(results, {:partial, nil}, fn attempt ->
+      case Jason.decode(attempt) do
+        {:ok, map} when is_map(map) -> {:ok, map}
+        {:ok, list} when is_list(list) -> {:ok, list}
+        _ -> nil
+      end
+    end)
   end
 
   # -- Parse strategies (tried in order) --
 
   defp try_parse_strategies(text) do
+    normalized = normalize_quotes(text)
+    escaped = escape_control_chars(normalized)
+    extracted = extract_from_markdown(text)
+
     with :error <- try_decode(text),
-         normalized = normalize_quotes(text),
          :error <- try_decode(normalized),
-         escaped = escape_control_chars(normalized),
          :error <- try_decode(escaped),
-         stripped = strip_trailing_commas(escaped),
-         :error <- try_if_different(stripped, escaped),
-         extracted = extract_from_markdown(text),
+         :error <- try_if_different(strip_trailing_commas(escaped), escaped),
          :error <- try_if_different(extracted, text),
          :error <-
            try_if_different(extracted |> normalize_quotes() |> escape_control_chars(), text),
@@ -101,10 +99,8 @@ defmodule Rho.StructuredOutput do
              text
            ),
          :error <- try_merge_objects(escaped),
-         :error <- try_brace_scan(escaped),
-         single_to_double = convert_single_quotes(text),
-         :error <- try_if_different(single_to_double, text) do
-      :error
+         :error <- try_brace_scan(escaped) do
+      try_if_different(convert_single_quotes(text), text)
     end
   end
 
@@ -144,25 +140,26 @@ defmodule Rho.StructuredOutput do
   # Handles cases where the LLM emits extra trailing braces.
   defp try_brace_scan(text) do
     case :binary.match(text, "{") do
-      {start, _} ->
-        close_positions =
-          :binary.matches(text, "}")
-          |> Enum.map(&elem(&1, 0))
-          |> Enum.filter(&(&1 > start))
-          |> Enum.reverse()
-
-        Enum.find_value(close_positions, :error, fn end_pos ->
-          candidate = binary_part(text, start, end_pos - start + 1)
-
-          case try_decode(candidate) do
-            {:ok, _} = ok -> ok
-            :error -> nil
-          end
-        end)
-
-      :nomatch ->
-        :error
+      {start, _} -> scan_close_positions(text, start)
+      :nomatch -> :error
     end
+  end
+
+  defp scan_close_positions(text, start) do
+    close_positions =
+      :binary.matches(text, "}")
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.filter(&(&1 > start))
+      |> Enum.reverse()
+
+    Enum.find_value(close_positions, :error, fn end_pos ->
+      candidate = binary_part(text, start, end_pos - start + 1)
+
+      case try_decode(candidate) do
+        {:ok, _} = ok -> ok
+        :error -> nil
+      end
+    end)
   end
 
   # Try merging multiple JSON objects in the text into one.
@@ -186,38 +183,42 @@ defmodule Rho.StructuredOutput do
   defp extract_json_objects(text, acc) do
     case :binary.match(text, "{") do
       {start, _} ->
-        rest_from_open = binary_part(text, start, byte_size(text) - start)
-
-        close_positions =
-          :binary.matches(rest_from_open, "}")
-          |> Enum.map(&elem(&1, 0))
-
-        found =
-          Enum.find_value(close_positions, nil, fn end_pos ->
-            candidate = binary_part(rest_from_open, 0, end_pos + 1)
-
-            case Jason.decode(candidate) do
-              {:ok, map} when is_map(map) -> {map, end_pos + 1}
-              _ -> nil
-            end
-          end)
-
-        case found do
-          {map, consumed} ->
-            remaining_start = start + consumed
-            remaining = binary_part(text, remaining_start, byte_size(text) - remaining_start)
-            extract_json_objects(remaining, [map | acc])
-
-          nil ->
-            # Skip past this { and try the next one
-            next_start = start + 1
-            remaining = binary_part(text, next_start, byte_size(text) - next_start)
-            extract_json_objects(remaining, acc)
-        end
+        {found, rest_from_open} = find_first_json_object(text, start)
+        advance_json_extraction(text, start, found, rest_from_open, acc)
 
       :nomatch ->
         Enum.reverse(acc)
     end
+  end
+
+  defp find_first_json_object(text, start) do
+    rest_from_open = binary_part(text, start, byte_size(text) - start)
+
+    found =
+      :binary.matches(rest_from_open, "}")
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.find_value(nil, fn end_pos ->
+        candidate = binary_part(rest_from_open, 0, end_pos + 1)
+
+        case Jason.decode(candidate) do
+          {:ok, map} when is_map(map) -> {map, end_pos + 1}
+          _ -> nil
+        end
+      end)
+
+    {found, rest_from_open}
+  end
+
+  defp advance_json_extraction(text, start, {map, consumed}, _rest, acc) do
+    remaining_start = start + consumed
+    remaining = binary_part(text, remaining_start, byte_size(text) - remaining_start)
+    extract_json_objects(remaining, [map | acc])
+  end
+
+  defp advance_json_extraction(text, start, nil, _rest, acc) do
+    next_start = start + 1
+    remaining = binary_part(text, next_start, byte_size(text) - next_start)
+    extract_json_objects(remaining, acc)
   end
 
   # -- Quote normalization --
@@ -368,29 +369,26 @@ defmodule Rho.StructuredOutput do
       {start, 3} ->
         content_start = start + 3
         rest = binary_part(text, content_start, byte_size(text) - content_start)
-
-        case :binary.match(rest, "```") do
-          {end_pos, _} ->
-            content = binary_part(rest, 0, end_pos) |> String.trim()
-
-            if String.starts_with?(content, "{") or String.starts_with?(content, "[") do
-              content
-            else
-              text
-            end
-
-          :nomatch ->
-            content = String.trim(rest)
-
-            if String.starts_with?(content, "{") or String.starts_with?(content, "[") do
-              content
-            else
-              text
-            end
-        end
+        content = extract_fence_content(rest)
+        if_json_like(content, text)
 
       :nomatch ->
         text
+    end
+  end
+
+  defp extract_fence_content(rest) do
+    case :binary.match(rest, "```") do
+      {end_pos, _} -> binary_part(rest, 0, end_pos) |> String.trim()
+      :nomatch -> String.trim(rest)
+    end
+  end
+
+  defp if_json_like(content, fallback) do
+    if String.starts_with?(content, "{") or String.starts_with?(content, "[") do
+      content
+    else
+      fallback
     end
   end
 

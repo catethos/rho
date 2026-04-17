@@ -5,16 +5,15 @@ defmodule RhoWeb.SessionLive do
   """
   use Phoenix.LiveView
 
-  import RhoWeb.CoreComponents
-  import RhoWeb.ChatComponents
-
   import RhoWeb.SignalComponents
+  import RhoWeb.SessionLive.LayoutComponents
 
   alias RhoWeb.Session.SessionCore
   alias RhoWeb.Session.Shell
   alias RhoWeb.Session.SignalRouter
   alias RhoWeb.Session.Snapshot
   alias RhoWeb.Session.Threads
+  alias RhoWeb.SessionLive.DataTableHelpers
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   @impl true
@@ -84,6 +83,7 @@ defmodule RhoWeb.SessionLive do
         socket
         |> restore_from_snapshot()
         |> refresh_threads()
+        |> refresh_data_table_session()
       else
         socket
       end
@@ -116,6 +116,7 @@ defmodule RhoWeb.SessionLive do
               |> assign(:chat_context, chat_context)
               |> merge_workspaces(new_workspaces)
               |> SessionCore.subscribe_and_hydrate(sid, session_ensure_opts(live_action))
+              |> refresh_data_table_session()
 
             _ ->
               socket
@@ -233,12 +234,12 @@ defmodule RhoWeb.SessionLive do
 
     agent_id = Rho.Agent.Primary.new_agent_id(parent_id)
 
+    known_roles = Rho.CLI.Config.agent_names()
+
     role_atom =
-      try do
-        String.to_existing_atom(role)
-      rescue
-        ArgumentError -> :worker
-      end
+      Enum.find(known_roles, :worker, fn name ->
+        Atom.to_string(name) == role
+      end)
 
     # Give each UI-created agent its own tape so conversations are independent
     memory_mod = Rho.Config.tape_module()
@@ -257,10 +258,27 @@ defmodule RhoWeb.SessionLive do
         organization_id: get_in(socket.assigns, [:current_organization, Access.key(:id)])
       )
 
+    # Eagerly add the agent to tab state so the tab renders immediately
+    # rather than waiting for the async rho.agent.started signal.
+    agent_entry = %{
+      agent_id: agent_id,
+      session_id: sid,
+      role: role_atom,
+      status: :idle,
+      depth: 0,
+      capabilities: [],
+      model: nil,
+      step: nil,
+      max_steps: nil
+    }
+
     socket =
       socket
       |> assign(:show_new_agent, false)
       |> assign(:active_agent_id, agent_id)
+      |> assign(:agents, Map.put(socket.assigns.agents, agent_id, agent_entry))
+      |> assign(:agent_tab_order, socket.assigns.agent_tab_order ++ [agent_id])
+      |> assign(:agent_messages, Map.put_new(socket.assigns.agent_messages, agent_id, []))
 
     {:noreply, socket}
   end
@@ -693,15 +711,9 @@ defmodule RhoWeb.SessionLive do
     {:noreply, socket}
   end
 
-  # --- Workspace-delegated handle_info ---
-
-  @impl true
-  def handle_info({:data_table_get_table, _, _} = msg, socket) do
-    dispatch_to_workspace(socket, RhoWeb.Workspaces.DataTable, msg)
-  end
-
   # --- Shell activity pulse decay ---
 
+  @impl true
   def handle_info({:clear_pulse, key}, socket) do
     {:noreply, assign(socket, :shell, Shell.clear_pulse(socket.assigns.shell, key))}
   end
@@ -752,6 +764,73 @@ defmodule RhoWeb.SessionLive do
 
   def handle_info({:lens_detail_request, _} = msg, socket) do
     dispatch_to_workspace(socket, RhoWeb.Workspaces.LensDashboard, msg)
+  end
+
+  # --- DataTable snapshot-cache messages (from DataTableComponent / EffectDispatcher) ---
+
+  def handle_info({:data_table_refresh, table_name}, socket) do
+    {:noreply, refresh_data_table_active(socket, table_name)}
+  end
+
+  def handle_info({:data_table_switch_tab, name}, socket) do
+    sid = socket.assigns.session_id
+
+    state =
+      DataTableHelpers.ensure_dt_keys(
+        SignalRouter.read_ws_state(socket, :data_table) || DataTableHelpers.dt_initial_state()
+      )
+
+    new_state = %{state | active_table: name, view_key: nil, mode_label: nil}
+
+    new_state =
+      case sid && Rho.Stdlib.DataTable.get_table_snapshot(sid, name) do
+        {:ok, snap} ->
+          %{new_state | active_snapshot: snap, active_version: snap.version, error: nil}
+
+        {:error, :not_running} ->
+          %{new_state | active_snapshot: nil, active_version: nil, error: :not_running}
+
+        _ ->
+          %{new_state | active_snapshot: nil, active_version: nil}
+      end
+
+    {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_view_change, view_key, mode_label}, socket) do
+    state =
+      DataTableHelpers.ensure_dt_keys(
+        SignalRouter.read_ws_state(socket, :data_table) || DataTableHelpers.dt_initial_state()
+      )
+
+    new_state = %{state | view_key: view_key, mode_label: mode_label}
+    {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_error, reason}, socket) do
+    state =
+      DataTableHelpers.ensure_dt_keys(
+        SignalRouter.read_ws_state(socket, :data_table) || DataTableHelpers.dt_initial_state()
+      )
+
+    new_state = %{state | error: reason}
+    {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_save, table_name, new_name}, socket) do
+    {:noreply, DataTableHelpers.handle_save(socket, table_name, new_name)}
+  end
+
+  def handle_info({:data_table_fork, table_name}, socket) do
+    {:noreply, DataTableHelpers.handle_fork(socket, table_name)}
+  end
+
+  def handle_info({:data_table_publish, table_name, new_name, version_tag}, socket) do
+    {:noreply, DataTableHelpers.handle_publish(socket, table_name, new_name, version_tag)}
+  end
+
+  def handle_info({:data_table_flash, message}, socket) do
+    {:noreply, DataTableHelpers.set_flash(socket, message)}
   end
 
   # --- Chatroom @mention routing ---
@@ -814,13 +893,31 @@ defmodule RhoWeb.SessionLive do
   def handle_info({:signal, %Jido.Signal{type: type, data: data} = signal}, socket) do
     sid = socket.assigns.session_id
 
-    if SessionCore.signal_for_session?(data, sid) do
-      correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
-      data = Map.put(data, :correlation_id, correlation_id)
-      # Route through full registry so closed workspaces also project
-      {:noreply, SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())}
-    else
-      {:noreply, socket}
+    cond do
+      # DataTable server invalidation events — refetch snapshot.
+      # These are published by `Rho.Stdlib.DataTable.Server` (and
+      # EffectDispatcher view-change hints) on the session-scoped
+      # `rho.session.<sid>.events.data_table` topic and caught here
+      # before they reach the generic signal router.
+      sid && is_binary(type) && String.ends_with?(type, ".events.data_table") ->
+        {:noreply, apply_data_table_event(socket, data)}
+
+      # Workspace-open effects — `%Rho.Effect.OpenWorkspace{key: :data_table}`
+      # is published by `EffectDispatcher` on
+      # `rho.session.<sid>.events.workspace_open`. Since `determine_workspaces/1`
+      # starts empty, the workspace has to be added to `@workspaces` on demand
+      # when a tool asks for it (mirroring the `add_workspace` handle_event).
+      sid && is_binary(type) && String.ends_with?(type, ".events.workspace_open") ->
+        {:noreply, apply_open_workspace_event(socket, data)}
+
+      SessionCore.signal_for_session?(data, sid) ->
+        correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
+        data = Map.put(data, :correlation_id, correlation_id)
+        # Route through full registry so closed workspaces also project
+        {:noreply, SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())}
+
+      true ->
+        {:noreply, socket}
     end
   end
 
@@ -838,9 +935,6 @@ defmodule RhoWeb.SessionLive do
       # Save UI snapshot for resume
       snapshot = Snapshot.build_snapshot(socket)
       Snapshot.save(sid, File.cwd!(), snapshot)
-
-      # Unregister data table PID if active
-      Rho.Stdlib.Plugins.DataTable.unregister(sid)
     end
 
     :ok
@@ -1023,512 +1117,11 @@ defmodule RhoWeb.SessionLive do
     """
   end
 
-  # --- Header component ---
-
-  attr(:session_id, :string, default: nil)
-  attr(:agents, :map, required: true)
-  attr(:total_input_tokens, :integer, required: true)
-  attr(:total_output_tokens, :integer, required: true)
-  attr(:total_cost, :float, required: true)
-  attr(:total_cached_tokens, :integer, required: true)
-  attr(:total_reasoning_tokens, :integer, required: true)
-  attr(:step_input_tokens, :integer, required: true)
-  attr(:step_output_tokens, :integer, required: true)
-  attr(:user_avatar, :string, default: nil)
-  attr(:uploads, :any, required: true)
-  attr(:debug_mode, :boolean, default: false)
-
-  defp session_header(assigns) do
-    ~H"""
-    <header class="session-header">
-      <div class="header-left">
-        <h1 class="header-title">Rho</h1>
-        <span :if={@session_id} class="header-session-id"><%= truncate_id(@session_id) %></span>
-        <.badge :if={map_size(@agents) > 0}>
-          <%= map_size(@agents) %> agent<%= if map_size(@agents) != 1, do: "s" %>
-        </.badge>
-      </div>
-      <div class="header-right">
-        <span class="header-tokens" title="Total input / output tokens (last step input / output)">
-          <%= format_tokens(@total_input_tokens) %> in / <%= format_tokens(@total_output_tokens) %> out
-          <span :if={@step_input_tokens > 0} class="header-step-tokens">
-            (step: <%= format_tokens(@step_input_tokens) %> in / <%= format_tokens(@step_output_tokens) %> out)
-          </span>
-        </span>
-        <span :if={@total_cached_tokens > 0} class="header-tokens header-cached" title="Cached tokens">
-          cached: <%= format_tokens(@total_cached_tokens) %>
-        </span>
-        <span :if={@total_reasoning_tokens > 0} class="header-tokens header-reasoning" title="Reasoning tokens">
-          reasoning: <%= format_tokens(@total_reasoning_tokens) %>
-        </span>
-        <span :if={@total_cost > 0} class="header-cost">
-          $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
-        </span>
-        <button class={"btn-new-agent #{if @debug_mode, do: "debug-active"}"} phx-click="toggle_debug" title="Toggle debug mode">
-          Debug
-        </button>
-        <a :if={@session_id} href={"/observatory/#{@session_id}"} target="_blank"
-          class="btn-new-agent" title="Open Observatory">
-          Observatory
-        </a>
-        <button class="btn-new-agent" phx-click="toggle_new_agent" title="New agent">
-          + Agent
-        </button>
-        <button :if={@session_id} class="btn-stop" phx-click="stop_session" title="Stop session">
-          Stop
-        </button>
-        <form id="avatar-upload-form" phx-change="validate_upload" class="header-avatar-form">
-          <label class="header-avatar" title="Click to upload avatar">
-            <%= if @user_avatar do %>
-              <img src={@user_avatar} class="header-avatar-img" />
-            <% else %>
-              <span class="header-avatar-placeholder">Y</span>
-            <% end %>
-            <.live_file_input upload={@uploads.avatar} class="sr-only" />
-          </label>
-        </form>
-      </div>
-    </header>
-    """
-  end
-
-  # --- Tab bar ---
-
-  attr(:agent_tab_order, :list, required: true)
-  attr(:agents, :map, required: true)
-  attr(:active_agent_id, :string, default: nil)
-  attr(:inflight, :map, required: true)
-
-  defp tab_bar(assigns) do
-    ~H"""
-    <div class="chat-tab-bar" :if={length(@agent_tab_order) > 0}>
-      <div
-        :for={agent_id <- @agent_tab_order}
-        class={"chat-tab #{if @active_agent_id == agent_id, do: "active", else: ""} #{if agent_stopped?(@agents, agent_id), do: "stopped", else: ""}"}
-      >
-        <button class="tab-select-btn" phx-click="select_tab" phx-value-agent-id={agent_id}>
-          <.status_dot :if={@agents[agent_id]} status={@agents[agent_id].status} />
-          <span class="tab-label"><%= tab_label(@agents, agent_id) %></span>
-          <span :if={Map.has_key?(@inflight, agent_id)} class="tab-typing">...</span>
-        </button>
-        <button
-          :if={!is_primary_tab?(agent_id)}
-          class="tab-close-btn"
-          phx-click="remove_agent"
-          phx-value-agent-id={agent_id}
-          title="Remove agent"
-        >×</button>
-      </div>
-    </div>
-    """
-  end
-
-  defp is_primary_tab?(agent_id) do
-    case String.split(agent_id, "/") do
-      [_sid, "primary"] -> true
-      _ -> false
-    end
-  end
-
-  # --- Workspace tab bar ---
-
-  attr(:workspaces, :map, required: true)
-  attr(:active, :atom, default: nil)
-  attr(:available, :map, default: %{})
-  attr(:shell, :map, required: true)
-  attr(:pending, :boolean, default: false)
-
-  defp workspace_tab_bar(assigns) do
-    chat_expanded = assigns.shell.chat_mode == :expanded
-
-    assigns = assign(assigns, :chat_expanded, chat_expanded)
-
-    ~H"""
-    <div class="workspace-tab-bar">
-      <div class="workspace-tabs">
-        <button
-          :for={{key, ws} <- @workspaces}
-          class={"workspace-tab #{if @active == key, do: "active", else: ""}"}
-          phx-click="switch_workspace"
-          phx-value-workspace={key}
-        >
-          <span class="workspace-tab-label"><%= ws.label() %></span>
-          <% chrome = @shell.workspaces[key] %>
-          <span :if={chrome && chrome.pulse} class="workspace-tab-activity">
-            <span class="workspace-tab-pulse"></span>
-          </span>
-          <span :if={chrome && chrome.unseen_count > 0} class="workspace-tab-badge">
-            <%= chrome.unseen_count %>
-          </span>
-          <span
-            class="workspace-tab-close"
-            phx-click="close_workspace"
-            phx-value-workspace={key}
-          >
-            &times;
-          </span>
-        </button>
-      </div>
-
-      <div class="workspace-tab-actions">
-        <button
-          class={"workspace-tab-toggle-chat #{if @chat_expanded, do: "active", else: ""}"}
-          phx-click="toggle_chat"
-          title={if @chat_expanded, do: "Hide chat", else: "Show chat"}
-        >
-          Chat
-        </button>
-
-        <div :if={map_size(@available) > 0} class="workspace-add-picker">
-          <button class="workspace-add-btn" phx-click={Phoenix.LiveView.JS.toggle(to: "#workspace-picker-dropdown")}>
-            +
-          </button>
-          <div id="workspace-picker-dropdown" class="workspace-picker-dropdown" style="display: none;">
-            <button
-              :for={{key, ws} <- @available}
-              class="workspace-picker-item"
-              phx-click="add_workspace"
-              phx-value-workspace={key}
-            >
-              <%= ws.label() %>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  # --- Workspace overlay ---
-
-  attr(:key, :atom, required: true)
-  attr(:label, :string, required: true)
-  attr(:ws_mod, :any, required: true)
-  attr(:ws_state, :map, default: nil)
-  attr(:shared_ws_assigns, :map, required: true)
-
-  defp workspace_overlay(assigns) do
-    overlay_assigns =
-      assigns.ws_mod.component_assigns(assigns.ws_state, assigns.shared_ws_assigns)
-
-    assigns = assign(assigns, :overlay_assigns, overlay_assigns)
-
-    ~H"""
-    <div class="workspace-overlay is-open">
-      <div class="workspace-overlay-header">
-        <span class="workspace-overlay-title"><%= @label %></span>
-        <div class="workspace-overlay-actions">
-          <button
-            class="workspace-overlay-btn pin-btn"
-            phx-click="pin_workspace"
-            phx-value-workspace={@key}
-            title="Pin to tab bar"
-          >
-            Pin
-          </button>
-          <button
-            class="workspace-overlay-close"
-            phx-click="dismiss_overlay"
-            phx-value-workspace={@key}
-            title="Dismiss"
-          >
-            ×
-          </button>
-        </div>
-      </div>
-      <div class="workspace-overlay-body">
-        <.live_component
-          :if={@ws_state}
-          module={@ws_mod.component()}
-          id={"overlay-#{@key}"}
-          class="active"
-          {@overlay_assigns}
-        />
-      </div>
-    </div>
-    """
-  end
-
-  # --- Thread picker ---
-
-  attr(:threads, :list, required: true)
-  attr(:active_thread_id, :string, default: nil)
-
-  defp thread_picker(assigns) do
-    ~H"""
-    <div :if={length(@threads) > 0} class="thread-picker">
-      <div class="thread-picker-tabs">
-        <div
-          :for={thread <- @threads}
-          class={"thread-tab #{if thread["id"] == @active_thread_id, do: "active", else: ""}"}
-        >
-          <button
-            class="thread-tab-btn"
-            phx-click="switch_thread"
-            phx-value-thread_id={thread["id"]}
-            title={thread["summary"] || thread["name"]}
-          >
-            <span class="thread-tab-label"><%= thread["name"] %></span>
-          </button>
-          <button
-            :if={thread["id"] != "thread_main"}
-            class="thread-tab-close"
-            phx-click="close_thread"
-            phx-value-thread_id={thread["id"]}
-            title="Close thread"
-          >
-            ×
-          </button>
-        </div>
-      </div>
-      <button class="thread-new-btn" phx-click="new_blank_thread" title="New thread">
-        +
-      </button>
-    </div>
-    """
-  end
-
-  # --- Chat side panel ---
-
-  attr(:chat_mode, :atom, default: :expanded)
-  attr(:compact, :boolean, default: false)
-  attr(:messages, :list, required: true)
-  attr(:session_id, :string, required: true)
-  attr(:inflight, :map, required: true)
-  attr(:active_agent_id, :string, required: true)
-  attr(:user_avatar, :string, default: nil)
-  attr(:agent_avatar, :string, default: nil)
-  attr(:pending, :boolean, default: false)
-  attr(:agents, :map, required: true)
-  attr(:agent_tab_order, :list, required: true)
-  attr(:chat_status, :atom, default: :idle)
-  attr(:uploads, :any, required: true)
-  attr(:active_agent, :map, default: nil)
-  attr(:connected, :boolean, default: true)
-  attr(:threads, :list, default: [])
-  attr(:active_thread_id, :string, default: nil)
-
-  defp chat_side_panel(assigns) do
-    panel_class =
-      case assigns.chat_mode do
-        :expanded -> "dt-chat-panel"
-        :collapsed -> "dt-chat-panel is-collapsed"
-        :hidden -> "dt-chat-panel is-hidden"
-      end
-
-    assigns = assign(assigns, :panel_class, panel_class)
-
-    ~H"""
-    <div class={@panel_class}>
-      <div class="dt-chat-header">
-        <span class="dt-chat-title">Assistant</span>
-        <.status_dot :if={@chat_status != :idle} status={@chat_status} />
-        <.thread_picker threads={@threads} active_thread_id={@active_thread_id} />
-      </div>
-
-      <.tab_bar
-        :if={length(@agent_tab_order) > 1}
-        agent_tab_order={@agent_tab_order}
-        agents={@agents}
-        active_agent_id={@active_agent_id}
-        inflight={@inflight}
-      />
-
-      <.chat_feed
-        messages={@messages}
-        session_id={@session_id}
-        inflight={@inflight}
-        active_agent_id={@active_agent_id}
-        user_avatar={@user_avatar}
-        agent_avatar={@agent_avatar}
-        pending={@pending}
-      />
-
-      <div class="chat-input-area">
-        <form id="chat-input-form" phx-submit="send_message" class="chat-input-form">
-          <textarea
-            name="content"
-            id="chat-input"
-            placeholder="Ask to generate skills, edit rows, etc..."
-            rows="1"
-            phx-hook="AutoResize"
-          ></textarea>
-          <button type="submit" class="btn-send">Send</button>
-        </form>
-      </div>
-    </div>
-    """
-  end
-
-  # --- New agent dialog ---
-
-  attr(:session_id, :string, default: nil)
-
-  defp new_agent_dialog(assigns) do
-    roles = Rho.CLI.Config.agent_names()
-
-    # Build parent options from live agents in the session
-    parent_options =
-      if assigns.session_id do
-        Rho.Agent.Registry.list_all(assigns[:session_id])
-        |> Enum.map(fn info -> {info.agent_id, tab_label_from_info(info)} end)
-        |> Enum.sort_by(fn {id, _} -> id end)
-      else
-        []
-      end
-
-    assigns =
-      assigns
-      |> assign(:roles, roles)
-      |> assign(:parent_options, parent_options)
-
-    ~H"""
-    <div class="modal-overlay">
-      <div class="modal-dialog" phx-click-away="toggle_new_agent">
-        <h3>Create New Agent</h3>
-
-        <form phx-submit="create_agent" phx-hook="ParentPicker" id="new-agent-form">
-          <div :if={length(@parent_options) > 0} class="agent-parent-picker">
-            <label class="agent-parent-label">Parent agent</label>
-            <input type="hidden" name="parent_id" value="" id="new-agent-parent-input" />
-            <div class="agent-parent-list">
-              <button
-                type="button"
-                class="agent-parent-btn active"
-                data-parent-id=""
-                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: ""})}
-              >
-                None (top-level)
-              </button>
-              <button
-                :for={{id, label} <- @parent_options}
-                type="button"
-                class="agent-parent-btn"
-                data-parent-id={id}
-                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: id})}
-              >
-                <%= label %>
-              </button>
-            </div>
-          </div>
-
-          <div class="agent-role-list">
-            <button
-              :for={role <- @roles}
-              type="submit"
-              name="role"
-              value={role}
-              class="agent-role-btn"
-            >
-              <%= role %>
-            </button>
-          </div>
-        </form>
-        <button class="modal-cancel" phx-click="toggle_new_agent">Cancel</button>
-      </div>
-    </div>
-    """
-  end
-
-  defp tab_label_from_info(info) do
-    name = info[:role] || info[:agent_id]
-    segments = String.split(to_string(info.agent_id), "/")
-
-    case segments do
-      [_sid, "primary"] -> "primary"
-      [_sid, "primary" | rest] -> List.last(rest) || to_string(name)
-      _ -> to_string(name)
-    end
-  end
-
-  # --- Debug panel ---
-
-  attr(:projections, :map, required: true)
-  attr(:active_agent_id, :string, default: nil)
-  attr(:session_id, :string, default: nil)
-
-  defp debug_panel(assigns) do
-    active_id = assigns.active_agent_id || SessionCore.primary_agent_id(assigns.session_id)
-    projection = Map.get(assigns.projections, active_id)
-
-    assigns =
-      assigns
-      |> assign(:projection, projection)
-      |> assign(:debug_agent_id, active_id)
-
-    ~H"""
-    <div class="debug-panel">
-      <div class="debug-header">
-        <h3>Debug: LLM Context</h3>
-        <span :if={@projection} class="debug-meta">
-          <%= @projection.raw_message_count %> messages, <%= @projection.raw_tool_count %> tools, step <%= @projection.step || "?" %>
-        </span>
-      </div>
-      <div class="debug-body">
-        <%= if @projection do %>
-          <div class="debug-section">
-            <div class="debug-section-title">Tools (<%= length(@projection.tools) %>)</div>
-            <div class="debug-tools-list">
-              <span :for={tool <- @projection.tools} class="debug-tool-badge"><%= tool %></span>
-            </div>
-          </div>
-
-          <div class="debug-section">
-            <div class="debug-section-title">Context Messages (<%= length(@projection.context) %>)</div>
-            <div class="debug-messages">
-              <div :for={{msg, idx} <- Enum.with_index(@projection.context)} class={"debug-msg debug-msg-#{msg.role}"}>
-                <div class="debug-msg-header">
-                  <span class={"debug-msg-role debug-role-#{msg.role}"}><%= msg.role %></span>
-                  <span class="debug-msg-idx">#<%= idx %></span>
-                  <span :if={msg.cache_control} class="debug-msg-cache">cached</span>
-                </div>
-                <details class="debug-msg-details" open={String.length(debug_content_string(msg.content)) <= 5000}>
-                  <summary class="debug-msg-summary"><%= String.length(debug_content_string(msg.content)) %> chars</summary>
-                  <pre class="debug-msg-content"><%= debug_content_string(msg.content) %></pre>
-                </details>
-              </div>
-            </div>
-          </div>
-        <% else %>
-          <div class="debug-empty">No projection data yet. Send a message to see the LLM context.</div>
-        <% end %>
-      </div>
-    </div>
-    """
-  end
-
-  defp debug_content_string(content) when is_binary(content), do: content
-  defp debug_content_string(other), do: inspect(other, limit: :infinity)
-
   defp chat_status(assigns) do
     if MapSet.size(assigns.pending_response) > 0 or map_size(assigns.inflight) > 0 do
       :busy
     else
       :idle
-    end
-  end
-
-  # --- Private helpers ---
-
-  defp truncate_id(id) when byte_size(id) > 16, do: String.slice(id, 0, 16) <> "..."
-  defp truncate_id(id), do: id
-
-  defp format_tokens(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
-  defp format_tokens(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}K"
-  defp format_tokens(n), do: "#{n}"
-
-  defp tab_label(agents, agent_id) do
-    case Map.get(agents, agent_id) do
-      nil -> "unknown"
-      %{role: role} -> to_string(role)
-    end
-  end
-
-  defp agent_stopped?(agents, agent_id) do
-    case Map.get(agents, agent_id) do
-      nil -> true
-      %{status: :stopped} -> true
-      _ -> false
     end
   end
 
@@ -1567,10 +1160,16 @@ defmodule RhoWeb.SessionLive do
     signals_since =
       events
       |> Enum.filter(fn evt ->
-        case evt["emitted_at"] do
-          ts when is_integer(ts) -> ts > since_ms
-          _ -> false
-        end
+        ts_ok =
+          case evt["emitted_at"] do
+            ts when is_integer(ts) -> ts > since_ms
+            _ -> false
+          end
+
+        # Only replay events belonging to this session (prevents cross-session agent ghosts)
+        session_ok = evt["session_id"] == nil or evt["session_id"] == sid
+
+        ts_ok and session_ok
       end)
 
     Enum.reduce(signals_since, socket, fn evt, sock ->
@@ -1591,6 +1190,20 @@ defmodule RhoWeb.SessionLive do
   end
 
   defp safe_to_existing_atom(other), do: other
+
+  # --- DataTable helpers (delegated to DataTableHelpers) ---
+
+  defp apply_data_table_event(socket, data),
+    do: DataTableHelpers.apply_data_table_event(socket, data)
+
+  defp apply_open_workspace_event(socket, data),
+    do: DataTableHelpers.apply_open_workspace_event(socket, data)
+
+  defp refresh_data_table_session(socket),
+    do: DataTableHelpers.refresh_data_table_session(socket)
+
+  defp refresh_data_table_active(socket, table_name),
+    do: DataTableHelpers.refresh_data_table_active(socket, table_name)
 
   defp determine_workspaces(_live_action), do: %{}
 

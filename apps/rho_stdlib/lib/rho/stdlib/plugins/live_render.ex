@@ -146,81 +146,83 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     with :ok <- validate_spec(spec, catalog, max_bytes, pre_validated_size) do
       # Normalize: ensure root and elements exist
       spec = normalize_spec(spec)
+      publish_spec(spec, title, context)
+      {:ok, "Rendered."}
+    end
+  end
 
-      session_id = context[:session_id]
-      agent_id = context[:agent_id]
+  defp publish_spec(_spec, _title, %{session_id: nil}), do: :ok
+  defp publish_spec(_spec, _title, context) when not is_map_key(context, :session_id), do: :ok
 
-      if session_id do
-        message_id = "ui_#{System.unique_integer([:positive])}"
-        source = "/session/#{session_id}/agent/#{agent_id}"
-        topic = "rho.session.#{session_id}.events"
-        elements = spec["elements"] || %{}
-        root_id = spec["root"]
+  defp publish_spec(spec, title, context) do
+    session_id = context[:session_id]
+    agent_id = context[:agent_id]
+    message_id = "ui_#{System.unique_integer([:positive])}"
+    source = "/session/#{session_id}/agent/#{agent_id}"
+    topic = "rho.session.#{session_id}.events"
+    elements = spec["elements"] || %{}
+    root_id = spec["root"]
 
-        # Stream elements progressively via BFS. Each delta is a self-consistent
-        # partial spec: parent children arrays are trimmed to only reference
-        # elements present in the partial. List data (e.g. table rows) streams
-        # row by row.
-        ordered_ids = bfs_element_order(root_id, elements)
-        partial_elements = %{}
+    ordered_ids = bfs_element_order(root_id, elements)
 
-        publish_delta = fn acc ->
-          # Trim children arrays so they only reference elements in the partial
-          trimmed =
-            Map.new(acc, fn {id, el} ->
-              children = el["children"] || []
-              trimmed_children = Enum.filter(children, &Map.has_key?(acc, &1))
-              {id, Map.put(el, "children", trimmed_children)}
-            end)
+    publish_delta = fn acc ->
+      trimmed = trim_children_for_partial(acc)
 
-          Comms.publish(
-            "#{topic}.ui_spec_delta",
-            %{
-              session_id: session_id,
-              agent_id: agent_id,
-              message_id: message_id,
-              title: title,
-              spec: %{"root" => root_id, "elements" => trimmed}
-            },
-            source: source
-          )
-        end
+      Comms.publish(
+        "#{topic}.ui_spec_delta",
+        %{
+          session_id: session_id,
+          agent_id: agent_id,
+          message_id: message_id,
+          title: title,
+          spec: %{"root" => root_id, "elements" => trimmed}
+        },
+        source: source
+      )
+    end
 
-        Enum.reduce(ordered_ids, partial_elements, fn el_id, acc ->
-          el = elements[el_id]
-          data = get_in(el, ["props", "data"])
+    _final_partial =
+      Enum.reduce(ordered_ids, %{}, fn el_id, acc ->
+        stream_element(acc, el_id, elements, publish_delta)
+      end)
 
-          if is_list(data) and length(data) > 1 do
-            # Stream list data incrementally (row by row)
-            Enum.reduce(data, acc, fn row, inner_acc ->
-              existing_data = get_in(inner_acc, [el_id, "props", "data"]) || []
-              updated_el = put_in(el, ["props", "data"], existing_data ++ [row])
-              inner_acc = Map.put(inner_acc, el_id, updated_el)
-              publish_delta.(inner_acc)
-              inner_acc
-            end)
-          else
-            acc = Map.put(acc, el_id, el)
-            publish_delta.(acc)
-            acc
-          end
-        end)
+    Comms.publish(
+      "#{topic}.ui_spec",
+      %{
+        session_id: session_id,
+        agent_id: agent_id,
+        message_id: message_id,
+        title: title,
+        spec: spec
+      },
+      source: source
+    )
+  end
 
-        # Final complete spec
-        Comms.publish(
-          "#{topic}.ui_spec",
-          %{
-            session_id: session_id,
-            agent_id: agent_id,
-            message_id: message_id,
-            title: title,
-            spec: spec
-          },
-          source: source
-        )
-      end
+  defp trim_children_for_partial(acc) do
+    Map.new(acc, fn {id, el} ->
+      children = el["children"] || []
+      trimmed_children = Enum.filter(children, &Map.has_key?(acc, &1))
+      {id, Map.put(el, "children", trimmed_children)}
+    end)
+  end
 
-      {:ok, "UI rendered successfully."}
+  defp stream_element(acc, el_id, elements, publish_delta) do
+    el = elements[el_id]
+    data = get_in(el, ["props", "data"])
+
+    if is_list(data) and length(data) > 1 do
+      Enum.reduce(data, acc, fn row, inner_acc ->
+        existing_data = get_in(inner_acc, [el_id, "props", "data"]) || []
+        updated_el = put_in(el, ["props", "data"], existing_data ++ [row])
+        inner_acc = Map.put(inner_acc, el_id, updated_el)
+        publish_delta.(inner_acc)
+        inner_acc
+      end)
+    else
+      acc = Map.put(acc, el_id, el)
+      publish_delta.(acc)
+      acc
     end
   end
 
@@ -231,9 +233,8 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
 
   defp validate_spec(spec, catalog, max_bytes, pre_validated_size) when is_map(spec) do
     with :ok <- validate_size(spec, max_bytes, pre_validated_size),
-         :ok <- validate_structure(spec),
-         :ok <- validate_components(spec, catalog) do
-      :ok
+         :ok <- validate_structure(spec) do
+      validate_components(spec, catalog)
     end
   end
 

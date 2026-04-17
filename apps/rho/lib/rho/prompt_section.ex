@@ -61,10 +61,7 @@ defmodule Rho.PromptSection do
   def from_bindings([]), do: nil
 
   def from_bindings(bindings) when is_list(bindings) do
-    body =
-      bindings
-      |> Enum.map(&format_binding/1)
-      |> Enum.join("\n")
+    body = Enum.map_join(bindings, "\n", &format_binding/1)
 
     %__MODULE__{
       key: :bindings,
@@ -180,30 +177,7 @@ defmodule Rho.PromptSection do
 
     inner =
       Enum.reduce(section.subsections, inner, fn sub, acc ->
-        sub_inner = []
-
-        sub_inner =
-          if sub.heading do
-            [sub_inner | ["<heading>#{sub.heading}</heading>"]]
-          else
-            sub_inner
-          end
-
-        sub_inner =
-          if sub.body && sub.body != "" do
-            [sub_inner | ["<body>\n#{sub.body}\n</body>"]]
-          else
-            sub_inner
-          end
-
-        sub_inner =
-          Enum.reduce(sub.examples, sub_inner, fn ex, a ->
-            [a | ["<example>\n#{ex}\n</example>"]]
-          end)
-
-        sub_attrs = if sub.key, do: ~s( key="#{sub.key}"), else: ""
-        content = IO.iodata_to_binary(Enum.intersperse(List.flatten(sub_inner), "\n"))
-        [acc | ["<subsection#{sub_attrs}>\n#{content}\n</subsection>"]]
+        [acc | [render_xml_subsection(sub)]]
       end)
 
     inner =
@@ -213,6 +187,33 @@ defmodule Rho.PromptSection do
 
     content = IO.iodata_to_binary(Enum.intersperse(List.flatten(inner), "\n"))
     "<#{tag}#{key_attr}>\n#{content}\n</#{tag}>"
+  end
+
+  defp render_xml_subsection(sub) do
+    sub_inner = []
+
+    sub_inner =
+      if sub.heading do
+        [sub_inner | ["<heading>#{sub.heading}</heading>"]]
+      else
+        sub_inner
+      end
+
+    sub_inner =
+      if sub.body && sub.body != "" do
+        [sub_inner | ["<body>\n#{sub.body}\n</body>"]]
+      else
+        sub_inner
+      end
+
+    sub_inner =
+      Enum.reduce(sub.examples, sub_inner, fn ex, a ->
+        [a | ["<example>\n#{ex}\n</example>"]]
+      end)
+
+    sub_attrs = if sub.key, do: ~s( key="#{sub.key}"), else: ""
+    content = IO.iodata_to_binary(Enum.intersperse(List.flatten(sub_inner), "\n"))
+    "<subsection#{sub_attrs}>\n#{content}\n</subsection>"
   end
 
   # --- Helpers ---

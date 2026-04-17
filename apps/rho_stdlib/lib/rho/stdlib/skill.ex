@@ -30,31 +30,39 @@ defmodule Rho.Stdlib.Skill do
 
     case Regex.run(~r/\A---\n(.*?)\n---\n(.*)/s, content) do
       [_, frontmatter, body] ->
-        case YamlElixir.read_from_string(frontmatter) do
-          {:ok, meta} ->
-            name = meta["name"]
-            desc = meta["description"]
-
-            if name && desc && Regex.match?(@name_pattern, name) do
-              {:ok,
-               %__MODULE__{
-                 name: name,
-                 description: desc,
-                 location: path,
-                 source: source,
-                 metadata: meta["metadata"] || %{},
-                 body: String.trim(body)
-               }}
-            else
-              {:error, :invalid_frontmatter}
-            end
-
-          _ ->
-            {:error, :yaml_parse_error}
-        end
+        parse_frontmatter(frontmatter, body, path, source)
 
       _ ->
         {:error, :no_frontmatter}
+    end
+  end
+
+  defp parse_frontmatter(frontmatter, body, path, source) do
+    case YamlElixir.read_from_string(frontmatter) do
+      {:ok, meta} ->
+        build_skill(meta, body, path, source)
+
+      _ ->
+        {:error, :yaml_parse_error}
+    end
+  end
+
+  defp build_skill(meta, body, path, source) do
+    name = meta["name"]
+    desc = meta["description"]
+
+    if name && desc && Regex.match?(@name_pattern, name) do
+      {:ok,
+       %__MODULE__{
+         name: name,
+         description: desc,
+         location: path,
+         source: source,
+         metadata: meta["metadata"] || %{},
+         body: String.trim(body)
+       }}
+    else
+      {:error, :invalid_frontmatter}
     end
   end
 

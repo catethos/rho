@@ -191,7 +191,7 @@ defmodule Rho.TurnStrategy.StructuredIntegrationTest do
       assert {:ok, "Tape recorded"} = result
 
       context = Rho.Tape.Context.build(@test_tape)
-      assert length(context) > 0
+      assert context != []
 
       roles = Enum.map(context, & &1.role)
       assert :user in roles
@@ -279,7 +279,8 @@ defmodule Rho.TurnStrategy.StructuredIntegrationTest do
       assert system_text =~ "echo"
       assert system_text =~ "Action variants"
       assert system_text =~ "final_answer"
-      assert system_text =~ "Tool Reference"
+      # Tool descriptions are merged into action variants (no separate Tool Reference section)
+      assert system_text =~ "Echoes a message back"
     end
   end
 

@@ -13,7 +13,7 @@ defmodule RhoWeb.DataTable.Schema do
     @type t :: %__MODULE__{
             key: atom(),
             label: String.t(),
-            type: :text | :number | :textarea,
+            type: :text | :number | :textarea | :action,
             editable: boolean(),
             css_class: String.t() | nil
           }
@@ -24,7 +24,9 @@ defmodule RhoWeb.DataTable.Schema do
             columns: [],
             child_columns: [],
             children_key: nil,
-            group_by: []
+            group_by: [],
+            show_id: true,
+            children_display: :rows
 
   @type t :: %__MODULE__{
           title: String.t(),
@@ -32,7 +34,9 @@ defmodule RhoWeb.DataTable.Schema do
           columns: [Column.t()],
           child_columns: [Column.t()],
           children_key: atom() | nil,
-          group_by: [atom()]
+          group_by: [atom()],
+          show_id: boolean(),
+          children_display: :rows | :panel
         }
 
   @doc "Returns the list of known field name strings, including `id` and `sort_order`."

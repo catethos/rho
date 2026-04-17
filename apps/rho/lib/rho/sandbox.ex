@@ -119,12 +119,11 @@ defmodule Rho.Sandbox do
   defp format_diff(raw_output, sandbox) do
     raw_output
     |> String.split("\n", trim: true)
-    |> Enum.map(fn line ->
+    |> Enum.map_join("\n", fn line ->
       line
       |> String.replace(sandbox.workspace, "<workspace>")
       |> String.replace(sandbox.mount_path, "<sandbox>")
     end)
-    |> Enum.join("\n")
   end
 
   @doc """
@@ -253,9 +252,7 @@ defmodule Rho.Sandbox do
   defp start_mount(agent_id, mount_path, db_dir) do
     agentfs = System.find_executable("agentfs")
 
-    unless agentfs do
-      {:error, "agentfs binary not found in PATH"}
-    else
+    if agentfs do
       port =
         Port.open(
           {:spawn_executable, agentfs},
@@ -269,6 +266,8 @@ defmodule Rho.Sandbox do
         )
 
       {:ok, port}
+    else
+      {:error, "agentfs binary not found in PATH"}
     end
   end
 
@@ -281,24 +280,21 @@ defmodule Rho.Sandbox do
     if System.monotonic_time(:millisecond) > deadline do
       {:error, "mount timed out after #{@mount_ready_timeout}ms"}
     else
-      # Check if the mount is ready by trying to list its contents
-      case File.ls(mount_path) do
-        {:ok, _files} ->
-          # Verify it's actually a mount and not an empty dir
-          # by checking if the mount point is reported by mount command
-          {mounts, 0} = System.cmd("mount", [])
-
-          if String.contains?(mounts, mount_path) do
-            :ok
-          else
-            Process.sleep(100)
-            do_wait_for_mount(mount_path, deadline)
-          end
-
-        {:error, _} ->
-          Process.sleep(100)
-          do_wait_for_mount(mount_path, deadline)
+      case check_mount_ready(mount_path) do
+        :ok -> :ok
+        :not_ready -> Process.sleep(100) && do_wait_for_mount(mount_path, deadline)
       end
+    end
+  end
+
+  defp check_mount_ready(mount_path) do
+    case File.ls(mount_path) do
+      {:ok, _files} ->
+        {mounts, 0} = System.cmd("mount", [])
+        if String.contains?(mounts, mount_path), do: :ok, else: :not_ready
+
+      {:error, _} ->
+        :not_ready
     end
   end
 end

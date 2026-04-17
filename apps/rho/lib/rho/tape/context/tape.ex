@@ -2,7 +2,7 @@ defmodule Rho.Tape.Context.Tape do
   @moduledoc "Tape-context projection backed by the existing tape system."
   @behaviour Rho.Tape.Context
 
-  alias Rho.Tape.{Service, View, Compact, Fork, Store}
+  alias Rho.Tape.{Compact, Fork, Service, Store, View}
 
   @impl true
   def memory_ref(session_id, workspace), do: Service.session_tape(session_id, workspace)

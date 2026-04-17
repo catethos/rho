@@ -1,4 +1,5 @@
 defmodule Rho.Stdlib.Tools.Bash do
+  @moduledoc false
   @behaviour Rho.Plugin
 
   @impl Rho.Plugin

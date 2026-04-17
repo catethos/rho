@@ -57,54 +57,15 @@ defmodule Rho.Runner do
     tape_name = opts[:tape_name]
     memory_mod = opts[:tape_module] || Rho.Tape.Context.Tape
     subagent = opts[:subagent] || false
-    depth = opts[:depth] || 0
 
-    context = %Context{
-      tape_name: tape_name,
-      tape_module: memory_mod,
-      workspace: opts[:workspace],
-      agent_name: opts[:agent_name],
-      depth: depth,
-      subagent: subagent,
-      agent_id: opts[:agent_id],
-      session_id: opts[:session_id],
-      prompt_format: opts[:prompt_format] || :markdown,
-      user_id: opts[:user_id],
-      organization_id: opts[:organization_id]
-    }
-
-    tape = %Tape{
-      name: tape_name,
-      tape_module: memory_mod,
-      compact_threshold: opts[:compact_threshold] || 100_000,
-      compact_supported: function_exported?(memory_mod, :compact_if_needed, 2)
-    }
-
-    strategy =
-      opts[:turn_strategy] || opts[:reasoner] || Rho.TurnStrategy.Direct
+    context = build_context_struct(opts, tape_name, memory_mod, subagent)
+    tape = build_tape(tape_name, memory_mod, opts)
+    strategy = opts[:turn_strategy] || opts[:reasoner] || Rho.TurnStrategy.Direct
 
     base_prompt = opts[:system_prompt] || "You are a helpful assistant."
+    system_prompt = build_system_prompt(base_prompt, subagent, context, strategy, tool_defs)
 
-    system_prompt =
-      build_system_prompt(base_prompt, subagent, context, strategy, tool_defs)
-
-    raw_emit = resolve_emit(opts)
-
-    emit =
-      if tape_name do
-        fn event ->
-          if event.type not in [:llm_text, :tool_start, :tool_result] do
-            memory_mod.append_from_event(tape_name, event)
-          end
-
-          raw_emit.(event)
-        end
-      else
-        raw_emit
-      end
-
-    req_tools = Enum.map(tool_defs, & &1.tool)
-    tool_map = Map.new(tool_defs, fn t -> {t.tool.name, t} end)
+    emit = wrap_emit_with_tape(resolve_emit(opts), tape_name, memory_mod)
 
     %Runtime{
       model: model,
@@ -112,18 +73,77 @@ defmodule Rho.Runner do
       emit: emit,
       gen_opts: build_gen_opts(opts[:provider]),
       tool_defs: tool_defs,
-      req_tools: req_tools,
-      tool_map: tool_map,
+      req_tools: Enum.map(tool_defs, & &1.tool),
+      tool_map: Map.new(tool_defs, fn t -> {t.tool.name, t} end),
       system_prompt: system_prompt,
       subagent: subagent,
-      depth: depth,
+      depth: opts[:depth] || 0,
       tape: tape,
       context: context,
       lifecycle: nil
     }
   end
 
+  defp build_context_struct(opts, tape_name, memory_mod, subagent) do
+    %Context{
+      tape_name: tape_name,
+      tape_module: memory_mod,
+      workspace: opts[:workspace],
+      agent_name: opts[:agent_name],
+      depth: opts[:depth] || 0,
+      subagent: subagent,
+      agent_id: opts[:agent_id],
+      session_id: opts[:session_id],
+      prompt_format: opts[:prompt_format] || :markdown,
+      user_id: opts[:user_id],
+      organization_id: opts[:organization_id]
+    }
+  end
+
+  defp build_tape(tape_name, memory_mod, opts) do
+    %Tape{
+      name: tape_name,
+      tape_module: memory_mod,
+      compact_threshold: opts[:compact_threshold] || 100_000,
+      compact_supported: function_exported?(memory_mod, :compact_if_needed, 2)
+    }
+  end
+
+  defp wrap_emit_with_tape(raw_emit, nil, _memory_mod), do: raw_emit
+
+  defp wrap_emit_with_tape(raw_emit, tape_name, memory_mod) do
+    fn event ->
+      maybe_append_to_tape(event, tape_name, memory_mod)
+      raw_emit.(event)
+    end
+  end
+
+  defp maybe_append_to_tape(event, tape_name, memory_mod) do
+    if event.type not in [:llm_text, :tool_start, :tool_result] do
+      t_tape = System.monotonic_time(:millisecond)
+      memory_mod.append_from_event(tape_name, event)
+      tape_ms = System.monotonic_time(:millisecond) - t_tape
+
+      warn_if_slow(
+        tape_ms,
+        2_000,
+        "[runner.emit] tape append took #{tape_ms}ms for #{event.type}"
+      )
+    end
+  end
+
   # -- System prompt assembly --
+
+  @conciseness_section Rho.PromptSection.new(
+                         key: :conciseness,
+                         body:
+                           "Be concise between tool calls. Do not summarize what tools just did — " <>
+                             "the results speak for themselves. Only add text when you need user input, " <>
+                             "hit a blocker, or reach a natural milestone. Prefer calling the next tool immediately.",
+                         priority: :low,
+                         kind: :instructions,
+                         position: :postlude
+                       )
 
   defp build_system_prompt(base, true = _subagent, ctx, _strategy, _tool_defs) do
     alias Rho.PromptSection
@@ -144,7 +164,7 @@ defmodule Rho.Runner do
           position: :prelude
         )
 
-      PromptSection.render([base_section | plugin_sections], format)
+      PromptSection.render([base_section | plugin_sections] ++ [@conciseness_section], format)
     end
   end
 
@@ -176,7 +196,7 @@ defmodule Rho.Runner do
 
     prelude_text = PromptSection.render([base_section | plugin_prelude], format)
     strategy_text = PromptSection.render(strategy_sections, format)
-    postlude_text = PromptSection.render(plugin_postlude, format)
+    postlude_text = PromptSection.render(plugin_postlude ++ [@conciseness_section], format)
 
     [prelude_text, strategy_text, postlude_text]
     |> Enum.reject(&(&1 == ""))
@@ -219,16 +239,10 @@ defmodule Rho.Runner do
     [system_msg | tail]
   end
 
-  defp build_gen_opts(nil),
-    do: [provider_options: [openrouter_cache_control: %{type: "ephemeral"}]]
+  defp build_gen_opts(nil), do: []
 
   defp build_gen_opts(provider) do
-    [
-      provider_options: [
-        openrouter_provider: provider,
-        openrouter_cache_control: %{type: "ephemeral"}
-      ]
-    ]
+    [provider_options: [openrouter_provider: provider]]
   end
 
   # -- Main loop --
@@ -241,12 +255,27 @@ defmodule Rho.Runner do
   defp do_loop(context, runtime, step: step, max_steps: max) do
     runtime.emit.(%{type: :step_start, step: step, max_steps: max})
 
+    t0 = System.monotonic_time(:millisecond)
+
     with {:ok, context} <- maybe_compact(context, runtime),
+         t1 = System.monotonic_time(:millisecond),
+         :ok <- warn_if_slow(t1 - t0, 5_000, "[runner] compact took #{t1 - t0}ms at step #{step}"),
          {:ok, projection} <- run_prompt_out(context, runtime, step) do
-      runtime.turn_strategy.run(projection, runtime)
-      |> handle_strategy_result(context, runtime, step, max)
+      t2 = System.monotonic_time(:millisecond)
+      warn_if_slow(t2 - t1, 5_000, "[runner] prompt_out took #{t2 - t1}ms at step #{step}")
+      result = runtime.turn_strategy.run(projection, runtime)
+      t3 = System.monotonic_time(:millisecond)
+      warn_if_slow(t3 - t2, 30_000, "[runner] strategy.run took #{t3 - t2}ms at step #{step}")
+
+      handle_strategy_result(result, context, runtime, step, max)
     else
       {:error, reason} ->
+        Logger.error(
+          "[runner] step #{step} failed: #{inspect(reason)} " <>
+            "agent=#{runtime.context.agent_name} session=#{runtime.context.session_id} " <>
+            "agent_id=#{runtime.context.agent_id}"
+        )
+
         runtime.emit.(%{type: :error, reason: reason})
         {:error, reason}
     end
@@ -412,5 +441,10 @@ defmodule Rho.Runner do
       _ ->
         fn _event -> :ok end
     end
+  end
+
+  defp warn_if_slow(duration_ms, threshold, message) do
+    if duration_ms > threshold, do: Logger.warning(message)
+    :ok
   end
 end

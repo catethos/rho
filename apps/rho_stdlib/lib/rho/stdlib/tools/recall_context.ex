@@ -63,33 +63,36 @@ defmodule Rho.Stdlib.Tools.RecallContext do
   defp recall_phase(anchors, phase) do
     match =
       Enum.find(anchors, fn a ->
-        state = a.payload["state"] || %{}
-        (state["phase"] || a.payload["name"]) == phase
+        anchor_phase_name(a) == phase
       end)
 
     case match do
       nil ->
-        names =
-          Enum.map(anchors, fn a ->
-            state = a.payload["state"] || %{}
-            state["phase"] || a.payload["name"] || "unknown"
-          end)
-
+        names = Enum.map(anchors, &anchor_phase_name/1)
         {:ok, "Phase \"#{phase}\" not found. Available: #{Enum.join(names, ", ")}"}
 
       anchor ->
-        state = anchor.payload["state"] || %{}
-        summary = state["summary"] || "No summary."
-        next_steps = state["next_steps"] || []
-
-        parts = ["Phase: #{phase}", "Summary: #{summary}"]
-
-        parts =
-          if next_steps != [],
-            do: parts ++ ["Next steps: #{Enum.join(next_steps, ", ")}"],
-            else: parts
-
-        {:ok, Enum.join(parts, "\n")}
+        format_phase_detail(anchor, phase)
     end
+  end
+
+  defp anchor_phase_name(anchor) do
+    state = anchor.payload["state"] || %{}
+    state["phase"] || anchor.payload["name"] || "unknown"
+  end
+
+  defp format_phase_detail(anchor, phase) do
+    state = anchor.payload["state"] || %{}
+    summary = state["summary"] || "No summary."
+    next_steps = state["next_steps"] || []
+
+    parts = ["Phase: #{phase}", "Summary: #{summary}"]
+
+    parts =
+      if next_steps != [],
+        do: parts ++ ["Next steps: #{Enum.join(next_steps, ", ")}"],
+        else: parts
+
+    {:ok, Enum.join(parts, "\n")}
   end
 end

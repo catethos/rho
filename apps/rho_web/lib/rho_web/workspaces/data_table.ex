@@ -1,8 +1,14 @@
 defmodule RhoWeb.Workspaces.DataTable do
   @moduledoc """
   Workspace metadata for the DataTable (Skills Editor) panel.
+
+  Holds a **snapshot cache** rather than a row reducer — the actual row
+  state lives in `Rho.Stdlib.DataTable.Server` and is fetched by
+  `RhoWeb.SessionLive` via `handle_info/2` on invalidation events.
   """
   use RhoWeb.Workspace
+
+  alias RhoWeb.DataTable.Schemas
 
   @impl true
   def key, do: :data_table
@@ -27,9 +33,25 @@ defmodule RhoWeb.Workspaces.DataTable do
 
   @impl true
   def component_assigns(ws_state, shared) do
+    state = ws_state || RhoWeb.Projections.DataTableProjection.init()
+
+    snapshot = state.active_snapshot
+    rows = (snapshot && snapshot.rows) || []
+
+    schema = Schemas.resolve(state.view_key, state.active_table)
+
     %{
-      table_state: ws_state,
-      schema: (ws_state || %{})[:schema] || RhoWeb.DataTable.Schemas.skill_library(),
+      rows: rows,
+      schema: schema,
+      tables: state.tables,
+      table_order: state.table_order,
+      active_table: state.active_table,
+      view_key: state.view_key,
+      mode_label: state.mode_label,
+      metadata: state.metadata || %{},
+      error: state.error,
+      flash_message: state[:flash_message],
+      version: state.active_version,
       streaming: shared.streaming,
       total_cost: shared.total_cost,
       session_id: shared.session_id
@@ -37,17 +59,5 @@ defmodule RhoWeb.Workspaces.DataTable do
   end
 
   @impl true
-  def handle_info({:data_table_get_table, {caller_pid, ref}, filter}, ws_state, _context) do
-    if ws_state do
-      alias RhoWeb.Projections.DataTableProjection
-      rows = ws_state.rows_map |> Map.values() |> DataTableProjection.filter_rows(filter)
-      send(caller_pid, {ref, {:ok, rows}})
-    else
-      send(caller_pid, {ref, {:ok, []}})
-    end
-
-    {:noreply, ws_state}
-  end
-
   def handle_info(_message, _ws_state, _context), do: :skip
 end

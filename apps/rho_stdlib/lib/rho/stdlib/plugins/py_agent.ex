@@ -31,18 +31,7 @@ defmodule Rho.Stdlib.Plugins.PyAgent do
 
   defp build_tools(py_module, mount_opts, context) do
     name = Keyword.get(mount_opts, :name, to_string(py_module))
-
-    description =
-      case Keyword.fetch(mount_opts, :description) do
-        {:ok, desc} ->
-          desc
-
-        :error ->
-          case :py.call(py_module, :describe, []) do
-            {:ok, %{"description" => desc}} -> desc
-            _ -> "Talk to the #{name} Python agent"
-          end
-      end
+    description = resolve_description(py_module, mount_opts, name)
 
     [
       %{
@@ -57,23 +46,39 @@ defmodule Rho.Stdlib.Plugins.PyAgent do
           ),
         execute: fn %{"message" => message}, _ctx ->
           session_id = context[:session_id] || context[:agent_id] || "default"
-
-          case :py.call(py_module, :chat, [session_id, message]) do
-            {:ok, response} when is_binary(response) ->
-              {:ok, response}
-
-            {:ok, response} ->
-              {:ok, inspect(response)}
-
-            {:error, {exc_type, exc_msg}} ->
-              {:error, "Python #{exc_type}: #{exc_msg}"}
-
-            {:error, reason} ->
-              {:error, "Python agent error: #{inspect(reason)}"}
-          end
+          call_py_agent(py_module, session_id, message)
         end
       }
     ]
+  end
+
+  defp resolve_description(py_module, mount_opts, name) do
+    case Keyword.fetch(mount_opts, :description) do
+      {:ok, desc} ->
+        desc
+
+      :error ->
+        case :py.call(py_module, :describe, []) do
+          {:ok, %{"description" => desc}} -> desc
+          _ -> "Talk to the #{name} Python agent"
+        end
+    end
+  end
+
+  defp call_py_agent(py_module, session_id, message) do
+    case :py.call(py_module, :chat, [session_id, message]) do
+      {:ok, response} when is_binary(response) ->
+        {:ok, response}
+
+      {:ok, response} ->
+        {:ok, inspect(response)}
+
+      {:error, {exc_type, exc_msg}} ->
+        {:error, "Python #{exc_type}: #{exc_msg}"}
+
+      {:error, reason} ->
+        {:error, "Python agent error: #{inspect(reason)}"}
+    end
   end
 
   defp safe_existing_atom(str) when is_binary(str) do

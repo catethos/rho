@@ -58,4 +58,32 @@ defmodule Rho.ToolArgs do
   end
 
   def cast(args, _non_list_schema), do: args
+
+  @doc """
+  Validate that every param declared `required: true` in the parameter schema
+  is present and non-nil in the cast args map.
+
+  Returns `:ok` when all required params are satisfied, or
+  `{:error, [missing_atom_keys]}` listing the offending params.
+
+  Intended to run immediately after `cast/2`, before invoking a tool's run
+  callback — prevents nil from flowing into callbacks that assume
+  required params are present (e.g. reaching `Ecto.Repo.get_by/2` with
+  `id: nil`, which raises).
+  """
+  @spec validate_required(map(), keyword()) :: :ok | {:error, [atom()]}
+  def validate_required(cast_args, parameter_schema) when is_list(parameter_schema) do
+    missing =
+      for {key, opts} <- parameter_schema,
+          Keyword.get(opts, :required) == true,
+          is_nil(Map.get(cast_args, key)),
+          do: key
+
+    case missing do
+      [] -> :ok
+      keys -> {:error, keys}
+    end
+  end
+
+  def validate_required(_cast_args, _non_list_schema), do: :ok
 end

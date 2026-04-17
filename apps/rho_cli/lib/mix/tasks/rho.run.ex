@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.Rho.Run do
+  @moduledoc false
+
   use Mix.Task
 
   @shortdoc "Send a one-shot message to the LLM"

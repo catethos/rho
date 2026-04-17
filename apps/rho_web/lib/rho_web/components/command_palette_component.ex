@@ -84,7 +84,7 @@ defmodule RhoWeb.CommandPaletteComponent do
   defp build_actions(assigns) do
     workspace_actions =
       Enum.map(assigns.workspaces, fn {key, ws} ->
-        %{id: "open_workspace:#{key}", label: "Open #{ws.label}", category: :workspace}
+        %{id: "open_workspace:#{key}", label: "Open #{ws.label()}", category: :workspace}
       end)
 
     chat_action =

@@ -2,13 +2,25 @@ defmodule RhoWeb.DataTableComponent do
   @moduledoc """
   LiveComponent for an interactive, schema-driven data table.
 
-  Receives a `DataTable.Schema` via the `schema` assign to configure columns,
-  grouping, title, and empty state. Owns inline editing, group collapsing,
-  and optimistic updates via the signal bus.
+  Pure renderer that takes an ordered row list from a server snapshot
+  plus a `RhoWeb.DataTable.Schema` to configure columns, grouping,
+  title, and empty state. All row state is owned by
+  `Rho.Stdlib.DataTable.Server`; this component reads rows via assigns
+  and writes cell edits back through the client API synchronously. The
+  parent LiveView is responsible for refetching snapshots on
+  invalidation events and pushing them back into this component via
+  `ws_state_update`.
+
+  ## Tab strip
+
+  If `tables` / `table_order` are passed, a tab strip is rendered
+  above the table so the user can switch the active named table.
+  Clicking a tab sends `{:data_table_switch_tab, name}` to the parent
+  LiveView.
   """
   use Phoenix.LiveComponent
 
-  alias RhoWeb.Projections.DataTableProjection
+  alias Rho.Stdlib.DataTable
 
   @impl true
   def update(assigns, socket) do
@@ -16,28 +28,150 @@ defmodule RhoWeb.DataTableComponent do
       socket
       |> assign(assigns)
       |> assign_new(:editing, fn -> nil end)
-      |> assign_new(:collapsed, fn -> MapSet.new() end)
-      |> assign_new(:mode_label, fn -> nil end)
+      |> assign_new(:collapsed, fn -> :all_collapsed end)
+      |> assign_new(:optimistic_edits, fn -> %{} end)
+      |> assign_new(:metadata, fn -> %{} end)
+      |> assign_new(:sort_by, fn -> nil end)
+      |> assign_new(:sort_dir, fn -> :asc end)
+      |> assign_new(:confirm_delete, fn -> nil end)
+      |> assign_new(:editing_group, fn -> nil end)
+      |> assign_new(:view_key, fn -> nil end)
+      |> assign_new(:flash_message, fn -> nil end)
+      |> assign_new(:action_dialog, fn -> nil end)
+      |> assign_new(:export_menu_open, fn -> false end)
 
+    rows = socket.assigns[:rows] || []
     schema = socket.assigns.schema
-    table_state = socket.assigns.table_state
-    old_rows_map = socket.assigns[:rows_map]
+    version = socket.assigns[:version]
+    last_version = socket.assigns[:_last_version]
 
-    socket = assign(socket, :mode_label, table_state[:mode_label])
+    # Clear optimistic edits whenever a newer snapshot arrives, since the
+    # server's version is now authoritative.
+    optimistic =
+      if version && last_version && version > last_version do
+        %{}
+      else
+        socket.assigns.optimistic_edits
+      end
+
+    effective_rows = apply_optimistic(rows, optimistic)
+    sorted_rows = sort_rows(effective_rows, socket.assigns.sort_by, socket.assigns.sort_dir)
+    grouped = group_rows(sorted_rows, schema.group_by)
+
+    # On first render (or first render with data), collapse all groups.
+    collapsed =
+      case socket.assigns.collapsed do
+        :all_collapsed ->
+          ids = collect_all_group_ids(grouped)
+          # If no groups yet, stay sentinel so we catch the first real data
+          if MapSet.size(ids) == 0, do: :all_collapsed, else: ids
+
+        other ->
+          other
+      end
 
     socket =
-      if old_rows_map != table_state.rows_map do
-        socket
-        |> assign(:rows_map, table_state.rows_map)
-        |> assign(:grouped, group_rows(table_state.rows_map, schema.group_by))
-      else
-        socket
-      end
+      socket
+      |> assign(:rows, effective_rows)
+      |> assign(:_last_version, version)
+      |> assign(:optimistic_edits, optimistic)
+      |> assign(:collapsed, collapsed)
+      |> assign(:grouped, grouped)
 
     {:ok, socket}
   end
 
   @impl true
+  def handle_event("select_tab", %{"table" => name}, socket) do
+    send(self(), {:data_table_switch_tab, name})
+    {:noreply, socket}
+  end
+
+  def handle_event("navigate_to_library", %{"library-id" => library_id}, socket) do
+    send(self(), {:navigate_to_library, library_id})
+    {:noreply, socket}
+  end
+
+  def handle_event("open_save_dialog", _params, socket) do
+    name = library_name_from_table(socket.assigns[:active_table])
+    {:noreply, assign(socket, action_dialog: {:save, name})}
+  end
+
+  def handle_event("open_publish_dialog", _params, socket) do
+    name = library_name_from_table(socket.assigns[:active_table])
+    {:noreply, assign(socket, action_dialog: {:publish, name})}
+  end
+
+  def handle_event("close_dialog", _params, socket) do
+    {:noreply, assign(socket, :action_dialog, nil)}
+  end
+
+  def handle_event("confirm_save", %{"name" => name}, socket) do
+    active_table = socket.assigns[:active_table] || "main"
+    send(self(), {:data_table_save, active_table, String.trim(name)})
+    {:noreply, socket |> assign(:action_dialog, nil) |> assign(:flash_message, "Saving...")}
+  end
+
+  def handle_event("confirm_publish", %{"name" => name, "version_tag" => version_tag}, socket) do
+    active_table = socket.assigns[:active_table] || "main"
+
+    tag =
+      case String.trim(version_tag) do
+        "" -> nil
+        t -> t
+      end
+
+    send(self(), {:data_table_publish, active_table, String.trim(name), tag})
+    {:noreply, socket |> assign(:action_dialog, nil) |> assign(:flash_message, "Publishing...")}
+  end
+
+  def handle_event("fork_library", _params, socket) do
+    active_table = socket.assigns[:active_table] || "main"
+    send(self(), {:data_table_fork, active_table})
+    {:noreply, assign(socket, :flash_message, "Forking...")}
+  end
+
+  def handle_event("toggle_export_menu", _params, socket) do
+    {:noreply, assign(socket, :export_menu_open, !socket.assigns.export_menu_open)}
+  end
+
+  def handle_event("close_export_menu", _params, socket) do
+    {:noreply, assign(socket, :export_menu_open, false)}
+  end
+
+  def handle_event("export_csv", _params, socket) do
+    rows = socket.assigns.rows
+    schema = socket.assigns.schema
+    active_table = socket.assigns[:active_table] || "main"
+
+    csv = build_csv(rows, schema)
+    filename = String.replace(active_table, ~r/[^a-zA-Z0-9_-]/, "_") <> ".csv"
+
+    socket =
+      socket
+      |> assign(:export_menu_open, false)
+      |> push_event("csv-download", %{csv: csv, filename: filename})
+
+    {:noreply, socket}
+  end
+
+  def handle_event("export_xlsx", _params, socket) do
+    rows = socket.assigns.rows
+    schema = socket.assigns.schema
+    active_table = socket.assigns[:active_table] || "main"
+
+    xlsx_binary = build_xlsx(rows, schema)
+    b64 = Base.encode64(xlsx_binary)
+    filename = String.replace(active_table, ~r/[^a-zA-Z0-9_-]/, "_") <> ".xlsx"
+
+    socket =
+      socket
+      |> assign(:export_menu_open, false)
+      |> push_event("xlsx-download", %{data: b64, filename: filename})
+
+    {:noreply, socket}
+  end
+
   def handle_event("start_edit", %{"id" => id, "field" => field}, socket) do
     col = find_column(socket.assigns.schema, field)
 
@@ -49,38 +183,68 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   def handle_event("save_edit", %{"row_id" => id, "field" => field, "value" => value}, socket) do
-    table_state = socket.assigns.table_state
-    client_op_id = generate_op_id()
+    session_id = socket.assigns.session_id
+    active_table = socket.assigns[:active_table] || "main"
 
     {parent_id, child_index} = parse_compound_id(id)
 
-    new_state =
+    # Build the change list for the server. Child rows are addressed
+    # via the "child:<idx>:<field>" path on the parent row.
+    change =
       if child_index do
-        DataTableProjection.apply_optimistic_child_edit(
-          table_state,
-          parent_id,
-          child_index,
-          String.to_existing_atom(field),
-          value,
-          socket.assigns.schema.children_key,
-          client_op_id
-        )
+        %{
+          "id" => parent_id,
+          "field" => "child:#{child_index}:#{field}",
+          "value" => value
+        }
       else
-        DataTableProjection.apply_optimistic_edit(
-          table_state,
-          parent_id,
-          String.to_existing_atom(field),
-          value,
-          client_op_id
-        )
+        %{"id" => parent_id, "field" => field, "value" => value}
       end
 
-    send(self(), {:ws_state_update, :data_table, new_state})
+    # Optimistic overlay so the UI updates immediately even if the
+    # server round-trip and invalidation event haven't landed yet.
+    optimistic =
+      Map.put(socket.assigns.optimistic_edits, {parent_id, child_index, field}, value)
 
+    socket =
+      socket
+      |> assign(:optimistic_edits, optimistic)
+      |> assign(:editing, nil)
+
+    case DataTable.update_cells(session_id, [change], table: active_table) do
+      :ok ->
+        # Nudge the parent LV to refetch the snapshot immediately. The
+        # server's :table_changed event will also arrive via pubsub,
+        # but this avoids waiting for it.
+        send(self(), {:data_table_refresh, active_table})
+        {:noreply, socket}
+
+      {:error, reason} ->
+        send(self(), {:data_table_error, reason})
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("resolve_conflict", %{"id" => id, "resolution" => resolution}, socket) do
     session_id = socket.assigns.session_id
-    publish_user_edit(session_id, id, field, value, client_op_id)
+    active_table = socket.assigns[:active_table] || "combine_preview"
 
-    {:noreply, assign(socket, :editing, nil)}
+    change = %{"id" => id, "field" => "resolution", "value" => resolution}
+
+    optimistic =
+      Map.put(socket.assigns.optimistic_edits, {id, nil, "resolution"}, resolution)
+
+    socket = assign(socket, :optimistic_edits, optimistic)
+
+    case DataTable.update_cells(session_id, [change], table: active_table) do
+      :ok ->
+        send(self(), {:data_table_refresh, active_table})
+        {:noreply, socket}
+
+      {:error, reason} ->
+        send(self(), {:data_table_error, reason})
+        {:noreply, socket}
+    end
   end
 
   def handle_event("cancel_edit", _params, socket) do
@@ -88,31 +252,346 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   def handle_event("toggle_group", %{"group" => group_id}, socket) do
-    collapsed = socket.assigns.collapsed
-
     collapsed =
-      if MapSet.member?(collapsed, group_id),
-        do: MapSet.delete(collapsed, group_id),
-        else: MapSet.put(collapsed, group_id)
+      case socket.assigns.collapsed do
+        :all_collapsed ->
+          # Materialize so we can remove this one group
+          grouped = socket.assigns.grouped
+          collect_all_group_ids(grouped) |> MapSet.delete(group_id)
+
+        set ->
+          if MapSet.member?(set, group_id),
+            do: MapSet.delete(set, group_id),
+            else: MapSet.put(set, group_id)
+      end
 
     {:noreply, assign(socket, :collapsed, collapsed)}
+  end
+
+  # --- Group header editing (category/cluster) ---
+
+  def handle_event("start_group_edit", %{"group-key" => key, "group-value" => value}, socket) do
+    {:noreply, assign(socket, :editing_group, {key, value})}
+  end
+
+  def handle_event("cancel_group_edit", _params, socket) do
+    {:noreply, assign(socket, :editing_group, nil)}
+  end
+
+  def handle_event(
+        "save_group_edit",
+        %{"field" => field, "old_value" => old_value, "value" => new_value},
+        socket
+      ) do
+    if new_value == "" or new_value == old_value do
+      {:noreply, assign(socket, :editing_group, nil)}
+    else
+      session_id = socket.assigns.session_id
+      active_table = socket.assigns[:active_table] || "main"
+
+      # Find all rows matching the old group value and update them
+      rows = socket.assigns.rows
+
+      changes =
+        rows
+        |> Enum.filter(fn row ->
+          val = Map.get(row, String.to_existing_atom(field)) || Map.get(row, field)
+          to_string(val) == old_value
+        end)
+        |> Enum.map(fn row ->
+          %{"id" => to_string(row_id(row)), "field" => field, "value" => new_value}
+        end)
+
+      socket = assign(socket, :editing_group, nil)
+
+      case changes do
+        [] ->
+          {:noreply, socket}
+
+        _ ->
+          case DataTable.update_cells(session_id, changes, table: active_table) do
+            :ok ->
+              send(self(), {:data_table_refresh, active_table})
+              {:noreply, socket}
+
+            {:error, reason} ->
+              send(self(), {:data_table_error, reason})
+              {:noreply, socket}
+          end
+      end
+    end
+  end
+
+  # --- Add / Delete rows ---
+
+  def handle_event("add_row", params, socket) do
+    session_id = socket.assigns.session_id
+    active_table = socket.assigns[:active_table] || "main"
+    schema = socket.assigns.schema
+
+    # Build row with non-empty placeholders for required text fields.
+    # The storage schema rejects "" for required columns, so we use
+    # "(new)" as a visible placeholder the user can immediately edit.
+    row =
+      schema.columns
+      |> Map.new(fn col ->
+        default =
+          case col.type do
+            :number -> 0
+            _ -> "(new)"
+          end
+
+        {col.key, default}
+      end)
+      |> maybe_put(params, "category")
+      |> maybe_put(params, "cluster")
+
+    case DataTable.add_rows(session_id, [row], table: active_table) do
+      {:ok, _inserted} ->
+        send(self(), {:data_table_refresh, active_table})
+        {:noreply, socket}
+
+      {:error, reason} ->
+        send(self(), {:data_table_error, reason})
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("confirm_delete", %{"id" => id}, socket) do
+    {:noreply, assign(socket, :confirm_delete, id)}
+  end
+
+  def handle_event("cancel_delete", _params, socket) do
+    {:noreply, assign(socket, :confirm_delete, nil)}
+  end
+
+  def handle_event("delete_row", %{"id" => id}, socket) do
+    session_id = socket.assigns.session_id
+    active_table = socket.assigns[:active_table] || "main"
+
+    case DataTable.delete_rows(session_id, [id], table: active_table) do
+      :ok ->
+        send(self(), {:data_table_refresh, active_table})
+        {:noreply, assign(socket, :confirm_delete, nil)}
+
+      {:error, reason} ->
+        send(self(), {:data_table_error, reason})
+        {:noreply, assign(socket, :confirm_delete, nil)}
+    end
+  end
+
+  # --- Add / Delete child rows (proficiency levels) ---
+
+  def handle_event("add_child", %{"parent-id" => parent_id}, socket) do
+    session_id = socket.assigns.session_id
+    active_table = socket.assigns[:active_table] || "main"
+    schema = socket.assigns.schema
+    children_key = schema.children_key
+
+    row = find_row(socket.assigns.rows, parent_id)
+    children = (row && Map.get(row, children_key)) || []
+
+    # Next level number = max existing + 1
+    next_level = next_child_level(children)
+
+    blank_child =
+      schema.child_columns
+      |> Map.new(fn col ->
+        default = if col.type == :number, do: 0, else: ""
+        {col.key, default}
+      end)
+      |> Map.put(:level, next_level)
+
+    new_children = children ++ [blank_child]
+    change = %{"id" => parent_id, "field" => to_string(children_key), "value" => new_children}
+
+    case DataTable.update_cells(session_id, [change], table: active_table) do
+      :ok ->
+        send(self(), {:data_table_refresh, active_table})
+        {:noreply, socket}
+
+      {:error, reason} ->
+        send(self(), {:data_table_error, reason})
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("delete_child", %{"parent-id" => parent_id, "index" => idx_str}, socket) do
+    session_id = socket.assigns.session_id
+    active_table = socket.assigns[:active_table] || "main"
+    schema = socket.assigns.schema
+    children_key = schema.children_key
+
+    row = find_row(socket.assigns.rows, parent_id)
+    children = (row && Map.get(row, children_key)) || []
+    {idx, ""} = Integer.parse(idx_str)
+
+    new_children = List.delete_at(children, idx)
+    change = %{"id" => parent_id, "field" => to_string(children_key), "value" => new_children}
+
+    case DataTable.update_cells(session_id, [change], table: active_table) do
+      :ok ->
+        send(self(), {:data_table_refresh, active_table})
+        {:noreply, socket}
+
+      {:error, reason} ->
+        send(self(), {:data_table_error, reason})
+        {:noreply, socket}
+    end
+  end
+
+  # --- Column sorting ---
+
+  def handle_event("sort_column", %{"field" => field}, socket) do
+    field_atom = String.to_existing_atom(field)
+
+    {new_sort_by, new_sort_dir} =
+      case {socket.assigns.sort_by, socket.assigns.sort_dir} do
+        {^field_atom, :asc} -> {field_atom, :desc}
+        {^field_atom, :desc} -> {nil, :asc}
+        _ -> {field_atom, :asc}
+      end
+
+    rows = socket.assigns.rows
+    sorted = sort_rows(rows, new_sort_by, new_sort_dir)
+
+    socket =
+      socket
+      |> assign(:sort_by, new_sort_by)
+      |> assign(:sort_dir, new_sort_dir)
+      |> assign(:grouped, group_rows(sorted, socket.assigns.schema.group_by))
+
+    {:noreply, socket}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
     <div class={["dt-panel", @class]}>
+      <%= if @error do %>
+        <div class="dt-error-banner">
+          <strong>Data table unavailable:</strong> <%= inspect(@error) %>
+          <div class="dt-error-hint">The per-session table server is not running. Reload the page or regenerate the data.</div>
+        </div>
+      <% end %>
+
+      <%= if length(@table_order || []) > 1 do %>
+        <div class="dt-tab-strip">
+          <%= for name <- @table_order do %>
+            <% count = table_row_count(@tables, name) %>
+            <button
+              type="button"
+              phx-click="select_tab"
+              phx-target={@myself}
+              phx-value-table={name}
+              class={"dt-tab" <> if(name == @active_table, do: " dt-tab-active", else: "")}
+            >
+              <%= name %>
+              <span class="dt-tab-count"><%= count %></span>
+            </button>
+          <% end %>
+        </div>
+      <% end %>
+
       <div class="dt-toolbar">
         <h2 class="dt-title"><%= @schema.title %></h2>
-        <span :if={@mode_label} class="dt-mode-label"><%= @mode_label %></span>
-        <span class="dt-row-count"><%= map_size(@rows_map) %> rows</span>
+        <span class="dt-row-count"><%= length(@rows) %> rows</span>
         <span :if={@streaming} class="dt-streaming">
           streaming...
         </span>
         <span :if={@total_cost > 0} class="dt-cost">
           $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
         </span>
+        <span :if={@flash_message} class="dt-flash"><%= @flash_message %></span>
+        <div class="dt-toolbar-actions">
+          <button
+            :if={library_view?(@view_key, @active_table)}
+            type="button"
+            class="dt-action-btn dt-save-btn"
+            phx-click="open_save_dialog"
+            phx-target={@myself}
+            title="Save to library"
+          >
+            Save
+          </button>
+          <button
+            :if={library_view?(@view_key, @active_table)}
+            type="button"
+            class="dt-action-btn dt-publish-btn"
+            phx-click="open_publish_dialog"
+            phx-target={@myself}
+            title="Publish as immutable version"
+          >
+            Publish
+          </button>
+          <button
+            :if={library_view?(@view_key, @active_table)}
+            type="button"
+            class="dt-action-btn dt-fork-btn"
+            phx-click="fork_library"
+            phx-target={@myself}
+            title="Fork as new library"
+          >
+            Fork
+          </button>
+          <div
+            class="dt-export-dropdown"
+            id={"dt-export-" <> (@active_table || "main")}
+            phx-hook="ExportDownload"
+          >
+            <button
+              type="button"
+              class="dt-action-btn dt-export-btn"
+              phx-click="toggle_export_menu"
+              phx-target={@myself}
+            >
+              Export &#9662;
+            </button>
+            <div class={"dt-export-menu" <> if(@export_menu_open, do: " dt-export-menu-open", else: "")}>
+              <button type="button" class="dt-export-option" phx-click="export_csv" phx-target={@myself}>
+                CSV (.csv)
+              </button>
+              <button type="button" class="dt-export-option" phx-click="export_xlsx" phx-target={@myself}>
+                Excel (.xlsx)
+              </button>
+            </div>
+          </div>
+          <button type="button" class="dt-add-row-btn" phx-click="add_row" phx-target={@myself} title="Add row">
+            + Add Row
+          </button>
+        </div>
       </div>
+
+      <%= if @action_dialog do %>
+        <div class="dt-dialog-backdrop" phx-click="close_dialog" phx-target={@myself}>
+          <div class="dt-dialog" phx-click-away="close_dialog" phx-target={@myself}>
+            <%= case @action_dialog do %>
+              <% {:save, name} -> %>
+                <h3 class="dt-dialog-title">Save Library</h3>
+                <form phx-submit="confirm_save" phx-target={@myself}>
+                  <label class="dt-dialog-label">Library Name</label>
+                  <input type="text" name="name" value={name} class="dt-dialog-input" phx-hook="AutoFocus" id="save-dialog-name" />
+                  <div class="dt-dialog-actions">
+                    <button type="button" class="dt-dialog-btn dt-dialog-cancel" phx-click="close_dialog" phx-target={@myself}>Cancel</button>
+                    <button type="submit" class="dt-dialog-btn dt-dialog-confirm dt-save-btn">Save</button>
+                  </div>
+                </form>
+              <% {:publish, name} -> %>
+                <h3 class="dt-dialog-title">Publish Library</h3>
+                <form phx-submit="confirm_publish" phx-target={@myself}>
+                  <label class="dt-dialog-label">Library Name</label>
+                  <input type="text" name="name" value={name} class="dt-dialog-input" phx-hook="AutoFocus" id="publish-dialog-name" />
+                  <label class="dt-dialog-label">Version Tag <span class="dt-dialog-hint">(e.g. 2026.1 — auto-generated if blank)</span></label>
+                  <input type="text" name="version_tag" value="" class="dt-dialog-input" id="publish-dialog-version" placeholder="auto" />
+                  <div class="dt-dialog-actions">
+                    <button type="button" class="dt-dialog-btn dt-dialog-cancel" phx-click="close_dialog" phx-target={@myself}>Cancel</button>
+                    <button type="submit" class="dt-dialog-btn dt-dialog-confirm dt-publish-btn">Publish</button>
+                  </div>
+                </form>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
 
       <div class="dt-table-wrap">
         <%= if @grouped == [] do %>
@@ -120,27 +599,49 @@ defmodule RhoWeb.DataTableComponent do
         <% else %>
           <%= for {group_label, children} <- @grouped do %>
             <% group_id = "grp-" <> slug(group_label) %>
-            <div id={group_id} class={"dt-group dt-group-l1" <> if(MapSet.member?(@collapsed, group_id), do: " dt-collapsed", else: "")}>
-              <div class="dt-group-header dt-group-header-l1" phx-click="toggle_group" phx-target={@myself} phx-value-group={group_id}>
-                <span class="dt-chevron"></span>
-                <span class="dt-group-name"><%= group_label %></span>
-                <span class="dt-group-count"><%= count_nested_rows(children) %> rows</span>
+            <% group_by = @schema.group_by %>
+            <% l1_field = List.first(group_by) %>
+            <div id={group_id} class={"dt-group dt-group-l1" <> if(collapsed?(@collapsed, group_id), do: " dt-collapsed", else: "")}>
+              <div class="dt-group-header dt-group-header-l1">
+                <span class="dt-chevron" phx-click="toggle_group" phx-target={@myself} phx-value-group={group_id}></span>
+                <.editable_group_name
+                  field={l1_field}
+                  value={group_label}
+                  editing_group={@editing_group}
+                  myself={@myself}
+                />
+                <span class="dt-group-count" phx-click="toggle_group" phx-target={@myself} phx-value-group={group_id}><%= count_nested_rows(children) %> rows</span>
+                <button type="button" class="dt-group-add-btn" phx-click="add_row" phx-target={@myself}
+                  phx-value-category={group_label}
+                  title={"Add skill to #{group_label}"}>+</button>
               </div>
-              <div class={"dt-group-content" <> if(MapSet.member?(@collapsed, group_id), do: " dt-hidden", else: "")}>
+              <div class={"dt-group-content" <> if(collapsed?(@collapsed, group_id), do: " dt-hidden", else: "")}>
                 <%= case children do %>
                   <% {:rows, rows} -> %>
-                    <.data_table_rows rows={rows} schema={@schema} editing={@editing} myself={@myself} collapsed={@collapsed} />
+                    <.data_table_rows rows={rows} schema={@schema} editing={@editing} myself={@myself} collapsed={@collapsed} metadata={@metadata} sort_by={@sort_by} sort_dir={@sort_dir} confirm_delete={@confirm_delete} />
+                    <.add_row_in_group myself={@myself} group_by={group_by} group_label={group_label} sub_label={nil} />
                   <% {:nested, sub_groups} -> %>
+                    <% l2_field = Enum.at(group_by, 1) %>
                     <%= for {sub_label, rows} <- sub_groups do %>
                       <% sub_id = "grp-" <> slug(group_label) <> "-" <> slug(sub_label) %>
-                      <div id={sub_id} class={"dt-group dt-group-l2" <> if(MapSet.member?(@collapsed, sub_id), do: " dt-collapsed", else: "")}>
-                        <div class="dt-group-header dt-group-header-l2" phx-click="toggle_group" phx-target={@myself} phx-value-group={sub_id}>
-                          <span class="dt-chevron"></span>
-                          <span class="dt-group-name"><%= sub_label %></span>
-                          <span class="dt-group-count"><%= length(rows) %> rows</span>
+                      <div id={sub_id} class={"dt-group dt-group-l2" <> if(collapsed?(@collapsed, sub_id), do: " dt-collapsed", else: "")}>
+                        <div class="dt-group-header dt-group-header-l2">
+                          <span class="dt-chevron" phx-click="toggle_group" phx-target={@myself} phx-value-group={sub_id}></span>
+                          <.editable_group_name
+                            field={l2_field}
+                            value={sub_label}
+                            editing_group={@editing_group}
+                            myself={@myself}
+                          />
+                          <span class="dt-group-count" phx-click="toggle_group" phx-target={@myself} phx-value-group={sub_id}><%= length(rows) %> rows</span>
+                          <button type="button" class="dt-group-add-btn" phx-click="add_row" phx-target={@myself}
+                            phx-value-category={group_label}
+                            phx-value-cluster={sub_label}
+                            title={"Add skill to #{sub_label}"}>+</button>
                         </div>
-                        <div class={"dt-group-content" <> if(MapSet.member?(@collapsed, sub_id), do: " dt-hidden", else: "")}>
-                          <.data_table_rows rows={rows} schema={@schema} editing={@editing} myself={@myself} collapsed={@collapsed} />
+                        <div class={"dt-group-content" <> if(collapsed?(@collapsed, sub_id), do: " dt-hidden", else: "")}>
+                          <.data_table_rows rows={rows} schema={@schema} editing={@editing} myself={@myself} collapsed={@collapsed} metadata={@metadata} sort_by={@sort_by} sort_dir={@sort_dir} confirm_delete={@confirm_delete} />
+                          <.add_row_in_group myself={@myself} group_by={group_by} group_label={group_label} sub_label={sub_label} />
                         </div>
                       </div>
                     <% end %>
@@ -163,13 +664,17 @@ defmodule RhoWeb.DataTableComponent do
     has_children = assigns.schema.children_key != nil
     child_columns = assigns.schema.child_columns || []
     children_key = assigns.schema.children_key
+    show_id = Map.get(assigns.schema, :show_id, true)
+    panel_mode = Map.get(assigns.schema, :children_display, :rows) == :panel
 
     assigns =
       assign(assigns,
         visible_columns: visible_columns,
         has_children: has_children,
         child_columns: child_columns,
-        children_key: children_key
+        children_key: children_key,
+        show_id: show_id,
+        panel_mode: panel_mode
       )
 
     ~H"""
@@ -179,42 +684,92 @@ defmodule RhoWeb.DataTableComponent do
           <%= if @has_children do %>
             <th class="dt-th dt-th-expand"></th>
           <% end %>
-          <th class="dt-th dt-th-id">ID</th>
-          <th :for={col <- @visible_columns} class={"dt-th " <> (col.css_class || "dt-th-#{col.key}")}><%= col.label %></th>
-          <th :if={@has_children} :for={col <- @child_columns} class={"dt-th " <> (col.css_class || "dt-th-#{col.key}")}><%= col.label %></th>
+          <th :if={@show_id} class="dt-th dt-th-id">ID</th>
+          <th :for={col <- @visible_columns} class={"dt-th " <> (col.css_class || "dt-th-#{col.key}") <> if(@sort_by == col.key, do: " dt-th-sorted", else: "")}
+              phx-click="sort_column" phx-target={@myself} phx-value-field={col.key}
+              style="cursor: pointer; user-select: none;">
+            <%= col.label %>
+            <span :if={@sort_by == col.key} class="dt-sort-indicator">
+              <%= if @sort_dir == :asc, do: Phoenix.HTML.raw("&#9650;"), else: Phoenix.HTML.raw("&#9660;") %>
+            </span>
+          </th>
+          <%= if @has_children && !@panel_mode do %>
+            <th :for={col <- @child_columns} class={"dt-th " <> (col.css_class || "dt-th-#{col.key}")}><%= col.label %></th>
+          <% end %>
+          <th :if={@has_children && @panel_mode} class="dt-th dt-col-levels">Levels</th>
+          <th class="dt-th dt-th-actions"></th>
         </tr>
       </thead>
       <tbody>
         <%= if @has_children do %>
           <%= for row <- @rows do %>
-            <% row_id_str = to_string(row.id) %>
-            <% expanded = not MapSet.member?(@collapsed, "row-" <> row_id_str) %>
-            <% children = Map.get(row, @children_key) || [] %>
-            <tr id={"row-#{row.id}"} class="dt-row dt-parent-row">
+            <% row_id_str = to_string(row_id(row)) %>
+            <% expanded = not collapsed?(@collapsed, "row-" <> row_id_str) %>
+            <% children = Map.get(row, @children_key) || Map.get(row, to_string(@children_key)) || [] %>
+            <tr id={"row-#{row_id_str}"} class={"dt-row dt-parent-row" <> if(expanded && @panel_mode, do: " dt-skill-expanded", else: "")}>
               <td class="dt-td dt-td-expand" phx-click="toggle_group" phx-target={@myself} phx-value-group={"row-" <> row_id_str}>
                 <span class={"dt-chevron" <> if(expanded, do: " dt-expanded", else: "")}></span>
               </td>
-              <td class="dt-td dt-td-id"><%= row.id %></td>
-              <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={row_id_str} />
-              <td :for={_col <- @child_columns} class="dt-td dt-td-empty"></td>
+              <td :if={@show_id} class="dt-td dt-td-id"><%= row_id_str %></td>
+              <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={row_id_str} metadata={@metadata} />
+              <%= if !@panel_mode do %>
+                <td :for={_col <- @child_columns} class="dt-td dt-td-empty"></td>
+              <% else %>
+                <td class="dt-td dt-col-levels"><%= length(children) %></td>
+              <% end %>
+              <td class="dt-td dt-td-row-actions">
+                <.delete_button row_id={row_id_str} confirm_delete={@confirm_delete} myself={@myself} />
+              </td>
             </tr>
             <%= if expanded do %>
-              <%= for {child, idx} <- Enum.with_index(children) do %>
-                <% child_id = row_id_str <> ":child:" <> to_string(idx) %>
-                <% child_map = atomize_child(child) %>
-                <tr id={"row-#{child_id}"} class="dt-row dt-child-row">
-                  <td class="dt-td dt-td-expand"></td>
-                  <td class="dt-td dt-td-id dt-child-id"><%= idx + 1 %></td>
-                  <td :for={_col <- @visible_columns} class="dt-td dt-td-empty"></td>
-                  <.editable_cell :for={col <- @child_columns} row={child_map} col={col} editing={@editing} myself={@myself} row_id={child_id} />
+              <%= if @panel_mode do %>
+                <tr class="dt-row dt-proficiency-row">
+                  <td colspan={length(@visible_columns) + 3} style="padding: 0;">
+                    <div :if={children != []} class="dt-proficiency-panel">
+                      <%= for {child, idx} <- children |> Enum.with_index() |> Enum.sort_by(fn {c, _} -> get_child_level(c) end) do %>
+                        <% child_id = row_id_str <> ":child:" <> to_string(idx) %>
+                        <div class="dt-proficiency-item">
+                          <span class="dt-proficiency-level">L<%= get_child_level(child) %></span>
+                          <.inline_editable_span id={child_id} field="level_name" value={get_cell(child, :level_name)} editing={@editing} myself={@myself} class="dt-proficiency-name" />
+                          <.inline_editable_span id={child_id} field="level_description" value={get_cell(child, :level_description)} editing={@editing} myself={@myself} class="dt-proficiency-desc" />
+                          <button type="button" class="dt-child-delete-btn" phx-click="delete_child" phx-target={@myself} phx-value-parent-id={row_id_str} phx-value-index={idx} title="Remove level">
+                            &times;
+                          </button>
+                        </div>
+                      <% end %>
+                    </div>
+                    <div class="dt-proficiency-add">
+                      <button type="button" class="dt-add-child-btn" phx-click="add_child" phx-target={@myself} phx-value-parent-id={row_id_str}>
+                        + Add Level
+                      </button>
+                    </div>
+                  </td>
                 </tr>
+              <% else %>
+                <%= for {child, idx} <- Enum.with_index(children) do %>
+                  <% child_id = row_id_str <> ":child:" <> to_string(idx) %>
+                  <tr id={"row-#{child_id}"} class="dt-row dt-child-row">
+                    <td class="dt-td dt-td-expand"></td>
+                    <td :if={@show_id} class="dt-td dt-td-id dt-child-id"><%= idx + 1 %></td>
+                    <td :for={_col <- @visible_columns} class="dt-td dt-td-empty"></td>
+                    <.editable_cell :for={col <- @child_columns} row={child || %{}} col={col} editing={@editing} myself={@myself} row_id={child_id} metadata={@metadata} />
+                    <td class="dt-td dt-td-row-actions">
+                      <button type="button" class="dt-child-delete-btn" phx-click="delete_child" phx-target={@myself} phx-value-parent-id={row_id_str} phx-value-index={idx} title="Remove">
+                        &times;
+                      </button>
+                    </td>
+                  </tr>
+                <% end %>
               <% end %>
             <% end %>
           <% end %>
         <% else %>
-          <tr :for={row <- @rows} id={"row-#{row.id}"} class="dt-row">
-            <td class="dt-td dt-td-id"><%= row.id %></td>
-            <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={to_string(row.id)} />
+          <tr :for={row <- @rows} id={"row-#{row_id(row)}"} class="dt-row">
+            <td :if={@show_id} class="dt-td dt-td-id"><%= row_id(row) %></td>
+            <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={to_string(row_id(row))} metadata={@metadata} />
+            <td class="dt-td dt-td-row-actions">
+              <.delete_button row_id={to_string(row_id(row))} confirm_delete={@confirm_delete} myself={@myself} />
+            </td>
           </tr>
         <% end %>
       </tbody>
@@ -227,11 +782,14 @@ defmodule RhoWeb.DataTableComponent do
   defp editable_cell(assigns) do
     row_id = assigns.row_id
     editing? = assigns.editing == {row_id, Atom.to_string(assigns.col.key)}
-    value = Map.get(assigns.row, assigns.col.key, "")
+    value = get_cell(assigns.row, assigns.col.key)
 
     assigns = assign(assigns, editing?: editing?, value: value, cell_row_id: row_id)
 
     ~H"""
+    <%= if @col.type == :action do %>
+      <.action_cell row={@row} col={@col} value={@value} row_id={@cell_row_id} myself={@myself} />
+    <% else %>
     <td
       class={"dt-td " <> (@col.css_class || "dt-td-#{@col.key}")}
       phx-click={if @col.editable, do: "start_edit"}
@@ -240,7 +798,7 @@ defmodule RhoWeb.DataTableComponent do
       phx-value-field={@col.key}
     >
       <%= if @editing? do %>
-        <form phx-submit="save_edit" phx-target={@myself} phx-click-away="cancel_edit">
+        <form phx-submit="save_edit" phx-target={@myself}>
           <input type="hidden" name="row_id" value={@cell_row_id} />
           <input type="hidden" name="field" value={@col.key} />
           <%= if @col.type == :textarea do %>
@@ -252,6 +810,10 @@ defmodule RhoWeb.DataTableComponent do
               phx-keydown="cancel_edit"
               phx-target={@myself}
               phx-key="Escape"
+              phx-blur="save_edit"
+              phx-target={@myself}
+              phx-value-row_id={@cell_row_id}
+              phx-value-field={@col.key}
             ><%= @value %></textarea>
           <% else %>
             <input
@@ -263,7 +825,7 @@ defmodule RhoWeb.DataTableComponent do
               id={"edit-#{@cell_row_id}-#{@col.key}"}
               phx-blur="save_edit"
               phx-target={@myself}
-              phx-value-id={@cell_row_id}
+              phx-value-row_id={@cell_row_id}
               phx-value-field={@col.key}
               phx-keydown="cancel_edit"
               phx-target={@myself}
@@ -272,44 +834,312 @@ defmodule RhoWeb.DataTableComponent do
           <% end %>
         </form>
       <% else %>
-        <span class="dt-cell-text"><%= @value %></span>
+        <%= if @col.key == :skill_name && !@col.editable && @metadata[:library_id] do %>
+          <span
+            class="dt-cell-text dt-cell-link"
+            phx-click="navigate_to_library"
+            phx-target={@myself}
+            phx-value-library-id={@metadata[:library_id]}
+          ><%= @value %></span>
+        <% else %>
+          <span class="dt-cell-text"><%= @value %></span>
+        <% end %>
+      <% end %>
+    </td>
+    <% end %>
+    """
+  end
+
+  defp action_cell(assigns) do
+    resolved = assigns.value not in [nil, "", "unresolved"]
+    assigns = assign(assigns, resolved: resolved)
+
+    ~H"""
+    <td class={"dt-td " <> (@col.css_class || "dt-td-action")}>
+      <%= if @resolved do %>
+        <span class="dt-resolution-badge">
+          <span class="dt-resolution-icon">&#10003;</span>
+          <span class="dt-resolution-label"><%= resolution_label(@value) %></span>
+        </span>
+      <% else %>
+        <div class="dt-action-buttons">
+          <button
+            type="button"
+            class="dt-action-btn dt-action-merge-a"
+            phx-click="resolve_conflict"
+            phx-target={@myself}
+            phx-value-id={@row_id}
+            phx-value-resolution="merge_a"
+            title="Keep Skill A, absorb B's levels"
+          >&#8592; A</button>
+          <button
+            type="button"
+            class="dt-action-btn dt-action-merge-b"
+            phx-click="resolve_conflict"
+            phx-target={@myself}
+            phx-value-id={@row_id}
+            phx-value-resolution="merge_b"
+            title="Keep Skill B, absorb A's levels"
+          >B &#8594;</button>
+          <button
+            type="button"
+            class="dt-action-btn dt-action-keep-both"
+            phx-click="resolve_conflict"
+            phx-target={@myself}
+            phx-value-id={@row_id}
+            phx-value-resolution="keep_both"
+            title="Keep both as separate skills"
+          >Both</button>
+        </div>
       <% end %>
     </td>
     """
   end
 
-  # --- Grouping helpers ---
+  defp resolution_label("merge_a"), do: "Keep A"
+  defp resolution_label("merge_b"), do: "Keep B"
+  defp resolution_label("keep_both"), do: "Keep Both"
+  defp resolution_label(other), do: other
 
-  defp group_rows(rows_map, _group_by) when map_size(rows_map) == 0, do: []
+  # --- Editable group name (category/cluster headers) ---
 
-  defp group_rows(rows_map, []) do
-    rows = rows_map |> Map.values() |> Enum.sort_by(& &1[:sort_order])
-    [{"All", {:rows, rows}}]
+  defp editable_group_name(assigns) do
+    field_str = to_string(assigns.field)
+    editing? = assigns.editing_group == {field_str, assigns.value}
+    assigns = assign(assigns, :editing?, editing?)
+    assigns = assign(assigns, :field_str, field_str)
+
+    ~H"""
+    <%= if @editing? do %>
+      <form
+        phx-submit="save_group_edit"
+        phx-target={@myself}
+        class="dt-group-name dt-group-edit-form"
+        phx-click={Phoenix.LiveView.JS.dispatch("phx:stop-propagation")}
+      >
+        <input type="hidden" name="field" value={@field_str} />
+        <input type="hidden" name="old_value" value={@value} />
+        <input
+          type="text"
+          name="value"
+          value={@value}
+          class="dt-cell-input dt-group-edit-input"
+          phx-hook="AutoFocus"
+          id={"group-edit-#{@field_str}-#{slug(@value)}"}
+          phx-blur="save_group_edit"
+          phx-target={@myself}
+          phx-value-field={@field_str}
+          phx-value-old_value={@value}
+          phx-keydown="cancel_group_edit"
+          phx-target={@myself}
+          phx-key="Escape"
+        />
+      </form>
+    <% else %>
+      <span
+        class="dt-group-name dt-editable-hint"
+        phx-click="start_group_edit"
+        phx-target={@myself}
+        phx-value-group-key={@field_str}
+        phx-value-group-value={@value}
+      >
+        <%= @value %>
+      </span>
+    <% end %>
+    """
   end
 
-  defp group_rows(rows_map, [field]) do
-    rows_map
-    |> Map.values()
-    |> Enum.sort_by(& &1[:sort_order])
+  # --- Inline editable span (for proficiency panel items) ---
+
+  defp inline_editable_span(assigns) do
+    editing? = assigns.editing == {assigns.id, assigns.field}
+    assigns = assign(assigns, :editing?, editing?)
+
+    ~H"""
+    <%= if @editing? do %>
+      <form phx-submit="save_edit" phx-target={@myself} class={@class}>
+        <input type="hidden" name="row_id" value={@id} />
+        <input type="hidden" name="field" value={@field} />
+        <input
+          type="text"
+          name="value"
+          value={@value}
+          class="dt-cell-input dt-inline-input"
+          phx-hook="AutoFocus"
+          id={"edit-#{@id}-#{@field}"}
+          phx-blur="save_edit"
+          phx-target={@myself}
+          phx-value-row_id={@id}
+          phx-value-field={@field}
+          phx-keydown="cancel_edit"
+          phx-target={@myself}
+          phx-key="Escape"
+        />
+      </form>
+    <% else %>
+      <span
+        class={@class <> " dt-editable-hint"}
+        phx-click="start_edit"
+        phx-target={@myself}
+        phx-value-id={@id}
+        phx-value-field={@field}
+      >
+        <%= @value %>
+      </span>
+    <% end %>
+    """
+  end
+
+  # --- Delete confirmation button ---
+
+  defp delete_button(assigns) do
+    ~H"""
+    <%= if @confirm_delete == @row_id do %>
+      <span class="dt-delete-confirm">
+        <span class="dt-delete-confirm-text">Delete?</span>
+        <button type="button" class="dt-delete-yes" phx-click="delete_row" phx-target={@myself} phx-value-id={@row_id}>Yes</button>
+        <button type="button" class="dt-delete-no" phx-click="cancel_delete" phx-target={@myself}>No</button>
+      </span>
+    <% else %>
+      <button type="button" class="dt-row-delete-btn" phx-click="confirm_delete" phx-target={@myself} phx-value-id={@row_id} title="Delete row">
+        &times;
+      </button>
+    <% end %>
+    """
+  end
+
+  # --- "Add row" link inside a group ---
+
+  defp add_row_in_group(assigns) do
+    group_by = assigns.group_by
+
+    add_params =
+      case {group_by, assigns.group_label, assigns.sub_label} do
+        {[field1, field2 | _], label1, label2} when not is_nil(label2) ->
+          %{to_string(field1) => label1, to_string(field2) => label2}
+
+        {[field1 | _], label1, _} ->
+          %{to_string(field1) => label1}
+
+        _ ->
+          %{}
+      end
+
+    assigns = assign(assigns, :add_params, add_params)
+
+    ~H"""
+    <div class="dt-group-add-row">
+      <button type="button" class="dt-add-row-inline" phx-click="add_row" phx-target={@myself}
+        {Enum.map(@add_params, fn {k, v} -> {"phx-value-#{k}", v} end)}>
+        + Add Row
+      </button>
+    </div>
+    """
+  end
+
+  # --- Sorting ---
+
+  defp sort_rows(rows, nil, _dir), do: rows
+
+  defp sort_rows(rows, field, dir) do
+    Enum.sort_by(
+      rows,
+      fn row ->
+        val = Map.get(row, field) || Map.get(row, to_string(field)) || ""
+        if is_binary(val), do: String.downcase(val), else: val
+      end,
+      if(dir == :desc, do: :desc, else: :asc)
+    )
+  end
+
+  # --- Row lookup helpers ---
+
+  defp find_row(rows, id) do
+    Enum.find(rows, fn row -> to_string(row_id(row)) == id end)
+  end
+
+  defp next_child_level(children) do
+    children
+    |> Enum.map(&get_child_level/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp maybe_put(map, params, key) do
+    case Map.get(params, key) do
+      nil ->
+        map
+
+      "" ->
+        map
+
+      val ->
+        atom_key =
+          try do
+            String.to_existing_atom(key)
+          rescue
+            ArgumentError -> key
+          end
+
+        Map.put(map, atom_key, val)
+    end
+  end
+
+  # --- Collapsed state helpers ---
+
+  defp collapsed?(:all_collapsed, _id), do: true
+  defp collapsed?(set, id), do: MapSet.member?(set, id)
+
+  # --- Collect all group IDs for default-collapsed state ---
+
+  defp collect_all_group_ids(grouped) do
+    Enum.reduce(grouped, MapSet.new(), fn {group_label, children}, acc ->
+      group_id = "grp-" <> slug(group_label)
+      acc = MapSet.put(acc, group_id)
+
+      case children do
+        {:nested, sub_groups} ->
+          Enum.reduce(sub_groups, acc, fn {sub_label, _rows}, inner_acc ->
+            sub_id = "grp-" <> slug(group_label) <> "-" <> slug(sub_label)
+            MapSet.put(inner_acc, sub_id)
+          end)
+
+        {:rows, _} ->
+          acc
+      end
+    end)
+  end
+
+  # --- Grouping helpers (operate on ordered list, not rows_map) ---
+
+  defp group_rows([], _group_by), do: []
+
+  defp group_rows(rows, []), do: [{"All", {:rows, rows}}]
+
+  defp group_rows(rows, [field]) do
+    rows
     |> group_preserving_order(field)
-    |> Enum.map(fn {label, rows} -> {label, {:rows, rows}} end)
+    |> Enum.map(fn {label, group_rows} -> {label, {:rows, group_rows}} end)
   end
 
-  defp group_rows(rows_map, [field1, field2 | _]) do
-    rows_map
-    |> Map.values()
-    |> Enum.sort_by(& &1[:sort_order])
+  defp group_rows(rows, [field1, field2 | _]) do
+    rows
     |> group_preserving_order(field1)
-    |> Enum.map(fn {label, rows} ->
-      sub_groups = group_preserving_order(rows, field2)
+    |> Enum.map(fn {label, group_rows} ->
+      sub_groups = group_preserving_order(group_rows, field2)
       {label, {:nested, sub_groups}}
     end)
   end
 
   defp group_preserving_order(rows, field) do
+    str_field = if is_atom(field), do: Atom.to_string(field), else: field
+
     {groups, order} =
       Enum.reduce(rows, {%{}, %{}}, fn row, {groups, order} ->
-        key = Map.get(row, field, "") |> to_string()
+        key =
+          (Map.get(row, field) || Map.get(row, str_field) || "")
+          |> to_string()
+
         groups = Map.update(groups, key, [row], &[row | &1])
         order = Map.put_new(order, key, map_size(order))
         {groups, order}
@@ -326,14 +1156,31 @@ defmodule RhoWeb.DataTableComponent do
     Enum.reduce(sub_groups, 0, fn {_label, rows}, acc -> acc + length(rows) end)
   end
 
-  defp find_column(schema, field_name) when is_binary(field_name) do
-    key = String.to_existing_atom(field_name)
+  # --- Lookup helpers ---
 
-    Enum.find(schema.columns, &(&1.key == key)) ||
-      Enum.find(schema.child_columns || [], &(&1.key == key))
-  rescue
-    ArgumentError -> nil
+  defp row_id(row) do
+    Map.get(row, :id) || Map.get(row, "id")
   end
+
+  defp get_cell(row, key) when is_atom(key) do
+    Map.get(row, key) || Map.get(row, Atom.to_string(key)) || ""
+  end
+
+  defp get_child_level(child) do
+    (Map.get(child, :level) || Map.get(child, "level") || 0)
+    |> to_integer()
+  end
+
+  defp to_integer(v) when is_integer(v), do: v
+  defp to_integer(v) when is_binary(v), do: String.to_integer(v)
+  defp to_integer(_), do: 0
+
+  defp find_column(schema, field_name) when is_binary(field_name) do
+    Enum.find(schema.columns, &(Atom.to_string(&1.key) == field_name)) ||
+      Enum.find(schema.child_columns || [], &(Atom.to_string(&1.key) == field_name))
+  end
+
+  defp find_column(_, _), do: nil
 
   defp slug(text) when is_binary(text) do
     text
@@ -344,51 +1191,311 @@ defmodule RhoWeb.DataTableComponent do
 
   defp slug(_), do: "unknown"
 
+  defp csv_escape(value) when is_binary(value) do
+    if String.contains?(value, [",", "\"", "\n"]) do
+      "\"" <> String.replace(value, "\"", "\"\"") <> "\""
+    else
+      value
+    end
+  end
+
+  defp library_name_from_table("library:" <> name), do: name
+  defp library_name_from_table(_), do: ""
+
+  defp library_view?(view_key, active_table) do
+    view_key in [:skill_library, "skill_library"] or
+      (is_binary(active_table) and String.starts_with?(active_table, "library:"))
+  end
+
+  defp build_csv(rows, schema) do
+    columns = Enum.reject(schema.columns, fn col -> col.type == :action end)
+    child_columns = schema.child_columns || []
+    children_key = schema.children_key
+
+    has_children = children_key != nil and child_columns != []
+
+    all_headers =
+      if has_children do
+        Enum.map(columns, & &1.label) ++ Enum.map(child_columns, & &1.label)
+      else
+        Enum.map(columns, & &1.label)
+      end
+
+    header = Enum.map_join(all_headers, ",", &csv_escape/1)
+
+    data_lines =
+      Enum.flat_map(rows, fn row ->
+        parent_cells =
+          Enum.map(columns, fn col ->
+            val = Map.get(row, col.key) || Map.get(row, Atom.to_string(col.key)) || ""
+            csv_escape(to_string(val))
+          end)
+
+        if has_children do
+          children =
+            Map.get(row, children_key) || Map.get(row, Atom.to_string(children_key)) || []
+
+          case children do
+            [] ->
+              blank_children = List.duplicate("", length(child_columns))
+              [Enum.join(parent_cells ++ blank_children, ",")]
+
+            children when is_list(children) ->
+              Enum.map(children, fn child ->
+                child_cells =
+                  Enum.map(child_columns, fn col ->
+                    val =
+                      Map.get(child, col.key) || Map.get(child, Atom.to_string(col.key)) || ""
+
+                    csv_escape(to_string(val))
+                  end)
+
+                Enum.join(parent_cells ++ child_cells, ",")
+              end)
+          end
+        else
+          [Enum.join(parent_cells, ",")]
+        end
+      end)
+
+    header <> "\n" <> Enum.join(data_lines, "\n")
+  end
+
+  defp build_xlsx(rows, schema) do
+    columns = Enum.reject(schema.columns, fn col -> col.type == :action end)
+    child_columns = schema.child_columns || []
+    children_key = schema.children_key
+
+    has_children = children_key != nil and child_columns != []
+
+    all_cols =
+      if has_children, do: columns ++ child_columns, else: columns
+
+    # Styled header row: bold white text on dark background
+    header_style = [bold: true, bg_color: "#2B579A", color: "#FFFFFF", size: 11]
+
+    header_row =
+      Enum.map(all_cols, fn col -> [col.label | header_style] end)
+
+    # Build data rows grouped by parent row (skill), with alternating
+    # background color per skill group and a separator border on the
+    # last row of each group (gridlines are hidden).
+    stripe_color = "#F2F6FC"
+    separator = [bottom: [style: :thin, color: "#C0C0C0"]]
+
+    {data_rows, _group_idx} =
+      Enum.flat_map_reduce(rows, 0, fn row, group_idx ->
+        parent_cells =
+          Enum.map(columns, fn col ->
+            val = Map.get(row, col.key) || Map.get(row, Atom.to_string(col.key)) || ""
+            xlsx_cell_value(val, col.type)
+          end)
+
+        raw_rows =
+          if has_children do
+            children =
+              Map.get(row, children_key) || Map.get(row, Atom.to_string(children_key)) || []
+
+            case children do
+              [] ->
+                blank_children = List.duplicate("", length(child_columns))
+                [parent_cells ++ blank_children]
+
+              children when is_list(children) ->
+                Enum.map(children, fn child ->
+                  child_cells =
+                    Enum.map(child_columns, fn col ->
+                      val =
+                        Map.get(child, col.key) || Map.get(child, Atom.to_string(col.key)) || ""
+
+                      xlsx_cell_value(val, col.type)
+                    end)
+
+                  parent_cells ++ child_cells
+                end)
+            end
+          else
+            [parent_cells]
+          end
+
+        striped? = rem(group_idx, 2) == 1
+
+        styled_rows =
+          raw_rows
+          |> Enum.with_index()
+          |> Enum.map(fn {cells, row_idx} ->
+            last_in_group? = row_idx == length(raw_rows) - 1
+
+            Enum.map(cells, fn cell ->
+              style =
+                if(striped?, do: [bg_color: stripe_color], else: []) ++
+                  if(last_in_group?, do: [border: separator], else: [])
+
+              case {cell, style} do
+                {_, []} -> cell
+                {val, props} when is_binary(val) -> [val | props]
+                {val, props} when is_number(val) -> [val | props]
+                _ -> cell
+              end
+            end)
+          end)
+
+        {styled_rows, group_idx + 1}
+      end)
+
+    # Calculate column widths from content (capped at 60)
+    all_rows = [Enum.map(all_cols, & &1.label) | data_rows]
+
+    col_widths =
+      all_cols
+      |> Enum.with_index()
+      |> Enum.reduce(%{}, fn {_col, idx}, acc ->
+        max_len =
+          all_rows
+          |> Enum.map(fn row ->
+            cell = Enum.at(row, idx)
+
+            cell_str =
+              case cell do
+                [val | _] when is_binary(val) -> val
+                val when is_binary(val) -> val
+                val when is_number(val) -> to_string(val)
+                _ -> ""
+              end
+
+            String.length(cell_str)
+          end)
+          |> Enum.max(fn -> 8 end)
+
+        # Add padding, cap at 60
+        width = min(max_len + 3, 60)
+        Map.put(acc, idx + 1, width)
+      end)
+
+    sheet =
+      %Elixlsx.Sheet{
+        name: schema.title || "Data",
+        rows: [header_row | data_rows],
+        col_widths: col_widths,
+        show_grid_lines: false
+      }
+      |> Elixlsx.Sheet.set_row_height(1, 22)
+
+    {:ok, {_filename, binary}} =
+      %Elixlsx.Workbook{sheets: [sheet]}
+      |> Elixlsx.write_to_memory("export.xlsx")
+
+    binary
+  end
+
+  defp xlsx_cell_value(val, :number) when is_binary(val) do
+    case Float.parse(val) do
+      {n, ""} -> n
+      _ -> val
+    end
+  end
+
+  defp xlsx_cell_value(val, :number) when is_number(val), do: val
+  defp xlsx_cell_value(val, _type), do: to_string(val)
+
+  # Parse compound `"<parent_id>:child:<idx>"` identifiers.
   defp parse_compound_id(id) when is_binary(id) do
     case String.split(id, ":child:") do
       [parent, child_idx] ->
-        {parse_row_id(parent), String.to_integer(child_idx)}
+        case Integer.parse(child_idx) do
+          {n, ""} -> {parent, n}
+          _ -> {id, nil}
+        end
 
       [_single] ->
-        {parse_row_id(id), nil}
+        {id, nil}
     end
   end
 
-  defp parse_row_id(id) when is_binary(id) do
-    case Integer.parse(id) do
-      {int, ""} -> int
-      _ -> id
-    end
-  end
+  defp parse_compound_id(id), do: {to_string(id), nil}
 
-  defp parse_row_id(id), do: id
+  # --- Optimistic edit overlay ---
 
-  defp atomize_child(child) when is_map(child) do
-    Map.new(child, fn
-      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
-      {k, v} -> {k, v}
+  defp apply_optimistic(rows, optimistic) when optimistic == %{}, do: rows
+
+  defp apply_optimistic(rows, optimistic) do
+    Enum.map(rows, fn row ->
+      id = to_string(row_id(row))
+      apply_optimistic_row(row, id, optimistic)
     end)
-  rescue
-    ArgumentError -> child
   end
 
-  defp generate_op_id do
-    :crypto.strong_rand_bytes(12) |> Base.encode16(case: :lower)
+  defp apply_optimistic_row(row, id, optimistic) do
+    Enum.reduce(optimistic, row, fn
+      {{^id, nil, field}, value}, acc ->
+        put_cell(acc, field, value)
+
+      {{^id, child_idx, field}, value}, acc when is_integer(child_idx) ->
+        update_child(acc, child_idx, field, value)
+
+      _, acc ->
+        acc
+    end)
   end
 
-  defp publish_user_edit(session_id, row_id, field, value, client_op_id) do
-    topic = "rho.session.#{session_id}.events.data_table_user_edit"
+  defp put_cell(row, field, value) do
+    cond do
+      is_atom_key?(row, field) ->
+        Map.put(row, String.to_existing_atom(field), value)
 
-    Rho.Comms.publish(
-      topic,
-      %{
-        session_id: session_id,
-        row_id: row_id,
-        field: field,
-        value: value,
-        client_op_id: client_op_id
-      },
-      source: "/session/#{session_id}/user"
-    )
+      Map.has_key?(row, field) ->
+        Map.put(row, field, value)
+
+      true ->
+        Map.put(row, field, value)
+    end
   end
+
+  defp is_atom_key?(row, field) when is_binary(field) do
+    atom =
+      try do
+        String.to_existing_atom(field)
+      rescue
+        ArgumentError -> nil
+      end
+
+    atom && Map.has_key?(row, atom)
+  end
+
+  defp update_child(row, idx, field, value) do
+    children_key =
+      cond do
+        Map.has_key?(row, :proficiency_levels) -> :proficiency_levels
+        Map.has_key?(row, "proficiency_levels") -> "proficiency_levels"
+        true -> nil
+      end
+
+    case children_key && Map.get(row, children_key) do
+      nil ->
+        row
+
+      children when is_list(children) ->
+        updated =
+          List.update_at(children, idx, fn child ->
+            put_cell(child || %{}, field, value)
+          end)
+
+        Map.put(row, children_key, updated)
+
+      _ ->
+        row
+    end
+  end
+
+  # --- Tab strip helpers ---
+
+  defp table_row_count(tables, name) when is_list(tables) do
+    case Enum.find(tables, fn t -> t.name == name end) do
+      nil -> 0
+      %{row_count: n} -> n
+      _ -> 0
+    end
+  end
+
+  defp table_row_count(_, _), do: 0
 end

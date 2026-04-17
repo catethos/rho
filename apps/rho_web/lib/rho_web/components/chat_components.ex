@@ -13,6 +13,8 @@ defmodule RhoWeb.ChatComponents do
   attr(:user_avatar, :string, default: nil)
   attr(:agent_avatar, :string, default: nil)
   attr(:pending, :boolean, default: false)
+  attr(:active_step, :integer, default: nil)
+  attr(:active_max_steps, :integer, default: nil)
 
   def chat_feed(assigns) do
     ~H"""
@@ -41,6 +43,7 @@ defmodule RhoWeb.ChatComponents do
           <div class="message-content">
             <div class="message-body pending-indicator">
               <span class="pending-dots"><span>.</span><span>.</span><span>.</span></span>
+              <span :if={@active_step} class="pending-step">step {@active_step}{if @active_max_steps, do: "/#{@active_max_steps}", else: ""}</span>
             </div>
           </div>
         </div>
@@ -180,6 +183,9 @@ defmodule RhoWeb.ChatComponents do
       <div class="delegation-header">
         <span class="delegation-icon">&#x2192;</span>
         <span>Delegated to <strong><%= @delegation[:target_role] || @delegation[:agent_id] %></strong></span>
+        <span :if={@delegation[:status] == :pending && @delegation[:step]} class="delegation-step">
+          step <%= @delegation[:step] %>/<%= @delegation[:max_steps] %>
+        </span>
         <.status_dot status={@delegation[:status] || :pending} />
       </div>
       <div :if={@delegation[:task]} class="delegation-task"><%= @delegation.task %></div>
@@ -200,9 +206,13 @@ defmodule RhoWeb.ChatComponents do
     ~H"""
     <%= case @parsed do %>
       <% {:json, %{"action" => "final_answer"} = map} -> %>
-        <div :if={map["thinking"]} class="thinking-reasoning markdown-body"
-          id={"think-md-#{@msg_id}"} phx-hook="Markdown" data-md={map["thinking"]}
-          style="color:var(--text-secondary);font-size:0.8125rem;margin-bottom:0.5rem;opacity:0.8;"></div>
+        <details :if={map["thinking"]} class="thinking-block">
+          <summary class="thinking-summary">Thinking</summary>
+          <div class="thinking-content">
+            <div class="thinking-reasoning markdown-body"
+              id={"think-md-#{@msg_id}"} phx-hook="Markdown" data-md={map["thinking"]}></div>
+          </div>
+        </details>
         <div class="message-text markdown-body"
           id={"think-answer-#{@msg_id}"} phx-hook="Markdown"
           data-md={final_answer_text(map["action_input"])}></div>
@@ -218,6 +228,14 @@ defmodule RhoWeb.ChatComponents do
               <span class="thinking-label">Action:</span>
               <code><%= map["action"] %></code>
             </div>
+          </div>
+        </details>
+      <% {:raw_json, count} -> %>
+        <details class="thinking-block">
+          <summary class="thinking-summary">Raw JSON array (<%= count %> items) — not a valid action envelope</summary>
+          <div class="thinking-content">
+            <div class="thinking-plain markdown-body"
+              id={"think-txt-#{@msg_id}"} phx-hook="Markdown" data-md={"```json\n" <> @content <> "\n```"}></div>
           </div>
         </details>
       <% {:text, text} -> %>
@@ -422,8 +440,13 @@ defmodule RhoWeb.ChatComponents do
   end
 
   defp parse_thinking(content) do
-    case Rho.Parse.Lenient.parse(content) do
+    # Use StructuredOutput.parse — it includes brace-scan extraction, so
+    # `{valid json}<trailing prose>` responses still surface as `:json`
+    # and render as a proper final_answer envelope rather than dumping
+    # the raw stream (including duplicated thinking text) into the UI.
+    case Rho.StructuredOutput.parse(content) do
       {:ok, map} when is_map(map) -> {:json, map}
+      {:ok, list} when is_list(list) -> {:raw_json, length(list)}
       _ -> {:text, content}
     end
   end

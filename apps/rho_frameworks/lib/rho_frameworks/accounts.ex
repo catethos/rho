@@ -25,9 +25,11 @@ defmodule RhoFrameworks.Accounts do
 
   def get_user_by_email_and_password(email, password)
       when is_binary(email) and is_binary(password) do
-    user = Repo.get_by(User, email: email)
+    user = Repo.get_by(User, email: normalize_email(email))
     if User.valid_password?(user, password), do: user
   end
+
+  defp normalize_email(email), do: email |> String.trim() |> String.downcase()
 
   ## Session tokens
 
@@ -37,13 +39,17 @@ defmodule RhoFrameworks.Accounts do
     token
   end
 
-  def get_user_by_session_token(token) do
+  def get_user_by_session_token(token) when is_binary(token) do
     UserToken.verify_session_token_query(token)
     |> Repo.one()
   end
 
-  def delete_user_session_token(token) do
-    from(t in UserToken, where: t.token == ^token and t.context == "session")
+  def get_user_by_session_token(_), do: nil
+
+  def delete_user_session_token(token) when is_binary(token) do
+    hashed = UserToken.hash_token(token)
+
+    from(t in UserToken, where: t.token == ^hashed and t.context == "session")
     |> Repo.delete_all()
 
     :ok

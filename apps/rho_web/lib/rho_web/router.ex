@@ -14,18 +14,6 @@ defmodule RhoWeb.Router do
     plug(:fetch_current_user)
   end
 
-  pipeline :api do
-    plug(:accepts, ["json"])
-    plug(Plug.Parsers, parsers: [:json], json_decoder: Jason)
-    plug(RhoWeb.Plugs.APIAuth)
-  end
-
-  scope "/api", RhoWeb do
-    pipe_through(:api)
-
-    forward("/", ObservatoryAPI)
-  end
-
   # Public auth routes (redirect away if already logged in)
   scope "/", RhoWeb do
     pipe_through([:browser, :redirect_if_user_is_authenticated])
@@ -37,11 +25,20 @@ defmodule RhoWeb.Router do
     end
   end
 
+  pipeline :rate_limit_login do
+    plug(RhoWeb.Plugs.LoginRateLimit)
+  end
+
   # Auth controller (POST login/logout — must be regular controller for cookies)
+  scope "/", RhoWeb do
+    pipe_through([:browser, :rate_limit_login])
+
+    post("/users/log_in", UserSessionController, :create)
+  end
+
   scope "/", RhoWeb do
     pipe_through(:browser)
 
-    post("/users/log_in", UserSessionController, :create)
     delete("/users/log_out", UserSessionController, :delete)
   end
 
@@ -59,16 +56,14 @@ defmodule RhoWeb.Router do
         {RhoWeb.UserAuth, :ensure_authenticated},
         {RhoWeb.UserAuth, :ensure_org_member}
       ] do
-      live("/roles", RoleProfileListLive, :index)
-      live("/roles/:id", RoleProfileShowLive, :show)
-      live("/libraries", SkillLibraryLive, :index)
-      live("/libraries/:id", SkillLibraryShowLive, :show)
-      live("/chat/:session_id", SessionLive, :show)
-      live("/chat", SessionLive, :new)
-      live("/observatory/:session_id", ObservatoryLive, :show)
-      live("/observatory", ObservatoryLive, :new)
-      live("/settings", OrgSettingsLive, :index)
-      live("/members", OrgMembersLive, :index)
+      live("/chat", AppLive, :chat_new)
+      live("/chat/:session_id", AppLive, :chat_show)
+      live("/libraries", AppLive, :libraries)
+      live("/libraries/:id", AppLive, :library_show)
+      live("/roles", AppLive, :roles)
+      live("/roles/:id", AppLive, :role_show)
+      live("/settings", AppLive, :settings)
+      live("/members", AppLive, :members)
     end
   end
 
@@ -80,6 +75,21 @@ defmodule RhoWeb.Router do
       layout: {RhoWeb.Layouts, :app},
       on_mount: [{RhoWeb.UserAuth, :ensure_authenticated}] do
       live("/", OrgPickerLive, :index)
+    end
+  end
+
+  # Admin / operator dashboards.
+  #
+  # NOTE: currently only gated by `:require_authenticated_user` — any
+  # logged-in user can view. For production, add an admin-role plug
+  # (e.g. `plug :require_admin`) to this scope before shipping.
+  scope "/admin", RhoWeb do
+    pipe_through([:browser, :require_authenticated_user])
+
+    live_session :admin,
+      layout: {RhoWeb.Layouts, :app},
+      on_mount: [{RhoWeb.UserAuth, :ensure_authenticated}] do
+      live("/llm", Admin.LLMAdmissionLive, :index)
     end
   end
 end

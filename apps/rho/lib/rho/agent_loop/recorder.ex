@@ -108,7 +108,14 @@ defmodule Rho.AgentLoop.Recorder do
 
   @spec rebuild_context(Runtime.t()) :: [map()]
   def rebuild_context(%Runtime{system_prompt: prompt, tape: %{name: tape}}) do
-    [ReqLLM.Context.system(prompt) | Rho.Tape.Context.build(tape)]
+    system_msg =
+      ReqLLM.Context.system([
+        ReqLLM.Message.ContentPart.text(prompt, %{
+          cache_control: %{type: "ephemeral"}
+        })
+      ])
+
+    [system_msg | Rho.Tape.Context.build(tape)]
   end
 
   # -- Tape-write transformer pipeline --

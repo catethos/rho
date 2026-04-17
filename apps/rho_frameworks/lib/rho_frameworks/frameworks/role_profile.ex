@@ -31,6 +31,10 @@ defmodule RhoFrameworks.Frameworks.RoleProfile do
     field(:immutable, :boolean, default: false)
     belongs_to(:source_role_profile, __MODULE__)
 
+    # Library version pinning
+    belongs_to(:library, RhoFrameworks.Frameworks.Library)
+    field(:library_version, :string)
+
     belongs_to(:organization, RhoFrameworks.Accounts.Organization)
     belongs_to(:created_by, RhoFrameworks.Accounts.User)
     has_many(:role_skills, RhoFrameworks.Frameworks.RoleSkill)
@@ -56,6 +60,8 @@ defmodule RhoFrameworks.Frameworks.RoleProfile do
       :work_activities,
       :immutable,
       :source_role_profile_id,
+      :library_id,
+      :library_version,
       :organization_id,
       :created_by_id
     ])

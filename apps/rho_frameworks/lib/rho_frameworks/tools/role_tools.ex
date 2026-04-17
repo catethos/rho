@@ -11,13 +11,15 @@ defmodule RhoFrameworks.Tools.RoleTools do
 
   alias RhoFrameworks.Roles
   alias RhoFrameworks.GapAnalysis
-  alias Rho.Stdlib.Plugins.DataTable, as: DT
+  alias RhoFrameworks.DataTableSchemas
+  alias Rho.Stdlib.DataTable
 
   # ── Role Tools ──────────────────────────────────────────────────────────
 
   tool :save_role_profile,
        "Save the current data table (role mode) as a role profile. " <>
-         "Auto-upserts skills into a library as drafts. Only name is required." do
+         "Skills are linked to the specified library. " <>
+         "IMPORTANT: always pass library_id to avoid creating a duplicate 'Default Skills' library." do
     param(:name, :string, required: true, doc: "Role profile name")
     param(:role_family, :string, doc: "e.g. Engineering, Product")
 
@@ -27,7 +29,10 @@ defmodule RhoFrameworks.Tools.RoleTools do
     param(:description, :string, doc: "Role overview")
     param(:purpose, :string, doc: "Why this role exists")
 
-    param(:library_id, :string, doc: "Target library for skills. Omit for default.")
+    param(:library_id, :string,
+      required: true,
+      doc: "Library ID where skills are stored. Use list_libraries to find it."
+    )
 
     run(fn args, ctx ->
       name = args[:name]
@@ -35,29 +40,35 @@ defmodule RhoFrameworks.Tools.RoleTools do
       if is_nil(name) or name == "" do
         {:error, "Role profile name is required"}
       else
-        rows = DT.read_rows(ctx.session_id)
+        case DataTable.get_rows(ctx.session_id, table: "role_profile") do
+          {:error, :not_running} ->
+            {:error, "No 'role_profile' table is active — load or clone a role profile first."}
 
-        if rows == [] do
-          {:error, "Data table is empty — add skills first"}
-        else
-          attrs = %{name: name}
-          attrs = maybe_put(attrs, :role_family, args[:role_family])
-          attrs = maybe_put(attrs, :seniority_level, args[:seniority_level])
-          attrs = maybe_put(attrs, :seniority_label, args[:seniority_label])
-          attrs = maybe_put(attrs, :description, args[:description])
-          attrs = maybe_put(attrs, :purpose, args[:purpose])
+          [] ->
+            {:error, "The 'role_profile' table is empty — add skills first"}
 
-          opts = maybe_opt([], :library_id, args[:library_id])
+          rows when is_list(rows) ->
+            attrs = %{name: name}
+            attrs = maybe_put(attrs, :role_family, args[:role_family])
+            attrs = maybe_put(attrs, :seniority_level, args[:seniority_level])
+            attrs = maybe_put(attrs, :seniority_label, args[:seniority_label])
+            attrs = maybe_put(attrs, :description, args[:description])
+            attrs = maybe_put(attrs, :purpose, args[:purpose])
 
-          case Roles.save_role_profile(ctx.organization_id, attrs, rows, opts) do
-            {:ok, %{role_profile: rp, role_skills: skill_count}} ->
-              {:ok,
-               "Saved role profile '#{rp.name}' with #{skill_count} skill(s). " <>
-                 "New skills added to library as drafts."}
+            opts = maybe_opt([], :library_id, args[:library_id])
 
-            {:error, step, changeset, _} ->
-              {:error, "Save failed at #{step}: #{inspect(changeset)}"}
-          end
+            case Roles.save_role_profile(ctx.organization_id, attrs, rows, opts) do
+              {:ok, %{role_profile: rp, role_skills: skill_count}} ->
+                version_note =
+                  if rp.library_version,
+                    do: " (pinned to library version: #{rp.library_version})",
+                    else: ""
+
+                {:ok, "Saved '#{rp.name}' — #{skill_count} skill(s)#{version_note}."}
+
+              {:error, step, changeset, _} ->
+                {:error, "Save failed at #{step}: #{inspect(changeset)}"}
+            end
         end
       end
     end)
@@ -76,18 +87,29 @@ defmodule RhoFrameworks.Tools.RoleTools do
           {:error, "Role profile '#{name}' not found"}
 
         {:ok, %{role_profile: rp, rows: rows}} ->
-          %Rho.ToolResponse{
-            text:
-              "Loaded role profile '#{rp.name}' with #{length(rows)} skills into the data table",
-            effects: [
-              %Rho.Effect.OpenWorkspace{key: :data_table},
-              %Rho.Effect.Table{
-                schema_key: :role_profile,
-                mode_label: "Role Profile — #{rp.name}",
-                rows: rows
+          case DataTable.ensure_table(
+                 ctx.session_id,
+                 "role_profile",
+                 DataTableSchemas.role_profile_schema()
+               ) do
+            :ok ->
+              %Rho.ToolResponse{
+                text: "'#{rp.name}' — #{length(rows)} skills, table: 'role_profile'.",
+                effects: [
+                  %Rho.Effect.OpenWorkspace{key: :data_table},
+                  %Rho.Effect.Table{
+                    table_name: "role_profile",
+                    schema_key: :role_profile,
+                    mode_label: "Role Profile — #{rp.name}",
+                    rows: rows,
+                    metadata: %{library_id: rp.library_id}
+                  }
+                ]
               }
-            ]
-          }
+
+            {:error, reason} ->
+              {:error, "Failed to prepare 'role_profile' table: #{inspect(reason)}"}
+          end
       end
     end)
   end
@@ -115,6 +137,41 @@ defmodule RhoFrameworks.Tools.RoleTools do
     end)
   end
 
+  tool :start_role_profile_draft,
+       "Initialize an empty 'role_profile' data table so you can build a fresh role " <>
+         "from scratch. Use at the start of Path (a) bottom-up role creation BEFORE " <>
+         "calling add_rows. All subsequent add_rows/update_cells/delete_rows calls must " <>
+         "pass `table: \"role_profile\"`. Does not touch the database." do
+    param(:mode_label, :string, doc: "Optional label shown in the tab strip")
+
+    run(fn args, ctx ->
+      label = args[:mode_label] || "New Role Profile (draft)"
+
+      case DataTable.ensure_table(
+             ctx.session_id,
+             "role_profile",
+             DataTableSchemas.role_profile_schema()
+           ) do
+        :ok ->
+          %Rho.ToolResponse{
+            text: "Empty 'role_profile' table ready.",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: "role_profile",
+                schema_key: :role_profile,
+                mode_label: label,
+                rows: []
+              }
+            ]
+          }
+
+        {:error, reason} ->
+          {:error, "Failed to prepare 'role_profile' table: #{inspect(reason)}"}
+      end
+    end)
+  end
+
   tool :clone_role_skills,
        "Copy skill selection from one or more existing role profiles. " <>
          "When multiple roles, unions skills and keeps the highest required level on overlap. " <>
@@ -131,19 +188,28 @@ defmodule RhoFrameworks.Tools.RoleTools do
         {:ok, ids} when is_list(ids) and ids != [] ->
           rows = Roles.clone_role_skills(ctx.organization_id, ids)
 
-          %Rho.ToolResponse{
-            text:
-              "Cloned #{length(rows)} skills from #{length(ids)} role(s) into data table. " <>
-                "Edit as needed, then save_role_profile.",
-            effects: [
-              %Rho.Effect.OpenWorkspace{key: :data_table},
-              %Rho.Effect.Table{
-                schema_key: :role_profile,
-                mode_label: "New Role Profile (cloned)",
-                rows: rows
+          case DataTable.ensure_table(
+                 ctx.session_id,
+                 "role_profile",
+                 DataTableSchemas.role_profile_schema()
+               ) do
+            :ok ->
+              %Rho.ToolResponse{
+                text: "Cloned #{length(rows)} skills from #{length(ids)} role(s).",
+                effects: [
+                  %Rho.Effect.OpenWorkspace{key: :data_table},
+                  %Rho.Effect.Table{
+                    table_name: "role_profile",
+                    schema_key: :role_profile,
+                    mode_label: "New Role Profile (cloned)",
+                    rows: rows
+                  }
+                ]
               }
-            ]
-          }
+
+            {:error, reason} ->
+              {:error, "Failed to prepare 'role_profile' table: #{inspect(reason)}"}
+          end
 
         _ ->
           {:error, "Provide a JSON array of at least 1 role profile ID."}
@@ -173,6 +239,16 @@ defmodule RhoFrameworks.Tools.RoleTools do
         end)
 
       {:ok, Jason.encode!(result)}
+    end)
+  end
+
+  tool :get_org_view,
+       "Cross-role summary for the current organization: shared vs unique skills across " <>
+         "all role profiles, role families, and per-role skill counts. Pure read. " <>
+         "Use as a bootstrap 'what does this org look like?' call." do
+    run(fn _args, ctx ->
+      view = Roles.org_view(ctx.organization_id)
+      {:ok, Jason.encode!(view)}
     end)
   end
 
@@ -214,6 +290,30 @@ defmodule RhoFrameworks.Tools.RoleTools do
 
         _ ->
           {:error, "Invalid JSON. Provide a map of person_id → {skill_id → level}."}
+      end
+    end)
+  end
+
+  tool :check_role_currency,
+       "Check if a role profile's skills are current relative to the latest published library version." do
+    param(:role_profile_id, :string, required: true, doc: "Role profile ID")
+
+    run(fn args, ctx ->
+      case Roles.check_version_currency(ctx.organization_id, args[:role_profile_id]) do
+        {:ok, :current, details} ->
+          {:ok, Jason.encode!(%{status: "current", details: details})}
+
+        {:stale, details} ->
+          {:ok, Jason.encode!(%{status: "stale", details: details})}
+
+        {:error, :not_found} ->
+          {:error, "Role profile not found"}
+
+        {:error, :no_library, msg} ->
+          {:error, msg}
+
+        {:error, :library_deleted, msg} ->
+          {:error, msg}
       end
     end)
   end

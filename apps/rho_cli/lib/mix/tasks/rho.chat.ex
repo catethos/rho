@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.Rho.Chat do
+  @moduledoc false
+
   use Mix.Task
 
   @shortdoc "Start an interactive chat session with the LLM"

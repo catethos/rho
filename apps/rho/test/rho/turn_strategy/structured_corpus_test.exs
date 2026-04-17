@@ -14,8 +14,8 @@ defmodule Rho.TurnStrategy.StructuredCorpusTest do
   use ExUnit.Case, async: true
   use Mimic
 
-  alias Rho.TurnStrategy.Structured
   alias Rho.Test.TurnStrategyHarness
+  alias Rho.TurnStrategy.Structured
 
   setup :verify_on_exit!
   setup :set_mimic_from_context

@@ -7,11 +7,11 @@
         <span class="org-switcher-arrow">▾</span>
       </div>
       <div class="global-nav-links">
-        <a href={"/orgs/#{org.slug}/chat"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :chat, do: "page"}>Chat</a>
-        <a href={"/orgs/#{org.slug}/libraries"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :libraries, do: "page"}>Libraries</a>
-        <a href={"/orgs/#{org.slug}/roles"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :roles, do: "page"}>Roles</a>
-        <a href={"/orgs/#{org.slug}/settings"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :settings, do: "page"}>Settings</a>
-        <a href={"/orgs/#{org.slug}/members"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :members, do: "page"}>Members</a>
+        <.link patch={"/orgs/#{org.slug}/chat"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :chat, do: "page"}>Chat</.link>
+        <.link patch={"/orgs/#{org.slug}/libraries"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :libraries, do: "page"}>Libraries</.link>
+        <.link patch={"/orgs/#{org.slug}/roles"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :roles, do: "page"}>Roles</.link>
+        <.link patch={"/orgs/#{org.slug}/settings"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :settings, do: "page"}>Settings</.link>
+        <.link patch={"/orgs/#{org.slug}/members"} class="global-nav-link" aria-current={if Map.get(assigns, :active_page) == :members, do: "page"}>Members</.link>
       </div>
     <% else %>
       <div class="global-nav-links">
@@ -33,9 +33,8 @@
   </div>
 </nav>
 <div id="org-dropdown" class="org-dropdown" style="display:none;">
-  <%= if user = Map.get(assigns, :current_user) do %>
-    <% orgs = RhoFrameworks.Accounts.list_user_organizations(user.id) %>
-    <%= for %{organization: o, role: role} <- orgs do %>
+  <%= if Map.get(assigns, :current_user) do %>
+    <%= for %{organization: o, role: role} <- Map.get(assigns, :user_organizations, []) do %>
       <a href={"/orgs/#{o.slug}/chat"} class="org-dropdown-item">
         <span class="org-dropdown-name"><%= if o.personal, do: "Personal", else: o.name %></span>
         <span class="org-dropdown-role"><%= role %></span>

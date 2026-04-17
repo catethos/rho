@@ -14,7 +14,9 @@ defmodule Rho.Umbrella.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+    ]
   end
 
   defp aliases do

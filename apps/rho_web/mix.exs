@@ -39,7 +39,10 @@ defmodule RhoWeb.MixProject do
       {:bandit, "~> 1.6"},
       {:plug, "~> 1.16"},
       {:bcrypt_elixir, "~> 3.0"},
+      {:hammer, "~> 7.0"},
       {:jason, "~> 1.4"},
+      {:elixlsx, "~> 0.6"},
+      {:remote_ip, "~> 1.2"},
       {:mimic, "~> 1.10", only: :test},
       {:phoenix_live_reload, "~> 1.5", only: :dev}
     ]

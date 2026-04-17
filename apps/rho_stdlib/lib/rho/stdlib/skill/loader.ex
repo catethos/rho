@@ -84,15 +84,12 @@ defmodule Rho.Stdlib.Skill.Loader do
   """
   def render_prompt(skills, expanded \\ MapSet.new()) do
     summary =
-      skills
-      |> Enum.map(fn s -> "- #{s.name}: #{s.description}" end)
-      |> Enum.join("\n")
+      Enum.map_join(skills, "\n", fn s -> "- #{s.name}: #{s.description}" end)
 
     expanded_bodies =
       skills
       |> Enum.filter(&MapSet.member?(expanded, &1.name))
-      |> Enum.map(fn s -> "\n## Skill: #{s.name}\n\n#{s.body}" end)
-      |> Enum.join("\n")
+      |> Enum.map_join("\n", fn s -> "\n## Skill: #{s.name}\n\n#{s.body}" end)
 
     "<available_skills>\n#{summary}\n</available_skills>#{expanded_bodies}"
   end
@@ -160,25 +157,29 @@ defmodule Rho.Stdlib.Skill.Loader do
     roots = Enum.map(source_roots(workspace_path, sources), fn {path, _source} -> path end)
 
     roots
-    |> Enum.flat_map(fn root ->
-      if File.dir?(root) do
-        root
-        |> File.ls!()
-        |> Enum.map(&Path.join(root, &1))
-        |> Enum.filter(&File.dir?/1)
-        |> Enum.flat_map(fn dir ->
-          skill_md = Path.join(dir, "SKILL.md")
-
-          case File.stat(skill_md) do
-            {:ok, %{mtime: mtime}} -> [{skill_md, mtime}]
-            _ -> []
-          end
-        end)
-      else
-        []
-      end
-    end)
+    |> Enum.flat_map(&skill_mtimes_in_root/1)
     |> Enum.sort()
+  end
+
+  defp skill_mtimes_in_root(root) do
+    if File.dir?(root) do
+      root
+      |> File.ls!()
+      |> Enum.map(&Path.join(root, &1))
+      |> Enum.filter(&File.dir?/1)
+      |> Enum.flat_map(&skill_md_mtime/1)
+    else
+      []
+    end
+  end
+
+  defp skill_md_mtime(dir) do
+    skill_md = Path.join(dir, "SKILL.md")
+
+    case File.stat(skill_md) do
+      {:ok, %{mtime: mtime}} -> [{skill_md, mtime}]
+      _ -> []
+    end
   end
 
   defp read_skill(dir, source) do

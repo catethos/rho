@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.Rho.Trace do
+  @moduledoc false
+
   use Mix.Task
 
   @shortdoc "Analyze tape traces for sessions"
@@ -109,9 +111,7 @@ defmodule Mix.Tasks.Rho.Trace do
       error_pct = if t.calls > 0, do: Float.round(t.errors / t.calls * 100, 1), else: 0.0
 
       types_str =
-        t.error_types
-        |> Enum.map(fn {type, count} -> "#{type}(#{count})" end)
-        |> Enum.join(", ")
+        Enum.map_join(t.error_types, ", ", fn {type, count} -> "#{type}(#{count})" end)
 
       line =
         String.pad_trailing(t.name, 24) <>
@@ -183,135 +183,139 @@ defmodule Mix.Tasks.Rho.Trace do
 
   defp failures(tape_args, opts) do
     tapes = resolve_tapes(tape_args, opts)
+    Enum.each(tapes, &print_failures/1)
+  end
 
-    Enum.each(tapes, fn {name, entries} ->
-      tool_errors =
-        entries
-        |> Enum.filter(&(&1["kind"] == "tool_result" && &1["payload"]["status"] == "error"))
+  defp print_failures({name, entries}) do
+    tool_errors =
+      Enum.filter(entries, &(&1["kind"] == "tool_result" && &1["payload"]["status"] == "error"))
 
-      max_steps =
-        entries
-        |> Enum.filter(fn e ->
-          e["kind"] == "event" && e["payload"]["name"] == "error" &&
-            is_binary(e["payload"]["reason"]) &&
-            String.contains?(e["payload"]["reason"], "max steps")
-        end)
+    max_steps = Enum.filter(entries, &max_steps_error?/1)
+    retries = detect_retries(entries)
 
-      retries = detect_retries(entries)
+    if tool_errors != [] or max_steps != [] or retries != [] do
+      IO.puts("\n#{IO.ANSI.yellow()}#{name}#{IO.ANSI.reset()}")
+      Enum.each(tool_errors, &print_tool_error/1)
+      Enum.each(max_steps, &print_max_steps/1)
+      Enum.each(retries, &print_retry/1)
+    end
+  end
 
-      if tool_errors != [] or max_steps != [] or retries != [] do
-        IO.puts("\n#{IO.ANSI.yellow()}#{name}#{IO.ANSI.reset()}")
+  defp max_steps_error?(e) do
+    e["kind"] == "event" && e["payload"]["name"] == "error" &&
+      is_binary(e["payload"]["reason"]) &&
+      String.contains?(e["payload"]["reason"], "max steps")
+  end
 
-        Enum.each(tool_errors, fn e ->
-          p = e["payload"]
-          error_type = p["error_type"] || "unknown"
+  defp print_tool_error(e) do
+    p = e["payload"]
+    error_type = p["error_type"] || "unknown"
 
-          IO.puts(
-            "  #{IO.ANSI.red()}[tool_error]#{IO.ANSI.reset()} #{p["name"]} (#{error_type}): #{truncate(p["output"] || "", 80)}"
-          )
-        end)
+    IO.puts(
+      "  #{IO.ANSI.red()}[tool_error]#{IO.ANSI.reset()} #{p["name"]} (#{error_type}): #{truncate(p["output"] || "", 80)}"
+    )
+  end
 
-        Enum.each(max_steps, fn e ->
-          IO.puts(
-            "  #{IO.ANSI.red()}[max_steps]#{IO.ANSI.reset()} #{truncate(e["payload"]["reason"], 80)}"
-          )
-        end)
+  defp print_max_steps(e) do
+    IO.puts(
+      "  #{IO.ANSI.red()}[max_steps]#{IO.ANSI.reset()} #{truncate(e["payload"]["reason"], 80)}"
+    )
+  end
 
-        Enum.each(retries, fn {tool_name, count} ->
-          IO.puts(
-            "  #{IO.ANSI.yellow()}[retry]#{IO.ANSI.reset()} #{tool_name} called #{count}x consecutively"
-          )
-        end)
-      end
-    end)
+  defp print_retry({tool_name, count}) do
+    IO.puts(
+      "  #{IO.ANSI.yellow()}[retry]#{IO.ANSI.reset()} #{tool_name} called #{count}x consecutively"
+    )
   end
 
   defp cache(tape_args, opts) do
     tapes = resolve_tapes(tape_args, opts)
+    Enum.each(tapes, &print_cache_report/1)
+  end
 
-    Enum.each(tapes, fn {name, entries} ->
-      usage_events =
-        entries
-        |> Enum.filter(fn e ->
-          e["kind"] == "event" && e["payload"]["name"] == "llm_usage"
-        end)
+  defp print_cache_report({name, entries}) do
+    usage_events =
+      Enum.filter(entries, fn e ->
+        e["kind"] == "event" && e["payload"]["name"] == "llm_usage"
+      end)
 
-      if usage_events == [] do
-        :ok
-      else
-        IO.puts("\n#{name}")
+    if usage_events != [], do: print_cache_details(name, usage_events)
+  end
 
-        header =
-          String.pad_leading("Turn", 5) <>
-            String.pad_leading("Input", 8) <>
-            String.pad_leading("Cached", 8) <>
-            String.pad_leading("Cache%", 8) <>
-            String.pad_leading("CacheWr", 8) <>
-            String.pad_leading("Output", 8) <>
-            String.pad_leading("Cost", 11) <>
-            String.pad_leading("NoCacheCst", 11)
+  defp print_cache_details(name, usage_events) do
+    IO.puts("\n#{name}")
 
-        IO.puts(header)
-        IO.puts(String.duplicate("-", String.length(header)))
+    header =
+      String.pad_leading("Turn", 5) <>
+        String.pad_leading("Input", 8) <>
+        String.pad_leading("Cached", 8) <>
+        String.pad_leading("Cache%", 8) <>
+        String.pad_leading("CacheWr", 8) <>
+        String.pad_leading("Output", 8) <>
+        String.pad_leading("Cost", 11) <>
+        String.pad_leading("NoCacheCst", 11)
 
-        {total_cost, total_no_cache, total_input, total_cached, total_output} =
-          usage_events
-          |> Enum.with_index(1)
-          |> Enum.reduce({0.0, 0.0, 0, 0, 0}, fn {e, i}, {tc, tnc, ti, tca, to} ->
-            p = e["payload"]
-            inp = safe_int(p["input_tokens"])
-            cached = safe_int(p["cached_tokens"])
-            cache_wr = safe_int(p["cache_creation_tokens"])
-            out = safe_int(p["output_tokens"])
-            cost = safe_float(p["total_cost"])
+    IO.puts(header)
+    IO.puts(String.duplicate("-", String.length(header)))
 
-            cost_no_cache = estimate_uncached_cost(inp, out, p["model"])
-            cache_pct = if inp > 0, do: Float.round(cached / inp * 100, 1), else: 0.0
+    {total_cost, total_no_cache, total_input, total_cached, total_output} =
+      usage_events
+      |> Enum.with_index(1)
+      |> Enum.reduce({0.0, 0.0, 0, 0, 0}, &cache_turn_reducer/2)
 
-            line =
-              String.pad_leading("#{i}", 5) <>
-                String.pad_leading("#{inp}", 8) <>
-                String.pad_leading("#{cached}", 8) <>
-                String.pad_leading("#{cache_pct}%", 8) <>
-                String.pad_leading("#{cache_wr}", 8) <>
-                String.pad_leading("#{out}", 8) <>
-                String.pad_leading(format_cost(cost), 11) <>
-                String.pad_leading(format_cost(cost_no_cache), 11)
+    IO.puts(String.duplicate("-", String.length(header)))
 
-            IO.puts(line)
-            {tc + cost, tnc + cost_no_cache, ti + inp, tca + cached, to + out}
-          end)
+    total_cache_pct =
+      if total_input > 0,
+        do: Float.round(total_cached / total_input * 100, 1),
+        else: 0.0
 
-        IO.puts(String.duplicate("-", String.length(header)))
+    total_line =
+      String.pad_leading("Total", 5) <>
+        String.pad_leading("#{total_input}", 8) <>
+        String.pad_leading("#{total_cached}", 8) <>
+        String.pad_leading("#{total_cache_pct}%", 8) <>
+        String.pad_leading("", 8) <>
+        String.pad_leading("#{total_output}", 8) <>
+        String.pad_leading(format_cost(total_cost), 11) <>
+        String.pad_leading(format_cost(total_no_cache), 11)
 
-        total_cache_pct =
-          if total_input > 0,
-            do: Float.round(total_cached / total_input * 100, 1),
-            else: 0.0
+    IO.puts(total_line)
 
-        total_line =
-          String.pad_leading("Total", 5) <>
-            String.pad_leading("#{total_input}", 8) <>
-            String.pad_leading("#{total_cached}", 8) <>
-            String.pad_leading("#{total_cache_pct}%", 8) <>
-            String.pad_leading("", 8) <>
-            String.pad_leading("#{total_output}", 8) <>
-            String.pad_leading(format_cost(total_cost), 11) <>
-            String.pad_leading(format_cost(total_no_cache), 11)
+    savings = total_no_cache - total_cost
 
-        IO.puts(total_line)
+    savings_pct =
+      if total_no_cache > 0, do: Float.round(savings / total_no_cache * 100, 1), else: 0.0
 
-        savings = total_no_cache - total_cost
+    IO.puts("")
+    IO.puts("  Actual cost:          #{format_cost(total_cost)}")
+    IO.puts("  Cost without caching: #{format_cost(total_no_cache)}")
+    IO.puts("  Savings:              #{format_cost(savings)} (#{savings_pct}%)")
+  end
 
-        savings_pct =
-          if total_no_cache > 0, do: Float.round(savings / total_no_cache * 100, 1), else: 0.0
+  defp cache_turn_reducer({e, i}, {tc, tnc, ti, tca, to}) do
+    p = e["payload"]
+    inp = safe_int(p["input_tokens"])
+    cached = safe_int(p["cached_tokens"])
+    cache_wr = safe_int(p["cache_creation_tokens"])
+    out = safe_int(p["output_tokens"])
+    cost = safe_float(p["total_cost"])
 
-        IO.puts("")
-        IO.puts("  Actual cost:          #{format_cost(total_cost)}")
-        IO.puts("  Cost without caching: #{format_cost(total_no_cache)}")
-        IO.puts("  Savings:              #{format_cost(savings)} (#{savings_pct}%)")
-      end
-    end)
+    cost_no_cache = estimate_uncached_cost(inp, out, p["model"])
+    cache_pct = if inp > 0, do: Float.round(cached / inp * 100, 1), else: 0.0
+
+    line =
+      String.pad_leading("#{i}", 5) <>
+        String.pad_leading("#{inp}", 8) <>
+        String.pad_leading("#{cached}", 8) <>
+        String.pad_leading("#{cache_pct}%", 8) <>
+        String.pad_leading("#{cache_wr}", 8) <>
+        String.pad_leading("#{out}", 8) <>
+        String.pad_leading(format_cost(cost), 11) <>
+        String.pad_leading(format_cost(cost_no_cache), 11)
+
+    IO.puts(line)
+    {tc + cost, tnc + cost_no_cache, ti + inp, tca + cached, to + out}
   end
 
   defp estimate_uncached_cost(input_tokens, output_tokens, model_spec) do
@@ -383,14 +387,16 @@ defmodule Mix.Tasks.Rho.Trace do
       |> File.stream!()
       |> Stream.map(&String.trim/1)
       |> Stream.reject(&(&1 == ""))
-      |> Enum.flat_map(fn line ->
-        case Jason.decode(line) do
-          {:ok, entry} -> [entry]
-          {:error, _} -> []
-        end
-      end)
+      |> Enum.flat_map(&decode_tape_line/1)
     else
       []
+    end
+  end
+
+  defp decode_tape_line(line) do
+    case Jason.decode(line) do
+      {:ok, entry} -> [entry]
+      {:error, _} -> []
     end
   end
 

@@ -10,7 +10,8 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   use Rho.Tool
 
   alias RhoFrameworks.Library
-  alias Rho.Stdlib.Plugins.DataTable, as: DT
+  alias RhoFrameworks.DataTableSchemas
+  alias Rho.Stdlib.DataTable
 
   # ── Library Tools ──────────────────────────────────────────────────────
 
@@ -26,6 +27,8 @@ defmodule RhoFrameworks.Tools.LibraryTools do
             description: lib.description,
             type: lib.type,
             immutable: lib.immutable,
+            version: lib.version,
+            published_at: lib.published_at && to_string(lib.published_at),
             skill_count: lib.skill_count,
             updated_at: to_string(lib.updated_at)
           }
@@ -36,7 +39,8 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   tool :create_library,
-       "Create a new mutable skill library. Use for organizing skills by domain." do
+       "Create a new mutable skill library and initialize the 'library' data table for editing. " <>
+         "Then call save_and_generate with the skeleton JSON." do
     param(:name, :string, required: true, doc: "Library name")
     param(:description, :string, doc: "Brief description")
 
@@ -45,32 +49,60 @@ defmodule RhoFrameworks.Tools.LibraryTools do
       description = args[:description] || ""
 
       case Library.create_library(ctx.organization_id, %{name: name, description: description}) do
-        {:ok, lib} -> {:ok, "Created library '#{lib.name}' (id: #{lib.id})"}
-        {:error, changeset} -> {:error, "Failed: #{inspect(changeset.errors)}"}
+        {:ok, lib} ->
+          table_name = library_table_name(lib.name)
+
+          case DataTable.ensure_table(
+                 ctx.session_id,
+                 table_name,
+                 DataTableSchemas.library_schema()
+               ) do
+            :ok ->
+              %Rho.ToolResponse{
+                text: "Created '#{lib.name}' (id: #{lib.id}), table: '#{table_name}'.",
+                effects: [
+                  %Rho.Effect.OpenWorkspace{key: :data_table},
+                  %Rho.Effect.Table{
+                    table_name: table_name,
+                    schema_key: :skill_library,
+                    mode_label: "Skill Library — #{lib.name}",
+                    rows: []
+                  }
+                ]
+              }
+
+            {:error, reason} ->
+              {:ok,
+               "Created '#{lib.name}' (id: #{lib.id}), table init failed: #{inspect(reason)}"}
+          end
+
+        {:error, changeset} ->
+          {:error, "Failed: #{inspect(changeset.errors)}"}
       end
     end)
   end
 
   tool :browse_library,
        "List skills in a library, optionally filtered by category or status. " <>
-         "MUST be called before generating skills for a new role — use existing names as vocabulary." do
-    param(:library_id, :string, required: true, doc: "Library ID")
+         "Provide either library_id (preferred) or library_name." do
+    param(:library_id, :string, doc: "Library ID (preferred — from list_libraries)")
+    param(:library_name, :string, doc: "Library name (resolved if library_id is omitted)")
     param(:category, :string, doc: "Filter by category")
     param(:status, :string, doc: "Filter by status: draft, published, archived")
 
     run(fn args, ctx ->
-      case Library.get_library(ctx.organization_id, args[:library_id]) do
-        nil ->
-          {:error, "Library not found"}
-
-        _lib ->
+      case resolve_library_for_browse(ctx.organization_id, args) do
+        {:ok, lib} ->
           opts =
             []
             |> maybe_opt(:category, args[:category])
             |> maybe_opt(:status, args[:status])
 
-          skills = Library.browse_library(args[:library_id], opts)
+          skills = Library.browse_library(lib.id, opts)
           {:ok, Jason.encode!(skills)}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end)
   end
@@ -83,35 +115,173 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     )
 
     run(fn args, ctx ->
-      library_id =
+      lib =
         case args[:library_id] do
-          nil -> Library.get_or_create_default_library(ctx.organization_id).id
-          id -> id
+          nil -> Library.get_or_create_default_library(ctx.organization_id)
+          id -> Library.get_library(ctx.organization_id, id)
         end
 
-      rows = DT.read_rows(ctx.session_id)
+      case lib do
+        nil ->
+          {:error, "Library not found"}
 
-      if rows == [] do
-        {:error, "Data table is empty — nothing to save"}
+        lib ->
+          library_id = lib.id
+          table_name = library_table_name(lib.name)
+
+          case DataTable.get_rows(ctx.session_id, table: table_name) do
+            {:error, :not_running} ->
+              {:error,
+               "No '#{table_name}' table is active — load a library first with load_library."}
+
+            [] ->
+              {:error, "The '#{table_name}' table is empty — nothing to save"}
+
+            rows when is_list(rows) ->
+              case Library.save_to_library(ctx.organization_id, library_id, rows) do
+                {:ok, %{skills: skills, draft_library_id: draft_id}} ->
+                  count = length(skills)
+
+                  %Rho.ToolResponse{
+                    text: "Saved #{count} skill(s), draft created (#{draft_id}).",
+                    effects: [
+                      %Rho.Effect.Table{
+                        table_name: table_name,
+                        schema_key: :skill_library,
+                        mode_label: "Skill Library (draft)",
+                        rows: [],
+                        append?: true
+                      }
+                    ]
+                  }
+
+                {:ok, %{skills: skills}} ->
+                  count = length(skills)
+
+                  %Rho.ToolResponse{
+                    text: "Saved #{count} skill(s).",
+                    effects: [
+                      %Rho.Effect.Table{
+                        table_name: table_name,
+                        schema_key: :skill_library,
+                        mode_label: "Skill Library (saved)",
+                        rows: [],
+                        append?: true
+                      }
+                    ]
+                  }
+
+                {:error, :not_found} ->
+                  {:error, "Library not found"}
+
+                {:error, step, changeset, _} ->
+                  {:error, "Save failed at #{step}: #{inspect(changeset)}"}
+              end
+          end
+      end
+    end)
+  end
+
+  tool :save_and_generate,
+       "Save a skill skeleton to the library table AND spawn proficiency writers " <>
+         "for each category in a single step. Returns agent_ids — call await_all to collect results. " <>
+         "Call AFTER create_library." do
+    param(:skills_json, :string,
+      required: true,
+      doc:
+        ~s(JSON array: [{"category":"...","cluster":"...","skill_name":"...","skill_description":"..."},...]  )
+    )
+
+    param(:levels, :integer, doc: "Number of proficiency levels to generate (default: 5)")
+    param(:library_name, :string, required: true, doc: "Library name (from create_library)")
+
+    run(fn args, ctx ->
+      raw = args[:skills_json] || "[]"
+      num_levels = args[:levels] || 5
+      table_name = library_table_name(args[:library_name])
+
+      skills =
+        case Jason.decode(raw) do
+          {:ok, list} when is_list(list) -> list
+          _ -> []
+        end
+
+      if skills == [] do
+        {:error, "No valid data. Ensure skills_json is a valid JSON array."}
       else
-        case Library.save_to_library(library_id, rows) do
-          {:ok, %{skills: skills}} ->
-            count = length(skills)
-
-            %Rho.ToolResponse{
-              text: "Saved #{count} skill(s) to library (status: published)",
-              effects: [
-                %Rho.Effect.Table{
-                  schema_key: :skill_library,
-                  mode_label: "Skill Library (saved)",
-                  rows: [],
-                  append?: true
-                }
-              ]
+        rows =
+          Enum.map(skills, fn s ->
+            %{
+              category: s["category"] || "",
+              cluster: s["cluster"] || "",
+              skill_name: s["skill_name"] || "",
+              skill_description: s["skill_description"] || "",
+              proficiency_levels: []
             }
+          end)
 
-          {:error, step, changeset, _} ->
-            {:error, "Save failed at #{step}: #{inspect(changeset)}"}
+        with {:ok, _inserted} <- DataTable.add_rows(ctx.session_id, rows, table: table_name) do
+          by_category = Enum.group_by(skills, & &1["category"])
+          role_config = Rho.Config.agent_config(:proficiency_writer)
+          tools = resolve_proficiency_tools(ctx)
+
+          # Stagger LiteWorker spawns to avoid Finch connection pool
+          # exhaustion when the LLM provider is slow to open connections.
+          # Each worker runs an independent stream; without staggering, a
+          # large fan-out checks out many pool connections simultaneously
+          # and pushes later workers past the checkout timeout.
+          agent_ids =
+            by_category
+            |> Enum.with_index()
+            |> Enum.map(fn {{category, cat_skills}, idx} ->
+              if idx > 0, do: Process.sleep(250)
+
+              task_prompt = build_proficiency_prompt(category, cat_skills, num_levels, table_name)
+
+              {:ok, agent_id} =
+                Rho.Agent.LiteWorker.start(
+                  task: task_prompt,
+                  parent_agent_id: ctx.agent_id,
+                  tools: tools,
+                  role: :proficiency_writer,
+                  max_steps: Map.get(role_config, :max_steps, 5),
+                  context: %{ctx | subagent: true}
+                )
+
+              # Publish delegation card so UI can track this worker.
+              # Use parent agent_id so the card appears in the parent's chat feed.
+              if ctx.session_id do
+                Rho.Comms.publish(
+                  "rho.task.requested",
+                  %{
+                    session_id: ctx.session_id,
+                    agent_id: ctx.agent_id,
+                    worker_agent_id: agent_id,
+                    role: :proficiency_writer,
+                    task: "Proficiency levels: #{category} (#{length(cat_skills)} skills)"
+                  },
+                  source: "/session/#{ctx.session_id}/agent/#{agent_id}"
+                )
+              end
+
+              agent_id
+            end)
+
+          %Rho.ToolResponse{
+            text:
+              "Saved #{length(skills)} skeleton(s), spawned #{map_size(by_category)} writer(s). IDs: #{Jason.encode!(agent_ids)}",
+            effects: [
+              %Rho.Effect.Table{
+                table_name: table_name,
+                schema_key: :skill_library,
+                rows: [],
+                append?: true
+              }
+            ]
+          }
+        else
+          {:error, reason} ->
+            {:error, "Failed to save skeleton: #{inspect(reason)}"}
         end
       end
     end)
@@ -135,9 +305,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
                   do: " and #{role_count} reference role profiles",
                   else: ""
 
-              {:ok,
-               "Loaded '#{lib.name}' as immutable library with #{skill_count} skills#{role_msg}. " <>
-                 "Fork it with fork_library to create a mutable working copy."}
+              {:ok, "Loaded '#{lib.name}' (immutable, #{skill_count} skills#{role_msg})."}
 
             {:error, _step, changeset, _} ->
               {:error, "Load failed: #{inspect(changeset)}"}
@@ -188,7 +356,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
            ) do
         {:ok, %{library: lib, skills: skill_map}} ->
           skill_count = map_size(skill_map)
-          {:ok, "Forked into '#{lib.name}' with #{skill_count} skills (mutable)"}
+          {:ok, "Forked '#{lib.name}' — #{skill_count} skills."}
 
         {:error, _step, reason, _} ->
           {:error, "Fork failed: #{inspect(reason)}"}
@@ -199,33 +367,70 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   tool :load_library,
        "Load a library into the data table as structured skill rows for editing. " <>
          "Switches to skill_library schema. Replaces current data." do
-    param(:library_id, :string, required: true, doc: "Library ID to load")
+    param(:library_id, :string, doc: "Library ID to load (use this OR library_name)")
+
+    param(:library_name, :string,
+      doc: "Library name — loads draft, falls back to latest published"
+    )
+
+    param(:version, :string,
+      doc: "Specific version to load (e.g. '2026.04'). Requires library_name."
+    )
+
     param(:category, :string, doc: "Filter by category")
 
     run(fn args, ctx ->
-      case Library.get_library(ctx.organization_id, args[:library_id]) do
+      lib =
+        cond do
+          args[:library_id] ->
+            Library.get_library(ctx.organization_id, args[:library_id])
+
+          args[:library_name] ->
+            Library.resolve_library(ctx.organization_id, args[:library_name], args[:version])
+
+          true ->
+            nil
+        end
+
+      case lib do
         nil ->
           {:error, "Library not found"}
 
         lib ->
           opts = maybe_opt([], :category, args[:category])
-          rows = Library.load_library_rows(args[:library_id], opts)
+          rows = Library.load_library_rows(lib.id, opts)
 
           if rows == [] do
             {:error, "Library '#{lib.name}' has no skills"}
           else
-            %Rho.ToolResponse{
-              text:
-                "Loaded library '#{lib.name}' with #{length(rows)} skills into the data table",
-              effects: [
-                %Rho.Effect.OpenWorkspace{key: :data_table},
-                %Rho.Effect.Table{
-                  schema_key: :skill_library,
-                  mode_label: "Skill Library — #{lib.name}",
-                  rows: rows
+            version_label =
+              if lib.version, do: " v#{lib.version}", else: " (draft)"
+
+            table_name = library_table_name(lib.name)
+
+            case DataTable.ensure_table(
+                   ctx.session_id,
+                   table_name,
+                   DataTableSchemas.library_schema()
+                 ) do
+              :ok ->
+                %Rho.ToolResponse{
+                  text:
+                    "'#{lib.name}'#{version_label} — #{length(rows)} skills, table: '#{table_name}'.",
+                  effects: [
+                    %Rho.Effect.OpenWorkspace{key: :data_table},
+                    %Rho.Effect.Table{
+                      table_name: table_name,
+                      schema_key: :skill_library,
+                      mode_label: "Skill Library — #{lib.name}#{version_label}",
+                      rows: rows
+                    }
+                  ]
                 }
-              ]
-            }
+
+              {:error, reason} ->
+                {:error, "Failed to prepare 'library' table: #{inspect(reason)}"}
+            end
           end
       end
     end)
@@ -258,8 +463,8 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   tool :combine_libraries,
-       "Create a new mutable library by copying skills from multiple source libraries. " <>
-         "Sources are never modified. Use find_duplicates on the result to deduplicate." do
+       "Preview combining multiple source libraries. Always returns a preview summary — " <>
+         "never auto-commits. Present the preview to the user and get approval before calling combine_libraries_commit." do
     param(:source_library_ids_json, :string,
       required: true,
       doc: ~s(JSON array of library IDs, e.g. ["id1", "id2"])
@@ -271,26 +476,169 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     run(fn args, ctx ->
       raw = args[:source_library_ids_json] || "[]"
       new_name = args[:new_name]
-      description = args[:description]
+      _description = args[:description]
 
       case Jason.decode(raw) do
         {:ok, ids} when is_list(ids) and ids != [] ->
-          opts = maybe_opt([], :description, description)
+          case Library.combine_preview(ctx.organization_id, ids) do
+            {:ok, %{conflicts: [], stats: stats} = preview} ->
+              # No conflicts — return preview for user approval
+              source_summary =
+                preview.sources
+                |> Enum.map(fn s -> "#{s.name} (#{s.skill_count} skills)" end)
+                |> Enum.join(" + ")
 
-          case Library.combine_libraries(ctx.organization_id, ids, new_name, opts) do
-            {:ok, %{library: lib, skill_count: count}} ->
               {:ok,
-               "Created '#{lib.name}' with #{count} skills copied from #{length(ids)} source libraries. " <>
-                 "Sources unchanged. Run find_duplicates to identify overlaps."}
+               "Preview: #{source_summary} → '#{new_name}'. #{stats.total} skills, no conflicts."}
 
-            {:error, reason} ->
-              {:error, "Combine failed: #{inspect(reason)}"}
+            {:ok, %{conflicts: conflicts, stats: stats} = preview} ->
+              # Conflicts found — load into data table for visual resolution
+              conflict_rows =
+                Enum.map(conflicts, fn c ->
+                  %{
+                    id: "#{c.skill_a.id}:#{c.skill_b.id}",
+                    category: c.skill_a.category,
+                    confidence: to_string(c.confidence),
+                    skill_a_id: c.skill_a.id,
+                    skill_a_name: c.skill_a.name,
+                    skill_a_description: c.skill_a.description || "",
+                    skill_a_source: c.skill_a.source_library_name,
+                    skill_a_levels: c.skill_a.level_count,
+                    skill_a_roles: c.skill_a.role_count,
+                    skill_b_id: c.skill_b.id,
+                    skill_b_name: c.skill_b.name,
+                    skill_b_description: c.skill_b.description || "",
+                    skill_b_source: c.skill_b.source_library_name,
+                    skill_b_levels: c.skill_b.level_count,
+                    skill_b_roles: c.skill_b.role_count,
+                    resolution: "unresolved"
+                  }
+                end)
+
+              # Ensure the combine_preview table exists and load conflict rows
+              _ =
+                DataTable.ensure_table(
+                  ctx.session_id,
+                  "combine_preview",
+                  DataTableSchemas.combine_preview_schema()
+                )
+
+              source_summary =
+                preview.sources
+                |> Enum.map(fn s -> "#{s.name} (#{s.skill_count} skills)" end)
+                |> Enum.join(" + ")
+
+              %Rho.ToolResponse{
+                text:
+                  "#{stats.conflicted} conflict(s), #{stats.clean} clean — #{source_summary}.",
+                effects: [
+                  %Rho.Effect.OpenWorkspace{key: :data_table},
+                  %Rho.Effect.Table{
+                    table_name: "combine_preview",
+                    schema_key: :combine_conflicts,
+                    mode_label: "Combine: #{new_name}",
+                    rows: conflict_rows
+                  }
+                ]
+              }
           end
 
         _ ->
           {:error, "Provide a JSON array of at least 1 library ID."}
       end
     end)
+  end
+
+  tool :combine_libraries_commit,
+       "Commit a combined library after resolving conflicts. " <>
+         "Pass resolutions_json explicitly, or set to \"auto\" to read from the data table." do
+    param(:source_library_ids_json, :string,
+      required: true,
+      doc: ~s(JSON array of source library IDs)
+    )
+
+    param(:new_name, :string, required: true, doc: "Name for the combined library")
+    param(:description, :string, doc: "Optional description")
+
+    param(:resolutions_json, :string,
+      doc: ~s(JSON array of resolutions, or "auto" to read from the combine_preview data table)
+    )
+
+    run(fn args, ctx ->
+      with {:ok, ids} when is_list(ids) and ids != [] <-
+             Jason.decode(args[:source_library_ids_json] || "[]") do
+        resolutions = resolve_resolutions(args[:resolutions_json], ctx.session_id)
+        opts = maybe_opt([], :description, args[:description])
+
+        unresolved =
+          Enum.count(resolutions, fn r -> r["action"] in [nil, "", "unresolved"] end)
+
+        if unresolved > 0 do
+          {:error,
+           "#{unresolved} conflict(s) still unresolved. " <>
+             "Resolve all conflicts in the Skills Editor panel before committing."}
+        else
+          case Library.combine_commit(
+                 ctx.organization_id,
+                 ids,
+                 args[:new_name],
+                 resolutions,
+                 opts
+               ) do
+            {:ok, %{library: lib, skill_count: count}} ->
+              {:ok, "Created '#{lib.name}' (#{lib.id}) — #{count} skills."}
+
+            {:error, reason} ->
+              {:error, "Combine commit failed: #{inspect(reason)}"}
+          end
+        end
+      else
+        _ -> {:error, "Invalid source_library_ids_json."}
+      end
+    end)
+  end
+
+  # Read resolutions from explicit JSON or from the combine_preview data table
+  defp resolve_resolutions(nil, session_id), do: read_resolutions_from_table(session_id)
+  defp resolve_resolutions("", session_id), do: read_resolutions_from_table(session_id)
+  defp resolve_resolutions("auto", session_id), do: read_resolutions_from_table(session_id)
+
+  defp resolve_resolutions(json, _session_id) do
+    case Jason.decode(json) do
+      {:ok, list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp read_resolutions_from_table(session_id) do
+    case DataTable.get_rows(session_id, table: "combine_preview") do
+      {:ok, rows} ->
+        Enum.map(rows, fn row ->
+          resolution = get_in_row(row, :resolution)
+
+          {action, keep} =
+            case resolution do
+              "merge_a" -> {"merge", get_in_row(row, :skill_a_id)}
+              "merge_b" -> {"merge", get_in_row(row, :skill_b_id)}
+              "keep_both" -> {"keep_both", nil}
+              _ -> {"unresolved", nil}
+            end
+
+          %{
+            "skill_a_id" => get_in_row(row, :skill_a_id),
+            "skill_b_id" => get_in_row(row, :skill_b_id),
+            "action" => action,
+            "keep" => keep
+          }
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp get_in_row(row, key) when is_atom(key) do
+    Map.get(row, key) || Map.get(row, Atom.to_string(key))
   end
 
   tool :find_duplicates,
@@ -333,7 +681,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
 
       case Library.merge_skills(args[:source_id], args[:target_id], opts) do
         {:ok, _multi} ->
-          {:ok, "Merged successfully. Source skill deleted, references repointed to target."}
+          {:ok, "Merged. Source deleted."}
 
         {:error, :immutable_library, msg} ->
           {:error, msg}
@@ -353,7 +701,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
 
     run(fn args, _ctx ->
       case Library.dismiss_duplicate(args[:library_id], args[:skill_a_id], args[:skill_b_id]) do
-        {:ok, _} -> {:ok, "Marked as intentionally different. Won't be flagged again."}
+        {:ok, _} -> {:ok, "Dismissed."}
         {:error, changeset} -> {:error, "Failed: #{inspect(changeset.errors)}"}
       end
     end)
@@ -367,6 +715,150 @@ defmodule RhoFrameworks.Tools.LibraryTools do
       case Library.get_library(ctx.organization_id, args[:library_id]) do
         nil -> {:error, "Library not found"}
         _lib -> {:ok, Jason.encode!(Library.consolidation_report(args[:library_id]))}
+      end
+    end)
+  end
+
+  # ── Versioning Tools ───────────────────────────────────────────────────
+
+  tool :publish_library_version,
+       "Publish the current draft library as a versioned, immutable snapshot. " <>
+         "Once published, the library cannot be edited — create a new draft to make changes." do
+    param(:library_id, :string, required: true, doc: "Draft library ID to publish")
+
+    param(:version_tag, :string,
+      required: false,
+      doc: "Version tag, e.g. '2026.1'. Format: YYYY.N (auto-generated if omitted)"
+    )
+
+    param(:notes, :string, doc: "Optional publish notes")
+
+    run(fn args, ctx ->
+      # Sync data table rows to the draft before publishing,
+      # so in-memory edits (add_rows, update_cells) aren't lost.
+      library_id = args[:library_id]
+
+      # Look up the library to derive the correct named table
+      lib = Library.get_library(ctx.organization_id, library_id)
+      table_name = if lib, do: library_table_name(lib.name), else: "library"
+
+      case DataTable.get_rows(ctx.session_id, table: table_name) do
+        rows when is_list(rows) and rows != [] ->
+          Library.save_to_library(library_id, rows)
+
+        _ ->
+          :ok
+      end
+
+      version_tag = args[:version_tag]
+
+      case Library.publish_version(
+             ctx.organization_id,
+             library_id,
+             version_tag,
+             notes: args[:notes]
+           ) do
+        {:ok, lib} ->
+          {:ok, "Published '#{lib.name}' v#{lib.version}."}
+
+        {:error, :not_found} ->
+          {:error, "Library not found"}
+
+        {:error, :already_published, msg} ->
+          {:error, msg}
+
+        {:error, :version_exists, msg} ->
+          {:error, msg}
+
+        {:error, changeset} ->
+          {:error, "Publish failed: #{inspect(changeset)}"}
+      end
+    end)
+  end
+
+  tool :create_library_draft,
+       "Create a new mutable draft from the latest published version of a library. " <>
+         "Deep-copies all skills. Fails if a draft already exists." do
+    param(:library_name, :string, required: true, doc: "Library name to create a draft for")
+    param(:description, :string, doc: "Optional description override for the draft")
+
+    run(fn args, ctx ->
+      opts = maybe_opt([], :description, args[:description])
+
+      case Library.create_draft_from_latest(ctx.organization_id, args[:library_name], opts) do
+        {:ok, %{library: draft, skill_count: count}} ->
+          {:ok, "Draft '#{draft.name}' created — #{count} skills."}
+
+        {:error, :draft_exists, msg} ->
+          {:error, msg}
+
+        {:error, :no_published_version, msg} ->
+          {:error, msg}
+
+        {:error, _step, reason} ->
+          {:error, "Failed to create draft: #{inspect(reason)}"}
+      end
+    end)
+  end
+
+  tool :list_library_versions,
+       "List all published versions of a library by name, newest first." do
+    param(:library_name, :string, required: true, doc: "Library name")
+
+    run(fn args, ctx ->
+      versions = Library.list_versions(ctx.organization_id, args[:library_name])
+      draft = Library.get_draft(ctx.organization_id, args[:library_name])
+
+      result = %{
+        library_name: args[:library_name],
+        draft: if(draft, do: %{id: draft.id, updated_at: to_string(draft.updated_at)}, else: nil),
+        published_versions: versions
+      }
+
+      {:ok, Jason.encode!(result)}
+    end)
+  end
+
+  tool :set_default_library_version,
+       "Set a published library version as the default. " <>
+         "When resolving a library by name without a version, the default version is used " <>
+         "if no draft exists. Only one default per library name." do
+    param(:library_id, :string,
+      required: true,
+      doc: "Published library version ID to set as default"
+    )
+
+    run(fn args, ctx ->
+      case Library.set_default_version(ctx.organization_id, args[:library_id]) do
+        {:ok, lib} ->
+          {:ok, "Default set: '#{lib.name}' v#{lib.version}."}
+
+        {:error, :not_found} ->
+          {:error, "Library not found"}
+
+        {:error, :not_published, msg} ->
+          {:error, msg}
+
+        {:error, reason} ->
+          {:error, "Failed: #{inspect(reason)}"}
+      end
+    end)
+  end
+
+  tool :diff_library_versions,
+       "Compare two versions of the same library. Shows added, removed, and modified skills. " <>
+         "Use version 'draft' or omit to compare against the current draft." do
+    param(:library_name, :string, required: true, doc: "Library name")
+    param(:version_a, :string, required: true, doc: "First version (e.g. '2026.01' or 'draft')")
+    param(:version_b, :string, required: true, doc: "Second version (e.g. '2026.04' or 'draft')")
+
+    run(fn args, ctx ->
+      version_a = if args[:version_a] == "draft", do: nil, else: args[:version_a]
+      version_b = if args[:version_b] == "draft", do: nil, else: args[:version_b]
+
+      case Library.diff_versions(ctx.organization_id, args[:library_name], version_a, version_b) do
+        {:ok, diff} -> {:ok, Jason.encode!(diff)}
+        {:error, :not_found, msg} -> {:error, msg}
       end
     end)
   end
@@ -434,7 +926,75 @@ defmodule RhoFrameworks.Tools.LibraryTools do
 
   # ── Helpers ────────────────────────────────────────────────────────────
 
+  defp resolve_proficiency_tools(ctx) do
+    shared_tools = RhoFrameworks.Tools.SharedTools.__tools__(ctx)
+    shared_tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
+  end
+
+  defp build_proficiency_prompt(category, skills, num_levels, table_name) do
+    skill_lines =
+      skills
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {s, i} ->
+        name = s["skill_name"] || ""
+        cluster = s["cluster"] || ""
+        desc = s["skill_description"] || ""
+        "#{i}. #{name} | Cluster: #{cluster} | #{desc}"
+      end)
+
+    """
+    Generate #{num_levels}-level Dreyfus-model proficiency levels for the following skills.
+
+    Category: #{category}
+    Levels: #{num_levels}
+
+    Skills:
+    #{skill_lines}
+
+    Call add_proficiency_levels once with ALL skills above. Use the EXACT skill_name values.
+    IMPORTANT: Pass table: "#{table_name}" to add_proficiency_levels.
+    """
+  end
+
+  @doc false
+  def library_table_name(lib_name) when is_binary(lib_name), do: "library:#{lib_name}"
+
   defp maybe_opt(opts, _key, nil), do: opts
   defp maybe_opt(opts, _key, ""), do: opts
   defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  # browse_library accepts either library_id or library_name.
+  # Tries id first, then falls back to name via Library.resolve_library/2.
+  defp resolve_library_for_browse(org_id, args) do
+    id = blank_to_nil(args[:library_id])
+    name = blank_to_nil(args[:library_name])
+
+    cond do
+      id ->
+        case Library.get_library(org_id, id) do
+          nil -> {:error, "Library not found for library_id=#{id}"}
+          lib -> {:ok, lib}
+        end
+
+      name ->
+        case Library.resolve_library(org_id, name) do
+          nil ->
+            {:error,
+             "Library not found for library_name=#{inspect(name)}. " <>
+               "Call list_libraries to see available libraries."}
+
+          lib ->
+            {:ok, lib}
+        end
+
+      true ->
+        {:error,
+         "Provide library_id (preferred) or library_name. " <>
+           "Call list_libraries first if you don't know the id."}
+    end
+  end
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value) when is_binary(value), do: value
 end

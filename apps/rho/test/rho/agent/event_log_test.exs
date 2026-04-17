@@ -41,7 +41,7 @@ defmodule Rho.Agent.EventLogTest do
       Process.sleep(50)
 
       {events, last_seq} = EventLog.read(sid)
-      assert length(events) >= 1
+      assert events != []
       assert last_seq >= 1
 
       event = hd(events)
@@ -152,7 +152,7 @@ defmodule Rho.Agent.EventLogTest do
       Process.sleep(50)
 
       {events, _} = EventLog.read(sid)
-      assert length(events) >= 1
+      assert events != []
 
       # PID should be stringified
       event = List.last(events)
@@ -174,7 +174,7 @@ defmodule Rho.Agent.EventLogTest do
       Process.sleep(50)
 
       {events, _} = EventLog.read(sid)
-      assert length(events) >= 1
+      assert events != []
 
       event = hd(events)
       # event_id is the signal's UUID

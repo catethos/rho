@@ -1,10 +1,62 @@
 defmodule RhoWeb.DataTable.Schemas do
   @moduledoc """
-  Predefined DataTable schemas for known domain tables.
+  Predefined `RhoWeb.DataTable.Schema` values keyed by a **view key**.
+
+  Web schemas describe *how* a data table renders — column labels,
+  groupings, css classes, edit behavior. They are intentionally
+  distinct from the stdlib `Rho.Stdlib.DataTable.Schema` structs used
+  for storage-side validation.
+
+  ## Resolution
+
+  The LiveView resolves a web schema from:
+
+    1. An explicit `view_key` (atom or string) set on the workspace
+       snapshot cache by `EffectDispatcher` when a `Rho.Effect.Table`
+       carries `schema_key`.
+    2. The current `active_table` name, for future named-table rendering.
+    3. A generic fallback for unknown keys.
+
+  `resolve/2` is the single entry point; callers should never branch on
+  `String.to_atom/1`. Lookups are via whitelist maps.
   """
 
   alias RhoWeb.DataTable.Schema
   alias RhoWeb.DataTable.Schema.Column
+
+  @doc """
+  Resolve a web schema by view key (atom or string) and/or table name.
+
+  Tries `view_key` first, then `table_name`, then falls back to a
+  generic schema. Always returns a `%RhoWeb.DataTable.Schema{}`.
+  """
+  @spec resolve(atom() | String.t() | nil, String.t() | nil) :: Schema.t()
+  def resolve(view_key, table_name \\ nil)
+
+  def resolve(view_key, _table_name) when view_key in [:skill_library, "skill_library"],
+    do: skill_library()
+
+  def resolve(view_key, _table_name) when view_key in [:role_profile, "role_profile"],
+    do: role_profile()
+
+  def resolve(view_key, _table_name) when view_key in [:combine_conflicts, "combine_conflicts"],
+    do: combine_conflicts()
+
+  def resolve(nil, table_name) when is_binary(table_name) do
+    by_table_name(table_name)
+  end
+
+  def resolve(_view_key, table_name) when is_binary(table_name) do
+    by_table_name(table_name)
+  end
+
+  def resolve(_view_key, _table_name), do: generic()
+
+  defp by_table_name("library:" <> _), do: skill_library()
+  defp by_table_name("library"), do: skill_library()
+  defp by_table_name("role_profile"), do: role_profile()
+  defp by_table_name("combine_preview"), do: combine_conflicts()
+  defp by_table_name(_), do: generic()
 
   @doc "Skill library editing: structured skills with nested proficiency levels."
   def skill_library do
@@ -13,6 +65,8 @@ defmodule RhoWeb.DataTable.Schemas do
       empty_message: "No data — ask the assistant to generate a skill framework",
       group_by: [:category, :cluster],
       children_key: :proficiency_levels,
+      show_id: false,
+      children_display: :panel,
       columns: [
         %Column{key: :category, label: "Category", editable: false, css_class: "dt-col-cat"},
         %Column{key: :cluster, label: "Cluster", editable: false, css_class: "dt-col-cluster"},
@@ -48,6 +102,12 @@ defmodule RhoWeb.DataTable.Schemas do
         %Column{key: :cluster, label: "Cluster", editable: false, css_class: "dt-col-cluster"},
         %Column{key: :skill_name, label: "Skill", editable: false, css_class: "dt-col-skill"},
         %Column{
+          key: :skill_description,
+          label: "Description",
+          type: :textarea,
+          css_class: "dt-col-desc"
+        },
+        %Column{
           key: :required_level,
           label: "Required Level",
           type: :number,
@@ -55,6 +115,72 @@ defmodule RhoWeb.DataTable.Schemas do
         },
         %Column{key: :required, label: "Required", css_class: "dt-col-req"}
       ]
+    }
+  end
+
+  @doc "Combine conflicts: side-by-side skill pairs with resolution actions."
+  def combine_conflicts do
+    %Schema{
+      title: "Resolve Conflicts",
+      empty_message: "No conflicts — all skills merge cleanly",
+      group_by: [],
+      show_id: false,
+      columns: [
+        %Column{
+          key: :confidence,
+          label: "Match",
+          editable: false,
+          css_class: "dt-col-confidence"
+        },
+        %Column{
+          key: :skill_a_name,
+          label: "Skill A",
+          editable: false,
+          css_class: "dt-col-skill-a"
+        },
+        %Column{
+          key: :skill_a_description,
+          label: "Desc A",
+          editable: false,
+          css_class: "dt-col-desc-a"
+        },
+        %Column{
+          key: :skill_b_name,
+          label: "Skill B",
+          editable: false,
+          css_class: "dt-col-skill-b"
+        },
+        %Column{
+          key: :skill_b_description,
+          label: "Desc B",
+          editable: false,
+          css_class: "dt-col-desc-b"
+        },
+        %Column{
+          key: :resolution,
+          label: "Action",
+          editable: false,
+          type: :action,
+          css_class: "dt-col-action"
+        }
+      ]
+    }
+  end
+
+  @doc """
+  Generic fallback for unknown / dynamic tables (e.g. `"main"`).
+
+  Columns are derived at render time from the first row's keys — this
+  schema just carries the title + empty message + an empty columns
+  list. The component is expected to infer column headers from rows
+  when `columns == []` and `children_key == nil`.
+  """
+  def generic do
+    %Schema{
+      title: "Data Table",
+      empty_message: "No data yet",
+      columns: [],
+      group_by: []
     }
   end
 end

@@ -1,0 +1,420 @@
+defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
+  @moduledoc """
+  Integration tests exercising the Phase 3 named-table migration for the
+  frameworks domain tools. These hit the real
+  `Rho.Stdlib.DataTable.Server` — no mocks — to verify that:
+
+    * `load_library` writes rows into the `"library"` table
+    * `load_role_profile` writes rows into the `"role_profile"` table
+    * `save_to_library` / `save_role_profile` read from their named tables
+    * two named tables can coexist for a single session
+    * `save_*` tools return an actionable error when no DataTable server is
+      running for the session.
+  """
+
+  use ExUnit.Case, async: false
+
+  alias Rho.Stdlib.DataTable
+  alias RhoFrameworks.Library, as: LibraryCtx
+  alias RhoFrameworks.Repo
+  alias RhoFrameworks.Tools.LibraryTools
+  alias RhoFrameworks.Tools.RoleTools
+
+  setup do
+    org_id = Ecto.UUID.generate()
+
+    Repo.insert!(%RhoFrameworks.Accounts.Organization{
+      id: org_id,
+      name: "Named Table Test Org",
+      slug: "named-table-test-#{System.unique_integer([:positive])}"
+    })
+
+    # Unique session id per test so DataTable servers do not collide.
+    session_id = "sess-nt-#{System.unique_integer([:positive])}"
+
+    on_exit(fn -> DataTable.stop(session_id) end)
+
+    ctx = %Rho.Context{
+      agent_name: :test,
+      organization_id: org_id,
+      session_id: session_id,
+      agent_id: "agent-test",
+      tape_module: Rho.Tape.Null
+    }
+
+    %{org_id: org_id, session_id: session_id, ctx: ctx}
+  end
+
+  # --- Helpers ------------------------------------------------------------
+
+  defp tool(module, name) do
+    module.__tools__()
+    |> Enum.find(&(&1.tool.name == name))
+    |> Map.fetch!(:execute)
+  end
+
+  defp seed_library_with_skill(org_id) do
+    {:ok, lib} =
+      LibraryCtx.create_library(org_id, %{
+        name: "Engineering",
+        description: "Engineering skills"
+      })
+
+    {:ok, _skill} =
+      LibraryCtx.upsert_skill(lib.id, %{
+        category: "Software Development",
+        cluster: "Programming",
+        name: "Elixir",
+        description: "OTP/BEAM",
+        status: "published",
+        proficiency_levels: [
+          %{"level" => 1, "level_name" => "Novice", "level_description" => "Knows basics"},
+          %{"level" => 3, "level_name" => "Competent", "level_description" => "Builds features"}
+        ]
+      })
+
+    lib
+  end
+
+  defp seed_role_profile(org_id) do
+    lib = seed_library_with_skill(org_id)
+    save = tool(RoleTools, "save_role_profile")
+
+    # Prime the "role_profile" table for the save tool to read from.
+    :ok =
+      DataTable.ensure_table(
+        "seed-#{System.unique_integer([:positive])}",
+        "role_profile",
+        RhoFrameworks.DataTableSchemas.role_profile_schema()
+      )
+
+    {lib, save}
+  end
+
+  # --- library round trip -------------------------------------------------
+
+  describe "library load → save round trip" do
+    test "load_library writes into the \"library\" table and save_to_library reads from it",
+         %{org_id: org_id, session_id: session_id, ctx: ctx} do
+      lib = seed_library_with_skill(org_id)
+      load = tool(LibraryTools, "load_library")
+      save = tool(LibraryTools, "save_to_library")
+
+      assert %Rho.ToolResponse{effects: effects} =
+               load.(%{library_id: lib.id}, ctx)
+
+      assert Enum.any?(effects, fn
+               %Rho.Effect.Table{table_name: "library", schema_key: :skill_library} -> true
+               _ -> false
+             end)
+
+      # EffectDispatcher runs in the web layer; simulate its "canonical
+      # write" step so the rows actually land in the named table.
+      %Rho.Effect.Table{rows: rows} =
+        Enum.find(effects, &match?(%Rho.Effect.Table{}, &1))
+
+      {:ok, _} = DataTable.replace_all(session_id, rows, table: "library")
+
+      # Round trip: save_to_library should read from the "library" table.
+      assert %Rho.ToolResponse{text: text} = save.(%{library_id: lib.id}, ctx)
+      assert text =~ "Saved"
+      assert text =~ "skill"
+
+      # And the "main" table should be untouched.
+      assert DataTable.get_rows(session_id, table: "main") == []
+    end
+
+    test "save_to_library errors when the server is not running", %{ctx: ctx} do
+      lib_id = Ecto.UUID.generate()
+      save = tool(LibraryTools, "save_to_library")
+
+      # Server was never started for this session — save should refuse
+      # rather than silently creating an empty table.
+      assert {:error, message} = save.(%{library_id: lib_id}, ctx)
+      assert message =~ "library"
+    end
+
+    test "save_to_library errors when the library table is empty",
+         %{org_id: org_id, session_id: session_id, ctx: ctx} do
+      _lib = seed_library_with_skill(org_id)
+      save = tool(LibraryTools, "save_to_library")
+
+      # Table exists but carries no rows.
+      :ok =
+        DataTable.ensure_table(
+          session_id,
+          "library",
+          RhoFrameworks.DataTableSchemas.library_schema()
+        )
+
+      assert {:error, message} = save.(%{}, ctx)
+      assert message =~ "empty"
+    end
+  end
+
+  # --- role profile round trip -------------------------------------------
+
+  describe "role_profile load → save round trip" do
+    test "load_role_profile writes into the \"role_profile\" table and save_role_profile reads from it",
+         %{org_id: org_id, session_id: session_id, ctx: ctx} do
+      {lib, save} = seed_role_profile(org_id)
+      load = tool(RoleTools, "load_role_profile")
+
+      # Seed an existing role profile by saving one synthetically.
+      :ok =
+        DataTable.ensure_table(
+          session_id,
+          "role_profile",
+          RhoFrameworks.DataTableSchemas.role_profile_schema()
+        )
+
+      {:ok, _} =
+        DataTable.replace_all(
+          session_id,
+          [
+            %{
+              category: "Software Development",
+              cluster: "Programming",
+              skill_name: "Elixir",
+              required_level: 3,
+              required: true
+            }
+          ],
+          table: "role_profile"
+        )
+
+      {:ok, _} =
+        save.(
+          %{
+            name: "Senior Backend Engineer",
+            role_family: "Engineering",
+            seniority_level: 3,
+            library_id: lib.id
+          },
+          ctx
+        )
+
+      # Clear the table and then load it back from storage.
+      {:ok, _} = DataTable.replace_all(session_id, [], table: "role_profile")
+
+      assert %Rho.ToolResponse{effects: effects} =
+               load.(%{name: "Senior Backend Engineer"}, ctx)
+
+      assert Enum.any?(effects, fn
+               %Rho.Effect.Table{table_name: "role_profile", schema_key: :role_profile} -> true
+               _ -> false
+             end)
+
+      %Rho.Effect.Table{rows: loaded_rows} =
+        Enum.find(effects, &match?(%Rho.Effect.Table{}, &1))
+
+      assert Enum.any?(loaded_rows, fn row ->
+               row[:skill_name] == "Elixir" and row[:required_level] == 3
+             end)
+    end
+
+    test "save_role_profile errors when the server is not running", %{ctx: ctx} do
+      save = tool(RoleTools, "save_role_profile")
+      assert {:error, message} = save.(%{name: "Any Role"}, ctx)
+      assert message =~ "role_profile"
+    end
+  end
+
+  # --- two tables open simultaneously ------------------------------------
+
+  describe "coexisting library + role_profile tables" do
+    test "load_library then load_role_profile leaves both tables populated",
+         %{org_id: org_id, session_id: session_id, ctx: ctx} do
+      lib = seed_library_with_skill(org_id)
+
+      # --- library tab ---
+      load_lib = tool(LibraryTools, "load_library")
+
+      %Rho.ToolResponse{effects: lib_effects} =
+        load_lib.(%{library_id: lib.id}, ctx)
+
+      %Rho.Effect.Table{rows: lib_rows, table_name: "library"} =
+        Enum.find(lib_effects, &match?(%Rho.Effect.Table{}, &1))
+
+      {:ok, _} = DataTable.replace_all(session_id, lib_rows, table: "library")
+
+      # --- role_profile tab ---
+      # Seed a role profile in the DB by writing rows and saving.
+      :ok =
+        DataTable.ensure_table(
+          session_id,
+          "role_profile",
+          RhoFrameworks.DataTableSchemas.role_profile_schema()
+        )
+
+      {:ok, _} =
+        DataTable.replace_all(
+          session_id,
+          [
+            %{
+              category: "Software Development",
+              cluster: "Programming",
+              skill_name: "Elixir",
+              required_level: 2,
+              required: true
+            }
+          ],
+          table: "role_profile"
+        )
+
+      save_role = tool(RoleTools, "save_role_profile")
+
+      {:ok, _} =
+        save_role.(
+          %{name: "Mid Engineer", role_family: "Engineering", library_id: lib.id},
+          ctx
+        )
+
+      # Both tables should now exist for this session.
+      tables = DataTable.list_tables(session_id)
+      names = Enum.map(tables, & &1.name) |> Enum.sort()
+      assert "library" in names
+      assert "role_profile" in names
+      assert "main" in names
+
+      assert DataTable.get_rows(session_id, table: "library") != []
+      assert DataTable.get_rows(session_id, table: "role_profile") != []
+    end
+  end
+
+  # --- start_role_profile_draft -----------------------------------------
+
+  describe "start_role_profile_draft" do
+    test "creates an empty role_profile table so add_rows can target it",
+         %{session_id: session_id, ctx: ctx} do
+      start = tool(RoleTools, "start_role_profile_draft")
+
+      assert %Rho.ToolResponse{effects: effects, text: text} =
+               start.(%{mode_label: "My Draft"}, ctx)
+
+      assert text =~ "role_profile"
+
+      assert Enum.any?(effects, fn
+               %Rho.Effect.Table{table_name: "role_profile", rows: []} -> true
+               _ -> false
+             end)
+
+      # The table now exists and is empty — subsequent add_rows with
+      # table: "role_profile" must succeed without :not_found.
+      assert {:ok, [row]} =
+               DataTable.add_rows(
+                 session_id,
+                 [
+                   %{
+                     skill_name: "Elixir",
+                     required_level: 3,
+                     required: true
+                   }
+                 ],
+                 table: "role_profile"
+               )
+
+      assert row.skill_name == "Elixir"
+    end
+  end
+
+  # --- get_org_view -----------------------------------------------------
+
+  describe "get_org_view" do
+    test "returns empty summary when the org has no role profiles",
+         %{ctx: ctx} do
+      view = tool(RoleTools, "get_org_view")
+      assert {:ok, json} = view.(%{}, ctx)
+      assert %{"role_count" => 0, "shared_count" => 0, "roles" => []} = Jason.decode!(json)
+    end
+
+    test "computes shared vs unique skills across multiple role profiles",
+         %{org_id: org_id, session_id: session_id, ctx: ctx} do
+      lib = seed_library_with_skill(org_id)
+
+      :ok =
+        DataTable.ensure_table(
+          session_id,
+          "role_profile",
+          RhoFrameworks.DataTableSchemas.role_profile_schema()
+        )
+
+      save_role = tool(RoleTools, "save_role_profile")
+
+      # Role A: Elixir + Python
+      {:ok, _} =
+        DataTable.replace_all(
+          session_id,
+          [
+            %{
+              category: "Software Development",
+              cluster: "Programming",
+              skill_name: "Elixir",
+              required_level: 3,
+              required: true
+            },
+            %{
+              category: "Software Development",
+              cluster: "Programming",
+              skill_name: "Python",
+              required_level: 2,
+              required: true
+            }
+          ],
+          table: "role_profile"
+        )
+
+      {:ok, _} =
+        save_role.(
+          %{name: "Backend Engineer", role_family: "Engineering", library_id: lib.id},
+          ctx
+        )
+
+      # Role B: Elixir + Go (Elixir shared; Python and Go unique)
+      {:ok, _} =
+        DataTable.replace_all(
+          session_id,
+          [
+            %{
+              category: "Software Development",
+              cluster: "Programming",
+              skill_name: "Elixir",
+              required_level: 4,
+              required: true
+            },
+            %{
+              category: "Software Development",
+              cluster: "Programming",
+              skill_name: "Go",
+              required_level: 3,
+              required: true
+            }
+          ],
+          table: "role_profile"
+        )
+
+      {:ok, _} =
+        save_role.(
+          %{name: "Platform Engineer", role_family: "Engineering", library_id: lib.id},
+          ctx
+        )
+
+      view = tool(RoleTools, "get_org_view")
+      assert {:ok, json} = view.(%{}, ctx)
+      decoded = Jason.decode!(json)
+
+      assert decoded["role_count"] == 2
+      assert "Elixir" in decoded["shared_skills"]
+      refute "Python" in decoded["shared_skills"]
+      refute "Go" in decoded["shared_skills"]
+
+      unique = decoded["unique_per_role"]
+      assert "Python" in unique["Backend Engineer"]
+      assert "Go" in unique["Platform Engineer"]
+      refute "Elixir" in unique["Backend Engineer"]
+
+      assert decoded["role_families"]["Engineering"] |> Enum.sort() ==
+               ["Backend Engineer", "Platform Engineer"]
+    end
+  end
+end

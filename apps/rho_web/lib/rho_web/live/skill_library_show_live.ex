@@ -11,7 +11,7 @@ defmodule RhoWeb.SkillLibraryShowLive do
     {library, skills} =
       if connected?(socket) do
         org = socket.assigns.current_organization
-        lib = Library.get_library!(org.id, id)
+        lib = Library.get_visible_library!(org.id, id)
         skills = Library.browse_library(id)
         {lib, skills}
       else

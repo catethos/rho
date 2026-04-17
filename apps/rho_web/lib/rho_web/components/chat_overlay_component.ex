@@ -187,7 +187,7 @@ defmodule RhoWeb.ChatOverlayComponent do
       content: content
     }
 
-    socket = assign(socket, :messages, socket.assigns.messages ++ [user_msg])
+    socket = assign(socket, :messages, Enum.take(socket.assigns.messages ++ [user_msg], -200))
 
     pid = Rho.Agent.Primary.whereis(sid)
 
@@ -271,7 +271,7 @@ defmodule RhoWeb.ChatOverlayComponent do
       agent_id = data[:agent_id] || socket.assigns.agent_id
 
       # Flush inflight text to a thinking message
-      socket = flush_inflight_to_thinking(socket, agent_id)
+      {socket, _} = flush_inflight_to_thinking(socket, agent_id)
 
       {id, socket} = next_id(socket)
 
@@ -319,7 +319,7 @@ defmodule RhoWeb.ChatOverlayComponent do
     agent_id = data[:agent_id] || socket.assigns.agent_id
 
     # Flush any remaining inflight text as thinking
-    socket = flush_inflight_to_thinking(socket, agent_id)
+    {socket, has_final_answer} = flush_inflight_to_thinking(socket, agent_id)
 
     # Clear inflight for this agent
     inflight = Map.delete(socket.assigns.inflight, agent_id)
@@ -328,17 +328,22 @@ defmodule RhoWeb.ChatOverlayComponent do
     socket =
       case data[:result] do
         {:ok, text} when is_binary(text) and text != "" ->
-          {id, socket} = next_id(socket)
+          if has_final_answer do
+            # The thinking message already contains the final answer — skip duplicate
+            socket
+          else
+            {id, socket} = next_id(socket)
 
-          msg = %{
-            id: id,
-            role: :assistant,
-            type: :text,
-            content: text,
-            agent_id: agent_id
-          }
+            msg = %{
+              id: id,
+              role: :assistant,
+              type: :text,
+              content: text,
+              agent_id: agent_id
+            }
 
-          assign(socket, :messages, socket.assigns.messages ++ [msg])
+            assign(socket, :messages, socket.assigns.messages ++ [msg])
+          end
 
         {:error, reason} ->
           {id, socket} = next_id(socket)
@@ -373,6 +378,7 @@ defmodule RhoWeb.ChatOverlayComponent do
         raw = Enum.join(chunks)
 
         if String.trim(raw) != "" do
+          has_final_answer = contains_final_answer?(raw)
           {id, socket} = next_id(socket)
 
           thinking_msg = %{
@@ -390,16 +396,26 @@ defmodule RhoWeb.ChatOverlayComponent do
               envelope: nil
             })
 
-          socket
-          |> assign(:messages, socket.assigns.messages ++ [thinking_msg])
-          |> assign(:inflight, inflight)
-          |> Phoenix.LiveView.push_event("stream-end", %{agent_id: agent_id})
+          socket =
+            socket
+            |> assign(:messages, socket.assigns.messages ++ [thinking_msg])
+            |> assign(:inflight, inflight)
+            |> Phoenix.LiveView.push_event("stream-end", %{agent_id: agent_id})
+
+          {socket, has_final_answer}
         else
-          socket
+          {socket, false}
         end
 
       _ ->
-        socket
+        {socket, false}
+    end
+  end
+
+  defp contains_final_answer?(raw) do
+    case Rho.StructuredOutput.parse(raw) do
+      {:ok, %{"action" => "final_answer"}} -> true
+      _ -> false
     end
   end
 end

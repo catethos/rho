@@ -18,7 +18,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   @behaviour Rho.Plugin
 
-  alias Rho.Agent.{Worker, Registry, Supervisor, LiteWorker, LiteTracker}
+  alias Rho.Agent.{LiteTracker, LiteWorker, Registry, Supervisor, Worker}
   alias Rho.Comms
 
   @max_depth 3
@@ -76,10 +76,17 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   def tools(_mount_opts, _context), do: []
 
   @impl Rho.Plugin
-  def prompt_sections(_mount_opts, %{agent_name: self_name} = _ctx) do
+  def prompt_sections(mount_opts, %{agent_name: self_name} = _ctx) do
+    visible = Keyword.get(mount_opts, :visible_agents)
+
     other_agents =
       Rho.Config.agent_names()
       |> Enum.reject(&(&1 == self_name))
+      |> then(fn names ->
+        if is_list(visible),
+          do: Enum.filter(names, &(&1 in visible)),
+          else: names
+      end)
       |> Enum.map(fn name ->
         config = Rho.Config.agent_config(name)
         desc = config[:description] || "no description"
@@ -95,15 +102,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         %Rho.PromptSection{
           key: :available_agents,
           heading: "Available Specialist Agents",
-          body:
-            """
-            ## Delegation strategy
-            - **`delegate_task_lite`** — use for independent generation/data tasks (e.g. proficiency levels, summaries, evaluations). Lightweight, fast, parallel-friendly. Prefer this by default.
-            - **`delegate_task`** — use only when the subtask needs multi-turn reasoning, tool chaining, or conversation with other agents.
-            - **`await_all`** — collect results from multiple agents in one call instead of sequential `await_task`.
-
-            ## Available roles
-            """ <> Enum.join(other_agents, "\n"),
+          body: Enum.join(other_agents, "\n"),
           priority: :normal,
           kind: :reference,
           position: :prelude
@@ -478,35 +477,57 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     inherit_context = arg(args, :inherit_context) || false
     max_steps = arg(args, :max_steps) || @default_max_steps
 
-    unless task_prompt do
-      {:error, "task parameter is required"}
+    if task_prompt do
+      delegate_or_route(task_prompt, %{
+        capability: capability,
+        role_str: role_str,
+        session_id: session_id,
+        parent_agent_id: parent_agent_id,
+        workspace: workspace,
+        parent_depth: parent_depth,
+        tape_module: memory_mod,
+        parent_emit: parent_emit,
+        context_summary: context_summary,
+        inherit_context: inherit_context,
+        max_steps: max_steps,
+        user_id: identity[:user_id],
+        organization_id: identity[:organization_id]
+      })
     else
-      # Try capability-based routing first
-      case route_by_capability(capability, session_id, parent_agent_id, task_prompt) do
-        {:routed, result} ->
-          result
+      {:error, "task parameter is required"}
+    end
+  end
 
-        :not_routed ->
-          role_atom =
-            if role_str in known_roles_cache(),
-              do: String.to_existing_atom(role_str),
-              else: :worker
+  defp delegate_or_route(task_prompt, params) do
+    case route_by_capability(
+           params.capability,
+           params.session_id,
+           params.parent_agent_id,
+           task_prompt
+         ) do
+      {:routed, result} ->
+        result
 
-          do_delegate(task_prompt, %{
-            session_id: session_id,
-            parent_agent_id: parent_agent_id,
-            workspace: workspace,
-            parent_depth: parent_depth,
-            tape_module: memory_mod,
-            parent_emit: parent_emit,
-            role: role_atom,
-            context_summary: context_summary,
-            inherit_context: inherit_context,
-            max_steps: max_steps,
-            user_id: identity[:user_id],
-            organization_id: identity[:organization_id]
-          })
-      end
+      :not_routed ->
+        role_atom =
+          if params.role_str in known_roles_cache(),
+            do: String.to_existing_atom(params.role_str),
+            else: :worker
+
+        do_delegate(task_prompt, %{
+          session_id: params.session_id,
+          parent_agent_id: params.parent_agent_id,
+          workspace: params.workspace,
+          parent_depth: params.parent_depth,
+          tape_module: params.tape_module,
+          parent_emit: params.parent_emit,
+          role: role_atom,
+          context_summary: params.context_summary,
+          inherit_context: params.inherit_context,
+          max_steps: params.max_steps,
+          user_id: params[:user_id],
+          organization_id: params[:organization_id]
+        })
     end
   end
 
@@ -635,71 +656,78 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     timeout_secs = arg(args, :timeout) || 300
     timeout_ms = min(timeout_secs * 1000, @await_timeout)
 
-    unless agent_id do
-      {:error, "agent_id parameter is required"}
+    if agent_id do
+      await_agent(agent_id, timeout_ms, timeout_secs)
     else
-      # Check lite tracker first (lightweight agents)
-      case LiteTracker.lookup(agent_id) do
-        nil ->
-          await_full_worker(agent_id, timeout_ms, timeout_secs)
+      {:error, "agent_id parameter is required"}
+    end
+  end
 
-        _lite_entry ->
-          case LiteWorker.await(agent_id, timeout_ms) do
-            {:ok, text} -> {:ok, text}
-            {:error, reason} -> {:error, "lite agent #{agent_id} failed: #{reason}"}
-          end
-      end
+  defp await_agent(agent_id, timeout_ms, timeout_secs) do
+    case LiteTracker.lookup(agent_id) do
+      nil ->
+        await_full_worker(agent_id, timeout_ms, timeout_secs)
+
+      _lite_entry ->
+        case LiteWorker.await(agent_id, timeout_ms) do
+          {:ok, text} -> {:ok, text}
+          {:error, reason} -> {:error, "lite agent #{agent_id} failed: #{reason}"}
+        end
     end
   end
 
   defp await_full_worker(agent_id, timeout_ms, timeout_secs) do
     pid = Worker.whereis(agent_id)
 
-    unless pid do
-      {:error, "unknown agent: #{agent_id}"}
+    if pid do
+      collect_full_worker(pid, agent_id, timeout_ms, timeout_secs)
     else
-      try do
-        case Worker.collect(pid, timeout_ms) do
-          {:ok, text} ->
-            try do
-              GenServer.stop(pid, :normal, 5_000)
-            catch
-              :exit, _ -> :ok
-            end
-
-            {:ok, text}
-
-          {:error, reason} ->
-            {:error, "agent #{agent_id} failed: #{inspect(reason)}"}
-        end
-      catch
-        :exit, {:timeout, _} ->
-          {:error,
-           "agent #{agent_id} timed out after #{timeout_secs}s (still running in background)"}
-
-        :exit, reason ->
-          {:error, "agent #{agent_id} exited: #{inspect(reason)}"}
-      end
+      {:error, "unknown agent: #{agent_id}"}
     end
+  end
+
+  defp collect_full_worker(pid, agent_id, timeout_ms, timeout_secs) do
+    case Worker.collect(pid, timeout_ms) do
+      {:ok, text} ->
+        safe_stop(pid)
+        {:ok, text}
+
+      {:error, reason} ->
+        {:error, "agent #{agent_id} failed: #{inspect(reason)}"}
+    end
+  catch
+    :exit, {:timeout, _} ->
+      {:error, "agent #{agent_id} timed out after #{timeout_secs}s (still running in background)"}
+
+    :exit, reason ->
+      {:error, "agent #{agent_id} exited: #{inspect(reason)}"}
+  end
+
+  defp safe_stop(pid) do
+    GenServer.stop(pid, :normal, 5_000)
+  catch
+    :exit, _ -> :ok
   end
 
   # --- Delegate lite implementation ---
 
-  defp execute_delegate_lite(args, session_id, parent_agent_id, ctx) do
+  defp execute_delegate_lite(args, session_id, parent_agent_id, %Rho.Context{} = ctx) do
     task_prompt = arg(args, :task)
     role_str = arg(args, :role) || "worker"
-    max_steps = arg(args, :max_steps) || 3
 
-    unless task_prompt do
-      {:error, "task parameter is required"}
-    else
-      role_atom =
-        if role_str in known_roles_cache(),
-          do: String.to_existing_atom(role_str),
-          else: :worker
+    agent_name =
+      if role_str in known_roles_cache(),
+        do: String.to_existing_atom(role_str),
+        else: :worker
 
-      agent_name = if role_atom in Rho.Config.agent_names(), do: role_atom, else: :default
+    role_config =
+      if agent_name in Rho.Config.agent_names(),
+        do: Rho.Config.agent_config(agent_name),
+        else: %{}
 
+    max_steps = arg(args, :max_steps) || Map.get(role_config, :max_steps, 5)
+
+    if task_prompt do
       # Resolve tools once from context — lite workers reuse them directly
       tools = Rho.PluginRegistry.collect_tools(ctx)
       tools = tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
@@ -709,7 +737,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
              parent_agent_id: parent_agent_id,
              tools: tools,
              role: agent_name,
-             max_steps: max_steps
+             max_steps: max_steps,
+             context: %Rho.Context{ctx | subagent: true}
            ) do
         {:ok, agent_id} ->
           Comms.publish(
@@ -729,6 +758,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
            "Lite agent #{agent_id} spawned (role: #{role_str}). " <>
              "Use await_task(agent_id: \"#{agent_id}\") or await_all to get the result."}
       end
+    else
+      {:error, "task parameter is required"}
     end
   end
 
@@ -748,60 +779,69 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     if ids == [] do
       {:error, "agent_ids must be a non-empty JSON array of strings"}
     else
-      tasks =
-        Enum.map(ids, fn id ->
-          Task.async(fn ->
-            result = do_await_single(id, session_id, timeout_ms)
-            {id, result}
-          end)
-        end)
+      results = await_all_agents(ids, session_id, timeout_ms)
 
-      results = Task.await_many(tasks, timeout_ms + 5_000)
-
-      summary =
-        Map.new(results, fn {id, result} ->
-          case result do
-            {:ok, text} -> {id, %{"status" => "ok", "result" => text}}
-            {:error, reason} -> {id, %{"status" => "error", "error" => reason}}
-          end
-        end)
+      summary = Map.new(results, &format_await_result/1)
 
       {:ok, Jason.encode!(summary)}
     end
   end
 
+  defp await_all_agents(ids, session_id, timeout_ms) do
+    tasks =
+      Enum.map(ids, fn id ->
+        Task.async(fn ->
+          result = do_await_single(id, session_id, timeout_ms)
+          {id, result}
+        end)
+      end)
+
+    Task.await_many(tasks, timeout_ms + 5_000)
+  end
+
+  defp format_await_result({id, {:ok, text}}),
+    do: {id, %{"status" => "ok", "result" => text}}
+
+  defp format_await_result({id, {:error, reason}}),
+    do: {id, %{"status" => "error", "error" => reason}}
+
   defp do_await_single(agent_id, _session_id, timeout_ms) do
     # Check lite tracker first
     case LiteTracker.lookup(agent_id) do
       nil ->
-        # Full worker path
-        pid = Worker.whereis(agent_id)
-
-        unless pid do
-          {:error, "unknown agent: #{agent_id}"}
-        else
-          try do
-            case Worker.collect(pid, timeout_ms) do
-              {:ok, text} ->
-                try do
-                  GenServer.stop(pid, :normal, 5_000)
-                catch
-                  :exit, _ -> :ok
-                end
-
-                {:ok, text}
-
-              {:error, reason} ->
-                {:error, inspect(reason)}
-            end
-          catch
-            :exit, _ -> {:error, "timeout"}
-          end
-        end
+        await_full_worker_single(agent_id, timeout_ms)
 
       _lite_entry ->
         LiteWorker.await(agent_id, timeout_ms)
     end
+  end
+
+  defp await_full_worker_single(agent_id, timeout_ms) do
+    pid = Worker.whereis(agent_id)
+
+    if pid do
+      collect_and_stop(pid, agent_id, timeout_ms)
+    else
+      {:error, "unknown agent: #{agent_id}"}
+    end
+  end
+
+  defp collect_and_stop(pid, _agent_id, timeout_ms) do
+    case Worker.collect(pid, timeout_ms) do
+      {:ok, text} ->
+        try do
+          GenServer.stop(pid, :normal, 5_000)
+        catch
+          :exit, _ -> :ok
+        end
+
+        {:ok, text}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  catch
+    :exit, _ -> {:error, "timeout"}
   end
 
   # --- Send message implementation ---
@@ -898,25 +938,27 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   end
 
   defp format_tape_entry(entry) when is_map(entry) do
-    role = entry[:role] || entry["role"] || entry[:kind] || entry["kind"] || "unknown"
-    content = entry[:content] || entry["content"] || entry[:payload] || entry["payload"]
-
-    case content do
-      nil ->
-        nil
-
-      c when is_binary(c) and byte_size(c) > 1000 ->
-        "[#{role}] #{String.slice(c, 0, 1000)}... [truncated]"
-
-      c when is_binary(c) ->
-        "[#{role}] #{c}"
-
-      c ->
-        "[#{role}] #{inspect(c)}"
-    end
+    role = entry_field(entry, [:role, :kind], "unknown")
+    content = entry_field(entry, [:content, :payload], nil)
+    format_tape_content(role, content)
   end
 
   defp format_tape_entry(_), do: nil
+
+  defp entry_field(entry, keys, default) do
+    Enum.find_value(keys, default, fn key ->
+      entry[key] || entry[Atom.to_string(key)]
+    end)
+  end
+
+  defp format_tape_content(_role, nil), do: nil
+
+  defp format_tape_content(role, c) when is_binary(c) and byte_size(c) > 1000 do
+    "[#{role}] #{String.slice(c, 0, 1000)}... [truncated]"
+  end
+
+  defp format_tape_content(role, c) when is_binary(c), do: "[#{role}] #{c}"
+  defp format_tape_content(role, c), do: "[#{role}] #{inspect(c)}"
 
   # --- Stop agent implementation ---
 
@@ -942,15 +984,11 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     target = arg(args, :target)
     message = arg(args, :message)
 
-    unless target && message do
-      {:error, "target and message parameters are required"}
-    else
+    if target && message do
       # Resolve target — could be agent_id or role
       target_pid = resolve_target(target, session_id)
 
-      unless target_pid do
-        {:error, "unknown agent or role: #{target}"}
-      else
+      if target_pid do
         Worker.deliver_signal(target_pid, %{
           type: "rho.message.sent",
           data: %{message: message, from: self_agent_id}
@@ -970,7 +1008,11 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         )
 
         {:ok, "Message sent to #{target}"}
+      else
+        {:error, "unknown agent or role: #{target}"}
       end
+    else
+      {:error, "target and message parameters are required"}
     end
   end
 
@@ -979,15 +1021,13 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   defp execute_broadcast_message(args, session_id, self_agent_id) do
     message = arg(args, :message)
 
-    unless message do
-      {:error, "message parameter is required"}
-    else
+    if message do
       targets = Registry.list_except(session_id, self_agent_id)
 
-      for agent <- targets do
+      Enum.each(targets, fn agent ->
         signal = %{type: "rho.message.sent", data: %{message: message, from: self_agent_id}}
         Worker.deliver_signal(agent.pid, signal)
-      end
+      end)
 
       # Publish observable event for signal timeline
       Comms.publish(
@@ -1003,6 +1043,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
       )
 
       {:ok, "Broadcast sent to #{length(targets)} agents"}
+    else
+      {:error, "message parameter is required"}
     end
   end
 
@@ -1014,26 +1056,24 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     if agents == [] do
       {:ok, "No other agents active in this session."}
     else
-      lines =
-        Enum.map(agents, fn agent ->
-          status_str = to_string(agent.status)
-          role_str = to_string(agent.role)
-          desc = agent[:description]
-          skills = agent[:skills] || []
-
-          card_line = "- #{agent.agent_id} (#{role_str}, #{status_str}, depth: #{agent.depth})"
-          card_line = if desc, do: card_line <> "\n  #{desc}", else: card_line
-
-          card_line =
-            if skills != [],
-              do: card_line <> "\n  skills: #{Enum.join(skills, ", ")}",
-              else: card_line
-
-          card_line
-        end)
+      lines = Enum.map(agents, &format_agent_line/1)
 
       {:ok, "Active agents:\n#{Enum.join(lines, "\n")}"}
     end
+  end
+
+  defp format_agent_line(agent) do
+    status_str = to_string(agent.status)
+    role_str = to_string(agent.role)
+    desc = agent[:description]
+    skills = agent[:skills] || []
+
+    card_line = "- #{agent.agent_id} (#{role_str}, #{status_str}, depth: #{agent.depth})"
+    card_line = if desc, do: card_line <> "\n  #{desc}", else: card_line
+
+    if skills != [],
+      do: card_line <> "\n  skills: #{Enum.join(skills, ", ")}",
+      else: card_line
   end
 
   # --- Get agent card implementation ---
@@ -1041,31 +1081,35 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   defp execute_get_agent_card(args, session_id) do
     target = arg(args, :target)
 
-    unless target do
-      {:error, "target parameter is required"}
-    else
+    if target do
       agent = resolve_agent_entry(target, session_id)
 
-      unless agent do
-        {:error, "unknown agent or role: #{target}"}
+      if agent do
+        format_agent_card(agent)
       else
-        desc = agent[:description] || "(no description set)"
-        skills = agent[:skills] || []
-        skills_str = if skills != [], do: Enum.join(skills, ", "), else: "(none)"
-
-        card = """
-        Agent: #{agent.agent_id}
-        Role: #{agent.role}
-        Status: #{agent.status}
-        Depth: #{agent.depth}
-        Description: #{desc}
-        Skills: #{skills_str}
-        Parent: #{Rho.Agent.Primary.parent_of(agent.agent_id) || "(none)"}
-        """
-
-        {:ok, String.trim(card)}
+        {:error, "unknown agent or role: #{target}"}
       end
+    else
+      {:error, "target parameter is required"}
     end
+  end
+
+  defp format_agent_card(agent) do
+    desc = agent[:description] || "(no description set)"
+    skills = agent[:skills] || []
+    skills_str = if skills != [], do: Enum.join(skills, ", "), else: "(none)"
+
+    card = """
+    Agent: #{agent.agent_id}
+    Role: #{agent.role}
+    Status: #{agent.status}
+    Depth: #{agent.depth}
+    Description: #{desc}
+    Skills: #{skills_str}
+    Parent: #{Rho.Agent.Primary.parent_of(agent.agent_id) || "(none)"}
+    """
+
+    {:ok, String.trim(card)}
   end
 
   # --- Tool filtering ---
@@ -1157,9 +1201,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   defp with_validated_agent(args, session_id, fun) do
     agent_id = arg(args, :agent_id)
 
-    unless agent_id do
-      {:error, "agent_id parameter is required"}
-    else
+    if agent_id do
       agent = Registry.get(agent_id)
 
       cond do
@@ -1172,6 +1214,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         true ->
           fun.(agent)
       end
+    else
+      {:error, "agent_id parameter is required"}
     end
   end
 

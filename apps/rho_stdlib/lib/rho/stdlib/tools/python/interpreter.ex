@@ -218,49 +218,56 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
   end
 
   defp format_output(stdout, result, changed_files, image_paths) do
-    decoded =
-      try do
-        Pythonx.decode(result)
-      rescue
-        _ -> nil
-      end
-
+    decoded = safe_decode(result)
     image_tags = Enum.map(image_paths, &"[Plot saved: #{&1}]")
 
-    # Check for structured response: {"final": bool, "result": value}
     case decoded do
       %{"final" => final?, "result" => value} when is_boolean(final?) ->
-        disposition = if final?, do: :final, else: :ok
-        result_str = if is_binary(value), do: value, else: inspect(value)
-
-        parts =
-          [
-            if(stdout != "", do: stdout),
-            result_str,
-            format_changed_files(changed_files)
-          ]
-          |> Enum.reject(&is_nil/1)
-          |> Kernel.++(image_tags)
-
-        {disposition, Enum.join(parts, "\n")}
+        format_structured_output(stdout, final?, value, changed_files, image_tags)
 
       _ ->
-        parts =
-          [
-            if(stdout != "", do: stdout),
-            if(decoded != nil, do: inspect(decoded)),
-            format_changed_files(changed_files)
-          ]
-          |> Enum.reject(&is_nil/1)
-          |> Kernel.++(image_tags)
-
-        output =
-          if parts == [],
-            do: "(code executed successfully, no output)",
-            else: Enum.join(parts, "\n")
-
-        {:ok, output}
+        format_plain_output(stdout, decoded, changed_files, image_tags)
     end
+  end
+
+  defp safe_decode(result) do
+    Pythonx.decode(result)
+  rescue
+    _ -> nil
+  end
+
+  defp format_structured_output(stdout, final?, value, changed_files, image_tags) do
+    disposition = if final?, do: :final, else: :ok
+    result_str = if is_binary(value), do: value, else: inspect(value)
+
+    parts =
+      [
+        if(stdout != "", do: stdout),
+        result_str,
+        format_changed_files(changed_files)
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Kernel.++(image_tags)
+
+    {disposition, Enum.join(parts, "\n")}
+  end
+
+  defp format_plain_output(stdout, decoded, changed_files, image_tags) do
+    parts =
+      [
+        if(stdout != "", do: stdout),
+        if(decoded != nil, do: inspect(decoded)),
+        format_changed_files(changed_files)
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Kernel.++(image_tags)
+
+    output =
+      if parts == [],
+        do: "(code executed successfully, no output)",
+        else: Enum.join(parts, "\n")
+
+    {:ok, output}
   end
 
   defp format_changed_files([]), do: nil
@@ -308,20 +315,17 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
   defp snapshot_files(workspace) do
     case File.ls(workspace) do
       {:ok, entries} ->
-        Map.new(entries, fn name ->
-          path = Path.join(workspace, name)
-
-          mtime =
-            case File.stat(path) do
-              {:ok, %{mtime: mtime}} -> mtime
-              _ -> nil
-            end
-
-          {name, mtime}
-        end)
+        Map.new(entries, fn name -> {name, file_mtime(Path.join(workspace, name))} end)
 
       _ ->
         %{}
+    end
+  end
+
+  defp file_mtime(path) do
+    case File.stat(path) do
+      {:ok, %{mtime: mtime}} -> mtime
+      _ -> nil
     end
   end
 

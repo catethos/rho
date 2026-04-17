@@ -110,10 +110,9 @@ defmodule RhoWeb.Session.SessionCore do
     agent_tab_order = [primary_id | agent_ids -- [primary_id]]
     agent_messages = Map.new(agent_ids, fn id -> {id, []} end)
 
-    # Always register data table PID so tools like get_table work
-    # regardless of which page the user started on (chat vs editor).
-    # The handler reads from ws_states which is always maintained.
-    Rho.Stdlib.Plugins.DataTable.register(session_id, self())
+    # Ensure the data table server is running for this session. The
+    # server owns row state; tools and the LiveView both read from it.
+    Rho.Stdlib.DataTable.ensure_started(session_id)
 
     socket
     |> assign(:session_id, session_id)
@@ -129,14 +128,10 @@ defmodule RhoWeb.Session.SessionCore do
   # Unsubscribe
   # -------------------------------------------------------------------
 
-  @doc "Unsubscribe from all signal bus subscriptions and unregister data table PID."
+  @doc "Unsubscribe from all signal bus subscriptions."
   def unsubscribe(socket) do
     for sub <- socket.assigns[:bus_subs] || [] do
       Rho.Comms.unsubscribe(sub)
-    end
-
-    if sid = socket.assigns[:session_id] do
-      Rho.Stdlib.Plugins.DataTable.unregister(sid)
     end
 
     socket

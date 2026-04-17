@@ -189,6 +189,46 @@ defmodule RhoWeb.InlineJS do
         }
       },
 
+      ExportDownload: {
+        mounted() {
+          var self = this;
+          this.handleEvent("csv-download", ({csv, filename}) => {
+            var blob = new Blob([csv], {type: "text/csv;charset=utf-8;"});
+            this._download(blob, filename);
+          });
+          this.handleEvent("xlsx-download", ({data, filename}) => {
+            var byteString = atob(data);
+            var ab = new ArrayBuffer(byteString.length);
+            var ia = new Uint8Array(ab);
+            for (var i = 0; i < byteString.length; i++) {
+              ia[i] = byteString.charCodeAt(i);
+            }
+            var blob = new Blob([ab], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+            this._download(blob, filename);
+          });
+          // Close dropdown when clicking outside
+          this._onClickOutside = function(e) {
+            if (!self.el.contains(e.target)) {
+              self.pushEventTo(self.el, "close_export_menu", {});
+            }
+          };
+          document.addEventListener("mousedown", this._onClickOutside);
+        },
+        destroyed() {
+          document.removeEventListener("mousedown", this._onClickOutside);
+        },
+        _download(blob, filename) {
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+      },
+
       SignalTimeline: {
         mounted() {
           var self = this;
@@ -267,6 +307,26 @@ defmodule RhoWeb.InlineJS do
         }
       }
     };
+
+    window.addEventListener("phx:scroll_to_skill", function(e) {
+      var id = e.detail.skill_id;
+      var el = document.getElementById("skill-" + id);
+      if (!el) return;
+
+      // Open all parent <details> elements so the row is visible
+      var node = el.parentElement;
+      while (node) {
+        if (node.tagName === "DETAILS") node.open = true;
+        node = node.parentElement;
+      }
+
+      // Scroll and flash highlight
+      setTimeout(function() {
+        el.scrollIntoView({behavior: "smooth", block: "center"});
+        el.classList.add("skill-highlight");
+        setTimeout(function() { el.classList.remove("skill-highlight"); }, 2000);
+      }, 100);
+    });
     """
   end
 end

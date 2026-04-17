@@ -225,13 +225,11 @@ defmodule Rho.CLI.Repl do
   defp format_args(args) when map_size(args) == 0, do: ""
 
   defp format_args(args) do
-    args
-    |> Enum.map(fn {k, v} ->
+    Enum.map_join(args, ", ", fn {k, v} ->
       v_str = to_string(v)
       v_str = if String.length(v_str) > 60, do: String.slice(v_str, 0, 60) <> "...", else: v_str
       "#{k}: #{inspect(v_str)}"
     end)
-    |> Enum.join(", ")
   end
 
   defp print_tool_output(output) do

@@ -10,10 +10,12 @@ defmodule RhoWeb.StreamEnvelope do
 
     1. **Candidacy** — the accumulated text must start (after optional
        markdown fence) with `{` or `[`. Non-JSON prose is ignored.
-    2. **Parse** — `Rho.Parse.Lenient.parse_partial/1` auto-closes
-       unclosed `{`, `[`, `"` at EOF, then `Jason.decode`s. For a map
-       with an `action` (or `tool`/`name`) key we return an envelope
-       summary; otherwise `:no_envelope`.
+    2. **Parse** — `Rho.StructuredOutput.parse_partial/1` uses multiple
+       completion strategies (close-as-is, null for trailing colon,
+       strip trailing comma, truncate to last comma) to handle
+       incomplete streaming JSON. For a map with an `action` (or
+       `tool`/`name`) key we return an envelope summary; otherwise
+       `:no_envelope`.
 
   The summary is intentionally thin: `action_name`, `action_input`
   (which may itself be a partial map), and any `thinking` field. The
@@ -36,7 +38,9 @@ defmodule RhoWeb.StreamEnvelope do
   @spec analyze(String.t()) :: result()
   def analyze(text) when is_binary(text) do
     if envelope_candidate?(text) do
-      case Rho.Parse.Lenient.parse_partial(text) do
+      stripped = Rho.Parse.Lenient.strip_fences(text)
+
+      case Rho.StructuredOutput.parse_partial(stripped) do
         {:ok, %{} = map} -> from_map(map) |> or_regex_fallback(text)
         _ -> regex_fallback(text)
       end

@@ -217,7 +217,7 @@ defmodule Rho.TransformerRegistry do
     with {:module, _} <- Code.ensure_loaded(mod),
          true <- function_exported?(mod, :transform, 3) do
       try do
-        apply(mod, :transform, [stage, data, context])
+        mod.transform(stage, data, context)
       rescue
         e ->
           Logger.warning(

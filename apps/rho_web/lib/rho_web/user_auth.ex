@@ -143,7 +143,11 @@ defmodule RhoWeb.UserAuth do
         {:cont,
          socket
          |> Phoenix.Component.assign(:current_organization, org)
-         |> Phoenix.Component.assign(:current_membership, membership)}
+         |> Phoenix.Component.assign(:current_membership, membership)
+         |> Phoenix.Component.assign(
+           :user_organizations,
+           Accounts.list_user_organizations(user.id)
+         )}
       else
         {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/")}
       end
@@ -153,11 +157,10 @@ defmodule RhoWeb.UserAuth do
   end
 
   defp mount_current_user(socket, session) do
-    user =
+    Phoenix.Component.assign_new(socket, :current_user, fn ->
       if user_token = session["user_token"] do
         Accounts.get_user_by_session_token(user_token)
       end
-
-    Phoenix.Component.assign(socket, :current_user, user)
+    end)
   end
 end

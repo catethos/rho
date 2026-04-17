@@ -33,3 +33,6 @@ _rho/
 **/priv/*.db-wal
 
 data.xlsx
+
+# Runtime log files
+/logs/

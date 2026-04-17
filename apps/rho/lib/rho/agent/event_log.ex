@@ -136,7 +136,11 @@ defmodule Rho.Agent.EventLog do
     # Filter out high-frequency reconstructable events
     event_type = type |> String.split(".") |> List.last()
 
-    if event_type in @filtered_types do
+    # Drop events that belong to a different session
+    event_session = data[:session_id] || data["session_id"]
+    foreign? = is_binary(event_session) and event_session != state.session_id
+
+    if event_type in @filtered_types or foreign? do
       {:noreply, state}
     else
       try do
@@ -216,20 +220,21 @@ defmodule Rho.Agent.EventLog do
   defp truncate_args(data, key, max_bytes) do
     case Map.get(data, key) do
       args when is_map(args) ->
-        truncated =
-          Map.new(args, fn {k, v} ->
-            if is_binary(v) and byte_size(v) > max_bytes do
-              {k, String.slice(v, 0, max_bytes) <> "... [truncated]"}
-            else
-              {k, v}
-            end
-          end)
-
-        Map.put(data, key, truncated)
+        Map.put(data, key, truncate_arg_values(args, max_bytes))
 
       _ ->
         data
     end
+  end
+
+  defp truncate_arg_values(args, max_bytes) do
+    Map.new(args, fn {k, v} ->
+      if is_binary(v) and byte_size(v) > max_bytes do
+        {k, String.slice(v, 0, max_bytes) <> "... [truncated]"}
+      else
+        {k, v}
+      end
+    end)
   end
 
   # Recursively convert structs to plain maps so Jason.encode! won't blow up

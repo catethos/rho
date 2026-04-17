@@ -4,14 +4,56 @@ defmodule RhoWeb.UserRegistrationLive do
 
   alias RhoFrameworks.Accounts
   alias RhoFrameworks.Accounts.User
+  alias RhoWeb.RateLimiter
+  alias RhoWeb.RemoteIpHelper
+
+  # 5 registrations per IP per hour. Generous enough for shared-NAT setups
+  # (offices, dorms) but tight enough to stop scripted account spam.
+  @register_window_ms :timer.hours(1)
+  @register_max 5
 
   def mount(_params, _session, socket) do
     changeset = Accounts.change_registration(%User{})
-    socket = assign(socket, form: to_form(changeset, as: "user"), active_page: :auth)
+
+    socket =
+      socket
+      |> assign(form: to_form(changeset, as: "user"), active_page: :auth)
+      |> assign(:client_ip, peer_ip(socket))
+
     {:ok, socket}
   end
 
   def handle_event("save", %{"user" => user_params}, socket) do
+    case RateLimiter.hit(
+           "register:ip:" <> socket.assigns.client_ip,
+           @register_window_ms,
+           @register_max
+         ) do
+      {:allow, _count} ->
+        do_save(socket, user_params)
+
+      {:deny, retry_after_ms} ->
+        minutes = div(retry_after_ms, 60_000) + 1
+
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Too many registration attempts. Please try again in about #{minutes} minute(s)."
+         )}
+    end
+  end
+
+  def handle_event("validate", %{"user" => user_params}, socket) do
+    changeset =
+      %User{}
+      |> User.registration_changeset(user_params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, form: to_form(changeset, as: "user"))}
+  end
+
+  defp do_save(socket, user_params) do
     case Accounts.register_user(user_params) do
       {:ok, _user} ->
         {:noreply,
@@ -24,14 +66,7 @@ defmodule RhoWeb.UserRegistrationLive do
     end
   end
 
-  def handle_event("validate", %{"user" => user_params}, socket) do
-    changeset =
-      %User{}
-      |> User.registration_changeset(user_params)
-      |> Map.put(:action, :validate)
-
-    {:noreply, assign(socket, form: to_form(changeset, as: "user"))}
-  end
+  defp peer_ip(socket), do: RemoteIpHelper.from_socket(socket)
 
   def render(assigns) do
     ~H"""

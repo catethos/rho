@@ -221,24 +221,26 @@ defmodule Rho.Tape.Store do
       |> File.stream!()
       |> Stream.map(&String.trim/1)
       |> Stream.reject(&(&1 == ""))
-      |> Enum.reduce({0, nil}, fn line, {max, anchor_id} ->
-        case Entry.from_json(line) do
-          {:ok, entry} ->
-            :ets.insert(@table, {{tape_name, entry.id}, entry})
-            index_entry(tape_name, entry)
-            new_anchor = if entry.kind == :anchor, do: entry.id, else: anchor_id
-            {Kernel.max(max, entry.id), new_anchor}
-
-          {:error, _} ->
-            {max, anchor_id}
-        end
-      end)
+      |> Enum.reduce({0, nil}, &load_tape_line(tape_name, &1, &2))
 
     if max_id > 0 do
       :ets.insert(
         @table,
         {{tape_name, :meta}, %{next_id: max_id + 1, last_anchor_id: last_anchor_id}}
       )
+    end
+  end
+
+  defp load_tape_line(tape_name, line, {max, anchor_id}) do
+    case Entry.from_json(line) do
+      {:ok, entry} ->
+        :ets.insert(@table, {{tape_name, entry.id}, entry})
+        index_entry(tape_name, entry)
+        new_anchor = if entry.kind == :anchor, do: entry.id, else: anchor_id
+        {Kernel.max(max, entry.id), new_anchor}
+
+      {:error, _} ->
+        {max, anchor_id}
     end
   end
 

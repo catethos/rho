@@ -137,32 +137,7 @@ defmodule Rho.Agent.Primary do
 
   defp do_ensure_started(session_id, opts) do
     workspace = opts[:workspace] || File.cwd!()
-
-    result =
-      case whereis(session_id) do
-        nil ->
-          worker_opts =
-            [
-              agent_id: agent_id(session_id),
-              session_id: session_id,
-              workspace: workspace,
-              agent_name: opts[:agent_name] || :default,
-              role: :primary,
-              user_id: opts[:user_id],
-              organization_id: opts[:organization_id]
-            ]
-            |> then(fn wo ->
-              if opts[:tape_ref], do: Keyword.put(wo, :tape_ref, opts[:tape_ref]), else: wo
-            end)
-
-          case Rho.Agent.Supervisor.start_worker(worker_opts) do
-            {:ok, pid} -> {:ok, pid}
-            {:error, {:already_started, pid}} -> {:ok, pid}
-          end
-
-        pid ->
-          {:ok, pid}
-      end
+    result = find_or_start_worker(session_id, workspace, opts)
 
     case result do
       {:ok, _pid} ->
@@ -171,6 +146,34 @@ defmodule Rho.Agent.Primary do
 
       error ->
         error
+    end
+  end
+
+  defp find_or_start_worker(session_id, workspace, opts) do
+    case whereis(session_id) do
+      nil -> start_new_worker(session_id, workspace, opts)
+      pid -> {:ok, pid}
+    end
+  end
+
+  defp start_new_worker(session_id, workspace, opts) do
+    worker_opts =
+      [
+        agent_id: agent_id(session_id),
+        session_id: session_id,
+        workspace: workspace,
+        agent_name: opts[:agent_name] || :default,
+        role: :primary,
+        user_id: opts[:user_id],
+        organization_id: opts[:organization_id]
+      ]
+      |> then(fn wo ->
+        if opts[:tape_ref], do: Keyword.put(wo, :tape_ref, opts[:tape_ref]), else: wo
+      end)
+
+    case Rho.Agent.Supervisor.start_worker(worker_opts) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
     end
   end
 
@@ -307,28 +310,26 @@ defmodule Rho.Agent.Primary do
   @spec inject(String.t(), String.t() | nil, String.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def inject(session_id, target_agent_id, message, opts \\ []) do
-    cond do
-      target_agent_id in [nil, "primary"] ->
-        case whereis(session_id) do
-          nil -> {:error, :session_not_found}
-          pid -> Worker.submit(pid, message, opts)
-        end
+    if target_agent_id in [nil, "primary"] do
+      case whereis(session_id) do
+        nil -> {:error, :session_not_found}
+        pid -> Worker.submit(pid, message, opts)
+      end
+    else
+      case Worker.whereis(target_agent_id) do
+        nil ->
+          {:error, :agent_not_found}
 
-      true ->
-        case Worker.whereis(target_agent_id) do
-          nil ->
-            {:error, :agent_not_found}
+        pid ->
+          from = opts[:from] || "external"
 
-          pid ->
-            from = opts[:from] || "external"
+          Worker.deliver_signal(pid, %{
+            type: "rho.message.sent",
+            data: %{message: message, from: from}
+          })
 
-            Worker.deliver_signal(pid, %{
-              type: "rho.message.sent",
-              data: %{message: message, from: from}
-            })
-
-            {:ok, :injected}
-        end
+          {:ok, :injected}
+      end
     end
   end
 

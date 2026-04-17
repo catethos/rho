@@ -9,11 +9,14 @@ defmodule RhoWeb.OrgMembersLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    org = socket.assigns.current_organization
     membership = socket.assigns.current_membership
-    members = Accounts.list_members(org.id)
     can_manage = Authorization.can?(membership, :manage_members)
     is_owner = Authorization.can?(membership, :manage_org)
+
+    members =
+      if connected?(socket),
+        do: Accounts.list_members(socket.assigns.current_organization.id),
+        else: []
 
     {:ok,
      socket

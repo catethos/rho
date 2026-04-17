@@ -78,38 +78,41 @@ defmodule Rho.Tape.Service do
     else
       id_set = MapSet.new(matching_ids)
       all_entries = Store.read(tape_name)
-
-      # Build a map: user_entry_id -> next assistant entry (single pass)
-      next_assistant =
-        all_entries
-        |> Enum.reverse()
-        |> Enum.reduce({%{}, nil}, fn entry, {map, last_assistant} ->
-          cond do
-            entry.kind == :message and entry.payload["role"] == "assistant" ->
-              {map, entry}
-
-            entry.kind == :message and entry.payload["role"] == "user" and last_assistant != nil ->
-              {Map.put(map, entry.id, last_assistant), last_assistant}
-
-            true ->
-              {map, last_assistant}
-          end
-        end)
-        |> elem(0)
+      next_assistant = build_next_assistant_map(all_entries)
 
       all_entries
       |> Enum.filter(&MapSet.member?(id_set, &1.id))
       |> Enum.take(-limit)
-      |> Enum.flat_map(fn entry ->
-        if entry.payload["role"] == "user" do
-          case Map.get(next_assistant, entry.id) do
-            nil -> [entry]
-            assistant_entry -> [entry, assistant_entry]
-          end
-        else
-          [entry]
-        end
-      end)
+      |> Enum.flat_map(&expand_with_assistant(&1, next_assistant))
+    end
+  end
+
+  defp build_next_assistant_map(entries) do
+    entries
+    |> Enum.reverse()
+    |> Enum.reduce({%{}, nil}, fn entry, {map, last_assistant} ->
+      cond do
+        entry.kind == :message and entry.payload["role"] == "assistant" ->
+          {map, entry}
+
+        entry.kind == :message and entry.payload["role"] == "user" and last_assistant != nil ->
+          {Map.put(map, entry.id, last_assistant), last_assistant}
+
+        true ->
+          {map, last_assistant}
+      end
+    end)
+    |> elem(0)
+  end
+
+  defp expand_with_assistant(entry, next_assistant) do
+    if entry.payload["role"] == "user" do
+      case Map.get(next_assistant, entry.id) do
+        nil -> [entry]
+        assistant_entry -> [entry, assistant_entry]
+      end
+    else
+      [entry]
     end
   end
 

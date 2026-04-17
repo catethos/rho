@@ -1,19 +1,28 @@
 defmodule RhoWeb.Session.EffectDispatcher do
   @moduledoc """
   Dispatches `Rho.Effect.*` structs produced by tool responses to the
-  appropriate signal bus topics.
+  per-session data table server and the session signal bus.
 
   This is the bridge between the core runtime's effect structs and the
-  web layer's signal-driven projections. Each effect type maps to one or
-  more signal bus publishes that existing workspace projections already
-  handle.
+  web layer. For `%Rho.Effect.Table{}`:
+
+    1. Calls `Rho.Stdlib.DataTable.ensure_started/1` / `replace_all/3`
+       / `add_rows/3` on the target named table (defaults to `"main"`).
+    2. Publishes a single `:view_change` payload on
+       `rho.session.<sid>.events.data_table` carrying the optional
+       `schema_key` (web view key) and `mode_label`. The LiveView
+       uses this to select the correct web schema and title.
+
+  The DataTable server publishes its own `:table_changed` invalidation
+  event after the write — the LiveView reacts to that to refetch the
+  snapshot. There is no second legacy row-delta signal stream.
 
   Called from `SessionEffects.apply/2` when tool_result signals carry
   effects.
   """
 
   alias Rho.Comms
-  alias Rho.Stdlib.Plugins.DataTable, as: DT
+  alias Rho.Stdlib.DataTable
 
   @type dispatch_context :: %{
           session_id: String.t(),
@@ -29,26 +38,33 @@ defmodule RhoWeb.Session.EffectDispatcher do
   def dispatch(%Rho.Effect.Table{} = effect, ctx) do
     session_id = ctx.session_id
     agent_id = ctx.agent_id
+    table_name = effect.table_name || "main"
 
-    # Schema change if schema_key or columns are provided
-    if effect.schema_key || effect.columns != [] do
-      payload =
-        %{}
-        |> maybe_put(:schema_key, effect.schema_key)
-        |> maybe_put(:mode_label, effect.mode_label)
-        |> maybe_put_non_empty(:columns, effect.columns)
+    # Ensure the server is up. `restart: :temporary` means we own the
+    # first-start decision here rather than leaking it into `add_rows`.
+    _ = DataTable.ensure_started(session_id)
 
-      DT.publish_event(session_id, agent_id, :schema_change, payload)
+    # Announce the view change (schema key + mode label) so the LV can
+    # pick the right web schema even though the data still lives in
+    # the "main" table for now. This is a UI hint, not a data signal.
+    if effect.schema_key || effect.mode_label do
+      publish_view_change(session_id, agent_id, %{
+        view_key: effect.schema_key,
+        mode_label: effect.mode_label,
+        table_name: table_name,
+        metadata: effect.metadata
+      })
     end
 
-    if effect.append? do
-      # Append mode: stream rows progressively
-      DT.stream_rows_progressive(effect.rows, :add, session_id, agent_id)
-    else
-      # Replace mode: clear then stream
-      DT.publish_event(session_id, agent_id, :replace_all, %{})
-      DT.stream_rows_progressive(effect.rows, :add, session_id, agent_id)
-    end
+    # Canonical write: update the DataTable server. The server itself
+    # publishes `:table_changed` on the `data_table` topic, which the
+    # LiveView reacts to by refetching the active snapshot.
+    _ =
+      if effect.append? do
+        DataTable.add_rows(session_id, effect.rows, table: table_name)
+      else
+        DataTable.replace_all(session_id, effect.rows, table: table_name)
+      end
 
     :ok
   end
@@ -91,9 +107,17 @@ defmodule RhoWeb.Session.EffectDispatcher do
     end)
   end
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp publish_view_change(session_id, agent_id, payload) do
+    topic = "rho.session.#{session_id}.events.data_table"
 
-  defp maybe_put_non_empty(map, _key, []), do: map
-  defp maybe_put_non_empty(map, key, value), do: Map.put(map, key, value)
+    Comms.publish(
+      topic,
+      Map.merge(payload, %{
+        event: :view_change,
+        session_id: session_id,
+        agent_id: agent_id
+      }),
+      source: "/session/#{session_id}/agent/#{agent_id}"
+    )
+  end
 end

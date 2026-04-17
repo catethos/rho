@@ -1,8 +1,13 @@
 import Config
 
-# Increase Finch connection pool for subagent concurrency.
-# ReqLLM default is size: 1, count: 8 — bump count to handle parallel LLM streams.
+# Finch connection pool sized for subagent fan-out.
+# Each concurrent LLM stream occupies one HTTP/1 connection (size: 1 per pool),
+# so `count` is the effective concurrency ceiling. Primary agent + per-category
+# LiteWorkers spawned by tools like `save_and_generate` all stream in parallel;
+# count must exceed max expected fan-out or checkouts queue and time out
+# (see Rho.TurnStrategy.Shared.retryable?/1 for the pool-exhaustion retry path).
 config :req_llm,
+  custom_providers: [ReqLLM.Providers.FireworksAI],
   # Increase receive timeout to handle slow LLM providers (e.g., OpenRouter + MiniMax)
   # that may pause >30s between text generation and tool call generation.
   stream_receive_timeout: 120_000,
@@ -11,9 +16,9 @@ config :req_llm,
     pools: %{
       :default => [
         protocols: [:http1],
-        size: 25,
-        count: 1,
-        conn_max_idle_time: 30_000,
+        size: 1,
+        count: 256,
+        conn_max_idle_time: 120_000,
         start_pool_metrics?: true
       ]
     }
@@ -27,14 +32,14 @@ config :rho, tape_module: Rho.Tape.Context.Tape
 # Phoenix endpoint configuration
 config :rho_web, RhoWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
-  http: [ip: {127, 0, 0, 1}, port: 4001],
+  http: [ip: {0, 0, 0, 0}, port: 4001],
   url: [host: "localhost"],
-  check_origin: ["//localhost"],
+  check_origin: false,
   server: true,
   secret_key_base: "rho_dev_secret_key_base_at_least_64_bytes_long_for_cookie_signing_purposes!!",
   render_errors: [formats: [html: RhoWeb.ErrorHTML], layout: false],
   pubsub_server: Rho.PubSub,
-  live_view: [signing_salt: "rho_lv_salt"]
+  live_view: [signing_salt: "Rv8nBqK2dYhF6mP3"]
 
 # Ecto / SQLite
 config :rho_frameworks, ecto_repos: [RhoFrameworks.Repo]

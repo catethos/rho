@@ -30,7 +30,7 @@ defmodule RhoWeb.Session.SignalRouterTest do
   end
 
   describe "read_ws_state/2" do
-    test "reads initial projection state" do
+    test "reads initial snapshot-cache state" do
       socket = build_socket()
       assert SignalRouter.read_ws_state(socket, :data_table) == DataTableProjection.init()
     end
@@ -44,7 +44,7 @@ defmodule RhoWeb.Session.SignalRouterTest do
   describe "write_ws_state/3" do
     test "writes and reads back state" do
       socket = build_socket()
-      new_state = %{rows_map: %{1 => %{id: 1}}, next_id: 2, partial_streamed: %{}}
+      new_state = Map.put(DataTableProjection.init(), :active_table, "library")
       socket = SignalRouter.write_ws_state(socket, :data_table, new_state)
       assert SignalRouter.read_ws_state(socket, :data_table) == new_state
     end
@@ -53,63 +53,22 @@ defmodule RhoWeb.Session.SignalRouterTest do
       socket =
         build_socket(%{ws_states: %{data_table: DataTableProjection.init(), other: %{x: 1}}})
 
-      new_ss = %{rows_map: %{1 => %{id: 1}}, next_id: 2, partial_streamed: %{}}
-      socket = SignalRouter.write_ws_state(socket, :data_table, new_ss)
+      new_state = Map.put(DataTableProjection.init(), :active_table, "library")
+      socket = SignalRouter.write_ws_state(socket, :data_table, new_state)
       assert SignalRouter.read_ws_state(socket, :other) == %{x: 1}
     end
   end
 
-  describe "route/3 workspace dispatch" do
-    # We test workspace routing in isolation by using a stub that doesn't
-    # go through SessionProjection (which requires a fully connected socket).
-    # The integration path is covered by existing LiveView tests.
-
-    test "dispatches spreadsheet signal to DataTableProjection" do
-      socket = build_socket()
-
-      signal = %{
-        type: "rho.session.test.data_table_rows_delta",
-        data: %{rows: [%{"skill_name" => "Elixir"}]}
-      }
-
-      # Directly test the workspace dispatch portion
-      socket =
-        Enum.reduce(workspaces(), socket, fn {key, ws}, sock ->
-          if ws.projection.handles?(signal.type) do
-            state = SignalRouter.read_ws_state(sock, key)
-            new_state = ws.projection.reduce(state, signal)
-            SignalRouter.write_ws_state(sock, key, new_state)
-          else
-            sock
-          end
-        end)
-
-      ss = SignalRouter.read_ws_state(socket, :data_table)
-      assert map_size(ss.rows_map) == 1
-      assert ss.rows_map[1].skill_name == "Elixir"
+  describe "DataTable stub projection" do
+    test "handles?/1 is false for all signal types" do
+      refute DataTableProjection.handles?("rho.session.abc.events.data_table_rows_delta")
+      refute DataTableProjection.handles?("rho.session.abc.text_delta")
     end
 
-    test "non-spreadsheet signal does not change ws_states" do
-      socket = build_socket()
-
-      signal = %{
-        type: "rho.session.test.text_delta",
-        data: %{text: "hello"}
-      }
-
-      # Dispatch through workspaces only
-      socket =
-        Enum.reduce(workspaces(), socket, fn {key, ws}, sock ->
-          if ws.projection.handles?(signal.type) do
-            state = SignalRouter.read_ws_state(sock, key)
-            new_state = ws.projection.reduce(state, signal)
-            SignalRouter.write_ws_state(sock, key, new_state)
-          else
-            sock
-          end
-        end)
-
-      assert SignalRouter.read_ws_state(socket, :data_table) == DataTableProjection.init()
+    test "reduce/2 is a no-op" do
+      state = DataTableProjection.init()
+      signal = %{type: "rho.session.abc.events.whatever", data: %{}}
+      assert DataTableProjection.reduce(state, signal) == state
     end
   end
 end

@@ -91,6 +91,9 @@ defmodule RhoWeb.Projections.SessionState do
       String.ends_with?(type, ".message_sent") ->
         reduce_message_sent(state, data)
 
+      String.ends_with?(type, ".error") ->
+        reduce_error(state, data)
+
       true ->
         add_signal(state, [], type, data, signal)
     end
@@ -165,11 +168,13 @@ defmodule RhoWeb.Projections.SessionState do
   defp do_reduce(state, %{type: "rho.task.requested" = type, data: data} = signal) do
     {id, state} = next_id(state)
 
+    # worker_agent_id tracks the lite worker; agent_id is the parent (for chat feed placement)
     msg = %{
       id: id,
       role: :system,
       type: :delegation,
       agent_id: data[:agent_id],
+      worker_agent_id: data[:worker_agent_id],
       target_role: data[:role],
       task: data[:task],
       status: :pending,
@@ -180,20 +185,63 @@ defmodule RhoWeb.Projections.SessionState do
     add_signal(state, [], type, data, signal)
   end
 
+  defp do_reduce(state, %{type: "rho.task.progress", data: data}) do
+    agent_id = data[:agent_id]
+
+    pred = fn msg ->
+      msg[:type] == :delegation and msg[:status] == :pending and
+        (msg[:worker_agent_id] == agent_id or msg[:agent_id] == agent_id)
+    end
+
+    has_existing? =
+      Enum.any?(state.agent_messages, fn {_aid, msgs} -> Enum.any?(msgs, pred) end)
+
+    state =
+      if has_existing? do
+        update_message_by(state, pred, fn msg ->
+          Map.merge(msg, %{step: data[:step], max_steps: data[:max_steps]})
+        end)
+      else
+        state
+      end
+
+    {state, []}
+  end
+
   defp do_reduce(state, %{type: "rho.task.completed" = type, data: data} = signal) do
-    {id, state} = next_id(state)
+    agent_id = data[:agent_id]
+    status = if data[:status] == :error, do: :error, else: :ok
 
-    msg = %{
-      id: id,
-      role: :system,
-      type: :delegation,
-      agent_id: data[:agent_id],
-      status: :ok,
-      result: data[:result],
-      content: "Task completed"
-    }
+    # Match by worker_agent_id (from save_and_generate) or agent_id (legacy)
+    pred = fn msg ->
+      msg[:type] == :delegation and msg[:status] == :pending and
+        (msg[:worker_agent_id] == agent_id or msg[:agent_id] == agent_id)
+    end
 
-    state = append_message(state, msg)
+    has_existing? =
+      Enum.any?(state.agent_messages, fn {_aid, msgs} -> Enum.any?(msgs, pred) end)
+
+    state =
+      if has_existing? do
+        update_message_by(state, pred, fn msg ->
+          Map.merge(msg, %{status: status, result: data[:result]})
+        end)
+      else
+        {id, state} = next_id(state)
+
+        msg = %{
+          id: id,
+          role: :system,
+          type: :delegation,
+          agent_id: agent_id,
+          status: status,
+          result: data[:result],
+          content: "Task completed"
+        }
+
+        append_message(state, msg)
+      end
+
     add_signal(state, [], type, data, signal)
   end
 
@@ -246,7 +294,7 @@ defmodule RhoWeb.Projections.SessionState do
       agent_id = data[:agent_id] || primary_agent_id(state)
 
       state = clear_pending_response(state, agent_id)
-      {state, flush_effects} = flush_inflight_to_thinking(state, agent_id)
+      {state, flush_effects, _} = flush_inflight_to_thinking(state, agent_id)
 
       {id, state} = next_id(state)
 
@@ -477,7 +525,7 @@ defmodule RhoWeb.Projections.SessionState do
     agent_id = data[:agent_id] || primary_agent_id(state)
 
     state = clear_pending_response(state, agent_id)
-    {state, flush_effects} = flush_inflight_to_thinking(state, agent_id)
+    {state, flush_effects, has_final_answer} = flush_inflight_to_thinking(state, agent_id)
 
     inflight = Map.delete(state.inflight, agent_id)
     agents = update_agent_status(state.agents, agent_id, :idle)
@@ -485,17 +533,22 @@ defmodule RhoWeb.Projections.SessionState do
     {state, msg_effects} =
       case data[:result] do
         {:ok, text} when is_binary(text) and text != "" ->
-          {id, state} = next_id(state)
+          if has_final_answer do
+            # The thinking message already contains the final answer — skip duplicate
+            {state, []}
+          else
+            {id, state} = next_id(state)
 
-          msg = %{
-            id: id,
-            role: :assistant,
-            type: :text,
-            content: text,
-            agent_id: agent_id
-          }
+            msg = %{
+              id: id,
+              role: :assistant,
+              type: :text,
+              content: text,
+              agent_id: agent_id
+            }
 
-          {append_message(state, msg), []}
+            {append_message(state, msg), []}
+          end
 
         {:error, reason} ->
           {id, state} = next_id(state)
@@ -581,6 +634,36 @@ defmodule RhoWeb.Projections.SessionState do
     {Map.put(state, :agents, agents), []}
   end
 
+  defp reduce_error(state, data) do
+    agent_id = data[:agent_id] || primary_agent_id(state)
+    reason = data[:reason]
+
+    # Clear pending response and flush any in-flight text
+    state = clear_pending_response(state, agent_id)
+    {state, flush_effects, _} = flush_inflight_to_thinking(state, agent_id)
+
+    inflight = Map.delete(state.inflight, agent_id)
+    agents = update_agent_status(state.agents, agent_id, :error)
+
+    {id, state} = next_id(state)
+
+    msg = %{
+      id: id,
+      role: :system,
+      type: :error,
+      agent_id: agent_id,
+      content: "Error: #{inspect(reason)}"
+    }
+
+    state =
+      state
+      |> Map.put(:inflight, inflight)
+      |> Map.put(:agents, agents)
+      |> append_message(msg)
+
+    {state, flush_effects}
+  end
+
   # --- Helpers ---
 
   defp flush_inflight_to_thinking(state, agent_id) do
@@ -589,6 +672,8 @@ defmodule RhoWeb.Projections.SessionState do
         raw = Enum.join(chunks)
 
         if String.trim(raw) != "" do
+          has_final_answer = contains_final_answer?(raw)
+
           {id, state} = next_id(state)
 
           thinking_msg = %{
@@ -610,13 +695,20 @@ defmodule RhoWeb.Projections.SessionState do
             |> Map.put(:inflight, inflight)
             |> append_message(thinking_msg)
 
-          {state, [{:push_event, "stream-end", %{agent_id: agent_id}}]}
+          {state, [{:push_event, "stream-end", %{agent_id: agent_id}}], has_final_answer}
         else
-          {state, []}
+          {state, [], false}
         end
 
       _ ->
-        {state, []}
+        {state, [], false}
+    end
+  end
+
+  defp contains_final_answer?(raw) do
+    case Rho.StructuredOutput.parse(raw) do
+      {:ok, %{"action" => "final_answer"}} -> true
+      _ -> false
     end
   end
 
@@ -643,9 +735,6 @@ defmodule RhoWeb.Projections.SessionState do
       timestamp: timestamp,
       correlation_id: data[:correlation_id]
     }
-
-    signals = Enum.take([sig | state.signals], 500)
-    state = Map.put(state, :signals, signals)
 
     effects = [{:push_event, "signal", sig} | existing_effects]
     {state, effects}

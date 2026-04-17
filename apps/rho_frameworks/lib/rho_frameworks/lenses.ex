@@ -212,16 +212,10 @@ defmodule RhoFrameworks.Lenses do
     end
   end
 
-  defp build_gen_opts(nil),
-    do: [provider_options: [openrouter_cache_control: %{type: "ephemeral"}]]
+  defp build_gen_opts(nil), do: []
 
   defp build_gen_opts(provider) do
-    [
-      provider_options: [
-        openrouter_provider: provider,
-        openrouter_cache_control: %{type: "ephemeral"}
-      ]
-    ]
+    [provider_options: [openrouter_provider: provider]]
   end
 
   defp call_llm_for_scores(lens, target, model, gen_opts) do

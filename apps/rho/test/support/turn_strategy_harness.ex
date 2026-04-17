@@ -148,36 +148,33 @@ defmodule Rho.Test.TurnStrategyHarness do
     end
   end
 
+  @action_keys ~w(action tool tool_name name)
+  @args_keys ~w(action_input tool_input parameters args input)
+
   defp detect_map_heuristics(parsed, tool_map) do
-    action = parsed["action"] || parsed["tool"] || parsed["tool_name"] || parsed["name"]
+    action = Enum.find_value(@action_keys, fn k -> parsed[k] end)
+    args_raw = Enum.find_value(@args_keys, fn k -> parsed[k] end)
 
-    args_raw =
-      parsed["action_input"] || parsed["tool_input"] || parsed["parameters"] ||
-        parsed["args"] || parsed["input"]
+    hits = detect_args_heuristic(args_raw, [])
+    detect_action_heuristic(action, tool_map, hits)
+  end
 
-    hits = []
+  defp detect_args_heuristic(s, hits) when is_binary(s) do
+    case Jason.decode(s) do
+      {:ok, m} when is_map(m) -> hits
+      _ -> [:string_action_input | hits]
+    end
+  end
 
-    hits =
-      case args_raw do
-        s when is_binary(s) ->
-          case Jason.decode(s) do
-            {:ok, m} when is_map(m) -> hits
-            _ -> [:string_action_input | hits]
-          end
+  defp detect_args_heuristic(_other, hits), do: hits
 
-        _ ->
-          hits
-      end
+  defp detect_action_heuristic(action, _tool_map, hits) when not is_binary(action),
+    do: [:raw_response | hits]
 
-    hits =
-      cond do
-        not is_binary(action) -> [:raw_response | hits]
-        action == "final_answer" -> hits
-        Map.has_key?(tool_map, action) -> hits
-        true -> [:unknown_action | hits]
-      end
+  defp detect_action_heuristic("final_answer", _tool_map, hits), do: hits
 
-    hits
+  defp detect_action_heuristic(action, tool_map, hits) do
+    if Map.has_key?(tool_map, action), do: hits, else: [:unknown_action | hits]
   end
 
   # -- Result classification --

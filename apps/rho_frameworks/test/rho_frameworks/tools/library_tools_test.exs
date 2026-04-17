@@ -12,18 +12,25 @@ defmodule RhoFrameworks.Tools.LibraryToolsTest do
         [
           "browse_library",
           "combine_libraries",
+          "combine_libraries_commit",
           "consolidate_library",
           "create_library",
+          "create_library_draft",
           "diff_library",
+          "diff_library_versions",
           "dismiss_duplicate",
           "find_duplicates",
           "fork_library",
           "list_libraries",
+          "list_library_versions",
           "load_library",
           "load_template",
           "merge_skills",
+          "publish_library_version",
+          "save_and_generate",
           "save_to_library",
-          "search_skills_cross_library"
+          "search_skills_cross_library",
+          "set_default_library_version"
         ]
 
       assert names == expected
@@ -48,13 +55,17 @@ defmodule RhoFrameworks.Tools.LibraryToolsTest do
   end
 
   describe "parameter schemas" do
-    test "browse_library has required library_id" do
+    test "browse_library accepts library_id or library_name (neither required)" do
       tools = LibraryTools.__tools__()
       browse = Enum.find(tools, &(&1.tool.name == "browse_library"))
       schema = browse.tool.parameter_schema
 
       assert schema[:library_id][:type] == :string
-      assert schema[:library_id][:required] == true
+      assert schema[:library_name][:type] == :string
+      # Neither is individually required — the tool enforces
+      # "at least one" at runtime and returns a friendly error.
+      refute Keyword.get(schema[:library_id], :required)
+      refute Keyword.get(schema[:library_name], :required)
     end
 
     test "create_library has required name" do

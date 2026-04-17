@@ -13,7 +13,8 @@ defmodule RhoWeb.RoleProfileShowLive do
         org = socket.assigns.current_organization
 
         rp =
-          Roles.get_role_profile!(org.id, id) |> RhoFrameworks.Repo.preload(role_skills: :skill)
+          Roles.get_visible_role_profile!(org.id, id)
+          |> RhoFrameworks.Repo.preload(role_skills: :skill)
 
         grouped = group_skills(rp.role_skills)
         {rp, grouped}

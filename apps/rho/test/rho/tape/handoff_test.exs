@@ -28,7 +28,7 @@ defmodule Rho.Tape.HandoffTest do
       assert anchor.payload["state"]["next_steps"] == ["Fix auth module", "Run tests"]
       assert anchor.payload["state"]["owner"] == "agent"
       assert is_list(anchor.payload["state"]["source_ids"])
-      assert length(anchor.payload["state"]["source_ids"]) > 0
+      assert anchor.payload["state"]["source_ids"] != []
     end
 
     test "shifts default view to start after new anchor" do

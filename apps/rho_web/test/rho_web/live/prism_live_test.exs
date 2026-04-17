@@ -1,7 +1,7 @@
 defmodule RhoWeb.PrismLiveTest do
   @moduledoc """
   Tests for the Prism LiveViews: RoleProfileListLive, RoleProfileShowLive,
-  SkillLibraryLive, SkillLibraryShowLive.
+  SkillLibraryShowLive.
 
   Uses manual socket construction (same pattern as session/ tests) with
   real DB data from rho_frameworks.
@@ -33,45 +33,6 @@ defmodule RhoWeb.PrismLiveTest do
       )
 
     struct!(Phoenix.LiveView.Socket, assigns: assigns)
-  end
-
-  # ── SkillLibraryLive ──────────────────────────────────────────────────
-
-  describe "SkillLibraryLive" do
-    test "mount with no libraries returns empty list", %{org: org} do
-      socket =
-        build_socket(%{current_organization: org})
-        |> put_private_connected(true)
-
-      {:ok, socket} = RhoWeb.SkillLibraryLive.mount(%{}, %{}, socket)
-
-      assert socket.assigns.libraries == []
-      assert socket.assigns.active_page == :libraries
-    end
-
-    test "mount loads libraries when connected", %{org_id: org_id, org: org} do
-      {:ok, _lib} = Library.create_library(org_id, %{name: "Engineering Skills"})
-      {:ok, _lib2} = Library.create_library(org_id, %{name: "Leadership"})
-
-      socket =
-        build_socket(%{current_organization: org})
-        |> put_private_connected(true)
-
-      {:ok, socket} = RhoWeb.SkillLibraryLive.mount(%{}, %{}, socket)
-
-      assert length(socket.assigns.libraries) == 2
-      names = Enum.map(socket.assigns.libraries, & &1.name)
-      assert "Engineering Skills" in names
-      assert "Leadership" in names
-    end
-
-    test "disconnected mount returns empty libraries", %{org: org} do
-      socket = build_socket(%{current_organization: org})
-
-      {:ok, socket} = RhoWeb.SkillLibraryLive.mount(%{}, %{}, socket)
-
-      assert socket.assigns.libraries == []
-    end
   end
 
   # ── SkillLibraryShowLive ──────────────────────────────────────────────
@@ -319,56 +280,21 @@ defmodule RhoWeb.PrismLiveTest do
     end
   end
 
-  # ── DataTableProjection schema_key ────────────────────────────────────
+  # ── Web schema resolution via RhoWeb.DataTable.Schemas ────────────────
 
-  describe "DataTableProjection schema_key resolution" do
-    alias RhoWeb.Projections.DataTableProjection
+  describe "DataTable web schema resolution" do
     alias RhoWeb.DataTable.Schemas
 
-    test "resolves :role_profile schema_key" do
-      state = DataTableProjection.init()
-
-      signal = %{
-        type: "rho.session.x.events.data_table_schema_change",
-        data: %{schema_key: :role_profile, mode_label: "Role Profile — Test"},
-        meta: %{}
-      }
-
-      new_state = DataTableProjection.reduce(state, signal)
-
-      assert new_state.schema == Schemas.role_profile()
-      assert new_state.mode_label == "Role Profile — Test"
-      assert "required_level" in new_state.known_fields
+    test "resolves :role_profile view_key" do
+      assert Schemas.resolve(:role_profile) == Schemas.role_profile()
     end
 
-    test "resolves string schema_key" do
-      state = DataTableProjection.init()
-
-      signal = %{
-        type: "rho.session.x.events.data_table_schema_change",
-        data: %{schema_key: "skill_library", mode_label: "Skills"},
-        meta: %{}
-      }
-
-      new_state = DataTableProjection.reduce(state, signal)
-
-      assert new_state.schema == Schemas.skill_library()
-      assert "level_description" in new_state.known_fields
+    test "resolves string view_key" do
+      assert Schemas.resolve("skill_library") == Schemas.skill_library()
     end
 
-    test "falls back to mode_label only when schema_key is nil" do
-      state = DataTableProjection.init()
-
-      signal = %{
-        type: "rho.session.x.events.data_table_schema_change",
-        data: %{mode_label: "Custom Mode"},
-        meta: %{}
-      }
-
-      new_state = DataTableProjection.reduce(state, signal)
-
-      assert new_state.mode_label == "Custom Mode"
-      assert new_state.schema == nil
+    test "falls back to generic schema for unknown key" do
+      assert Schemas.resolve(nil, "main") == Schemas.generic()
     end
   end
 

@@ -162,4 +162,38 @@ defmodule Rho.Tool.DSLTest do
       assert [%Rho.Effect.Table{rows: [%{name: "result1"}]}] = effects
     end
   end
+
+  # ── Required-param enforcement ────────────────────────────────────────
+
+  describe "required parameter validation" do
+    setup do
+      ctx = %Rho.Context{agent_name: :test}
+      {:ok, ctx: ctx}
+    end
+
+    test "missing required param returns friendly error instead of crashing", %{ctx: ctx} do
+      tools = SampleTools.__tools__()
+      greet = Enum.find(tools, &(&1.tool.name == "greet"))
+
+      assert {:error, msg} = greet.execute.(%{}, ctx)
+      assert msg =~ "Missing required parameter"
+      assert msg =~ "name"
+    end
+
+    test "explicit nil for required param is rejected", %{ctx: ctx} do
+      tools = SampleTools.__tools__()
+      greet = Enum.find(tools, &(&1.tool.name == "greet"))
+
+      assert {:error, msg} = greet.execute.(%{"name" => nil}, ctx)
+      assert msg =~ "name"
+    end
+
+    test "missing optional param is allowed", %{ctx: ctx} do
+      tools = SampleTools.__tools__()
+      greet = Enum.find(tools, &(&1.tool.name == "greet"))
+
+      # title is optional — omitting it is fine
+      assert {:ok, "Hello, World!"} = greet.execute.(%{"name" => "World"}, ctx)
+    end
+  end
 end

@@ -38,11 +38,17 @@ defmodule RhoFrameworks.Accounts.User do
   defp validate_email(changeset) do
     changeset
     |> validate_required([:email])
+    |> update_change(:email, &normalize_email/1)
     |> validate_format(:email, ~r/^[^\s]+@[^\s]+$/, message: "must have the @ sign and no spaces")
     |> validate_length(:email, max: 160)
     |> unsafe_validate_unique(:email, RhoFrameworks.Repo)
     |> unique_constraint(:email)
   end
+
+  defp normalize_email(email) when is_binary(email),
+    do: email |> String.trim() |> String.downcase()
+
+  defp normalize_email(other), do: other
 
   defp validate_password(changeset) do
     changeset
