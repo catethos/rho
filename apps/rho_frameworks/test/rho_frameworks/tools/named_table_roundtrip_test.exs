@@ -103,8 +103,10 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       assert %Rho.ToolResponse{effects: effects} =
                load.(%{library_id: lib.id}, ctx)
 
+      table_name = LibraryTools.library_table_name(lib.name)
+
       assert Enum.any?(effects, fn
-               %Rho.Effect.Table{table_name: "library", schema_key: :skill_library} -> true
+               %Rho.Effect.Table{table_name: ^table_name, schema_key: :skill_library} -> true
                _ -> false
              end)
 
@@ -113,7 +115,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       %Rho.Effect.Table{rows: rows} =
         Enum.find(effects, &match?(%Rho.Effect.Table{}, &1))
 
-      {:ok, _} = DataTable.replace_all(session_id, rows, table: "library")
+      {:ok, _} = DataTable.replace_all(session_id, rows, table: table_name)
 
       # Round trip: save_to_library should read from the "library" table.
       assert %Rho.ToolResponse{text: text} = save.(%{library_id: lib.id}, ctx)
@@ -124,30 +126,30 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       assert DataTable.get_rows(session_id, table: "main") == []
     end
 
-    test "save_to_library errors when the server is not running", %{ctx: ctx} do
+    test "save_to_library errors when the library is not found", %{ctx: ctx} do
       lib_id = Ecto.UUID.generate()
       save = tool(LibraryTools, "save_to_library")
 
-      # Server was never started for this session — save should refuse
-      # rather than silently creating an empty table.
+      # Library doesn't exist — save should refuse.
       assert {:error, message} = save.(%{library_id: lib_id}, ctx)
-      assert message =~ "library"
+      assert message =~ "not found"
     end
 
     test "save_to_library errors when the library table is empty",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
-      _lib = seed_library_with_skill(org_id)
+      lib = seed_library_with_skill(org_id)
       save = tool(LibraryTools, "save_to_library")
+      table_name = LibraryTools.library_table_name(lib.name)
 
       # Table exists but carries no rows.
       :ok =
         DataTable.ensure_table(
           session_id,
-          "library",
+          table_name,
           RhoFrameworks.DataTableSchemas.library_schema()
         )
 
-      assert {:error, message} = save.(%{}, ctx)
+      assert {:error, message} = save.(%{library_id: lib.id}, ctx)
       assert message =~ "empty"
     end
   end
@@ -215,7 +217,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
 
     test "save_role_profile errors when the server is not running", %{ctx: ctx} do
       save = tool(RoleTools, "save_role_profile")
-      assert {:error, message} = save.(%{name: "Any Role"}, ctx)
+      assert {:error, message} = save.(%{name: "Any Role", library_id: Ecto.UUID.generate()}, ctx)
       assert message =~ "role_profile"
     end
   end
@@ -226,6 +228,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
     test "load_library then load_role_profile leaves both tables populated",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
       lib = seed_library_with_skill(org_id)
+      lib_table = LibraryTools.library_table_name(lib.name)
 
       # --- library tab ---
       load_lib = tool(LibraryTools, "load_library")
@@ -233,10 +236,10 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       %Rho.ToolResponse{effects: lib_effects} =
         load_lib.(%{library_id: lib.id}, ctx)
 
-      %Rho.Effect.Table{rows: lib_rows, table_name: "library"} =
+      %Rho.Effect.Table{rows: lib_rows, table_name: ^lib_table} =
         Enum.find(lib_effects, &match?(%Rho.Effect.Table{}, &1))
 
-      {:ok, _} = DataTable.replace_all(session_id, lib_rows, table: "library")
+      {:ok, _} = DataTable.replace_all(session_id, lib_rows, table: lib_table)
 
       # --- role_profile tab ---
       # Seed a role profile in the DB by writing rows and saving.
@@ -273,11 +276,11 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       # Both tables should now exist for this session.
       tables = DataTable.list_tables(session_id)
       names = Enum.map(tables, & &1.name) |> Enum.sort()
-      assert "library" in names
+      assert lib_table in names
       assert "role_profile" in names
       assert "main" in names
 
-      assert DataTable.get_rows(session_id, table: "library") != []
+      assert DataTable.get_rows(session_id, table: lib_table) != []
       assert DataTable.get_rows(session_id, table: "role_profile") != []
     end
   end

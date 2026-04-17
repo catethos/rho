@@ -10,7 +10,9 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   use Rho.Tool
 
   alias RhoFrameworks.Library
+  alias RhoFrameworks.Library.Editor
   alias RhoFrameworks.DataTableSchemas
+  alias RhoFrameworks.Runtime
   alias Rho.Stdlib.DataTable
 
   # ── Library Tools ──────────────────────────────────────────────────────
@@ -45,39 +47,29 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     param(:description, :string, doc: "Brief description")
 
     run(fn args, ctx ->
-      name = args[:name]
-      description = args[:description] || ""
+      rt = Runtime.from_rho_context(ctx)
+      params = %{name: args[:name], description: args[:description] || ""}
 
-      case Library.create_library(ctx.organization_id, %{name: name, description: description}) do
-        {:ok, lib} ->
-          table_name = library_table_name(lib.name)
+      case Editor.create(params, rt) do
+        {:ok, %{library: lib, table: _spec, table_error: reason}} ->
+          {:ok, "Created '#{lib.name}' (id: #{lib.id}), table init failed: #{inspect(reason)}"}
 
-          case DataTable.ensure_table(
-                 ctx.session_id,
-                 table_name,
-                 DataTableSchemas.library_schema()
-               ) do
-            :ok ->
-              %Rho.ToolResponse{
-                text: "Created '#{lib.name}' (id: #{lib.id}), table: '#{table_name}'.",
-                effects: [
-                  %Rho.Effect.OpenWorkspace{key: :data_table},
-                  %Rho.Effect.Table{
-                    table_name: table_name,
-                    schema_key: :skill_library,
-                    mode_label: "Skill Library — #{lib.name}",
-                    rows: []
-                  }
-                ]
+        {:ok, %{library: lib, table: spec}} ->
+          %Rho.ToolResponse{
+            text: "Created '#{lib.name}' (id: #{lib.id}), table: '#{spec.name}'.",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: spec.name,
+                schema_key: spec.schema_key,
+                mode_label: spec.mode_label,
+                rows: []
               }
+            ]
+          }
 
-            {:error, reason} ->
-              {:ok,
-               "Created '#{lib.name}' (id: #{lib.id}), table init failed: #{inspect(reason)}"}
-          end
-
-        {:error, changeset} ->
-          {:error, "Failed: #{inspect(changeset.errors)}"}
+        {:error, {:validation, errors}} ->
+          {:error, "Failed: #{inspect(errors)}"}
       end
     end)
   end
@@ -115,10 +107,13 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     )
 
     run(fn args, ctx ->
+      rt = Runtime.from_rho_context(ctx)
+
+      # Resolve the library first so we can derive the table name
       lib =
         case args[:library_id] do
-          nil -> Library.get_or_create_default_library(ctx.organization_id)
-          id -> Library.get_library(ctx.organization_id, id)
+          nil -> Library.get_or_create_default_library(rt.organization_id)
+          id -> Library.get_library(rt.organization_id, id)
         end
 
       case lib do
@@ -126,57 +121,49 @@ defmodule RhoFrameworks.Tools.LibraryTools do
           {:error, "Library not found"}
 
         lib ->
-          library_id = lib.id
-          table_name = library_table_name(lib.name)
+          tbl = Editor.table_name(lib.name)
+          params = %{library_id: lib.id, table_name: tbl}
 
-          case DataTable.get_rows(ctx.session_id, table: table_name) do
-            {:error, :not_running} ->
-              {:error,
-               "No '#{table_name}' table is active — load a library first with load_library."}
-
-            [] ->
-              {:error, "The '#{table_name}' table is empty — nothing to save"}
-
-            rows when is_list(rows) ->
-              case Library.save_to_library(ctx.organization_id, library_id, rows) do
-                {:ok, %{skills: skills, draft_library_id: draft_id}} ->
-                  count = length(skills)
-
-                  %Rho.ToolResponse{
-                    text: "Saved #{count} skill(s), draft created (#{draft_id}).",
-                    effects: [
-                      %Rho.Effect.Table{
-                        table_name: table_name,
-                        schema_key: :skill_library,
-                        mode_label: "Skill Library (draft)",
-                        rows: [],
-                        append?: true
-                      }
-                    ]
+          case Editor.save_table(params, rt) do
+            {:ok, %{saved_count: count, draft_library_id: draft_id}} when is_binary(draft_id) ->
+              %Rho.ToolResponse{
+                text: "Saved #{count} skill(s), draft created (#{draft_id}).",
+                effects: [
+                  %Rho.Effect.Table{
+                    table_name: tbl,
+                    schema_key: :skill_library,
+                    mode_label: "Skill Library (draft)",
+                    rows: [],
+                    append?: true
                   }
+                ]
+              }
 
-                {:ok, %{skills: skills}} ->
-                  count = length(skills)
-
-                  %Rho.ToolResponse{
-                    text: "Saved #{count} skill(s).",
-                    effects: [
-                      %Rho.Effect.Table{
-                        table_name: table_name,
-                        schema_key: :skill_library,
-                        mode_label: "Skill Library (saved)",
-                        rows: [],
-                        append?: true
-                      }
-                    ]
+            {:ok, %{saved_count: count}} ->
+              %Rho.ToolResponse{
+                text: "Saved #{count} skill(s).",
+                effects: [
+                  %Rho.Effect.Table{
+                    table_name: tbl,
+                    schema_key: :skill_library,
+                    mode_label: "Skill Library (saved)",
+                    rows: [],
+                    append?: true
                   }
+                ]
+              }
 
-                {:error, :not_found} ->
-                  {:error, "Library not found"}
+            {:error, :not_found} ->
+              {:error, "Library not found"}
 
-                {:error, step, changeset, _} ->
-                  {:error, "Save failed at #{step}: #{inspect(changeset)}"}
-              end
+            {:error, {:not_running, tbl}} ->
+              {:error, "No '#{tbl}' table is active — load a library first with load_library."}
+
+            {:error, {:empty_table, tbl}} ->
+              {:error, "The '#{tbl}' table is empty — nothing to save"}
+
+            {:error, {:save_failed, step, changeset}} ->
+              {:error, "Save failed at #{step}: #{inspect(changeset)}"}
           end
       end
     end)
@@ -957,7 +944,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   @doc false
-  def library_table_name(lib_name) when is_binary(lib_name), do: "library:#{lib_name}"
+  defdelegate library_table_name(lib_name), to: Editor, as: :table_name
 
   defp maybe_opt(opts, _key, nil), do: opts
   defp maybe_opt(opts, _key, ""), do: opts

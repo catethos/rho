@@ -126,6 +126,7 @@ defmodule RhoFrameworks.Lenses do
 
   defp persist_score(lens, target, axis_results, classification) do
     target_attrs = target_to_attrs(target)
+    next_version = next_score_version(lens.id, target)
 
     Ecto.Multi.new()
     |> Ecto.Multi.insert(
@@ -136,6 +137,7 @@ defmodule RhoFrameworks.Lenses do
           scored_at: DateTime.utc_now() |> DateTime.truncate(:second),
           scoring_method: lens.scoring_method || "manual",
           classification: classification,
+          version: next_version,
           lens_id: lens.id
         }
         |> Map.merge(target_attrs)
@@ -183,6 +185,20 @@ defmodule RhoFrameworks.Lenses do
 
   defp target_to_attrs(%{skill_id: id}), do: %{skill_id: id}
   defp target_to_attrs(%{role_profile_id: id}), do: %{role_profile_id: id}
+
+  defp next_score_version(lens_id, target) do
+    target_clause = target_where(target)
+
+    current_max =
+      from(s in LensScore,
+        where: s.lens_id == ^lens_id,
+        select: max(s.version)
+      )
+      |> where(^target_clause)
+      |> Repo.one()
+
+    (current_max || 0) + 1
+  end
 
   # --- LLM Scoring ---
 

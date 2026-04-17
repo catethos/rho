@@ -680,6 +680,7 @@ defmodule RhoFrameworks.Library do
   # --- Fork / Derive ---
 
   def fork_library(org_id, source_library_id, new_name, opts \\ []) do
+    opts = Keyword.put_new(opts, :include_roles, true)
     derive_library(org_id, [source_library_id], new_name, opts)
   end
 
