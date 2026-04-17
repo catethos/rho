@@ -10,7 +10,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   use Rho.Tool
 
   alias RhoFrameworks.Library
-  alias RhoFrameworks.Library.Editor
+  alias RhoFrameworks.Library.{Editor, Operations}
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Runtime
   alias Rho.Stdlib.DataTable
@@ -183,80 +183,21 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     param(:library_name, :string, required: true, doc: "Library name (from create_library)")
 
     run(fn args, ctx ->
-      raw = args[:skills_json] || "[]"
-      num_levels = args[:levels] || 5
-      table_name = library_table_name(args[:library_name])
+      rt = Runtime.from_rho_context(ctx)
 
-      skills =
-        case Jason.decode(raw) do
-          {:ok, list} when is_list(list) -> list
-          _ -> []
-        end
+      params = %{
+        skills_json: args[:skills_json] || "[]",
+        levels: args[:levels] || 5,
+        library_name: args[:library_name]
+      }
 
-      if skills == [] do
-        {:error, "No valid data. Ensure skills_json is a valid JSON array."}
-      else
-        rows =
-          Enum.map(skills, fn s ->
-            %{
-              category: s["category"] || "",
-              cluster: s["cluster"] || "",
-              skill_name: s["skill_name"] || "",
-              skill_description: s["skill_description"] || "",
-              proficiency_levels: []
-            }
-          end)
-
-        with {:ok, _inserted} <- DataTable.add_rows(ctx.session_id, rows, table: table_name) do
-          by_category = Enum.group_by(skills, & &1["category"])
-          role_config = Rho.Config.agent_config(:proficiency_writer)
-          tools = resolve_proficiency_tools(ctx)
-
-          # Stagger LiteWorker spawns to avoid Finch connection pool
-          # exhaustion when the LLM provider is slow to open connections.
-          # Each worker runs an independent stream; without staggering, a
-          # large fan-out checks out many pool connections simultaneously
-          # and pushes later workers past the checkout timeout.
-          agent_ids =
-            by_category
-            |> Enum.with_index()
-            |> Enum.map(fn {{category, cat_skills}, idx} ->
-              if idx > 0, do: Process.sleep(250)
-
-              task_prompt = build_proficiency_prompt(category, cat_skills, num_levels, table_name)
-
-              {:ok, agent_id} =
-                Rho.Agent.LiteWorker.start(
-                  task: task_prompt,
-                  parent_agent_id: ctx.agent_id,
-                  tools: tools,
-                  role: :proficiency_writer,
-                  max_steps: Map.get(role_config, :max_steps, 5),
-                  context: %{ctx | subagent: true}
-                )
-
-              # Publish delegation card so UI can track this worker.
-              # Use parent agent_id so the card appears in the parent's chat feed.
-              if ctx.session_id do
-                Rho.Comms.publish(
-                  "rho.task.requested",
-                  %{
-                    session_id: ctx.session_id,
-                    agent_id: ctx.agent_id,
-                    worker_agent_id: agent_id,
-                    role: :proficiency_writer,
-                    task: "Proficiency levels: #{category} (#{length(cat_skills)} skills)"
-                  },
-                  source: "/session/#{ctx.session_id}/agent/#{agent_id}"
-                )
-              end
-
-              agent_id
-            end)
+      case Operations.save_and_generate(params, rt) do
+        {:ok, %{rows_added: count, table_name: table_name, workers: workers}} ->
+          agent_ids = Enum.map(workers, & &1.agent_id)
 
           %Rho.ToolResponse{
             text:
-              "Saved #{length(skills)} skeleton(s), spawned #{map_size(by_category)} writer(s). IDs: #{Jason.encode!(agent_ids)}",
+              "Saved #{count} skeleton(s), spawned #{length(workers)} writer(s). IDs: #{Jason.encode!(agent_ids)}",
             effects: [
               %Rho.Effect.Table{
                 table_name: table_name,
@@ -266,10 +207,22 @@ defmodule RhoFrameworks.Tools.LibraryTools do
               }
             ]
           }
-        else
-          {:error, reason} ->
-            {:error, "Failed to save skeleton: #{inspect(reason)}"}
-        end
+
+        {:error, :empty_list} ->
+          {:error, "No valid data. Ensure skills_json is a valid JSON array."}
+
+        {:error, :not_a_list} ->
+          {:error, "No valid data. Ensure skills_json is a valid JSON array."}
+
+        {:error, {:json_decode, _msg}} ->
+          {:error, "No valid data. Ensure skills_json is a valid JSON array."}
+
+        {:error, {:missing_required_keys, _keys, _count}} ->
+          {:error,
+           "No valid data. Ensure skills_json is a valid JSON array with category and skill_name."}
+
+        {:error, reason} ->
+          {:error, "Failed to save skeleton: #{inspect(reason)}"}
       end
     end)
   end
@@ -912,36 +865,6 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   # ── Helpers ────────────────────────────────────────────────────────────
-
-  defp resolve_proficiency_tools(ctx) do
-    shared_tools = RhoFrameworks.Tools.SharedTools.__tools__(ctx)
-    shared_tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
-  end
-
-  defp build_proficiency_prompt(category, skills, num_levels, table_name) do
-    skill_lines =
-      skills
-      |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {s, i} ->
-        name = s["skill_name"] || ""
-        cluster = s["cluster"] || ""
-        desc = s["skill_description"] || ""
-        "#{i}. #{name} | Cluster: #{cluster} | #{desc}"
-      end)
-
-    """
-    Generate #{num_levels}-level Dreyfus-model proficiency levels for the following skills.
-
-    Category: #{category}
-    Levels: #{num_levels}
-
-    Skills:
-    #{skill_lines}
-
-    Call add_proficiency_levels once with ALL skills above. Use the EXACT skill_name values.
-    IMPORTANT: Pass table: "#{table_name}" to add_proficiency_levels.
-    """
-  end
 
   @doc false
   defdelegate library_table_name(lib_name), to: Editor, as: :table_name

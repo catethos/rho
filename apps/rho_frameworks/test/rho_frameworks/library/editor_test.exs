@@ -203,4 +203,206 @@ defmodule RhoFrameworks.Library.EditorTest do
                Editor.save_table(%{library_id: lib.id, table_name: tbl}, flow_rt)
     end
   end
+
+  # -------------------------------------------------------------------
+  # append_rows/2
+  # -------------------------------------------------------------------
+
+  describe "append_rows/2" do
+    setup %{session_id: sid} do
+      tbl = "library:AppendTest"
+
+      :ok =
+        DataTable.ensure_table(
+          sid,
+          tbl,
+          RhoFrameworks.DataTableSchemas.library_schema()
+        )
+
+      %{tbl: tbl}
+    end
+
+    test "appends rows and returns count", %{agent_rt: rt, tbl: tbl} do
+      rows = [
+        %{category: "Dev", cluster: "Lang", skill_name: "Elixir", skill_description: "BEAM"},
+        %{category: "Dev", cluster: "Lang", skill_name: "Go", skill_description: "Systems"}
+      ]
+
+      assert {:ok, %{count: 2}} = Editor.append_rows(%{table_name: tbl, rows: rows}, rt)
+
+      assert {:ok, fetched} = Editor.read_rows(%{table_name: tbl}, rt)
+      assert length(fetched) == 2
+    end
+
+    test "returns error when table server not running", %{org_id: org_id} do
+      fresh_rt = %Runtime{
+        mode: :agent,
+        organization_id: org_id,
+        session_id: "sess-no-server-append-#{System.unique_integer([:positive])}",
+        parent_agent_id: "agent-test"
+      }
+
+      assert {:error, {:not_running, "library:Ghost"}} =
+               Editor.append_rows(
+                 %{table_name: "library:Ghost", rows: [%{skill_name: "X"}]},
+                 fresh_rt
+               )
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # replace_rows/2
+  # -------------------------------------------------------------------
+
+  describe "replace_rows/2" do
+    setup %{session_id: sid} do
+      tbl = "library:ReplaceTest"
+
+      :ok =
+        DataTable.ensure_table(
+          sid,
+          tbl,
+          RhoFrameworks.DataTableSchemas.library_schema()
+        )
+
+      {:ok, _} =
+        DataTable.add_rows(
+          sid,
+          [%{category: "Old", cluster: "X", skill_name: "OldSkill", skill_description: "Gone"}],
+          table: tbl
+        )
+
+      %{tbl: tbl}
+    end
+
+    test "replaces all rows", %{agent_rt: rt, tbl: tbl} do
+      new_rows = [
+        %{category: "New", cluster: "Y", skill_name: "NewSkill", skill_description: "Fresh"}
+      ]
+
+      assert {:ok, %{count: 1}} = Editor.replace_rows(%{table_name: tbl, rows: new_rows}, rt)
+
+      assert {:ok, [row]} = Editor.read_rows(%{table_name: tbl}, rt)
+      assert row.skill_name == "NewSkill"
+    end
+
+    test "works identically in flow mode", %{flow_rt: rt, tbl: tbl} do
+      new_rows = [
+        %{category: "Flow", cluster: "Z", skill_name: "FlowSkill", skill_description: "Test"}
+      ]
+
+      assert {:ok, %{count: 1}} = Editor.replace_rows(%{table_name: tbl, rows: new_rows}, rt)
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # apply_proficiency_levels/2
+  # -------------------------------------------------------------------
+
+  describe "apply_proficiency_levels/2" do
+    setup %{session_id: sid} do
+      tbl = "library:ProfTest"
+
+      :ok =
+        DataTable.ensure_table(
+          sid,
+          tbl,
+          RhoFrameworks.DataTableSchemas.library_schema()
+        )
+
+      {:ok, _} =
+        DataTable.add_rows(
+          sid,
+          [
+            %{
+              category: "Dev",
+              cluster: "Lang",
+              skill_name: "Elixir",
+              skill_description: "BEAM",
+              proficiency_levels: []
+            },
+            %{
+              category: "Dev",
+              cluster: "Lang",
+              skill_name: "Go",
+              skill_description: "Systems",
+              proficiency_levels: []
+            }
+          ],
+          table: tbl
+        )
+
+      %{tbl: tbl}
+    end
+
+    test "updates matching skills and reports skipped", %{agent_rt: rt, tbl: tbl} do
+      skill_levels = [
+        %{
+          "skill_name" => "Elixir",
+          "levels" => [
+            %{"level" => 1, "level_name" => "Novice", "level_description" => "Basics"}
+          ]
+        },
+        %{
+          "skill_name" => "Rust",
+          "levels" => [
+            %{"level" => 1, "level_name" => "Novice", "level_description" => "Basics"}
+          ]
+        }
+      ]
+
+      assert {:ok, %{updated_count: 1, skipped: ["Rust"]}} =
+               Editor.apply_proficiency_levels(%{table_name: tbl, skill_levels: skill_levels}, rt)
+
+      # Verify the update persisted
+      assert {:ok, rows} = Editor.read_rows(%{table_name: tbl}, rt)
+      elixir_row = Enum.find(rows, &(&1.skill_name == "Elixir"))
+      assert length(elixir_row.proficiency_levels) == 1
+    end
+
+    test "returns error when no skills match", %{agent_rt: rt, tbl: tbl} do
+      skill_levels = [
+        %{
+          "skill_name" => "Rust",
+          "levels" => [%{"level" => 1, "level_name" => "N", "level_description" => "D"}]
+        }
+      ]
+
+      assert {:error, {:no_matches, ["Rust"]}} =
+               Editor.apply_proficiency_levels(%{table_name: tbl, skill_levels: skill_levels}, rt)
+    end
+
+    test "returns error when table server not running", %{org_id: org_id} do
+      fresh_rt = %Runtime{
+        mode: :agent,
+        organization_id: org_id,
+        session_id: "sess-no-server-prof-#{System.unique_integer([:positive])}",
+        parent_agent_id: "agent-test"
+      }
+
+      assert {:error, {:not_running, "library:Ghost"}} =
+               Editor.apply_proficiency_levels(
+                 %{
+                   table_name: "library:Ghost",
+                   skill_levels: [%{"skill_name" => "X", "levels" => []}]
+                 },
+                 fresh_rt
+               )
+    end
+
+    test "works in flow mode", %{flow_rt: rt, tbl: tbl} do
+      skill_levels = [
+        %{
+          "skill_name" => "Go",
+          "levels" => [
+            %{"level" => 1, "level_name" => "Novice", "level_description" => "Basics"},
+            %{"level" => 2, "level_name" => "Advanced", "level_description" => "Expert"}
+          ]
+        }
+      ]
+
+      assert {:ok, %{updated_count: 1, skipped: []}} =
+               Editor.apply_proficiency_levels(%{table_name: tbl, skill_levels: skill_levels}, rt)
+    end
+  end
 end

@@ -124,6 +124,118 @@ defmodule RhoFrameworks.Library.Editor do
   end
 
   # -------------------------------------------------------------------
+  # Append rows
+  # -------------------------------------------------------------------
+
+  @doc "Append rows to an existing library DataTable."
+  @spec append_rows(%{table_name: String.t(), rows: [map()]}, Runtime.t()) ::
+          {:ok, %{count: non_neg_integer()}} | {:error, term()}
+  def append_rows(%{table_name: tbl, rows: rows}, %Runtime{} = rt) do
+    case DataTable.add_rows(rt.session_id, rows, table: tbl) do
+      {:ok, inserted} ->
+        {:ok, %{count: length(inserted)}}
+
+      {:error, :not_running} ->
+        {:error, {:not_running, tbl}}
+
+      {:error, :not_found} ->
+        {:error, {:not_running, tbl}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Replace rows
+  # -------------------------------------------------------------------
+
+  @doc "Replace all rows in a library DataTable."
+  @spec replace_rows(%{table_name: String.t(), rows: [map()]}, Runtime.t()) ::
+          {:ok, %{count: non_neg_integer()}} | {:error, term()}
+  def replace_rows(%{table_name: tbl, rows: rows}, %Runtime{} = rt) do
+    case DataTable.replace_all(rt.session_id, rows, table: tbl) do
+      {:ok, _replaced} ->
+        {:ok, %{count: length(rows)}}
+
+      {:error, :not_running} ->
+        {:error, {:not_running, tbl}}
+
+      {:error, :not_found} ->
+        {:error, {:not_running, tbl}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Apply proficiency levels
+  # -------------------------------------------------------------------
+
+  @doc """
+  Match skill entries by `skill_name` and update their `proficiency_levels` field.
+
+  Takes native Elixir maps (not JSON strings). Returns counts of updated and
+  skipped skills.
+  """
+  @spec apply_proficiency_levels(
+          %{table_name: String.t(), skill_levels: [map()]},
+          Runtime.t()
+        ) :: {:ok, %{updated_count: non_neg_integer(), skipped: [String.t()]}} | {:error, term()}
+  def apply_proficiency_levels(%{table_name: tbl, skill_levels: skill_levels}, %Runtime{} = rt) do
+    with {:ok, rows} <- read_rows(%{table_name: tbl}, rt) do
+      rows_by_name =
+        Map.new(rows, fn row ->
+          {to_string(row[:skill_name] || row["skill_name"] || ""), row}
+        end)
+
+      {changes, matched, skipped} =
+        Enum.reduce(skill_levels, {[], [], []}, fn entry, {ch_acc, m_acc, s_acc} ->
+          skill_name = to_string(entry["skill_name"] || entry[:skill_name] || "")
+          levels = entry["levels"] || entry[:levels] || []
+
+          proficiency_levels =
+            Enum.map(levels, fn lvl ->
+              %{
+                level: lvl["level"] || lvl[:level] || 1,
+                level_name: lvl["level_name"] || lvl[:level_name] || "",
+                level_description: lvl["level_description"] || lvl[:level_description] || ""
+              }
+            end)
+
+          case Map.get(rows_by_name, skill_name) do
+            nil ->
+              {ch_acc, m_acc, [skill_name | s_acc]}
+
+            row ->
+              row_id = to_string(row[:id] || row["id"])
+
+              change = %{
+                "id" => row_id,
+                "field" => "proficiency_levels",
+                "value" => proficiency_levels
+              }
+
+              {[change | ch_acc], [skill_name | m_acc], s_acc}
+          end
+        end)
+
+      if changes == [] do
+        {:error, {:no_matches, Enum.reverse(skipped)}}
+      else
+        case DataTable.update_cells(rt.session_id, changes, table: tbl) do
+          :ok ->
+            {:ok, %{updated_count: length(matched), skipped: Enum.reverse(skipped)}}
+
+          {:error, reason} ->
+            {:error, {:update_failed, reason}}
+        end
+      end
+    end
+  end
+
+  # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
 

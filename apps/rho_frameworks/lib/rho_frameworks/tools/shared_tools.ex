@@ -10,6 +10,8 @@ defmodule RhoFrameworks.Tools.SharedTools do
   use Rho.Tool
 
   alias Rho.Stdlib.DataTable
+  alias RhoFrameworks.Library.Editor
+  alias RhoFrameworks.Runtime
 
   tool :add_proficiency_levels,
        "Update existing skeleton skills in the data table with proficiency levels. " <>
@@ -27,92 +29,50 @@ defmodule RhoFrameworks.Tools.SharedTools do
       raw = args[:levels_json] || "[]"
       table = args[:table] || "library"
 
-      skills =
+      skill_levels =
         case Jason.decode(raw) do
           {:ok, list} when is_list(list) -> list
           _ -> []
         end
 
-      if skills == [] do
+      if skill_levels == [] do
         {:error, "No valid data. Ensure levels_json is a valid JSON array."}
       else
-        # Fetch existing rows to match by skill_name
-        existing_rows =
-          case DataTable.get_rows(ctx.session_id, table: table) do
-            {:error, _} -> []
-            rows -> rows
-          end
+        rt = Runtime.from_rho_context(ctx)
+        params = %{table_name: table, skill_levels: skill_levels}
 
-        rows_by_name =
-          Map.new(existing_rows, fn row ->
-            {to_string(row[:skill_name] || row["skill_name"] || ""), row}
-          end)
+        case Editor.apply_proficiency_levels(params, rt) do
+          {:ok, %{updated_count: count, skipped: skipped}} ->
+            msg = "Updated #{count} skill(s)."
+            msg = if skipped != [], do: msg <> " Skipped #{length(skipped)}.", else: msg
+            {:ok, msg}
 
-        {changes, matched, skipped} =
-          Enum.reduce(skills, {[], [], []}, fn skill_entry, {ch_acc, m_acc, s_acc} ->
-            skill_name = skill_entry["skill_name"] || ""
-            levels = skill_entry["levels"] || []
+          {:error, {:no_matches, skipped}} ->
+            skipped_names = Enum.join(skipped, ", ")
+            known = known_tables_hint(ctx.session_id, table)
 
-            proficiency_levels =
-              Enum.map(levels, fn lvl ->
-                %{
-                  level: lvl["level"] || 1,
-                  level_name: lvl["level_name"] || "",
-                  level_description: lvl["level_description"] || ""
-                }
-              end)
+            {:error,
+             "No matching skeleton skills found in '#{table}' table. " <>
+               "Skipped: #{skipped_names}. " <>
+               known <>
+               "If the framework lives in a different named table, retry with the correct `table:` arg. " <>
+               "Otherwise ensure save_and_generate was called first."}
 
-            case Map.get(rows_by_name, skill_name) do
-              nil ->
-                {ch_acc, m_acc, [skill_name | s_acc]}
+          {:error, {:not_running, tbl}} ->
+            known = known_tables_hint(ctx.session_id, table)
 
-              row ->
-                row_id = to_string(row[:id] || row["id"])
+            {:error,
+             "No '#{tbl}' table is active. " <>
+               known <>
+               "Ensure save_and_generate or load_library was called first."}
 
-                change = %{
-                  "id" => row_id,
-                  "field" => "proficiency_levels",
-                  "value" => proficiency_levels
-                }
-
-                {[change | ch_acc], [skill_name | m_acc], s_acc}
-            end
-          end)
-
-        if changes == [] do
-          skipped_names = Enum.reverse(skipped) |> Enum.join(", ")
-          known = known_tables_hint(ctx.session_id, table)
-
-          {:error,
-           "No matching skeleton skills found in '#{table}' table. " <>
-             "Skipped: #{skipped_names}. " <>
-             known <>
-             "If the framework lives in a different named table, retry with the correct `table:` arg. " <>
-             "Otherwise ensure save_and_generate was called first."}
-        else
-          case DataTable.update_cells(ctx.session_id, changes, table: table) do
-            :ok ->
-              msg = "Updated #{length(matched)} skill(s)."
-
-              msg =
-                case skipped do
-                  [] -> msg
-                  _ -> msg <> " Skipped #{length(skipped)}."
-                end
-
-              {:ok, msg}
-
-            {:error, reason} ->
-              {:error, "Failed to update rows: #{inspect(reason)}"}
-          end
+          {:error, {:update_failed, reason}} ->
+            {:error, "Failed to update rows: #{inspect(reason)}"}
         end
       end
     end)
   end
 
-  # Render a "Known tables: [...]" hint from the session's DataTable.
-  # Used to make `add_proficiency_levels` errors actionable when the
-  # caller passed (or defaulted to) a table that has no skeletons.
   defp known_tables_hint(session_id, attempted) do
     case DataTable.list_tables(session_id) do
       tables when is_list(tables) and tables != [] ->
