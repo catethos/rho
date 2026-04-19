@@ -62,6 +62,7 @@ defmodule RhoWeb.Router do
       live("/libraries/:id", AppLive, :library_show)
       live("/roles", AppLive, :roles)
       live("/roles/:id", AppLive, :role_show)
+      live("/flows/:flow_id", FlowLive, :run)
       live("/settings", AppLive, :settings)
       live("/members", AppLive, :members)
     end

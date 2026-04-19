@@ -16,20 +16,11 @@ defmodule Rho.Test.TurnStrategyHarness do
 
       %{
         dispatched: :final | :reprompt | :error | {:tool, name},
-        heuristic_hits: non_neg_integer(),
         reprompts: 0 | 1,
         tokens: %{input_tokens: n, output_tokens: n},
         events: [map()],
         result: {:continue, step} | {:done, response} | {:error, reason}
       }
-
-  ## heuristic_hits
-
-  For `:structured`, the harness inspects the fixture text via
-  `structured_heuristics/2` and counts the recovery paths the parser
-  would have taken (bare-array detection, `_raw` wrapping, code-block
-  fallback, raw-response fallback, unknown-action handling). For any
-  other strategy, returns 0.
   """
 
   alias Rho.AgentLoop.{Runtime, Tape}
@@ -97,84 +88,13 @@ defmodule Rho.Test.TurnStrategyHarness do
 
     {dispatched, reprompts} = classify(result)
 
-    heuristic_hits =
-      case strategy_mod do
-        Rho.TurnStrategy.Structured -> length(structured_heuristics(fixture_text, tool_map))
-        _ -> 0
-      end
-
     %{
       dispatched: dispatched,
-      heuristic_hits: heuristic_hits,
       reprompts: reprompts,
       tokens: usage,
       events: collected,
       result: result
     }
-  end
-
-  @doc """
-  Detect which `:structured`-strategy heuristic recovery paths would fire
-  for the given LLM text. Returns a list of atoms:
-
-    * `:bare_array` — top-level JSON array
-    * `:string_action_input` — `action_input` was a string
-    * `:unknown_action` — action name not in tool_map (non-final)
-    * `:code_block_fallback` — no JSON but a fenced code block
-    * `:raw_response` — no JSON, no code block
-    * `:malformed_json` — starts with `{` but fails to decode
-  """
-  def structured_heuristics(text, tool_map) do
-    stripped = Rho.Parse.Lenient.strip_fences(text)
-
-    case Jason.decode(stripped) do
-      {:ok, list} when is_list(list) ->
-        [:bare_array]
-
-      {:ok, %{} = parsed} ->
-        detect_map_heuristics(parsed, tool_map)
-
-      {:ok, _other} ->
-        [:raw_response]
-
-      {:error, _} ->
-        trimmed = String.trim_leading(text)
-
-        cond do
-          Regex.match?(~r/```(\w+)\s*\n/s, text) -> [:code_block_fallback]
-          String.starts_with?(trimmed, "{") -> [:malformed_json, :raw_response]
-          true -> [:raw_response]
-        end
-    end
-  end
-
-  @action_keys ~w(action tool tool_name name)
-  @args_keys ~w(action_input tool_input parameters args input)
-
-  defp detect_map_heuristics(parsed, tool_map) do
-    action = Enum.find_value(@action_keys, fn k -> parsed[k] end)
-    args_raw = Enum.find_value(@args_keys, fn k -> parsed[k] end)
-
-    hits = detect_args_heuristic(args_raw, [])
-    detect_action_heuristic(action, tool_map, hits)
-  end
-
-  defp detect_args_heuristic(s, hits) when is_binary(s) do
-    case Jason.decode(s) do
-      {:ok, m} when is_map(m) -> hits
-      _ -> [:string_action_input | hits]
-    end
-  end
-
-  defp detect_args_heuristic(_other, hits), do: hits
-
-  defp detect_action_heuristic(action, _tool_map, hits) when not is_binary(action),
-    do: [:raw_response | hits]
-
-  defp detect_action_heuristic("final_answer", _tool_map, hits), do: hits
-
-  defp detect_action_heuristic(action, tool_map, hits) do
-    if Map.has_key?(tool_map, action), do: hits, else: [:unknown_action | hits]
   end
 
   # -- Result classification --
@@ -195,6 +115,8 @@ defmodule Rho.Test.TurnStrategyHarness do
   defp classify({:continue, _}), do: {:reprompt, 1}
 
   defp classify({:error, _}), do: {:error, 0}
+
+  defp classify({:parse_error, _, _}), do: {:reprompt, 1}
 
   defp classify({:final, _, _}), do: {:final, 0}
 

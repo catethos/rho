@@ -205,7 +205,7 @@ defmodule RhoWeb.ChatComponents do
 
     ~H"""
     <%= case @parsed do %>
-      <% {:json, %{"action" => "final_answer"} = map} -> %>
+      <% {:json, %{"tool" => "respond"} = map} -> %>
         <details :if={map["thinking"]} class="thinking-block">
           <summary class="thinking-summary">Thinking</summary>
           <div class="thinking-content">
@@ -215,9 +215,9 @@ defmodule RhoWeb.ChatComponents do
         </details>
         <div class="message-text markdown-body"
           id={"think-answer-#{@msg_id}"} phx-hook="Markdown"
-          data-md={final_answer_text(map["action_input"])}></div>
+          data-md={map["message"] || ""}></div>
       <% {:json, map} -> %>
-        <details class="thinking-block">
+        <details :if={map["thinking"] || map["action"]} class="thinking-block">
           <summary class="thinking-summary">
             <%= truncate_summary(Map.get(map, "thinking")) || Map.get(map, "action", "Thinking") %>
           </summary>
@@ -297,8 +297,7 @@ defmodule RhoWeb.ChatComponents do
   the raw streaming JSON text in the chat bubble with a structured view:
 
     * `thinking` — shown as muted markdown-rendered prose.
-    * `final_answer` — shown as the visible assistant prose
-      (pulled from `action_input.answer`), markdown-rendered.
+    * `respond` — shown as the visible assistant prose, markdown-rendered.
     * any other action — shown as a "Calling <tool>" chip.
 
   Uses the existing `Markdown` JS hook (via `window.marked` + DOMPurify)
@@ -317,11 +316,11 @@ defmodule RhoWeb.ChatComponents do
         style="color:var(--text-secondary);font-size:0.8125rem;margin-bottom:0.5rem;opacity:0.8;">
       </div>
       <%= cond do %>
-        <% @envelope[:action] == "final_answer" -> %>
+        <% @envelope[:action] == "respond" -> %>
           <div class="envelope-answer markdown-body"
             id={"env-answer-#{@stream_id}"}
             phx-hook="Markdown"
-            data-md={final_answer_text(@envelope[:action_input])}>
+            data-md={@envelope[:message] || ""}>
           </div>
         <% is_binary(@envelope[:action]) -> %>
           <div class="envelope-action">
@@ -333,11 +332,6 @@ defmodule RhoWeb.ChatComponents do
     </div>
     """
   end
-
-  defp final_answer_text(%{"answer" => answer}) when is_binary(answer), do: answer
-  defp final_answer_text(%{answer: answer}) when is_binary(answer), do: answer
-  defp final_answer_text(text) when is_binary(text), do: text
-  defp final_answer_text(_), do: ""
 
   # Format tool args with special handling for tools with code fields
   defp format_tool_args(tool_name, args) when is_map(args) and tool_name in ["python", "bash"] do
@@ -442,7 +436,7 @@ defmodule RhoWeb.ChatComponents do
   defp parse_thinking(content) do
     # Use StructuredOutput.parse — it includes brace-scan extraction, so
     # `{valid json}<trailing prose>` responses still surface as `:json`
-    # and render as a proper final_answer envelope rather than dumping
+    # and render as a proper respond envelope rather than dumping
     # the raw stream (including duplicated thinking text) into the UI.
     case Rho.StructuredOutput.parse(content) do
       {:ok, map} when is_map(map) -> {:json, map}

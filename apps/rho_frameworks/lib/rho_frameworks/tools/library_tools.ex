@@ -12,6 +12,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   alias RhoFrameworks.Library
   alias RhoFrameworks.Library.{Editor, Operations}
   alias RhoFrameworks.DataTableSchemas
+  alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Runtime
   alias Rho.Stdlib.DataTable
 
@@ -814,40 +815,42 @@ defmodule RhoFrameworks.Tools.LibraryTools do
         %{"name" => name, "skills" => skills} = data ->
           template = %{
             name: name,
-            description: data["description"],
+            description: MapAccess.get(data, :description, nil),
             skills:
               Enum.map(skills, fn skill ->
                 %{
-                  category: skill["category"] || "",
-                  cluster: skill["cluster"] || "",
-                  name: skill["name"] || "",
-                  description: skill["description"] || "",
+                  category: MapAccess.get(skill, :category),
+                  cluster: MapAccess.get(skill, :cluster),
+                  name: MapAccess.get(skill, :name),
+                  description: MapAccess.get(skill, :description),
                   proficiency_levels:
-                    Enum.map(skill["proficiency_levels"] || [], fn lvl ->
+                    Enum.map(MapAccess.get(skill, :proficiency_levels, []), fn lvl ->
                       %{
-                        "level" => lvl["level"] || 0,
-                        "level_name" => lvl["level_name"] || lvl["name"] || "",
+                        "level" => MapAccess.get(lvl, :level, 0),
+                        "level_name" =>
+                          MapAccess.get(lvl, :level_name, nil) || MapAccess.get(lvl, :name),
                         "level_description" =>
-                          lvl["level_description"] || lvl["description"] || ""
+                          MapAccess.get(lvl, :level_description, nil) ||
+                            MapAccess.get(lvl, :description)
                       }
                     end)
                 }
               end),
             role_profiles:
-              (data["role_profiles"] || [])
+              MapAccess.get(data, :role_profiles, [])
               |> Enum.map(fn rp ->
                 %{
-                  name: rp["name"],
-                  role_family: rp["role_family"],
-                  seniority_level: rp["seniority_level"],
-                  seniority_label: rp["seniority_label"],
-                  purpose: rp["purpose"],
+                  name: MapAccess.get(rp, :name, nil),
+                  role_family: MapAccess.get(rp, :role_family, nil),
+                  seniority_level: MapAccess.get(rp, :seniority_level, nil),
+                  seniority_label: MapAccess.get(rp, :seniority_label, nil),
+                  purpose: MapAccess.get(rp, :purpose, nil),
                   skills:
-                    Enum.map(rp["skills"] || [], fn rs ->
+                    Enum.map(MapAccess.get(rp, :skills, []), fn rs ->
                       %{
-                        skill_name: rs["skill_name"],
-                        min_expected_level: rs["min_expected_level"] || 1,
-                        required: Map.get(rs, "required", true)
+                        skill_name: MapAccess.get(rs, :skill_name, nil),
+                        min_expected_level: MapAccess.get(rs, :min_expected_level, 1),
+                        required: Map.get(rs, "required", Map.get(rs, :required, true))
                       }
                     end)
                 }

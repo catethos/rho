@@ -51,9 +51,7 @@
       order: [],
       allow_fallbacks: true
     },
-    # `turn_strategy:` is the canonical key. `reasoner:` is accepted as a
-    # legacy alias (both go through Rho.Config.resolve_turn_strategy/1).
-    reasoner: :structured,
+    turn_strategy: :typed_structured,
     max_steps: 50
   ],
   spreadsheet: [
@@ -132,7 +130,7 @@
        only: [:delegate_task, :delegate_task_lite, :await_task, :await_all, :list_agents],
        visible_agents: [:proficiency_writer, :data_extractor]}
     ],
-    reasoner: :structured,
+    turn_strategy: :typed_structured,
     max_steps: 50
   ],
   proficiency_writer: [
@@ -186,7 +184,7 @@
     Do NOT call delete_rows, add_rows, or any other tool. Only call add_proficiency_levels, then finish.
     """,
     mounts: [:data_table],
-    reasoner: :structured,
+    turn_strategy: :typed_structured,
     max_steps: 15
   ],
   data_extractor: [

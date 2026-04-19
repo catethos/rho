@@ -19,7 +19,7 @@ defmodule Rho.CLI.Config do
 
   @turn_strategy_modules %{
     direct: Rho.TurnStrategy.Direct,
-    structured: Rho.TurnStrategy.Structured
+    typed_structured: Rho.TurnStrategy.TypedStructured
   }
 
   @doc """

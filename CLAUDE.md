@@ -35,7 +35,9 @@ No Phoenix, Ecto, or external tool deps. Deps: `req_llm`, `jido_signal`, `jason`
 Key modules:
 - `Rho.Runner` — outer agent loop (step budget, compaction, tape recording)
 - `Rho.TurnStrategy` — behaviour for inner turn (LLM call, tool dispatch)
-- `Rho.TurnStrategy.Direct` / `Rho.TurnStrategy.Structured` — implementations
+- `Rho.TurnStrategy.Direct` / `Rho.TurnStrategy.TypedStructured` — implementations
+- `Rho.ActionSchema` — tagged union builder for TypedStructured
+- `Rho.SchemaCoerce` — schema-guided type coercion engine
 - `Rho.Plugin` / `Rho.PluginInstance` / `Rho.PluginRegistry` — plugin system
 - `Rho.Transformer` / `Rho.TransformerInstance` / `Rho.TransformerRegistry` — transformer pipeline
 - `Rho.Context` — ambient state struct for plugin/transformer callbacks

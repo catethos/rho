@@ -11,6 +11,7 @@ defmodule RhoFrameworks.Library.Proficiency do
   """
 
   alias RhoFrameworks.Library.Editor
+  alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Runtime
 
   @stagger_ms 250
@@ -40,9 +41,9 @@ defmodule RhoFrameworks.Library.Proficiency do
       skills
       |> Enum.with_index(1)
       |> Enum.map_join("\n", fn {s, i} ->
-        name = s["skill_name"] || ""
-        cluster = s["cluster"] || ""
-        desc = s["skill_description"] || ""
+        name = MapAccess.get(s, :skill_name)
+        cluster = MapAccess.get(s, :cluster)
+        desc = MapAccess.get(s, :skill_description)
         "#{i}. #{name} | Cluster: #{cluster} | #{desc}"
       end)
 
@@ -88,7 +89,7 @@ defmodule RhoFrameworks.Library.Proficiency do
     if rows == [] do
       {:error, :empty_rows}
     else
-      by_category = Enum.group_by(rows, fn r -> r["category"] || r[:category] || "" end)
+      by_category = Enum.group_by(rows, fn r -> MapAccess.get(r, :category) end)
       role_config = Rho.Config.agent_config(:proficiency_writer)
       tools = resolve_tools()
       parent_id = Runtime.lite_parent_id(rt)

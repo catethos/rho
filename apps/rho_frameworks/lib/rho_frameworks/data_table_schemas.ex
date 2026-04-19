@@ -74,6 +74,35 @@ defmodule RhoFrameworks.DataTableSchemas do
     }
   end
 
+  @doc "Schema for the `\"flow:state\"` table: tracks wizard flow progress."
+  def flow_state_schema do
+    %Schema{
+      name: "flow:state",
+      mode: :strict,
+      columns: [
+        %Column{name: :flow_id, type: :string, required?: true, doc: "Flow type identifier"},
+        %Column{
+          name: :current_step,
+          type: :string,
+          required?: true,
+          doc: "Current step atom as string"
+        },
+        %Column{name: :status, type: :string, required?: true, doc: "running/completed/failed"},
+        %Column{
+          name: :step_results_json,
+          type: :string,
+          required?: false,
+          doc: "JSON-encoded step results"
+        },
+        %Column{name: :library_id, type: :string, required?: false},
+        %Column{name: :table_name, type: :string, required?: false},
+        %Column{name: :started_at, type: :string, required?: true},
+        %Column{name: :updated_at, type: :string, required?: true}
+      ],
+      key_fields: [:flow_id]
+    }
+  end
+
   @doc "Schema for the `\"role_profile\"` table: one row per required skill with level."
   def role_profile_schema do
     %Schema{

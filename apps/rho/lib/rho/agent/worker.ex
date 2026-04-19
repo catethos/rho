@@ -1014,8 +1014,13 @@ defmodule Rho.Agent.Worker do
         {:error, "Unknown tool: #{tool_name}. Available: #{available}"}
 
       tool_def ->
-        cast_args = Rho.ToolArgs.cast(args, tool_def.tool.parameter_schema)
-        tool_def.execute.(cast_args, build_context(state, agent_depth(state)))
+        case Rho.ToolArgs.prepare(args, tool_def.tool.parameter_schema) do
+          {:ok, prepared_args, _repairs} ->
+            tool_def.execute.(prepared_args, build_context(state, agent_depth(state)))
+
+          {:error, reason} ->
+            {:error, "Arg preparation failed: #{inspect(reason)}"}
+        end
     end
   end
 

@@ -530,6 +530,12 @@ defmodule RhoWeb.AppLive do
     <.page_shell>
       <.page_header title="Skill Libraries" subtitle="Browse and manage skill catalogs">
         <:actions>
+          <.link
+            navigate={~p"/orgs/#{@current_organization.slug}/flows/create-framework"}
+            class="btn-secondary"
+          >
+            Create with Wizard
+          </.link>
           <button phx-click="open_chat_overlay" class="btn-primary">
             + New Library
           </button>

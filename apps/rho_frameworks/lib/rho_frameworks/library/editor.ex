@@ -10,6 +10,7 @@ defmodule RhoFrameworks.Library.Editor do
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Library, as: LibraryCtx
+  alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Runtime
 
   # -------------------------------------------------------------------
@@ -187,20 +188,23 @@ defmodule RhoFrameworks.Library.Editor do
     with {:ok, rows} <- read_rows(%{table_name: tbl}, rt) do
       rows_by_name =
         Map.new(rows, fn row ->
-          {to_string(row[:skill_name] || row["skill_name"] || ""), row}
+          {to_string(MapAccess.get(row, :skill_name)), row}
         end)
 
       {changes, matched, skipped} =
         Enum.reduce(skill_levels, {[], [], []}, fn entry, {ch_acc, m_acc, s_acc} ->
-          skill_name = to_string(entry["skill_name"] || entry[:skill_name] || "")
-          levels = entry["levels"] || entry[:levels] || []
+          skill_name = to_string(MapAccess.get(entry, :skill_name))
+
+          levels =
+            MapAccess.get(entry, :levels, nil) ||
+              MapAccess.get(entry, :proficiency_levels, [])
 
           proficiency_levels =
             Enum.map(levels, fn lvl ->
               %{
-                level: lvl["level"] || lvl[:level] || 1,
-                level_name: lvl["level_name"] || lvl[:level_name] || "",
-                level_description: lvl["level_description"] || lvl[:level_description] || ""
+                level: MapAccess.get(lvl, :level, 1),
+                level_name: MapAccess.get(lvl, :level_name),
+                level_description: MapAccess.get(lvl, :level_description)
               }
             end)
 
@@ -209,7 +213,7 @@ defmodule RhoFrameworks.Library.Editor do
               {ch_acc, m_acc, [skill_name | s_acc]}
 
             row ->
-              row_id = to_string(row[:id] || row["id"])
+              row_id = to_string(MapAccess.get(row, :id))
 
               change = %{
                 "id" => row_id,

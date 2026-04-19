@@ -86,4 +86,32 @@ defmodule Rho.ToolArgs do
   end
 
   def validate_required(_cast_args, _non_list_schema), do: :ok
+
+  @doc """
+  Full arg preparation pipeline: cast → coerce → validate.
+
+  Returns `{:ok, prepared_args, repairs}` or `{:error, reason}`.
+  Repairs is a list of coercion actions taken (empty if args were
+  already correctly typed).
+  """
+  @spec prepare(map(), keyword()) :: {:ok, map(), list()} | {:error, term()}
+  def prepare(args, parameter_schema) when is_list(parameter_schema) do
+    cast = cast(args, parameter_schema)
+
+    with {:ok, coerced, repairs} <-
+           Rho.SchemaCoerce.coerce_fields(cast, parameter_schema, mode: :tool_call),
+         :ok <- validate_required(coerced, parameter_schema) do
+      if repairs != [] do
+        :telemetry.execute(
+          [:rho, :tool, :args_coerced],
+          %{repair_count: length(repairs)},
+          %{repairs: repairs}
+        )
+      end
+
+      {:ok, coerced, repairs}
+    end
+  end
+
+  def prepare(args, _non_list_schema), do: {:ok, args, []}
 end

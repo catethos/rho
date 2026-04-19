@@ -349,6 +349,33 @@ defmodule Rho.Runner do
     do: {:error, reason}
 
   defp handle_strategy_result(
+         {:parse_error, reason, raw_text},
+         context,
+         runtime,
+         step,
+         max
+       ) do
+    correction =
+      "[System] Your response could not be parsed: #{inspect(reason)}. " <>
+        "Please respond with valid JSON matching the action schema."
+
+    Recorder.record_assistant_text(runtime, raw_text)
+    Recorder.record_injected_messages(runtime, [correction])
+
+    updated_context =
+      case runtime.tape.name do
+        nil ->
+          context ++
+            [ReqLLM.Context.assistant(raw_text || ""), ReqLLM.Context.user(correction)]
+
+        _tape ->
+          Recorder.rebuild_context(runtime)
+      end
+
+    do_loop(updated_context, runtime, step: step + 1, max_steps: max)
+  end
+
+  defp handle_strategy_result(
          {:continue, %{type: :subagent_nudge, text: text}},
          context,
          runtime,

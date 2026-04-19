@@ -11,6 +11,7 @@ defmodule RhoFrameworks.Tools.SharedTools do
 
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.Library.Editor
+  alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Runtime
 
   tool :add_proficiency_levels,
@@ -27,12 +28,21 @@ defmodule RhoFrameworks.Tools.SharedTools do
 
     run(fn args, ctx ->
       raw = args[:levels_json] || "[]"
-      table = args[:table] || "library"
+      table = MapAccess.get(args, :table, "library")
 
       skill_levels =
-        case Jason.decode(raw) do
-          {:ok, list} when is_list(list) -> list
-          _ -> []
+        cond do
+          is_list(raw) ->
+            raw
+
+          is_binary(raw) ->
+            case Jason.decode(raw) do
+              {:ok, list} when is_list(list) -> list
+              _ -> []
+            end
+
+          true ->
+            []
         end
 
       if skill_levels == [] do

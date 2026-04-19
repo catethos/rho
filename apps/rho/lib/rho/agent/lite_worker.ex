@@ -404,12 +404,16 @@ defmodule Rho.Agent.LiteWorker do
 
     result =
       if tool_def do
-        cast_args = Rho.ToolArgs.cast(args, tool_def.tool.parameter_schema)
+        case Rho.ToolArgs.prepare(args, tool_def.tool.parameter_schema) do
+          {:ok, prepared_args, _repairs} ->
+            try do
+              tool_def.execute.(prepared_args, context)
+            rescue
+              e -> {:error, Exception.message(e)}
+            end
 
-        try do
-          tool_def.execute.(cast_args, context)
-        rescue
-          e -> {:error, Exception.message(e)}
+          {:error, reason} ->
+            {:error, "Arg preparation failed: #{inspect(reason)}"}
         end
       else
         {:error, "unknown tool: #{name}"}

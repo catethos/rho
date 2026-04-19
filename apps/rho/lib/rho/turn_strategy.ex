@@ -13,8 +13,8 @@ defmodule Rho.TurnStrategy do
   ## Bundled strategies
 
   * `Rho.TurnStrategy.Direct` — native tool_use streaming (default)
-  * `Rho.TurnStrategy.Structured` — structured-JSON output parsed by
-    `Rho.StructuredOutput`
+  * `Rho.TurnStrategy.TypedStructured` — typed structured-JSON output
+    using `Rho.ActionSchema` for tagged union dispatch
 
   `Rho.Reasoner` and its sub-modules remain as delegating aliases.
   """

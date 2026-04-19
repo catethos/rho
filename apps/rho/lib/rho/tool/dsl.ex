@@ -84,15 +84,20 @@ defmodule Rho.Tool.DSL do
               ),
             execute: fn args, ctx ->
               schema = unquote(param_schema)
-              cast = Rho.ToolArgs.cast(args, schema)
 
-              case Rho.ToolArgs.validate_required(cast, schema) do
-                :ok ->
-                  unquote(run_ast).(cast, ctx)
+              case Rho.ToolArgs.prepare(args, schema) do
+                {:ok, prepared, _repairs} ->
+                  unquote(run_ast).(prepared, ctx)
 
-                {:error, missing} ->
-                  names = missing |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+                {:error, {:missing_required, field}} ->
+                  {:error, "Missing required parameter(s): #{field}"}
+
+                {:error, keys} when is_list(keys) ->
+                  names = keys |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
                   {:error, "Missing required parameter(s): #{names}"}
+
+                {:error, reason} ->
+                  {:error, "Arg preparation failed: #{inspect(reason)}"}
               end
             end
           }

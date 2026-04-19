@@ -7,6 +7,8 @@ defmodule RhoFrameworks.Library.Skeletons do
   with already-decoded Elixir terms.
   """
 
+  alias RhoFrameworks.MapAccess
+
   @required_keys ~w(skill_name category)
 
   @doc """
@@ -43,10 +45,10 @@ defmodule RhoFrameworks.Library.Skeletons do
   def to_rows(skills) when is_list(skills) do
     Enum.map(skills, fn s ->
       %{
-        category: s["category"] || "",
-        cluster: s["cluster"] || "",
-        skill_name: s["skill_name"] || "",
-        skill_description: s["skill_description"] || "",
+        category: MapAccess.get(s, :category),
+        cluster: MapAccess.get(s, :cluster),
+        skill_name: MapAccess.get(s, :skill_name),
+        skill_description: MapAccess.get(s, :skill_description),
         proficiency_levels: []
       }
     end)

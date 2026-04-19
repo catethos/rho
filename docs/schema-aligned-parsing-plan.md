@@ -1,788 +1,834 @@
-# Schema-Aligned Parsing (SAP) — Implementation Plan
+# Schema-Aligned Parsing for Rho — Revised Plan (v3)
 
-> **Vocabulary note (post-refactor).** This plan was drafted when the
-> codebase used `Rho.Reasoner` / `MountRegistry` / "mount hook". Those
-> names have since moved: `Rho.Reasoner` → `Rho.TurnStrategy`,
-> `Rho.Reasoner.Structured` → `Rho.TurnStrategy.Structured`,
-> `MountRegistry` → `PluginRegistry`, and "mount hook" is now a typed
-> stage on `Rho.Transformer`. SAP emits `:sap_repairs` operational
-> signals on the bus. See `CLAUDE.md` §"Migration from Mount/Memory/Reasoner"
-> for the full alias table.
+> Supersedes previous plan. Incorporates findings from `simplify_baml` (Rust),
+> Tao (Rust agent), GenBAML (Elixir DSL), the BoundaryML blog post, and an
+> oracle review focused on integration risk, safety guardrails, and Elixir
+> idioms.
 
-Goal: make the structured reasoner competitive with native tool-use on weak
-models and strictly better on strong ones by treating parsing as a
-schema-guided *repair* problem, not a syntax-recovery problem.
+## Executive Summary
 
-Reference: https://boundaryml.com/blog/schema-aligned-parsing
+Add schema-aligned parsing (SAP) to Rho's agent loop. SAP uses tool
+parameter schemas to guide error correction on LLM output — coercing
+wrong types, unwrapping wrapper objects, normalizing enum variants, and
+handling missing/extra fields.
 
-## Why
+The work is a **~300-line pure Elixir port** of the coercion layer from
+`simplify_baml/src/parser.rs`, integrated into `Rho.ToolArgs` as a
+unified `cast → coerce → validate` pipeline. It benefits all tool
+execution paths: Direct, Structured, DSL, Worker, and LiteWorker.
 
-`Rho.StructuredOutput` today is schema-blind: it does quote normalization,
-control-char escaping, trailing-comma stripping, markdown extraction, and
-brace-scan. That fixes syntax errors. It does not fix *semantic* errors
-like `"Amazon"` when the schema wants `["Amazon"]`, or misnamed keys, or
-extra yapping prose around valid JSON.
+The end goal is a **strict typed protocol** for all actions via
+`ActionSchema` and a new `:typed_structured` strategy — every possible
+LLM response maps to exactly one variant of a closed discriminated union.
 
-The structured reasoner compensates with ad-hoc heuristics
-(`detect_implicit_tool/1`, `resolve_tool_args` bare-string fallback,
-code-block → python/bash). These are brittle and domain-specific.
+---
 
-SAP replaces all of that with one principle: **compute the lowest-cost edit
-that turns the model's output into a value that conforms to the schema,
-using the schema to guide every coercion.**
+## Why — The Evidence
 
-## Architecture overview
+### Benchmark: SAP outperforms everything else
+
+Berkeley Function Calling Leaderboard (n=1000):
+
+| Model             | Function Calling | Python AST | SAP       |
+|-------------------|-----------------|------------|-----------|
+| Claude-3-Haiku    | 57.3%           | 82.6%      | **91.7%** |
+| GPT-4o-mini       | 19.8%           | 51.8%      | **92.4%** |
+| GPT-3.5-turbo     | 87.5%           | 75.8%      | **92.0%** |
+| GPT-4o            | 87.4%           | 82.1%      | **93.0%** |
+| Claude-3.5-Sonnet | 78.1%           | 93.8%      | **94.4%** |
+
+Source: https://boundaryml.com/blog/schema-aligned-parsing
+
+SAP beats function calling (Direct strategy) on every model. On Claude
+Haiku (used by Rho's spreadsheet agent), SAP is 60% more reliable than
+native tool_use. On GPT-4o-mini, it's 4.7x more reliable.
+
+### Rho's own experience confirms this
+
+From `docs/improvement-loop-round1.md` (2026-03-25):
+
+> Structured reasoner (`reasoner: :structured`) uses `stream_text` without
+> native tool_use — tools described only in prompt. LLM frequently ignored
+> JSON format and answered in plain text.
+> Fix: Switched to `reasoner: :direct`.
+
+The structured strategy was demoted because it's unreliable. But the
+spreadsheet agent (`.rho.exs:56`) still uses `:structured` for its streaming
+visibility and thinking trace. SAP makes Structured competitive again.
+
+### The core insight (Postel's Law)
+
+> "Be conservative in what you do, be liberal in what you accept."
+
+SAP doesn't constrain the model during generation — it corrects after the
+fact using schema knowledge. This makes it model-agnostic, provider-agnostic,
+and complementary to other approaches (stack with `response_format` or
+function calling for even better results).
+
+---
+
+## What — The Gap in Rho Today
+
+### What Rho has (Layer 1: syntax repair)
+
+`Rho.StructuredOutput` (537 lines) handles JSON syntax errors:
+- Unicode quote normalization
+- Control character escaping
+- Trailing comma stripping
+- Markdown fence extraction
+- Merged object detection
+- Brace-matching scan
+- Single-quote conversion
+- Partial JSON auto-closing (streaming)
+
+This is solid. Keep it as-is.
+
+### What Rho is missing (Layer 2: schema-guided coercion)
+
+When `StructuredOutput` produces valid JSON, Rho treats it as an opaque
+`Map<String, any>`. It doesn't know that `"30"` should be `30`, that
+`"january"` should be `"January"`, that `"hello"` should be `["hello"]`,
+or that `{"value": "text"}` should be `"text"`.
+
+The coercion layer from `simplify_baml/src/parser.rs` (lines 227-561)
+fills this gap. It's a recursive function that walks the JSON value and
+coerces each node to match the expected type from the schema.
+
+### All tool execution paths (5 call sites)
+
+Coercion must be integrated at **all** call sites, not just 2:
+
+| Call site | File | Current behavior |
+|-----------|------|------------------|
+| **Direct strategy** | `turn_strategy/direct.ex:140-143` | `ToolArgs.cast` only |
+| **Structured strategy** | `turn_strategy/structured.ex:255-256` | `ToolArgs.cast` only |
+| **DSL-generated tools** | `tool/dsl.ex:87-96` | `ToolArgs.cast` + `validate_required` |
+| **Worker (direct cmd)** | `agent/worker.ex:1017-1018` | `ToolArgs.cast` only |
+| **LiteWorker** | `agent/lite_worker.ex:407` | `ToolArgs.cast` only |
+
+The safest way to cover all paths: **put coercion inside `Rho.ToolArgs`**
+as a unified pipeline, so every caller gets it automatically.
+
+### What we learned from Tao and BAML
+
+**Tao** (`/Users/catethos/workspace/tao`) — Rust agent using `simplify_baml`:
+- All LLM responses are tool calls. Even "speak to user" is
+  `FinalResponse { message: String }`. No raw text case.
+- `Think { thought: String }` is a first-class tool for visible reasoning.
+- The `Tool` enum is a tagged/discriminated union (`#[baml(tag = "tool")]`).
+- The agent loop is: `parse → match variant → execute → loop`. Trivially
+  simple because the action space is total.
+
+**GenBAML** (`/Users/catethos/workspace/ds-agents/.../genbaml`) — Elixir DSL:
+- Compile-time schema definitions → BAML file generation.
+- `BamlElixir.Native.call/6` wraps BAML's Rust runtime via NIF.
+- Requires `.baml` files on disk — cannot pass schemas programmatically.
+- Good for standalone structured extraction, but the file-on-disk requirement
+  and separate LLM communication layer make it a poor fit as the inner loop
+  of Rho's agent runtime.
+
+**simplify_baml** (`/Users/catethos/workspace/simplify_baml/src/`) — the parser:
+- `ir.rs`: Type system — `FieldType` enum (String, Int, Float, Bool, Class,
+  Enum, TaggedEnum, List, Map, Union), `Class`, `Field`, `TaggedEnum`,
+  `TaggedVariant`.
+- `parser.rs`: 3-phase pipeline — extract JSON → parse → coerce to type.
+  The coercion functions are the key: `coerce_string`, `coerce_int`,
+  `coerce_float`, `coerce_bool`, `coerce_enum`, `coerce_class`,
+  `coerce_list`, `coerce_map`, `coerce_union`, `coerce_tagged_enum`.
+- `schema.rs`: Human-readable schema formatter for prompt injection. BAML
+  format: `{name: string, age?: int, tags: string[]}` with enum definitions
+  listed above.
+- Object unwrapping: when expecting a primitive but receiving an object, tries
+  field names `value`, `Value`, `string`, `String`, `text`, `Text`, `result`,
+  `Result`, then falls back to single-field unwrap.
+
+**Key conclusion**: We don't need BAML as a dependency. The coercion logic is
+~335 lines of Rust that maps naturally to ~150 lines of Elixir pattern matching.
+Rho's `StructuredOutput` already covers the JSON extraction phase. The only
+missing piece is the schema-guided coercion phase.
+
+---
+
+## How — Design
+
+### Architecture overview
 
 ```
-lib/rho/sap/
-  schema.ex         # canonical schema AST (internal, Rho-owned)
-  parser.ex         # top-level parse(text, schema) -> {:ok, value, repairs} | {:error, ...}
-  recover.ex        # syntax recovery (thin wrapper over current StructuredOutput)
-  extract.ex        # candidate extraction (brace-scan, markdown, yapping strip)
-  align.ex          # schema-guided coercion (the new work)
-  score.ex          # edit-cost scoring + candidate selection
-  repair.ex         # repair struct + telemetry helpers
-test/rho/sap/
-  parser_test.exs
-  align_test.exs
-  corpus_test.exs   # regression corpus from production
+apps/rho/lib/rho/
+├── schema_coerce.ex              # Pure recursive coercion engine (~150 lines)
+├── tool_args.ex                  # Unified pipeline: cast → coerce → validate
+├── action_schema.ex              # Tagged union from tool_defs (~120 lines)
+│                                 # includes prompt formatting + collision detection
+├── turn_strategy/
+│   ├── structured.ex             # UNCHANGED until typed_structured is validated
+│   └── typed_structured.ex       # New strategy using ActionSchema
+└── structured_output.ex          # UNCHANGED
 ```
 
-`Rho.StructuredOutput` stays as the syntax-recovery layer. `Rho.SAP` wraps
-it and adds schema alignment on top. Nothing is replaced wholesale.
+### Module boundaries
 
----
+- **`Rho.SchemaCoerce`** — pure recursive coercion engine. No dependencies
+  on ToolArgs, ActionSchema, or any Rho module. Input: `(value, type_spec)`.
+  Output: `{:ok, coerced, repairs}` or `{:error, reason}`. Reusable for
+  both tool args and structured extraction.
 
-## Context: pre-production
+- **`Rho.ToolArgs`** — public orchestration API. Calls `cast/2`, then
+  `SchemaCoerce.coerce_fields/3`, then `validate_required/2`. All 5 call
+  sites use this single entry point.
 
-Rho is not yet deployed. That changes the economics of this plan
-significantly. Most of what would otherwise be Phase 0 — corpus
-harvesting, baseline telemetry, shadow-mode harness, flag-gated
-rollout, ≥5% improvement threshold — exists to protect live users
-during a switchover. No users, no switchover, no protection needed.
+- **`Rho.ActionSchema`** — tagged union builder + parse/dispatch for the
+  typed structured strategy only. Handles collision detection, built-in
+  variant reservation, and prompt rendering.
 
-The feedback loop is `mix test` and dev runs, not production sessions.
-The "corpus" is `test/rho/reasoner/structured_corpus_test.exs` plus
-whatever breakage shows up in dev. Rollback is `git revert`.
+### Module 1: `Rho.SchemaCoerce`
 
-This reframes SAP from "multi-phase rollout program" to "focused
-refactor to cement the right abstraction *before* traffic arrives, so
-we don't accumulate corpus-shaped tech debt and face a flag-gated
-rewrite later."
+Port of `simplify_baml/src/parser.rs` lines 227-561.
 
-Phases below are sequenced for that pre-prod reality. Deferred phases
-(7 streaming rework, 7.5 multi-action, 10 validation loop) stay
-deferred until real usage proves they matter.
+**Source reference**: `/Users/catethos/workspace/simplify_baml/src/parser.rs`
 
----
+#### Safety-adapted coercion rules
 
-## Phase 0 — Code-hygiene prerequisites (lightweight)
+The original simplify_baml rules are designed for **extraction tolerance**.
+For **tool invocation safety**, we apply stricter guardrails:
 
-Traffic-dependent prerequisites are dropped. Only code-hygiene items
-that SAP genuinely needs remain.
+```
+coerce(value, expected_type, mode) → {:ok, coerced, repairs} | {:error, reason}
+```
 
-- **Audit `parameter_schema` completeness.** Grep every `parameter_schema:`
-  in `lib/rho/tools/**` and `lib/rho/mounts/**`. Every field must carry
-  `:type`; ideally `:required`, `:enum`, `:doc`. Fields without `:type`
-  break alignment — fix those first. This is just code hygiene, do it
-  regardless.
-- **Decide where `final_answer`'s schema lives.** Today hardcoded as
-  `{answer: string}`. SAP models it as just another union variant — need
-  a config seam (agent-level in `.rho.exs`) before Phase 1.
-- **Clarify `Rho.Reasoner.Tagged` scope.** Tagged reasoner shipped per
-  memory. Decide: does SAP apply to both Structured *and* Tagged, or
-  only Structured? Document in a one-liner.
-- **Fix `MountRegistry.safe_call/4`'s `function_exported?/3`** —
-  called without `Code.ensure_loaded!/1` first, silently fails. Fix
-  *before* SAP so the bug doesn't masquerade as a SAP regression.
-- **`detect_implicit_tool/1` archaeology.** This hard-codes the hiring
-  demo (`"levels"` key → `add_proficiency_levels`). Before deleting it
-  in Phase 8, fix the hiring demo prompt or tool schema so it no longer
-  needs the heuristic. Otherwise Phase 8 regresses that demo.
+**Mode `:tool_call`** (default for ToolArgs pipeline):
 
-### Decisions to lock down before coding
+| Expected type          | LLM output               | Coercion                          | Source (parser.rs) |
+|------------------------|---------------------------|-----------------------------------|--------------------|
+| `:string`              | `42`                      | `"42"`                            | line 256           |
+| `:string`              | `true`                    | `"true"`                          | line 257           |
+| `:string`              | `nil`                     | ❌ `{:error, :nil_for_required}` if required, passthrough if optional | **DIFFERS from simplify_baml** |
+| `:string`              | `%{"value" => "text"}`    | `"text"` (unwrap known keys only) | lines 259-273      |
+| `:string`              | `%{"x" => "text"}`        | ❌ no single-field unwrap in tool mode | **DIFFERS** |
+| `:integer`             | `"30"`                    | `30`                              | lines 296-299      |
+| `:integer`             | `3.0`                     | `3` (if no fractional part)       | lines 284-291      |
+| `:integer`             | `%{"value" => 42}`        | `42` (unwrap known keys only)     | lines 301-315      |
+| `:float`               | `"3.14"`                  | `3.14`                            | lines 330-333      |
+| `:float`               | `42` (integer)            | `42.0`                            | implicit           |
+| `:boolean`             | `"true"/"yes"/"1"`        | `true`                            | lines 358-367      |
+| `:boolean`             | `"false"/"no"/"0"`        | `false`                           | lines 358-367      |
+| `:boolean`             | `1` / `0`                 | `true` / `false`                  | lines 368-372      |
+| `{:in, variants}`      | `"january"`               | `"January"` (case-insensitive)    | lines 395-421      |
+| `{:list, inner}`       | scalar value              | `[value]` (scalar-to-list wrap)   | lines 506-511      |
+| `{:list, inner}`       | `[items]`                 | recursive coerce each item        | lines 500-505      |
+| `{:map, _}`            | `%{k => v}`               | recursive coerce values           | lines 514-528      |
+| tagged enum            | `%{"tool" => "Bash", ...}` | match variant, coerce fields     | lines 423-466      |
 
-- **Discriminator alias policy.** Today accepts `action`/`tool`/`tool_name`/
-  `name` and `action_input`/`tool_input`/`parameters`/`args`/`input`.
-  Recommendation: keep all as fuzzy-aliases with logged repairs on
-  non-canonical keys.
-- **Hard caps on work.** Pathological inputs can explode
-  candidates × fields × edit-distance. Set upper bounds:
-  max candidates (5), max alignment attempts (20), max wall-clock per
-  parse (50ms). Fail open to `{:raw_response, text}`.
-- **Nested-JSON-string decoding.** `normalize_args/1` auto-decodes
-  today. Some tools may rely on that. Audit callers before Phase 8
-  deletes it; replicate via `:decode_nested_json` repair.
-- **Streaming vs. alignment scope.** Alignment needs a complete JSON
-  value. Partial parser does syntax-recovery + prefix streaming only.
-  Full alignment runs post-stream.
+**Guardrails (differ from simplify_baml):**
 
-**Deliverable checklist:**
-- [ ] `parameter_schema` audit report (file-by-file gaps)
-- [ ] `final_answer` config seam design note
-- [ ] Tagged reasoner scope decision documented (one line)
-- [ ] `safe_call/4` `Code.ensure_loaded!` fix
-- [ ] Hiring demo no longer relies on `detect_implicit_tool`
+1. **No `nil → ""` for required fields.** `nil` on a required string returns
+   `{:error, {:missing_required, field}}`, not `""`. This prevents bypassing
+   `validate_required/2` with empty strings that silently flow into tool
+   callbacks expecting real values.
 
----
+2. **No arbitrary `:atom` coercion.** LLM input is untrusted — converting
+   arbitrary strings to atoms is a memory leak / DoS vector on the BEAM.
+   Atom coercion is whitelist-only: only convert when the `{:in, variants}`
+   list contains atoms.
 
-## Phase 1 — Schema AST (foundation)
+3. **Strict unwrap for tool mode.** Only unwrap known wrapper keys
+   (`value`, `text`, `result` and their capitalized forms). Do NOT do
+   arbitrary single-field object unwrap in tool mode — it's too liberal for
+   tool calls where the field name might be semantically important (paths,
+   IDs, commands).
 
-Define an internal schema representation the aligner walks. Kept
-deliberately minimal; does not attempt to be BAML IR.
+4. **All coercions produce a repair log.** Every coercion records
+   `{field, from_type, to_type, original_value}` so we can audit what
+   changed, emit telemetry, and debug chronic offenders.
+
+**Mode `:extraction`** (for future use in structured extraction):
+Mirrors the original simplify_baml behavior exactly, including `nil → ""`,
+single-field unwrap, and liberal atom coercion. Not used in Phase 1.
+
+#### Object unwrapping (known keys only in tool mode)
+
+When expecting a primitive type but receiving an object, try these field
+names in order (from parser.rs line 262):
 
 ```elixir
-defmodule Rho.SAP.Schema do
-  @type t ::
-          {:string}
-          | {:int}
-          | {:float}
-          | {:bool}
-          | {:enum, [String.t()]}
-          | {:list, t()}
-          | {:map, t(), t()}
-          | {:object, [{field :: String.t(), t(), required :: boolean()}]}
-          | {:union, [{tag :: String.t(), t()}]}   # discriminated union (final_answer | tool_a | tool_b)
-          | {:any}
+@wrapper_keys ~w(value Value text Text result Result)
+```
 
-  @spec from_tool_param_schema(keyword()) :: t()
-  def from_tool_param_schema(schema), do: ...
+In `:extraction` mode, also try `string`, `String` and fall back to
+single-field unwrap. In `:tool_call` mode, stop at the known keys list.
 
-  @spec action_union(tool_defs, final_answer_schema :: t()) :: t()
-  def action_union(tool_defs, final_schema), do: ...
+#### API
+
+```elixir
+# Coerce a single value to match expected type
+SchemaCoerce.coerce(value, :integer)
+→ {:ok, 30, [%{from: :string, to: :integer, original: "30"}]}
+
+SchemaCoerce.coerce(value, :integer)
+→ {:error, {:cannot_coerce, :map, :integer}}
+
+# Coerce all fields in a map against a parameter_schema keyword list
+SchemaCoerce.coerce_fields(args_map, parameter_schema, mode: :tool_call)
+→ {:ok, coerced_map, repairs}
+
+# mode defaults to :tool_call
+```
+
+### Module 1b: `Rho.ToolArgs` — Unified pipeline
+
+Extend the existing `Rho.ToolArgs` with a `prepare/2` function that
+orchestrates the full pipeline. All 5 call sites switch to this.
+
+```elixir
+@doc """
+Full arg preparation pipeline: cast → coerce → validate.
+
+Returns `{:ok, prepared_args, repairs}` or `{:error, reason}`.
+Repairs is a list of coercion actions taken (empty if args were
+already correctly typed).
+"""
+@spec prepare(map(), keyword()) :: {:ok, map(), list()} | {:error, term()}
+def prepare(args, parameter_schema) when is_list(parameter_schema) do
+  cast = cast(args, parameter_schema)
+
+  with {:ok, coerced, repairs} <-
+         Rho.SchemaCoerce.coerce_fields(cast, parameter_schema, mode: :tool_call),
+       :ok <- validate_required(coerced, parameter_schema) do
+    if repairs != [] do
+      :telemetry.execute(
+        [:rho, :tool, :args_coerced],
+        %{repair_count: length(repairs)},
+        %{repairs: repairs}
+      )
+    end
+
+    {:ok, coerced, repairs}
+  end
+end
+
+def prepare(args, _non_list_schema), do: {:ok, args, []}
+```
+
+**Migration for call sites** — each switches from:
+```elixir
+cast_args = Rho.ToolArgs.cast(args, schema)
+tool_def.execute.(cast_args, ctx)
+```
+to:
+```elixir
+case Rho.ToolArgs.prepare(args, schema) do
+  {:ok, prepared_args, _repairs} ->
+    tool_def.execute.(prepared_args, ctx)
+  {:error, reason} ->
+    {:error, "Arg preparation failed: #{inspect(reason)}"}
 end
 ```
 
-Build once per turn in `Reasoner.Structured.run/2` and pass through
-everywhere. Do not walk `tool.parameter_schema` on each parse attempt.
+This is more than "2 lines per strategy" — it's a result-tuple pipeline
+change at 5 call sites plus tests, but the pattern is mechanical.
 
-**Deliverable:** `Rho.SAP.Schema` + tests covering conversion from existing
-`parameter_schema` keyword format.
+#### Auditability: raw vs prepared args
 
----
-
-## Phase 2 — Candidate extraction
-
-Pull one or more JSON-shaped candidates out of noisy text.
+The Structured strategy currently records `new_args` (raw) in
+`build_tool_step_from_result` (line 523-535), not `cast_args`. After SAP,
+we must record **both** when they differ:
 
 ```elixir
-defmodule Rho.SAP.Extract do
-  @spec candidates(String.t()) :: [String.t()]
+# In build_tool_step_from_result, when repairs is non-empty:
+structured_calls: [{name, Jason.encode!(prepared_args), raw_args: args}]
+```
+
+This preserves tape/UI fidelity: the user sees what the LLM said, but the
+tool got the corrected values. Telemetry on `[:rho, :tool, :args_coerced]`
+tracks repair frequency per tool/field for monitoring.
+
+### Module 2: `Rho.ActionSchema`
+
+Builds a tagged union from tool_defs and handles the full parse+dispatch
+pipeline for the typed structured strategy.
+
+**Inspired by**: Tao's `Tool` enum (`/Users/catethos/workspace/tao/crates/tao-core/src/tools.rs`),
+simplify_baml's `TaggedEnum` (`/Users/catethos/workspace/simplify_baml/src/ir.rs` lines 110-124).
+
+#### The action type
+
+At agent boot, the tool set is fixed. ActionSchema converts tool_defs into
+a closed discriminated union:
+
+```
+Action = respond(message: string)
+       | think(thought: string)
+       | bash(cmd: string)
+       | fs_read(path: string, offset?: integer, limit?: integer)
+       | ... one per registered tool
+```
+
+Every possible LLM response maps to exactly one variant. There is no
+"raw text" case, no "code block fallback" case.
+
+#### Built-in variants and collision detection
+
+`respond` and `think` are **reserved** built-in variants. ActionSchema
+must detect collisions at build time:
+
+```elixir
+def build(tool_defs) do
+  reserved = MapSet.new(~w(respond think))
+  tool_names = Enum.map(tool_defs, & &1.tool.name)
+
+  # Fail fast on reserved name collisions
+  for name <- tool_names, name in reserved do
+    raise ArgumentError,
+      "Tool name #{inspect(name)} collides with built-in action. " <>
+      "Rename the tool or use a prefix."
+  end
+
+  # Fail fast on duplicate tool names
+  dupes = tool_names -- Enum.uniq(tool_names)
+  if dupes != [] do
+    raise ArgumentError,
+      "Duplicate tool names: #{inspect(Enum.uniq(dupes))}. " <>
+      "Each tool must have a unique name."
+  end
+
+  %ActionSchema{
+    variants: build_variants(tool_defs),
+    tag_key: "tool"
+  }
 end
 ```
 
-Strategies, in order:
-1. Whole text parses as JSON → one candidate.
-2. Fenced code blocks (```json ... ```) → candidates.
-3. Outer brace-scan (first `{` to each matching `}` position) → candidates.
-4. Multiple top-level JSON objects → merged candidate + individual candidates.
+#### Format and parsing
 
-Already mostly implemented in `StructuredOutput`. Just needs to return
-*all* viable candidates instead of the first that decodes, so the scorer
-can pick the best-aligned one.
+Prompt format — flat JSON with `"tool"` as discriminant:
 
-**Deliverable:** `Rho.SAP.Extract` returning a list of candidate strings.
-
----
-
-## Phase 3 — Syntax recovery (reuse)
-
-Wrap existing `Rho.StructuredOutput` normalizations:
-- quote normalization (curly, single)
-- control-char escaping
-- trailing-comma stripping
-- unquoted-key patching (NEW — JS/Python-style unquoted keys are common)
-- comment stripping (NEW — LLMs emit `// ...` in JSON)
-
-> **UTF-8 safety:** any string-shortening repair (yapping strip, ellipsize,
-> truncate-on-cap) must iterate by grapheme/codepoint, never by byte
-> offset. Cross-project lesson from `tao` (Rust): byte-slicing multi-byte
-> text silently produced invalid UTF-8 that masqueraded as parse failures
-> downstream. In Elixir: `String.slice/2`, `String.graphemes/1`, not
-> `binary_part/3`.
-
-```elixir
-defmodule Rho.SAP.Recover do
-  @spec normalize(String.t()) :: [String.t()]  # returns all passing variants
-end
-```
-
-Each candidate from Phase 2 goes through these recoveries, producing a set
-of syntactically valid JSON values. If none parse, the candidate is dropped.
-
-**Deliverable:** `Rho.SAP.Recover` with two new recoveries (unquoted keys,
-comments).
-
----
-
-## Phase 4 — Schema-guided alignment (the core)
-
-Given a parsed JSON value and the target schema, produce the nearest
-schema-conformant value and a list of repairs applied.
-
-```elixir
-defmodule Rho.SAP.Align do
-  @spec align(json_value, Schema.t(), opts()) ::
-          {:ok, value, [Repair.t()]} | {:error, [Repair.t()], reasons}
-end
-```
-
-### Alignment rules (coercion table)
-
-| From           | Target schema   | Coercion                                    |
-|----------------|-----------------|---------------------------------------------|
-| `"Amazon"`     | `{:list, _}`    | wrap → `["Amazon"]`                         |
-| `["x"]`        | `{:string}`     | unwrap first if singleton                   |
-| `"42"`         | `{:int}`        | `String.to_integer/1`                       |
-| `"3.14"`       | `{:float}`      | `String.parse/1`                            |
-| `42`           | `{:string}`     | `to_string/1`                               |
-| `"true"`       | `{:bool}`       | parse                                       |
-| `"Foo"`        | `{:enum, vals}` | fuzzy match (case-insensitive, then prefix) |
-| `nil`          | required field  | attempt default, else repair error          |
-| extra keys     | `{:object, _}`  | drop, emit repair                           |
-| missing key    | `{:object, _}`  | try alt spellings, else null if optional    |
-| misnamed key   | `{:object, _}`  | Levenshtein <= 2 match to schema key        |
-| nested JSON-in-string | any       | try decoding string, re-align               |
-
-### Discriminated union alignment (the reasoner's action type)
-
-The action schema is `{:union, [{"final_answer", ...}, {"bash", ...}, ...]}`.
-Input like:
 ```json
-{"action": "bash", "action_input": {"cmd": "ls"}}
+{"tool": "bash", "cmd": "ls -la"}
 ```
-Aligns by:
-1. Read `action` field → selects union variant.
-2. Align `action_input` against the selected variant's schema.
-3. If `action` is unknown, try fuzzy match against variant tags.
-4. If fuzzy-matched, add a `:variant_renamed` repair.
 
-### Repair record
+`think` as an **optional side-channel field** on any action (not a
+separate action that costs a turn):
+
+```json
+{"tool": "bash", "cmd": "ls -la", "thinking": "Let me check the directory"}
+```
+
+For standalone thinking (no tool call), use the think variant:
+
+```json
+{"tool": "think", "thought": "I need to reconsider my approach..."}
+```
+
+Terminal action:
+
+```json
+{"tool": "respond", "message": "Here is your answer..."}
+```
+
+#### Parse pipeline
+
+```
+Raw text
+  → StructuredOutput.parse           # Layer 1: syntax repair (existing)
+  → extract "tool" tag               # discriminant lookup
+  → find matching variant            # ActionSchema dispatch
+  → SchemaCoerce.coerce on fields    # Layer 2: type coercion (new)
+  → extract optional "thinking"      # side-channel, emitted but free
+  → dispatch based on tag
+
+Returns:
+  {:respond, message}                      # terminal
+  {:think, thought}                        # continue, inject thought
+  {:tool, name, coerced_args, tool_def, thinking: thinking}
+                                           # continue, execute tool
+  {:unknown, name, raw_args}               # continue, error message
+  {:parse_error, reason}                   # see retry handling below
+```
+
+#### Backward compatibility
+
+The parser accepts both the old envelope format and the new format:
+
+- `{"thinking": "...", "action": "bash", "action_input": {"cmd": "ls"}}` —
+  recognized via `"action"` key, `"action_input"` hoisted to top level,
+  `"thinking"` treated as a think side-effect (emitted but doesn't cost
+  a turn). Logs a repair.
+- `{"tool": "bash", "cmd": "ls"}` — new format, direct dispatch.
+- Key aliases (`"tool_name"`, `"name"`, `"args"`, `"input"`) — accepted
+  and normalized during the transition period. Removing these aliases is
+  deferred until telemetry shows they're no longer triggered. Current
+  Structured accepts them and removing them would regress real fixtures.
+
+This means existing system prompts, existing LLM behavior, and existing
+test fixtures all continue to work during the transition.
+
+#### Parse error handling
+
+**Today, Runner treats `{:error, reason}` as terminal** (runner.ex:348-349).
+There is no parse-error retry path. Before `:typed_structured` can ship:
+
+1. Add a `:parse_error` result type to the strategy contract.
+2. Runner handles `{:parse_error, reason, raw_text}` by:
+   - Injecting the raw text as an assistant message
+   - Injecting a correction prompt as a user message
+   - Decrementing the step budget
+   - Continuing the loop
 
 ```elixir
-defmodule Rho.SAP.Repair do
-  defstruct [:kind, :path, :from, :to, :cost]
-  # kinds: :wrap_list, :unwrap_singleton, :coerce_type, :fuzzy_key,
-  #        :fuzzy_variant, :drop_extra_key, :fill_optional_null,
-  #        :decode_nested_json, :strip_comment, :fix_quotes
+# In Runner.handle_strategy_result:
+defp handle_strategy_result(
+       {:parse_error, reason, raw_text},
+       context,
+       runtime,
+       step,
+       max
+     ) do
+  correction = "[System] Your response could not be parsed: #{reason}. " <>
+    "Please respond with valid JSON matching the action schema."
+
+  entries = [
+    ReqLLM.Context.assistant(raw_text),
+    ReqLLM.Context.user(correction)
+  ]
+
+  new_ctx = Context.append(context, entries)
+  do_loop(new_ctx, runtime, step: step + 1, max_steps: max)
 end
 ```
 
-**Deliverable:** `Rho.SAP.Align` + exhaustive alignment tests. Each
-coercion rule gets a test.
+This is critical infrastructure — without it, any parse failure in
+`:typed_structured` is a hard crash instead of a retry.
 
----
+### Refactored `Rho.TurnStrategy.TypedStructured`
 
-## Phase 5 — Scoring & selection
+**New file**: `apps/rho/lib/rho/turn_strategy/typed_structured.ex`
 
-When multiple candidates survive extraction+recovery+alignment, pick the
-one with the lowest total repair cost.
+The current `structured.ex` stays **completely unchanged** until
+`:typed_structured` is validated via A/B testing. No code is removed
+from the existing strategy until Phase 4.
 
-```elixir
-defmodule Rho.SAP.Score do
-  @spec cost([Repair.t()]) :: non_neg_integer()
-  @spec select([{value, [Repair.t()]}]) :: {value, [Repair.t()]} | :none
-end
-```
-
-Cost weights (initial, tunable from corpus data):
-- `:coerce_type` = 1
-- `:wrap_list` / `:unwrap_singleton` = 1
-- `:fuzzy_key` = 2 (per edit distance unit)
-- `:fuzzy_variant` = 3
-- `:drop_extra_key` = 1
-- `:fill_optional_null` = 0
-- `:decode_nested_json` = 2
-- syntax repairs (from Phase 3) = 1 each
-
-Hard cap: if total cost > `max_cost` (default 20), return `:error`. This
-prevents pathological "aligned" garbage.
-
-**Deliverable:** `Rho.SAP.Score` + selection tests.
-
----
-
-## Phase 6 — Public parser entrypoint
+**New `run/2` flow**:
 
 ```elixir
-defmodule Rho.SAP.Parser do
-  @spec parse(text :: String.t(), Schema.t(), opts()) ::
-          {:ok, value, [Repair.t()]}
-          | {:partial, [Repair.t()]}   # streaming, not yet parseable
-          | {:error, reason :: term()}
+def run(projection, runtime) do
+  schema = ActionSchema.build(runtime.tool_defs)
+  messages = projection.context
+  stream_opts = Keyword.drop(runtime.gen_opts, [:tools])
 
-  def parse(text, schema, opts \\ []) do
-    text
-    |> Extract.candidates()
-    |> Enum.flat_map(&Recover.normalize/1)
-    |> Enum.flat_map(&decode_to_json/1)
-    |> Enum.map(&Align.align(&1, schema, opts))
-    |> Enum.filter(&match?({:ok, _, _}, &1))
-    |> Score.select()
-    |> wrap_result()
+  case stream_with_retry(runtime.model, messages, stream_opts, runtime.emit, 1) do
+    {:ok, text, usage} ->
+      emit_usage(usage, projection, runtime)
+
+      case ActionSchema.parse_and_dispatch(text, schema, runtime.tool_map) do
+        {:respond, message} ->
+          {:done, %{type: :response, text: message}}
+
+        {:think, thought} ->
+          runtime.emit.(%{type: :llm_text, text: thought})
+          {:continue, build_think_step(thought)}
+
+        {:tool, name, args, _tool_def, opts} ->
+          if thinking = opts[:thinking] do
+            runtime.emit.(%{type: :thinking, text: thinking})
+          end
+          execute_tool(name, args, runtime.tool_map, runtime)
+
+        {:unknown, name, _args} ->
+          available = Map.keys(runtime.tool_map) |> Enum.join(", ")
+          error = "Unknown tool '#{name}'. Available: respond, think, #{available}"
+          {:continue, build_error_step(text, error)}
+
+        {:parse_error, reason} ->
+          {:parse_error, reason, text}
+      end
+
+    {:error, reason} ->
+      runtime.emit.(%{type: :error, reason: reason})
+      {:error, inspect(reason)}
   end
 end
 ```
 
-Emit `:telemetry` events:
-- `[:rho, :sap, :parse, :stop]` — `%{duration_us, repair_cost, candidates_tried}`
-- `[:rho, :sap, :parse, :exception]` — parse failures
-- `[:rho, :sap, :repair]` — one per repair applied (for corpus mining)
+**What stays from existing Structured** (~400 lines, shared or copied):
+- `stream_with_retry` / `do_stream` / `consume_stream` / `maybe_retry_structured`
+- `execute_tool` / `handle_tool_result` / `apply_tool_result_in`
+- `build_tool_step_from_result` / `build_tool_step`
+- `emit_thinking`
+- All emit events
 
-**Deliverable:** `Rho.SAP.Parser.parse/3` + telemetry + integration test.
+**What the new strategy does NOT have** (no fallback heuristics):
+- `parse_action` / `parse_json_action` / `extract_action_fields`
+- `@action_keys` / `@thinking_keys` / `@args_keys` (flexible key matching)
+- `parse_fallback` / `extract_code_block` / `lang_to_tool` / `code_tool_args`
+- `execute_action({:raw_response, ...})` re-prompt path
+- `detect_format_waste` / `find_balanced_envelope` / `scan_balanced`
+- `@prefill "JSON:\n"` / `strip_prefill` / `strip_prefill_once`
+- `normalize_args`
 
----
+These are replaced by the parse-error retry path in Runner.
 
-## Phase 7 — Schema-aware streaming (IN SCOPE)
+### Optional: `response_format` for supporting providers
 
-Progressive rendering is the reason the structured reasoner exists
-over native tool-use. Specifically: when a tool's `action_input`
-contains a list (skills, framework items, rows), the UI must render
-list elements **one by one as they stream**, not wait for the full
-JSON object to close. Otherwise the user can't tell the system is
-working.
-
-### Current streaming behavior
-
-`Reasoner.Structured.stream_with_retry/5` already accumulates tokens
-and calls `StructuredOutput.parse_partial/1` after every token,
-emitting `:structured_partial` with the best-effort parsed map. Two
-problems:
-
-1. **Subscribers get the whole map every tick** — no delta, no
-   "element N was just added." UI has to diff the map itself to
-   decide what to render.
-2. **Called every token** — the O(n²) concern from the BAML critique.
-   For a long skill list this runs parse+auto-close on growing text
-   once per token.
-
-### What Phase 7 adds
-
-Schema-aware partial events that tell subscribers *what just
-appeared*, not just *what the whole thing looks like so far*:
-
-- `:thinking_delta` — `thinking` field characters as they stream,
-  before the field closes.
-- `:action_detected` — emitted once when the `action` field closes
-  (so the UI can pick a renderer).
-- `:action_input_field_started` — `%{path: ["skills"], type: :list}`
-  when a field under `action_input` opens.
-- `:action_input_list_item` — `%{path: ["skills", 3], value: {...}}`
-  when a list element closes inside `action_input`. This is the
-  key event for your skill-framework case — every new skill in the
-  array emits one event, letting the UI append a card progressively.
-- `:action_input_field_closed` — field complete, final aligned value.
-
-### Implementation sketch
+Add `response_format: %{type: "json_object"}` to `stream_opts` for
+providers that support it (OpenAI, Fireworks, some OpenRouter models).
+This is complementary to SAP — provider guarantees valid JSON syntax,
+SAP handles semantic coercion on top. Together they should push
+reliability beyond 94%.
 
 ```elixir
-defmodule Rho.SAP.Stream do
-  # Incremental, schema-guided tokenizer + event emitter.
-  # State machine tracks: in-string, escape, current path, current
-  # partial value, current list index.
-  @spec feed(state, chunk :: String.t(), schema :: Schema.t()) ::
-          {new_state, [event()]}
+defp maybe_add_json_mode(opts, model) do
+  if supports_json_mode?(model),
+    do: Keyword.put(opts, :response_format, %{type: "json_object"}),
+    else: opts
 end
 ```
 
-The state machine walks the JSON character-by-character, maintains a
-`path` stack matching the schema, and emits events at structural
-boundaries (string close, list-element close, object close). Because
-the schema is known, each path has a type — the emitter can align
-each just-closed value against its field's schema *immediately* and
-emit the aligned result, not the raw JSON token.
+---
 
-Full alignment of the complete value still runs post-stream (Phase 6)
-as the authoritative parse — streaming events are advisory for UX.
-Post-stream aligned value is the one that goes into the tape.
+## Implementation Phases
 
-### Throttling
+### Phase 1: SchemaCoerce + ToolArgs pipeline (foundation)
 
-Not per-token. Emit events at structural boundaries only (string
-close, list-element close, field close). For very long strings in a
-single field (e.g. a 5000-char `answer`), throttle `:thinking_delta`/
-string-content deltas to 100ms or 256-byte chunks to keep LiveView
-patch rate sane.
+**Effort**: ~150 lines implementation + ~200 lines tests + 5 call site changes
+**Risk**: Low. Coercion only changes wrong-typed values. Correct values pass
+through. But this is not "zero risk" — the pipeline change touches 5 call
+sites and changes error handling from implicit to explicit.
+**Files**:
+- `apps/rho/lib/rho/schema_coerce.ex` (new)
+- `apps/rho/lib/rho/tool_args.ex` (extend with `prepare/2`)
+- `apps/rho/lib/rho/turn_strategy/direct.ex` (switch to `prepare/2`)
+- `apps/rho/lib/rho/turn_strategy/structured.ex` (switch to `prepare/2`)
+- `apps/rho/lib/rho/agent/worker.ex` (switch to `prepare/2`)
+- `apps/rho/lib/rho/agent/lite_worker.ex` (switch to `prepare/2`)
+- `apps/rho/lib/rho/tool/dsl.ex` (switch to `prepare/2`)
+- `apps/rho/test/rho/schema_coerce_test.exs` (new)
+- `apps/rho/test/rho/tool_args_test.exs` (extend)
 
-### Cancellation
+**Work**:
+1. Implement `SchemaCoerce.coerce/2` for all NimbleOptions types used in
+   parameter_schemas: `:string`, `:integer`, `:pos_integer`, `:float`,
+   `:number`, `:boolean`, `{:list, inner}`, `:map`, `{:map, opts}`,
+   `{:in, variants}`. No `:atom` — whitelist-only via `{:in, [atoms]}`.
+2. Implement object unwrapping with known keys only (`:tool_call` mode).
+3. Implement `coerce_fields/3` with repair log.
+4. Implement `ToolArgs.prepare/2` orchestrating `cast → coerce → validate`.
+5. Add telemetry on `[:rho, :tool, :args_coerced]`.
+6. Migrate all 5 call sites to `ToolArgs.prepare/2`.
+7. Port test cases from `simplify_baml/src/parser.rs` (lines 564+).
+8. Add property test: for any value already matching the expected type,
+   `coerce(value, type) == {:ok, value, []}` (no false positives).
+9. Add cross-path integration tests proving the same coercion happens in
+   Direct, Structured, LiteWorker, Worker, and DSL paths.
 
-Thread a cancel ref through the streaming path — user-cancel,
-step-budget-exhausted, or wall-clock timeout must be able to abort
-mid-stream cleanly. Check the ref between chunks; on cancel, return
-the partial state so the tape can record what was produced before
-abort.
+**Rollback**: Revert `prepare/2` calls to `cast/2` at each call site.
 
-### Backward compat
+### Phase 2: ActionSchema + collision detection
 
-Keep `:structured_partial` emitted (current subscribers rely on it),
-add the new `:action_input_*` events alongside. UI migrates field-by-
-field: skill/framework list rendering uses `:action_input_list_item`
-(progressive), other views keep consuming the whole-map event.
+**Effort**: ~120 lines implementation + ~120 lines tests
+**Risk**: Low. New module, not wired into any strategy yet.
+**Files**:
+- `apps/rho/lib/rho/action_schema.ex` (new)
+- `apps/rho/test/rho/action_schema_test.exs` (new)
 
-**Deliverable:** `Rho.SAP.Stream` state machine + new event types +
-throttle + cancel plumbing + UI migration for the skill/framework
-list-rendering path (the one that drove this phase). Use the schema to decide *when* to emit partial
-events:
-- Emit `:thinking_delta` as soon as the `thinking` field string has
-  content, don't wait for the full object.
-- Emit `:action_detected` once the `action` field closes.
-- Emit `:action_input_partial` with the aligned-so-far input.
+**Work**:
+1. Implement `build/1` — construct tagged union from tool_defs, add `respond`
+   and `think` built-in variants.
+2. **Collision detection** — fail fast on reserved name collisions and
+   duplicate tool names at build time.
+3. Implement `parse_and_dispatch/3` — StructuredOutput.parse → extract tag →
+   SchemaCoerce.coerce → dispatch.
+4. Backward compat: accept `"action"`/`"action_input"` envelope and key
+   aliases (`"tool_name"`, `"name"`, `"args"`, `"input"`) with repair logging.
+5. Implement `render_prompt/1` — BAML-style schema text for prompt injection.
+6. Test with mock tool_defs. Test that old envelope format parses correctly.
+7. Test collision detection raises on reserved names and duplicates.
 
-Throttle parse_partial calls: every 200ms or 512 bytes, not every token.
-Addresses the O(n²) concern from the BAML critique.
+### Phase 3: Runner parse-error retry + TypedStructured strategy
 
-**Cancellation:** thread a cancel signal through the streaming parse path
-— user-cancel, step-budget-exhausted, or wall-clock timeout must be able
-to abort mid-stream cleanly. Cross-project lesson from `tao` (Rust): its
-streaming tool parser uses `tokio::select!` on a `CancellationToken` so a
-cancel short-circuits the accumulator loop. Elixir equivalent: run the
-parse under a `Task` with a monitored process + timeout, or check a
-shared cancel ref between chunks. The Phase 0 50ms wall-clock cap covers
-the pathological-input case; this is the user/budget-initiated cancel
-case.
+**Effort**: ~60 lines Runner change + new strategy file (~200 lines)
+**Risk**: Medium. Changes core loop contract and adds a new strategy.
+**Mitigation**: Register as `turn_strategy: :typed_structured`. Keep
+`:structured` unchanged. Both coexist.
+**Files**:
+- `apps/rho/lib/rho/runner.ex` (add `:parse_error` handling)
+- `apps/rho/lib/rho/turn_strategy/typed_structured.ex` (new)
 
-**Deliverable:** streaming parser + throttle + new event types + cancel
-plumbing.
+**Work**:
+1. Add `handle_strategy_result({:parse_error, reason, raw_text}, ...)` to
+   Runner — injects correction prompt, decrements budget, continues loop.
+2. New `TypedStructured` strategy using `ActionSchema.parse_and_dispatch`.
+3. Shared streaming infrastructure: extract common streaming code from
+   existing `Structured` into a shared module or use delegation.
+4. `thinking` as optional side-channel on any action, plus standalone
+   `think` variant.
+5. `prompt_sections/2` using `ActionSchema.render_prompt`.
+6. Retain correction/fallback logic via the Runner retry path (not
+   inline heuristics).
+
+### Phase 4: Validation, rollout, and cleanup
+
+**Effort**: Testing, tuning, and eventual cleanup
+**Work**:
+1. Run spreadsheet agent with `:typed_structured`, compare to `:structured`.
+2. **Metrics to collect**:
+   - Re-prompt cycles per task
+   - Token usage per turn
+   - Task completion rate
+   - Coercion repair frequency by tool/field (from telemetry)
+   - Parse error rate and recovery rate
+   - Whether repairs correlate with better completion
+3. If `:typed_structured` is equal or better, make it the default.
+4. Monitor key alias telemetry — only remove backward-compat aliases after
+   data shows they're not triggered.
+5. Delete `:structured` only after `:typed_structured` is proven stable.
+
+### Phase 5 (optional): response_format
+
+**Effort**: ~20 lines
+**Work**: Detect provider support, add `response_format` to stream_opts.
+Complementary to SAP, not required.
+
+### Phase 6 (deferred): Schema-aware streaming
+
+From the original plan's Phase 7. Emit structured streaming events:
+`:action_detected`, `:action_input_list_item`, etc. Only build if the
+skill-framework list-rendering UX needs it.
+
+### Phase 7 (deferred): Multi-action
+
+From the original plan's Phase 7.5. Allow `actions: Action[]` instead of
+single action per turn. Only build if latency from 1-action-per-turn
+becomes a measured problem.
 
 ---
 
-## Phase 7.5 — Multi-action schema (DEFERRED)
+## Testing strategy
 
-Deferred until real traffic shows the 1-action-per-turn latency is
-actually costly. This phase is a concurrency change riding on SAP's
-coattails — concurrent `before_tool`/`after_tool` hooks, tool
-isolation decisions, signal-bus ordering, tape compaction. Evaluate
-against `Reasoner.Direct`'s existing parallelism in its own plan
-doc. Do not bundle with the SAP refactor.
+### Unit tests (Phase 1)
 
-Original sketch retained below for when it's time:
+- Every coercion rule from the table above: positive and negative cases.
+- Property test: `∀ value matching type, coerce(value, type) == {:ok, value, []}`.
+- Required-field safety: `nil` on required string → `{:error, ...}`, not `""`.
+- Ambiguity tests: single-field unwrap NOT triggered in `:tool_call` mode.
+- Repair log correctness: verify repairs list records what changed.
 
-Reason: `Direct` runs tool calls in parallel via `Task.async/1`, `Structured`
-forces one action per LLM round-trip. For a read-heavy turn (3 reads, 1
-reason, 1 write), that's 5 round-trips vs. 2. Latency multiplier is real
-and paid every turn.
+### Cross-path integration tests (Phase 1)
 
-The SAP union schema makes this essentially free to add: the action type
-becomes a *list* of variants, not a single variant.
+Prove that the same coercion happens regardless of which execution path
+is used. Create a test tool with schema `[count: [type: :integer]]` and
+call it with `%{"count" => "5"}` through each path:
 
-### Schema change
+- Direct strategy dispatch
+- Structured strategy execute_tool
+- DSL-generated tool execute
+- Worker direct command
+- LiteWorker execute_single_tool
 
-```elixir
-# Before (conceptual):
-action_schema = {:union, [final_answer, bash, fs_read, ...]}
+All 5 should produce `%{count: 5}` with the same repair log.
 
-# After:
-action_schema = {:object, [
-  {"thinking", {:string}, false},
-  {"actions", {:list, {:union, [final_answer, bash, fs_read, ...]}}, true}
-]}
-```
+### ActionSchema tests (Phase 2)
 
-### Prompt schema (what the LLM sees)
+- Collision detection: reserved names, duplicate names.
+- Old envelope format → correct dispatch.
+- Key alias normalization.
+- Unknown tool → `{:unknown, name, args}`.
+- Malformed JSON → `{:parse_error, reason}`.
 
-```
-{
-  thinking: string,
-  actions: Action[]   // 1+ actions; use one per turn unless independent
-}
+### Strategy tests (Phase 3)
 
-Action variants:
-- final_answer: { answer: string }
-- bash: { cmd: string }
-- fs_read: { path: string, offset?: int }
-...
-```
+- Parse error → Runner injects correction → retry succeeds.
+- Parse error budget exhaustion → terminal error.
+- `thinking` side-channel extraction on tool calls.
+- Standalone `think` variant.
+- `respond` terminal action.
 
-Guidance in the prompt: "emit multiple actions only when they don't
-depend on each other's outputs. Prefer one action when a later step
-depends on an earlier step's result."
+### Regression corpus (Phase 4)
 
-### Execution semantics
-
-In `Reasoner.Structured.run/2` after SAP alignment:
-
-```elixir
-%{"thinking" => thinking, "actions" => actions} = aligned_value
-
-case actions do
-  [%{"name" => "final_answer", "input" => %{"answer" => a}}] ->
-    emit_thinking(thinking)
-    {:done, %{type: :response, text: a}}
-
-  actions ->
-    # Execute non-final actions in parallel, mirror Direct reasoner shape
-    emit_thinking(thinking)
-    execute_parallel(actions, tool_map, runtime)
-end
-```
-
-Rules:
-- If `final_answer` appears alongside other actions, execute others
-  first; `final_answer` is applied on next turn only if no tool changed
-  state. Simpler rule: **`final_answer` must be the sole action** — if
-  mixed, drop `final_answer` and treat as tool-only turn, add repair
-  `:final_answer_mixed_with_tools`.
-- Parallel execution mirrors `Reasoner.Direct.handle_tool_calls/4`:
-  `Task.async` per action, `Task.await_many` with 5-minute timeout,
-  `before_tool`/`after_tool` lifecycle per call.
-- Tool results are batched into a single `:tool_step` entry (one
-  assistant message + one user message containing all results keyed by
-  call_id), so the tape preserves correct provenance.
-
-### Tape shape
-
-Extend `build_tool_step_from_result` to handle N calls:
-
-```elixir
-%{
-  type: :tool_step,
-  assistant_msg: ReqLLM.Context.assistant(Jason.encode!(%{
-    thinking: thinking, actions: actions_log
-  })),
-  tool_results: [ReqLLM.Context.user(batched_results_text)],
-  structured_calls: Enum.map(actions, &{&1.name, Jason.encode!(&1.input)}),
-  tool_calls: [],
-  response_text: nil
-}
-```
-
-Replay sees one assistant turn + one user turn with all results — same
-pattern as `Direct`'s multi-tool_calls single `tool_step`.
-
-### Backward compatibility
-
-Accept both shapes during alignment:
-- `{"action": "bash", "action_input": {...}}` → coerce to
-  `{"actions": [{"name": "bash", "input": {...}}]}` (add repair
-  `:single_action_wrapped`).
-- `{"actions": [...]}` → native.
-
-This lets old prompts/fixtures work unchanged and lets us keep the same
-parser in shadow mode.
-
-### Guardrails
-
-- Max `N` actions per turn (default 5) — cap enforced by alignment,
-  excess dropped with repair log. Prevents runaway fan-out.
-- Actions must be distinct (dedupe by `{name, input}` hash) — same repair.
-- Terminal tools (`finish`, `end_turn`, `create_anchor`, `clear_memory`)
-  must be sole actions, same rule as `final_answer`.
-
-**Deliverable:** multi-action alignment + parallel executor + tape
-builder. All existing `structured_corpus_test.exs` fixtures still pass
-via the single-action wrapping coercion.
+- Run existing test fixtures through `:typed_structured`.
+- A/B comparison on real agent tasks.
+- Monitor telemetry for chronic coercion offenders.
 
 ---
 
-## Phase 8 — Wire into `Rho.Reasoner.Structured`
+## Line count estimate
 
-This is where SAP pays off. Rewrite `parse_action/2` and friends:
+| Component | Current | After | Delta |
+|-----------|---------|-------|-------|
+| `SchemaCoerce` (new) | 0 | ~150 | +150 |
+| `ToolArgs` (extended) | 89 | ~130 | +41 |
+| `ActionSchema` (new) | 0 | ~120 | +120 |
+| `TypedStructured` (new) | 0 | ~200 | +200 |
+| `Runner` (parse-error) | 450 | ~470 | +20 |
+| `TurnStrategy.Structured` | 743 | 743 | 0 (unchanged until Phase 4) |
+| `TurnStrategy.Direct` | 384 | ~388 | +4 |
+| `StructuredOutput` | 537 | 537 | 0 |
+| Tests (new) | 0 | ~400 | +400 |
+| **Total production code delta** | | | **+535 initially, -300 after Phase 4 cleanup** |
 
-### Before
-```elixir
-defp parse_action(text, tool_map) do
-  case parse_json_action(text) do
-    {:ok, action} -> resolve_action(action, tool_map)
-    :miss -> parse_fallback(text, tool_map)
-  end
-end
-```
-
-### After
-```elixir
-defp parse_action(text, action_schema, tool_map) do
-  case Rho.SAP.Parser.parse(text, action_schema, max_cost: 15) do
-    {:ok, %{"action" => name, "action_input" => input}, repairs} ->
-      emit_repairs(repairs)
-      classify_action(name, input, tool_map)
-
-    {:error, _reason} ->
-      {:raw_response, text}
-  end
-end
-```
-
-Changes in `Rho.Reasoner.Structured`:
-
-1. **Build `action_schema` once per turn** in `run/2`:
-   ```elixir
-   action_schema = Rho.SAP.Schema.action_union(tool_defs, final_answer_schema)
-   ```
-
-2. **Delete these functions** (SAP absorbs them):
-   - `parse_json_action/1`
-   - `extract_action_fields/1` → becomes `Align.align` with union schema
-   - `resolve_action/2` → becomes `classify_action/3` (variant already picked)
-   - `resolve_tool_args/3` → alignment handles bare-string coercion
-   - `normalize_args/1` → alignment handles nested-JSON-string decoding
-   - `detect_implicit_tool/1` → dies (domain leak)
-   - `parse_fallback/2`'s code-block branch → moves to an opt-in mount hook or dies
-   - `extract_code_block/1`, `lang_to_tool/1`, `code_tool_args/2` → same
-
-3. **Keep `execute_action/4` single-action for now** — Phase 7.5
-   (multi-action) is deferred. SAP still returns a single aligned
-   action; the execute path stays as-is except for carrying the repair
-   log through.
-
-4. **Drop the re-prompt correction branch** in `{:raw_response, text}` — if
-   SAP returns `:error` after all repair attempts, the input truly is
-   unparseable, and we fall through to a single bounded correction with
-   the repair log attached (so the LLM sees *what* was wrong, not just
-   "please use JSON").
-
-5. **Add per-turn repair telemetry** to the emit stream for the UI:
-   ```elixir
-   emit.(%{type: :sap_repairs, repairs: repairs, cost: cost})
-   ```
-
-6. **No duplicate parse path, no flag.** SAP replaces the old
-   `parse_action` in place. Delete the old functions in the same
-   commit. No `parse_action_v2/parse_action_legacy` pair, no
-   `reasoner_sap` config flag. Git is the rollback. Cross-project
-   lesson from `tao` (Rust): its `run_agent`/`run_agent_streaming`
-   duplication rotted into 90% copy-paste before being unified via a
-   `ToolGetter` trait. Avoid the trap by not forking in the first
-   place.
-
-**Deliverable:** structured reasoner ~40% smaller, no domain heuristics,
-all fallback logic in one place, old path deleted (not deprecated).
+More code initially because we keep both strategies. After validation,
+removing `:structured` yields ~340 lines deleted, bringing net to ~+195
+production lines for significantly better reliability.
 
 ---
 
-## Phase 9 — Synthetic corpus + cost-weight tuning
+## Risk assessment
 
-No production logs exist yet. The corpus is:
-1. Every input already pinned by `test/rho/reasoner/structured_corpus_test.exs`
-   (these cover the failure modes that motivated the current heuristics).
-2. Hand-authored fixtures for each alignment rule in the Phase 4 table
-   — one positive + one negative per rule.
-3. Any LLM output that breaks during dev runs — add as a fixture the
-   moment you hit it.
+| Phase | Risk | Mitigation |
+|-------|------|------------|
+| 1 (SchemaCoerce + pipeline) | Low | Property test confirms no false positives. Telemetry tracks repairs. Rollback = revert 5 call sites to `cast/2`. |
+| 2 (ActionSchema) | Low | New module, not wired in yet. Pure unit tests. Collision detection catches naming issues early. |
+| 3 (Runner + TypedStructured) | Medium | Feature flag: `:typed_structured` vs `:structured`. Old strategy unchanged. Parse-error retry prevents hard crashes. |
+| 4 (Validation) | Low | A/B comparison with metrics, not a blind switch. Alias removal gated on telemetry data. |
+| 5 (response_format) | Low | Provider-specific, fallback for non-supporting providers. |
 
-```
-test/rho/sap/corpus/
-  bare_string_for_list.json
-  nested_json_string_args.json
-  misnamed_keys.json
-  yapping_prefix.json
-  unknown_action_fuzzy_match.json
-  ...
-```
+### Known risks and guardrails
 
-Each fixture: `{input_text, schema_name, expected_value, expected_repairs}`.
-
-Run as a property-style suite; tune cost weights until all fixtures pass
-and no false positives appear on "genuinely garbage" fixtures.
-
-Weights are provisional until real traffic lands. Commit to re-tuning
-once the system sees ≥1000 sessions.
-
-**Deliverable:** `corpus_test.exs` + ≥20 synthetic/dev fixtures.
+| Risk | Guardrail |
+|------|-----------|
+| `nil → ""` bypasses required-field validation | ❌ Blocked: nil on required field → `{:error, :missing_required}` |
+| Arbitrary atom creation from LLM input (BEAM DoS) | ❌ Blocked: no `:atom` coercion. Atoms only via `{:in, [atom_list]}` |
+| Over-liberal object unwrap changes semantics | Strict: known wrapper keys only in `:tool_call` mode |
+| Silent coercion masks bugs | Telemetry on every repair. Both raw and prepared args stored in tape |
+| `respond`/`think` collide with plugin tools | Fail-fast at `ActionSchema.build/1` time |
+| Duplicate tool names silently ignored | Fail-fast at `ActionSchema.build/1` time |
+| Parse failure = hard crash | Runner parse-error retry path (Phase 3) |
+| Removing key aliases regresses real usage | Aliases kept until telemetry shows zero triggers |
 
 ---
 
-## Phase 10 — Validation loop (deferred until real traffic)
+## Success criteria
 
-Deferred. Only build if post-deploy metrics show cases that alignment
-accepts but tools still reject. If after rollout some misalignments
-still slip through:
+1. **Phase 1**: All existing tests pass. SchemaCoerce tests cover every
+   coercion rule. Property test: no false positives. All 5 execution
+   paths produce identical coercion results.
 
-- Add a post-align validator that type-checks the aligned value against
-  the schema a second time.
-- On validation failure, feed the *repair log + validation error* back to
-  the LLM as a structured correction (max 2 attempts per turn).
+2. **Phase 3**: `:typed_structured` strategy handles parse errors
+   gracefully via Runner retry. No hard crashes on malformed output.
 
-Only do this if real traffic shows cases that alignment accepts but tools
-still reject. Don't build it speculatively.
+3. **Phase 4**: Spreadsheet agent on `:typed_structured` completes same
+   tasks with equal or fewer re-prompt cycles than `:structured`. Token
+   usage per turn decreases. Coercion repair telemetry shows which
+   tools/fields benefit most.
 
-### Error classification: retryable vs. terminal
-
-When wiring validation/correction, classify the failure before retrying:
-
-- **SAP `:error` (parse/alignment failure)** → retryable within the
-  correction budget. Feed repair log back to LLM, max 2 attempts/turn.
-- **Tool rejects aligned value** → retryable once with the validation
-  error as feedback.
-- **Context overflow / `max_tokens` / upstream 4xx on prompt size** →
-  NOT retryable. Route to compaction, not correction. A re-prompt with
-  a longer repair log only makes the overflow worse.
-- **Provider 5xx / rate-limit / timeout** → retryable via the existing
-  provider retry layer, not SAP's correction loop.
-
-Cross-project lesson from `tao` (Rust): its `is_retryable_error/1`
-explicitly excludes context-overflow from the retry set because the
-right remediation is compaction, and naive retry amplifies the problem.
-Mirror that distinction in Rho's correction branch.
+4. **Overall**: The structured strategy becomes reliable enough that the
+   improvement-loop-round1.md finding ("structured is unreliable, switch
+   to direct") no longer applies. `:typed_structured` becomes the
+   recommended default for agents needing streaming visibility and
+   visible reasoning. The strict typed protocol ensures every LLM
+   response has a well-defined dispatch path with no ambiguity.
 
 ---
 
-## Testing strategy per phase
+## References
 
-| Phase | Test focus |
-|---|---|
-| 1 | Schema AST construction from every existing tool's `parameter_schema` |
-| 2 | Extraction handles yapping, fenced blocks, brace-scan, merged objects |
-| 3 | Recovery: unquoted keys, JSON comments, control chars |
-| 4 | Every coercion rule in the table has a positive + negative test |
-| 5 | Candidate selection picks lowest cost; hard cap rejects garbage |
-| 6 | End-to-end parse across synthetic fixtures + any dev-run breakage |
-| 7 | List-item events fire per-element mid-stream (skill-framework case); throttle works; cancel mid-stream is clean |
-| 7.5 | Multi-action alignment, backward-compat wrapping, parallel executor, guardrails |
-| 8 | Structured reasoner tests pass unchanged; new tests for SAP integration |
-| 9 | Corpus regression suite pins behavior |
-
-Keep `test/rho/reasoner/structured_corpus_test.exs` green throughout — it's
-the acceptance bar.
-
----
-
-## Rollout sequencing (pre-production)
-
-No flag gate, no shadow mode, no rollback window — we're pre-traffic.
-Git is the rollback.
-
-1. **Phases 0–6** land as a unit: prerequisites + schema + extract +
-   recover + align + score + parser. No wiring into the reasoner yet.
-2. **Phase 8** swaps `parse_action/2` in-place inside
-   `Reasoner.Structured`, deletes the old heuristic functions in the
-   same commit, and updates every fixture in
-   `test/rho/reasoner/structured_corpus_test.exs` to stay green.
-3. **Phase 7** (schema-aware streaming) lands next, driven by the
-   skill/framework list-rendering UX. The `:action_input_list_item`
-   event is the acceptance bar — skills must render one-by-one.
-4. **Phase 9** extends the corpus from existing fixtures + any
-   breakage hit in dev. No production harvest.
-5. **Phases 7.5, 10** stay deferred. Revisit once the system has
-   real usage and we know whether multi-action latency or correction
-   loops are actually load-bearing.
-
-If something regresses in dev: `git revert` the Phase 8 commit, fix
-the alignment rule, re-land. No user-facing risk.
-
----
-
-## Non-goals
-
-- **Not** replacing `ReqLLM.Tool.parameter_schema` keyword format. SAP
-  reads it; tools don't change.
-- **Not** vendoring BAML's Rust parser. Pure Elixir. NIF is a later
-  perf/robustness upgrade if needed — same conclusion as the BAML
-  critique doc.
-- **Not** changing provider adapters or the `Direct` reasoner. SAP is
-  scoped to `Structured` (and any future prompt-based reasoner).
-- **Not** changing the tape/event model beyond adding `:sap_repairs`.
-
----
-
-## Open questions
-
-1. **Fuzzy-variant threshold**: what Levenshtein distance is "obviously a
-   typo for `bash`" vs. "model hallucinated a tool"? Start with distance
-   2 and tune from dev-run breakage. Revisit once there's real traffic.
-2. **Nested-JSON-string decoding depth**: LLMs sometimes produce
-   `action_input: "{\"cmd\":\"ls\"}"`. Decode once. Decoding recursively
-   risks ambiguity — don't.
-3. **`any` schema fields**: some tool params are untyped maps. Align
-   passes them through unchanged. Acceptable?
-4. **Should alignment ever mutate values silently, or always via repair
-   log?** Always via log. No silent coercion. Observability over magic.
+- BoundaryML blog post: https://boundaryml.com/blog/schema-aligned-parsing
+- simplify_baml parser source: `/Users/catethos/workspace/simplify_baml/src/parser.rs`
+- simplify_baml IR: `/Users/catethos/workspace/simplify_baml/src/ir.rs`
+- simplify_baml schema formatter: `/Users/catethos/workspace/simplify_baml/src/schema.rs`
+- Tao agent tools: `/Users/catethos/workspace/tao/crates/tao-core/src/tools.rs`
+- Tao LLM integration: `/Users/catethos/workspace/tao/crates/tao-core/src/llm.rs`
+- GenBAML schema DSL: `/Users/catethos/workspace/ds-agents/.../genbaml/lib/genbaml/schema.ex`
+- GenBAML runtime: `/Users/catethos/workspace/ds-agents/.../genbaml/lib/genbaml/runtime.ex`
+- Rho existing structured strategy: `apps/rho/lib/rho/turn_strategy/structured.ex`
+- Rho existing structured output parser: `apps/rho/lib/rho/structured_output.ex`
+- Rho improvement loop findings: `docs/improvement-loop-round1.md`
+- Previous plan version (v2): git history of this file

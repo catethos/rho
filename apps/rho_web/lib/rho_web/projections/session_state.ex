@@ -707,7 +707,7 @@ defmodule RhoWeb.Projections.SessionState do
 
   defp contains_final_answer?(raw) do
     case Rho.StructuredOutput.parse(raw) do
-      {:ok, %{"action" => "final_answer"}} -> true
+      {:ok, %{"tool" => "respond"}} -> true
       _ -> false
     end
   end
