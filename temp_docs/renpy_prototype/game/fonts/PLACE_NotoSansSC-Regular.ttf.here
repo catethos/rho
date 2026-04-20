@@ -1,0 +1,11 @@
+This folder must contain: NotoSansSC-Regular.ttf
+
+Download Noto Sans SC from either:
+  https://fonts.google.com/noto/specimen/Noto+Sans+SC
+  https://github.com/notofonts/noto-cjk/tree/main/Sans/OTF/SimplifiedChinese
+
+Drop the Regular weight in this folder and rename to NotoSansSC-Regular.ttf if needed.
+Until the file is present, the SC build will display tofu boxes (empty rectangles) instead of Chinese characters.
+
+Verify with: after launching, pick 简体中文 from the main menu. If the first line reads
+"合上笔记本电脑的时候是22:04..." the font is loaded. If it reads as boxes, the file is missing or misnamed.

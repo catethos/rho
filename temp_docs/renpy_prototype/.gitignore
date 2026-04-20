@@ -1,0 +1,20 @@
+# Ren'Py build artifacts
+*.rpyc
+*.rpa
+*.rpymc
+cache/
+saves/
+log.txt
+traceback.txt
+errors.txt
+
+# Ren'Py launcher scratch
+tmp/
+*.bak
+
+# macOS
+.DS_Store
+
+# Build outputs
+/dists/
+/renpy-*/
