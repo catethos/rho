@@ -95,35 +95,20 @@ defmodule RhoFrameworks.Library.Proficiency do
       parent_id = Runtime.lite_parent_id(rt)
       lite_ctx = build_lite_context(rt)
 
+      fanout_opts = %{
+        num_levels: num_levels,
+        table_name: table_name,
+        tools: tools,
+        role_config: role_config,
+        parent_id: parent_id,
+        lite_ctx: lite_ctx
+      }
+
       workers =
         by_category
         |> Enum.with_index()
         |> Enum.map(fn {{category, cat_skills}, idx} ->
-          if idx > 0, do: Process.sleep(@stagger_ms)
-
-          # Build prompt from the original parsed skills (string-keyed maps)
-          # or from DataTable rows (atom-keyed). build_prompt handles both via || fallback.
-          task_prompt =
-            build_prompt(%{
-              category: category,
-              skills: cat_skills,
-              levels: num_levels,
-              table_name: table_name
-            })
-
-          {:ok, agent_id} =
-            Rho.Agent.LiteWorker.start(
-              task: task_prompt,
-              parent_agent_id: parent_id,
-              tools: tools,
-              role: :proficiency_writer,
-              max_steps: Map.get(role_config, :max_steps, 5),
-              context: %{lite_ctx | subagent: true}
-            )
-
-          publish_delegation(rt, agent_id, category, length(cat_skills))
-
-          %{agent_id: agent_id, category: category, count: length(cat_skills)}
+          spawn_category_worker(category, cat_skills, idx, fanout_opts, rt)
         end)
 
       {:ok, %{workers: workers}}
@@ -152,6 +137,32 @@ defmodule RhoFrameworks.Library.Proficiency do
   # -------------------------------------------------------------------
 
   # Build a minimal Rho.Context for LiteWorker compatibility.
+  defp spawn_category_worker(category, cat_skills, idx, opts, rt) do
+    if idx > 0, do: Process.sleep(@stagger_ms)
+
+    task_prompt =
+      build_prompt(%{
+        category: category,
+        skills: cat_skills,
+        levels: opts.num_levels,
+        table_name: opts.table_name
+      })
+
+    {:ok, agent_id} =
+      Rho.Agent.LiteWorker.start(
+        task: task_prompt,
+        parent_agent_id: opts.parent_id,
+        tools: opts.tools,
+        role: :proficiency_writer,
+        max_steps: Map.get(opts.role_config, :max_steps, 5),
+        context: %{opts.lite_ctx | subagent: true}
+      )
+
+    publish_delegation(rt, agent_id, category, length(cat_skills))
+
+    %{agent_id: agent_id, category: category, count: length(cat_skills)}
+  end
+
   # LiteWorker uses session_id for event publishing and agent_name for
   # config lookup.
   defp build_lite_context(%Runtime{} = rt) do

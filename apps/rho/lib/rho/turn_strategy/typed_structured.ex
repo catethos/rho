@@ -52,10 +52,7 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
         case ActionSchema.parse_and_dispatch(text, schema, runtime.tool_map) do
           {:respond, message, opts} ->
-            if thinking = opts[:thinking] do
-              emit.(%{type: :llm_text, text: thinking})
-            end
-
+            maybe_emit_thinking(opts, emit)
             {:done, %{type: :response, text: message}}
 
           {:think, thought} ->
@@ -63,10 +60,7 @@ defmodule Rho.TurnStrategy.TypedStructured do
             {:continue, build_think_step(thought)}
 
           {:tool, name, args, _tool_def, opts} ->
-            if thinking = opts[:thinking] do
-              emit.(%{type: :llm_text, text: thinking})
-            end
-
+            maybe_emit_thinking(opts, emit)
             execute_tool(name, args, runtime.tool_map, runtime)
 
           {:unknown, name, _args} ->
@@ -382,6 +376,12 @@ defmodule Rho.TurnStrategy.TypedStructured do
       structured_calls: [],
       response_text: nil
     }
+  end
+
+  defp maybe_emit_thinking(opts, emit) do
+    if thinking = opts[:thinking] do
+      emit.(%{type: :llm_text, text: thinking})
+    end
   end
 
   # --- Stream metadata ---

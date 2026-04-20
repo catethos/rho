@@ -425,9 +425,9 @@ defmodule RhoFrameworks.Tools.LibraryTools do
             {:ok, %{conflicts: [], stats: stats} = preview} ->
               # No conflicts — return preview for user approval
               source_summary =
-                preview.sources
-                |> Enum.map(fn s -> "#{s.name} (#{s.skill_count} skills)" end)
-                |> Enum.join(" + ")
+                Enum.map_join(preview.sources, " + ", fn s ->
+                  "#{s.name} (#{s.skill_count} skills)"
+                end)
 
               {:ok,
                "Preview: #{source_summary} → '#{new_name}'. #{stats.total} skills, no conflicts."}
@@ -465,9 +465,9 @@ defmodule RhoFrameworks.Tools.LibraryTools do
                 )
 
               source_summary =
-                preview.sources
-                |> Enum.map(fn s -> "#{s.name} (#{s.skill_count} skills)" end)
-                |> Enum.join(" + ")
+                Enum.map_join(preview.sources, " + ", fn s ->
+                  "#{s.name} (#{s.skill_count} skills)"
+                end)
 
               %Rho.ToolResponse{
                 text:
@@ -506,35 +506,36 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     )
 
     run(fn args, ctx ->
-      with {:ok, ids} when is_list(ids) and ids != [] <-
-             Jason.decode(args[:source_library_ids_json] || "[]") do
-        resolutions = resolve_resolutions(args[:resolutions_json], ctx.session_id)
-        opts = maybe_opt([], :description, args[:description])
+      case Jason.decode(args[:source_library_ids_json] || "[]") do
+        {:ok, ids} when is_list(ids) and ids != [] ->
+          resolutions = resolve_resolutions(args[:resolutions_json], ctx.session_id)
+          opts = maybe_opt([], :description, args[:description])
 
-        unresolved =
-          Enum.count(resolutions, fn r -> r["action"] in [nil, "", "unresolved"] end)
+          unresolved =
+            Enum.count(resolutions, fn r -> r["action"] in [nil, "", "unresolved"] end)
 
-        if unresolved > 0 do
-          {:error,
-           "#{unresolved} conflict(s) still unresolved. " <>
-             "Resolve all conflicts in the Skills Editor panel before committing."}
-        else
-          case Library.combine_commit(
-                 ctx.organization_id,
-                 ids,
-                 args[:new_name],
-                 resolutions,
-                 opts
-               ) do
-            {:ok, %{library: lib, skill_count: count}} ->
-              {:ok, "Created '#{lib.name}' (#{lib.id}) — #{count} skills."}
+          if unresolved > 0 do
+            {:error,
+             "#{unresolved} conflict(s) still unresolved. " <>
+               "Resolve all conflicts in the Skills Editor panel before committing."}
+          else
+            case Library.combine_commit(
+                   ctx.organization_id,
+                   ids,
+                   args[:new_name],
+                   resolutions,
+                   opts
+                 ) do
+              {:ok, %{library: lib, skill_count: count}} ->
+                {:ok, "Created '#{lib.name}' (#{lib.id}) — #{count} skills."}
 
-            {:error, reason} ->
-              {:error, "Combine commit failed: #{inspect(reason)}"}
+              {:error, reason} ->
+                {:error, "Combine commit failed: #{inspect(reason)}"}
+            end
           end
-        end
-      else
-        _ -> {:error, "Invalid source_library_ids_json."}
+
+        _ ->
+          {:error, "Invalid source_library_ids_json."}
       end
     end)
   end
@@ -554,28 +555,28 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   defp read_resolutions_from_table(session_id) do
     case DataTable.get_rows(session_id, table: "combine_preview") do
       {:ok, rows} ->
-        Enum.map(rows, fn row ->
-          resolution = get_in_row(row, :resolution)
-
-          {action, keep} =
-            case resolution do
-              "merge_a" -> {"merge", get_in_row(row, :skill_a_id)}
-              "merge_b" -> {"merge", get_in_row(row, :skill_b_id)}
-              "keep_both" -> {"keep_both", nil}
-              _ -> {"unresolved", nil}
-            end
-
-          %{
-            "skill_a_id" => get_in_row(row, :skill_a_id),
-            "skill_b_id" => get_in_row(row, :skill_b_id),
-            "action" => action,
-            "keep" => keep
-          }
-        end)
+        Enum.map(rows, &parse_resolution_row/1)
 
       _ ->
         []
     end
+  end
+
+  defp parse_resolution_row(row) do
+    {action, keep} =
+      case get_in_row(row, :resolution) do
+        "merge_a" -> {"merge", get_in_row(row, :skill_a_id)}
+        "merge_b" -> {"merge", get_in_row(row, :skill_b_id)}
+        "keep_both" -> {"keep_both", nil}
+        _ -> {"unresolved", nil}
+      end
+
+    %{
+      "skill_a_id" => get_in_row(row, :skill_a_id),
+      "skill_b_id" => get_in_row(row, :skill_b_id),
+      "action" => action,
+      "keep" => keep
+    }
   end
 
   defp get_in_row(row, key) when is_atom(key) do

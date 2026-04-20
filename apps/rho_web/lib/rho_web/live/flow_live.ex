@@ -527,13 +527,12 @@ defmodule RhoWeb.FlowLive do
 
   defp format_seed_skills(roles) when is_list(roles) do
     roles
-    |> Enum.map(fn role ->
+    |> Enum.map_join("\n", fn role ->
       name = role[:name] || role["name"] || "Unknown"
       family = role[:role_family] || role["role_family"] || ""
       count = role[:skill_count] || role["skill_count"] || 0
       "- #{name} (#{family}, #{count} skills)"
     end)
-    |> Enum.join("\n")
   end
 
   defp derive_table_name(intake) do
@@ -612,20 +611,7 @@ defmodule RhoWeb.FlowLive do
 
       # Fan-out workers
       socket.assigns.workers != [] ->
-        updated =
-          Enum.map(socket.assigns.workers, fn w ->
-            if w.agent_id == agent_id, do: %{w | status: :completed}, else: w
-          end)
-
-        socket = assign(socket, :workers, updated)
-
-        if Enum.all?(updated, fn w -> w.status == :completed end) do
-          socket
-          |> assign(:step_status, :completed)
-          |> refresh_data_table()
-        else
-          socket
-        end
+        mark_worker_completed(socket, agent_id)
 
       true ->
         Logger.debug(
@@ -634,6 +620,23 @@ defmodule RhoWeb.FlowLive do
         )
 
         socket
+    end
+  end
+
+  defp mark_worker_completed(socket, agent_id) do
+    updated =
+      Enum.map(socket.assigns.workers, fn w ->
+        if w.agent_id == agent_id, do: %{w | status: :completed}, else: w
+      end)
+
+    socket = assign(socket, :workers, updated)
+
+    if Enum.all?(updated, fn w -> w.status == :completed end) do
+      socket
+      |> assign(:step_status, :completed)
+      |> refresh_data_table()
+    else
+      socket
     end
   end
 
@@ -713,15 +716,7 @@ defmodule RhoWeb.FlowLive do
   # -------------------------------------------------------------------
 
   defp find_library_by_name(org_id, name) do
-    import Ecto.Query, only: [from: 2]
-
-    RhoFrameworks.Repo.one(
-      from(l in RhoFrameworks.Frameworks.Library,
-        where: l.organization_id == ^org_id and l.name == ^name,
-        order_by: [desc: l.inserted_at],
-        limit: 1
-      )
-    )
+    RhoFrameworks.Library.get_library_by_name(org_id, name)
   end
 
   defp flow_table_name(step_results) do

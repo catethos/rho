@@ -265,7 +265,7 @@ defmodule RhoWeb.PrismLiveTest do
 
       assert socket.assigns.profile.name == "Data Engineer"
       assert socket.assigns.profile.purpose == "Build data pipelines"
-      assert length(socket.assigns.role_skills) > 0
+      assert socket.assigns.role_skills != []
       assert socket.assigns.active_page == :roles
     end
 

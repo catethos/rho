@@ -137,37 +137,36 @@ defmodule Rho.TurnStrategy.Direct do
         throw({:rho_transformer_halt, reason})
 
       {:cont, %{args: new_args}} ->
-        if tool_def do
-          case Rho.ToolArgs.prepare(new_args, tool_def.tool.parameter_schema) do
-            {:ok, prepared_args, _repairs} ->
-              call = %{name: name, args: prepared_args, call_id: call_id}
+        prepare_and_execute(tool_def, new_args, ctx, name, call_id)
+    end
+  end
 
-              task =
-                Task.async(fn ->
-                  execute_tool_def(tool_def, prepared_args, ctx, name, call_id)
-                end)
+  defp prepare_and_execute(nil, args, ctx, name, call_id) do
+    call = %{name: name, args: args, call_id: call_id}
+    task = Task.async(fn -> execute_tool_def(nil, args, ctx, name, call_id) end)
+    {task, call, nil, nil}
+  end
 
-              {task, call, nil, nil}
+  defp prepare_and_execute(tool_def, args, ctx, name, call_id) do
+    case Rho.ToolArgs.prepare(args, tool_def.tool.parameter_schema) do
+      {:ok, prepared_args, _repairs} ->
+        call = %{name: name, args: prepared_args, call_id: call_id}
+        task = Task.async(fn -> execute_tool_def(tool_def, prepared_args, ctx, name, call_id) end)
+        {task, call, nil, nil}
 
-            {:error, reason} ->
-              error_str = "Error: arg preparation failed: #{inspect(reason)}"
+      {:error, reason} ->
+        error_str = "Error: arg preparation failed: #{inspect(reason)}"
 
-              {nil, %{name: name, args: new_args, call_id: call_id}, error_str,
-               %{
-                 type: :tool_result,
-                 name: name,
-                 status: :error,
-                 output: error_str,
-                 call_id: call_id,
-                 latency_ms: 0,
-                 error_type: :arg_error
-               }}
-          end
-        else
-          call = %{name: name, args: new_args, call_id: call_id}
-          task = Task.async(fn -> execute_tool_def(nil, new_args, ctx, name, call_id) end)
-          {task, call, nil, nil}
-        end
+        {nil, %{name: name, args: args, call_id: call_id}, error_str,
+         %{
+           type: :tool_result,
+           name: name,
+           status: :error,
+           output: error_str,
+           call_id: call_id,
+           latency_ms: 0,
+           error_type: :arg_error
+         }}
     end
   end
 

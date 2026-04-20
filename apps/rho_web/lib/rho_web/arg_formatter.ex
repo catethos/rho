@@ -21,22 +21,32 @@ defmodule RhoWeb.ArgFormatter do
   @spec extract_inner_json(map()) :: {[{String.t(), String.t(), String.t()}], map()}
   def extract_inner_json(args) when is_map(args) do
     Enum.reduce(args, {[], %{}}, fn {k, v}, {parts, rest} ->
-      k_str = to_string(k)
-
-      if inner_json_key?(k_str) and is_binary(v) do
-        case Rho.Parse.Lenient.parse(v) do
-          {:ok, decoded} ->
-            label = inner_json_label(k_str)
-            pretty = Jason.encode!(decoded, pretty: true)
-            {parts ++ [{label, pretty, "json"}], rest}
-
-          _ ->
-            {parts, Map.put(rest, k, v)}
-        end
-      else
-        {parts, Map.put(rest, k, v)}
-      end
+      classify_arg(to_string(k), k, v, parts, rest)
     end)
+  end
+
+  defp classify_arg(k_str, k, v, parts, rest) when is_binary(v) do
+    if inner_json_key?(k_str) do
+      try_extract_json(k_str, k, v, parts, rest)
+    else
+      {parts, Map.put(rest, k, v)}
+    end
+  end
+
+  defp classify_arg(_k_str, k, v, parts, rest) do
+    {parts, Map.put(rest, k, v)}
+  end
+
+  defp try_extract_json(k_str, k, v, parts, rest) do
+    case Rho.Parse.Lenient.parse(v) do
+      {:ok, decoded} ->
+        label = inner_json_label(k_str)
+        pretty = Jason.encode!(decoded, pretty: true)
+        {parts ++ [{label, pretty, "json"}], rest}
+
+      _ ->
+        {parts, Map.put(rest, k, v)}
+    end
   end
 
   @doc "Returns true if a key name is eligible for inner-JSON extraction."

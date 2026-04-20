@@ -26,8 +26,8 @@ defmodule RhoFrameworks.SkeletonGenerator do
   """
   @spec generate(map(), Runtime.t()) :: {:ok, %{agent_id: String.t()}} | {:error, term()}
   def generate(params, %Runtime{} = rt) do
-    name = params[:name] || params["name"] || ""
-    description = params[:description] || params["description"] || ""
+    name = params[:name] || ""
+    description = params[:description] || ""
 
     config = Rho.Config.agent_config(:spreadsheet)
     parent_id = Runtime.lite_parent_id(rt)
@@ -52,7 +52,7 @@ defmodule RhoFrameworks.SkeletonGenerator do
   end
 
   defp skill_count_range(params) do
-    count = to_int(params[:skill_count] || params["skill_count"], 12)
+    count = to_int(params[:skill_count], 12)
     # Allow ±4 around the target for LLM flexibility
     lo = max(count - 4, 5)
     hi = count + 4
@@ -71,26 +71,7 @@ defmodule RhoFrameworks.SkeletonGenerator do
   defp to_int(_, default), do: default
 
   defp build_task_prompt(name, description, skill_range, params) do
-    domain = params[:domain] || params["domain"]
-    target_roles = params[:target_roles] || params["target_roles"]
-    seed_skills = params[:similar_role_skills] || params["similar_role_skills"]
-
-    context_lines =
-      [
-        if(domain && domain != "", do: "Domain: #{domain}"),
-        if(target_roles && target_roles != "", do: "Target roles: #{target_roles}"),
-        if(seed_skills && seed_skills != "",
-          do: "Seed context from similar roles:\n#{seed_skills}"
-        )
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    context_block =
-      if context_lines != [] do
-        "\n" <> Enum.join(context_lines, "\n") <> "\n"
-      else
-        ""
-      end
+    context_block = format_context_block(params)
 
     """
     Create a skill framework called "#{name}".
@@ -107,6 +88,23 @@ defmodule RhoFrameworks.SkeletonGenerator do
     """
   end
 
+  defp format_context_block(params) do
+    lines =
+      [
+        format_param(params, :domain, "Domain: "),
+        format_param(params, :target_roles, "Target roles: "),
+        format_param(params, :similar_role_skills, "Seed context from similar roles:\n")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if lines == [], do: "", else: "\n" <> Enum.join(lines, "\n") <> "\n"
+  end
+
+  defp format_param(params, key, prefix) do
+    value = params[key] || params[Atom.to_string(key)]
+    if is_binary(value) and value != "", do: prefix <> value
+  end
+
   @doc """
   Returns tool_defs available to the skeleton generator LiteWorker.
   """
@@ -121,8 +119,6 @@ defmodule RhoFrameworks.SkeletonGenerator do
   end
 
   defp save_skeletons_tool do
-    alias RhoFrameworks.Library.{Editor, Skeletons}
-
     %{
       tool:
         ReqLLM.tool(
@@ -137,43 +133,50 @@ defmodule RhoFrameworks.SkeletonGenerator do
           ],
           callback: fn _ -> :ok end
         ),
-      execute: fn args, ctx ->
-        raw = MapAccess.get(args, :skills_json, [])
-        skills = if is_binary(raw), do: elem(Jason.decode(raw), 1), else: raw
-        library_name = MapAccess.get(args, :library_name, nil)
-
-        if is_nil(library_name) or library_name == "" do
-          {:error, "library_name is required. Pass the exact name used in create_library."}
-        else
-          table_name = Editor.table_name(library_name)
-          rows = Skeletons.to_rows(skills)
-
-          with {:ok, %{count: count}} <-
-                 Editor.append_rows(
-                   %{table_name: table_name, rows: rows},
-                   Runtime.from_rho_context(ctx)
-                 ) do
-            {:ok, "Saved #{count} skill skeleton(s) to table '#{table_name}'."}
-          else
-            {:error, :empty_list} ->
-              {:error, "No valid data. Ensure skills_json is a non-empty JSON array."}
-
-            {:error, {:json_decode, _}} ->
-              {:error, "Invalid JSON. Ensure skills_json is a valid JSON array."}
-
-            {:error, {:missing_required_keys, _keys, _count}} ->
-              {:error, "Each skill needs at least category and skill_name."}
-
-            {:error, {:not_running, _}} ->
-              {:error,
-               "Table not found. You must call create_library first before save_skeletons."}
-
-            {:error, reason} ->
-              {:error, "Failed: #{inspect(reason)}"}
-          end
-        end
-      end
+      execute: &execute_save_skeletons/2
     }
+  end
+
+  defp execute_save_skeletons(args, ctx) do
+    raw = MapAccess.get(args, :skills_json, [])
+    skills = if is_binary(raw), do: elem(Jason.decode(raw), 1), else: raw
+    library_name = MapAccess.get(args, :library_name, nil)
+
+    if is_nil(library_name) or library_name == "" do
+      {:error, "library_name is required. Pass the exact name used in create_library."}
+    else
+      save_skills_to_table(library_name, skills, ctx)
+    end
+  end
+
+  defp save_skills_to_table(library_name, skills, ctx) do
+    alias RhoFrameworks.Library.{Editor, Skeletons}
+
+    table_name = Editor.table_name(library_name)
+    rows = Skeletons.to_rows(skills)
+
+    case Editor.append_rows(
+           %{table_name: table_name, rows: rows},
+           Runtime.from_rho_context(ctx)
+         ) do
+      {:ok, %{count: count}} ->
+        {:ok, "Saved #{count} skill skeleton(s) to table '#{table_name}'."}
+
+      {:error, :empty_list} ->
+        {:error, "No valid data. Ensure skills_json is a non-empty JSON array."}
+
+      {:error, {:json_decode, _}} ->
+        {:error, "Invalid JSON. Ensure skills_json is a valid JSON array."}
+
+      {:error, {:missing_required_keys, _keys, _count}} ->
+        {:error, "Each skill needs at least category and skill_name."}
+
+      {:error, {:not_running, _}} ->
+        {:error, "Table not found. You must call create_library first before save_skeletons."}
+
+      {:error, reason} ->
+        {:error, "Failed: #{inspect(reason)}"}
+    end
   end
 
   defp build_lite_context(%Runtime{} = rt) do

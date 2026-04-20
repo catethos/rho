@@ -116,30 +116,29 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
 
   defp compute_axis_averages(scores, lens) do
     axes = lens[:axes] || lens["axes"] || []
+    Enum.map(axes, fn axis -> compute_single_axis_average(axis, scores) end)
+  end
 
-    Enum.map(axes, fn axis ->
-      name = axis[:name] || axis["name"]
-      short_name = axis[:short_name] || axis["short_name"]
-      sort_order = axis[:sort_order] || axis["sort_order"]
+  defp compute_single_axis_average(axis, scores) do
+    name = axis[:name] || axis["name"]
+    short_name = axis[:short_name] || axis["short_name"]
+    sort_order = axis[:sort_order] || axis["sort_order"]
 
-      composites =
-        scores
-        |> Enum.flat_map(fn s ->
-          score_axes = s[:axes] || s["axes"] || []
+    composites = collect_composites_for_axis(scores, sort_order)
 
-          score_axes
-          |> Enum.filter(fn a ->
-            (a[:sort_order] || a["sort_order"]) == sort_order
-          end)
-          |> Enum.map(fn a -> a[:composite] || a["composite"] || 0.0 end)
-        end)
+    avg =
+      if composites == [],
+        do: 0.0,
+        else: Float.round(Enum.sum(composites) / length(composites), 1)
 
-      avg =
-        if composites == [],
-          do: 0.0,
-          else: Float.round(Enum.sum(composites) / length(composites), 1)
+    %{axis_name: name, short_name: short_name, average: avg}
+  end
 
-      %{axis_name: name, short_name: short_name, average: avg}
+  defp collect_composites_for_axis(scores, sort_order) do
+    Enum.flat_map(scores, fn s ->
+      (s[:axes] || s["axes"] || [])
+      |> Enum.filter(fn a -> (a[:sort_order] || a["sort_order"]) == sort_order end)
+      |> Enum.map(fn a -> a[:composite] || a["composite"] || 0.0 end)
     end)
   end
 end

@@ -51,14 +51,12 @@ defmodule RhoWeb.OrgMembersLive do
         {:error, :user_not_found} ->
           {:noreply, assign(socket, :invite_error, "No user found with that email.")}
 
-        {:error, changeset} ->
-          msg =
-            case changeset do
-              %Ecto.Changeset{} -> "Could not add member. They may already be a member."
-              _ -> "Could not add member."
-            end
+        {:error, %Ecto.Changeset{}} ->
+          {:noreply,
+           assign(socket, :invite_error, "Could not add member. They may already be a member.")}
 
-          {:noreply, assign(socket, :invite_error, msg)}
+        {:error, _} ->
+          {:noreply, assign(socket, :invite_error, "Could not add member.")}
       end
     end
   end

@@ -102,7 +102,7 @@ defmodule RhoWeb.SessionLive.LayoutComponents do
           <span :if={Map.has_key?(@inflight, agent_id)} class="tab-typing">...</span>
         </button>
         <button
-          :if={!is_primary_tab?(agent_id)}
+          :if={!primary_tab?(agent_id)}
           class="tab-close-btn"
           phx-click="remove_agent"
           phx-value-agent-id={agent_id}
@@ -367,14 +367,7 @@ defmodule RhoWeb.SessionLive.LayoutComponents do
 
         {options, _seen} =
           Enum.zip(infos, labels)
-          |> Enum.map_reduce(%{}, fn {info, label}, seen ->
-            if counts[label] > 1 do
-              idx = Map.get(seen, label, 0) + 1
-              {{info.agent_id, "#{label} ##{idx}"}, Map.put(seen, label, idx)}
-            else
-              {{info.agent_id, label}, seen}
-            end
-          end)
+          |> Enum.map_reduce(%{}, &disambiguate_label(&1, &2, counts))
 
         options
       else
@@ -517,7 +510,7 @@ defmodule RhoWeb.SessionLive.LayoutComponents do
     end
   end
 
-  defp is_primary_tab?(agent_id) do
+  defp primary_tab?(agent_id) do
     case String.split(agent_id, "/") do
       [_sid, "primary"] -> true
       _ -> false
@@ -532,6 +525,15 @@ defmodule RhoWeb.SessionLive.LayoutComponents do
       [_sid, "primary"] -> "primary"
       [_sid, "primary" | rest] -> List.last(rest) || to_string(name)
       _ -> to_string(name)
+    end
+  end
+
+  defp disambiguate_label({info, label}, seen, counts) do
+    if counts[label] > 1 do
+      idx = Map.get(seen, label, 0) + 1
+      {{info.agent_id, "#{label} ##{idx}"}, Map.put(seen, label, idx)}
+    else
+      {{info.agent_id, label}, seen}
     end
   end
 

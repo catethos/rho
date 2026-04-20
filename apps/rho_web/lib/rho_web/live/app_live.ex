@@ -188,11 +188,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:skills, skills)
       |> assign(:grouped, grouped)
       |> assign(:highlight_skill, params["skill"])
-      |> then(fn s ->
-        if params["skill"],
-          do: push_event(s, "scroll_to_skill", %{skill_id: params["skill"]}),
-          else: s
-      end)
+      |> maybe_scroll_to_skill(params["skill"])
       |> assign_new(:status_filter, fn -> nil end)
       |> assign_new(:show_fork_modal, fn -> false end)
       |> assign_new(:fork_name, fn -> "" end)
@@ -229,9 +225,7 @@ defmodule RhoWeb.AppLive do
     if connected?(socket) && id do
       org = socket.assigns.current_organization
 
-      rp =
-        RhoFrameworks.Roles.get_visible_role_profile!(org.id, id)
-        |> RhoFrameworks.Repo.preload(role_skills: :skill)
+      rp = RhoFrameworks.Roles.get_visible_role_profile_with_skills!(org.id, id)
 
       role_skills_grouped = group_role_skills(rp.role_skills)
       assign(socket, profile: rp, role_skills_grouped: role_skills_grouped)
@@ -281,6 +275,12 @@ defmodule RhoWeb.AppLive do
 
   defp apply_page(socket, _page, _params), do: socket
 
+  defp maybe_scroll_to_skill(socket, nil), do: socket
+
+  defp maybe_scroll_to_skill(socket, skill_id) do
+    push_event(socket, "scroll_to_skill", %{skill_id: skill_id})
+  end
+
   # ── Page cleanup on navigation ─────────────────────────────────────
 
   defp cleanup_previous_page(socket, new_page) do
@@ -291,16 +291,7 @@ defmodule RhoWeb.AppLive do
     else
       case prev do
         :libraries ->
-          # Clean up chat overlay subscriptions if any
-          for sub <- socket.assigns[:bus_subs] || [] do
-            Rho.Comms.unsubscribe(sub)
-          end
-
-          socket
-          |> assign(:libraries, nil)
-          |> assign(:chat_overlay_open, false)
-          |> assign(:overlay_session_id, nil)
-          |> assign(:bus_subs, [])
+          cleanup_libraries_page(socket)
 
         :library_show ->
           socket
@@ -334,6 +325,18 @@ defmodule RhoWeb.AppLive do
           socket
       end
     end
+  end
+
+  defp cleanup_libraries_page(socket) do
+    for sub <- socket.assigns[:bus_subs] || [] do
+      Rho.Comms.unsubscribe(sub)
+    end
+
+    socket
+    |> assign(:libraries, nil)
+    |> assign(:chat_overlay_open, false)
+    |> assign(:overlay_session_id, nil)
+    |> assign(:bus_subs, [])
   end
 
   # ── Render ─────────────────────────────────────────────────────────
@@ -1279,21 +1282,8 @@ defmodule RhoWeb.AppLive do
 
       _ = sid
 
-      submit_content =
-        if has_images do
-          parts = if has_text, do: [ReqLLM.Message.ContentPart.text(content)], else: []
-          parts ++ image_parts
-        else
-          content
-        end
-
-      display_text =
-        if has_images do
-          img_label = "#{length(image_parts)} image#{if length(image_parts) > 1, do: "s"}"
-          if has_text, do: "#{content}\n[#{img_label} attached]", else: "[#{img_label} attached]"
-        else
-          content
-        end
+      submit_content = build_submit_content(content, image_parts, has_text)
+      display_text = build_display_text(content, image_parts, has_text)
 
       SessionCore.send_message(socket, display_text, submit_content: submit_content)
     end
@@ -1415,28 +1405,7 @@ defmodule RhoWeb.AppLive do
   end
 
   def handle_event("validate_upload", _params, socket) do
-    socket =
-      if socket.assigns.uploads.avatar.entries != [] do
-        entries = socket.assigns.uploads.avatar.entries
-        entry = List.first(entries)
-
-        if entry && entry.done? do
-          [{binary, media_type}] =
-            consume_uploaded_entries(socket, :avatar, fn %{path: path}, entry ->
-              {:ok, {File.read!(path), entry.client_type || "image/png"}}
-            end)
-
-          SessionCore.save_avatar(binary, media_type)
-          data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
-          assign(socket, :user_avatar, data_uri)
-        else
-          socket
-        end
-      else
-        socket
-      end
-
-    {:noreply, socket}
+    {:noreply, maybe_consume_avatar(socket)}
   end
 
   def handle_event("cancel_upload", %{"ref" => ref}, socket) do
@@ -1525,29 +1494,8 @@ defmodule RhoWeb.AppLive do
             {:noreply, socket}
 
           ws_mod ->
-            shell =
-              socket.assigns.shell
-              |> Shell.add_workspace(key)
-              |> Shell.show_chat()
-
-            socket =
-              socket
-              |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
-              |> assign(
-                :ws_states,
-                Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
-              )
-              |> assign(:active_workspace_id, key)
-              |> assign(:shell, shell)
-
-            socket =
-              if socket.assigns.session_id do
-                hydrate_workspace(socket, socket.assigns.session_id, key, ws_mod)
-              else
-                socket
-              end
-
-            {:noreply, socket}
+            socket = init_workspace(socket, key, ws_mod)
+            {:noreply, maybe_hydrate_workspace(socket, key, ws_mod)}
         end
     end
   end
@@ -1790,33 +1738,16 @@ defmodule RhoWeb.AppLive do
     {:noreply, socket}
   end
 
-  # ── Events — Libraries page ───────────────────────────────────────
+  # ── Events — Libraries & Library Show pages (delegated) ───────────
 
-  def handle_event("set_default_version", %{"id" => id}, socket) do
-    org = socket.assigns.current_organization
+  @library_events ~w(
+    set_default_version delete_library set_default_version_from_show
+    filter_status open_fork_modal close_fork_modal update_fork_name
+    submit_fork show_diff hide_diff
+  )
 
-    case RhoFrameworks.Library.set_default_version(org.id, id) do
-      {:ok, lib} ->
-        libraries = RhoFrameworks.Library.list_libraries(org.id)
-
-        {:noreply,
-         socket
-         |> put_flash(:info, "Set v#{lib.version} as default for \"#{lib.name}\"")
-         |> assign(libraries: libraries, library_groups: group_libraries(libraries))}
-
-      {:error, :not_published, msg} ->
-        {:noreply, put_flash(socket, :error, msg)}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to set default version")}
-    end
-  end
-
-  def handle_event("delete_library", %{"id" => id}, socket) do
-    org = socket.assigns.current_organization
-    RhoFrameworks.Library.delete_library(org.id, id)
-    libraries = RhoFrameworks.Library.list_libraries(org.id)
-    {:noreply, assign(socket, libraries: libraries, library_groups: group_libraries(libraries))}
+  def handle_event(event, params, socket) when event in @library_events do
+    RhoWeb.AppLive.LibraryEvents.handle_event(event, params, socket)
   end
 
   def handle_event("open_chat_overlay", _params, socket) do
@@ -1827,247 +1758,38 @@ defmodule RhoWeb.AppLive do
     {:noreply, close_overlay(socket)}
   end
 
-  # ── Events — Library Show page ─────────────────────────────────────
+  # ── Events — Roles & Settings pages (delegated) ──────────────────
 
-  def handle_event("set_default_version_from_show", %{"id" => id}, socket) do
-    org = socket.assigns.current_organization
+  @settings_events ~w(delete_role save_org save_profile delete_org)
 
-    case RhoFrameworks.Library.set_default_version(org.id, id) do
-      {:ok, lib} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Set v#{lib.version} as default for \"#{lib.name}\"")
-         |> assign(:library, lib)}
-
-      {:error, :not_published, msg} ->
-        {:noreply, put_flash(socket, :error, msg)}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to set default version")}
-    end
+  def handle_event(event, params, socket) when event in @settings_events do
+    RhoWeb.AppLive.SettingsEvents.handle_event(event, params, socket)
   end
 
-  def handle_event("filter_status", %{"status" => status}, socket) do
-    status = if status == "", do: nil, else: status
-    opts = if status, do: [status: status], else: []
-    skills = RhoFrameworks.Library.browse_library(socket.assigns.library.id, opts)
+  # ── Events — Members page (delegated) ────────────────────────────
 
-    {:noreply,
-     assign(socket, skills: skills, grouped: group_skills(skills), status_filter: status)}
+  @member_events ~w(invite change_role remove_member transfer_ownership)
+
+  def handle_event(event, params, socket) when event in @member_events do
+    RhoWeb.AppLive.MemberEvents.handle_event(event, params, socket)
   end
 
-  def handle_event("open_fork_modal", _params, socket) do
-    default_name = "#{socket.assigns.library.name} (Custom)"
-    {:noreply, assign(socket, show_fork_modal: true, fork_name: default_name)}
-  end
+  # ── Private event helpers ─────────────────────────────────────────
 
-  def handle_event("close_fork_modal", _params, socket) do
-    {:noreply, assign(socket, show_fork_modal: false)}
-  end
+  defp maybe_consume_avatar(socket) do
+    entry = List.first(socket.assigns.uploads.avatar.entries)
 
-  def handle_event("update_fork_name", %{"fork_name" => name}, socket) do
-    {:noreply, assign(socket, fork_name: name)}
-  end
+    if entry && entry.done? do
+      [{binary, media_type}] =
+        consume_uploaded_entries(socket, :avatar, fn %{path: path}, entry ->
+          {:ok, {File.read!(path), entry.client_type || "image/png"}}
+        end)
 
-  def handle_event("submit_fork", %{"fork_name" => name}, socket) do
-    org = socket.assigns.current_organization
-    lib = socket.assigns.library
-
-    try do
-      case RhoFrameworks.Library.fork_library(org.id, lib.id, String.trim(name)) do
-        {:ok, %{library: forked}} ->
-          {:noreply,
-           socket
-           |> assign(:show_fork_modal, false)
-           |> put_flash(:info, "Forked \"#{lib.name}\" → \"#{forked.name}\"")
-           |> push_patch(to: ~p"/orgs/#{org.slug}/libraries/#{forked.id}")}
-
-        {:error, _step, reason, _changes} ->
-          {:noreply, put_flash(socket, :error, "Fork failed: #{inspect(reason)}")}
-      end
-    rescue
-      Ecto.NoResultsError ->
-        {:noreply, put_flash(socket, :error, "Cannot fork: library not found or not accessible.")}
-    end
-  end
-
-  def handle_event("show_diff", _params, socket) do
-    org = socket.assigns.current_organization
-    lib = socket.assigns.library
-
-    case RhoFrameworks.Library.diff_against_source(org.id, lib.id) do
-      {:ok, diff} ->
-        {:noreply, assign(socket, show_diff: true, diff_result: diff)}
-
-      {:error, _code, message} ->
-        {:noreply, put_flash(socket, :error, message)}
-    end
-  end
-
-  def handle_event("hide_diff", _params, socket) do
-    {:noreply, assign(socket, show_diff: false, diff_result: nil)}
-  end
-
-  # ── Events — Roles page ───────────────────────────────────────────
-
-  def handle_event("delete_role", %{"name" => name}, socket) do
-    org = socket.assigns.current_organization
-    RhoFrameworks.Roles.delete_role_profile(org.id, name)
-    profiles = RhoFrameworks.Roles.list_role_profiles(org.id)
-    {:noreply, assign(socket, profiles: profiles, role_grouped: group_roles_by_family(profiles))}
-  end
-
-  # ── Events — Settings page ────────────────────────────────────────
-
-  def handle_event("save_org", %{"organization" => params}, socket) do
-    org = socket.assigns.current_organization
-
-    case RhoFrameworks.Accounts.update_organization(org, params) do
-      {:ok, updated_org} ->
-        {:noreply,
-         socket
-         |> assign(:current_organization, updated_org)
-         |> assign(
-           :org_changeset,
-           to_form(RhoFrameworks.Accounts.change_organization(updated_org))
-         )
-         |> put_flash(:info, "Organization updated.")}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, :org_changeset, to_form(changeset))}
-    end
-  end
-
-  def handle_event("save_profile", %{"user" => params}, socket) do
-    user = socket.assigns.current_user
-
-    case RhoFrameworks.Accounts.update_user_profile(user, params) do
-      {:ok, updated_user} ->
-        {:noreply,
-         socket
-         |> assign(:current_user, updated_user)
-         |> assign(
-           :user_changeset,
-           to_form(RhoFrameworks.Accounts.change_user_profile(updated_user), as: "user")
-         )
-         |> put_flash(:info, "Profile updated.")}
-
-      {:error, changeset} ->
-        {:noreply, assign(socket, :user_changeset, to_form(changeset, as: "user"))}
-    end
-  end
-
-  def handle_event("delete_org", _params, socket) do
-    org = socket.assigns.current_organization
-    membership = socket.assigns.current_membership
-
-    cond do
-      !RhoFrameworks.Accounts.Authorization.can?(membership, :manage_org) ->
-        {:noreply, put_flash(socket, :error, "Only the owner can delete this organization.")}
-
-      org.personal ->
-        {:noreply, put_flash(socket, :error, "Personal organizations cannot be deleted.")}
-
-      true ->
-        case RhoFrameworks.Accounts.delete_organization(org) do
-          {:ok, _} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "Organization deleted.")
-             |> push_navigate(to: ~p"/")}
-
-          {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to delete organization.")}
-        end
-    end
-  end
-
-  # ── Events — Members page ─────────────────────────────────────────
-
-  def handle_event("invite", %{"email" => email, "role" => role}, socket) do
-    org = socket.assigns.current_organization
-
-    if org.personal do
-      {:noreply,
-       assign(socket, :invite_error, "Cannot invite members to a personal organization.")}
+      SessionCore.save_avatar(binary, media_type)
+      data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
+      assign(socket, :user_avatar, data_uri)
     else
-      case RhoFrameworks.Accounts.add_member(org.id, String.trim(email), role) do
-        {:ok, _membership} ->
-          members = RhoFrameworks.Accounts.list_members(org.id)
-
-          {:noreply,
-           socket
-           |> assign(:members, members)
-           |> assign(:invite_email, "")
-           |> assign(:invite_error, nil)
-           |> put_flash(:info, "Member added.")}
-
-        {:error, :user_not_found} ->
-          {:noreply, assign(socket, :invite_error, "No user found with that email.")}
-
-        {:error, changeset} ->
-          msg =
-            case changeset do
-              %Ecto.Changeset{} -> "Could not add member. They may already be a member."
-              _ -> "Could not add member."
-            end
-
-          {:noreply, assign(socket, :invite_error, msg)}
-      end
-    end
-  end
-
-  def handle_event("change_role", %{"membership_id" => membership_id, "role" => new_role}, socket) do
-    case RhoFrameworks.Accounts.update_member_role(membership_id, new_role) do
-      {:ok, _} ->
-        members = RhoFrameworks.Accounts.list_members(socket.assigns.current_organization.id)
-        {:noreply, assign(socket, :members, members)}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to update role.")}
-    end
-  end
-
-  def handle_event("remove_member", %{"id" => membership_id}, socket) do
-    case RhoFrameworks.Accounts.remove_member(membership_id) do
-      {:ok, _} ->
-        members = RhoFrameworks.Accounts.list_members(socket.assigns.current_organization.id)
-
-        {:noreply,
-         socket
-         |> assign(:members, members)
-         |> put_flash(:info, "Member removed.")}
-
-      {:error, :cannot_remove_owner} ->
-        {:noreply,
-         put_flash(socket, :error, "Cannot remove the owner. Transfer ownership first.")}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to remove member.")}
-    end
-  end
-
-  def handle_event("transfer_ownership", %{"user-id" => new_owner_id}, socket) do
-    org = socket.assigns.current_organization
-
-    case RhoFrameworks.Accounts.transfer_ownership(org.id, new_owner_id) do
-      :ok ->
-        members = RhoFrameworks.Accounts.list_members(org.id)
-        membership = RhoFrameworks.Accounts.get_membership(socket.assigns.current_user.id, org.id)
-
-        {:noreply,
-         socket
-         |> assign(:members, members)
-         |> assign(:current_membership, membership)
-         |> assign(:is_owner, false)
-         |> assign(
-           :can_manage,
-           RhoFrameworks.Accounts.Authorization.can?(membership, :manage_members)
-         )
-         |> put_flash(:info, "Ownership transferred.")}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to transfer ownership.")}
+      socket
     end
   end
 
@@ -2185,41 +1907,14 @@ defmodule RhoWeb.AppLive do
   end
 
   def handle_info({:chatroom_mention, target, text}, socket) do
-    sid = socket.assigns.session_id
-
-    if sid do
-      target_agent_id =
-        case Rho.Agent.Worker.whereis(target) do
-          pid when is_pid(pid) ->
-            target
-
-          nil ->
-            role_atom =
-              try do
-                String.to_existing_atom(target)
-              rescue
-                ArgumentError -> nil
-              end
-
-            case role_atom && Rho.Agent.Registry.find_by_role(sid, role_atom) do
-              [agent | _] -> agent.agent_id
-              _ -> nil
-            end
-        end
-
-      if target_agent_id do
-        prev_agent_id = socket.assigns.active_agent_id
-        socket = assign(socket, :active_agent_id, target_agent_id)
-
-        case SessionCore.send_message(socket, text) do
-          {:noreply, socket} ->
-            {:noreply, assign(socket, :active_agent_id, prev_agent_id)}
-        end
-      else
-        {:noreply, socket}
-      end
+    with sid when is_binary(sid) <- socket.assigns.session_id,
+         {:ok, agent_id} <- resolve_mention_target(sid, target) do
+      prev_agent_id = socket.assigns.active_agent_id
+      socket = assign(socket, :active_agent_id, agent_id)
+      {:noreply, socket} = SessionCore.send_message(socket, text)
+      {:noreply, assign(socket, :active_agent_id, prev_agent_id)}
     else
-      {:noreply, socket}
+      _ -> {:noreply, socket}
     end
   end
 
@@ -2392,7 +2087,7 @@ defmodule RhoWeb.AppLive do
           <span :if={Map.has_key?(@inflight, agent_id)} class="tab-typing">...</span>
         </button>
         <button
-          :if={!is_primary_tab?(agent_id)}
+          :if={!primary_tab?(agent_id)}
           class="tab-close-btn"
           phx-click="remove_agent"
           phx-value-agent-id={agent_id}
@@ -2403,7 +2098,7 @@ defmodule RhoWeb.AppLive do
     """
   end
 
-  defp is_primary_tab?(agent_id) do
+  defp primary_tab?(agent_id) do
     case String.split(agent_id, "/") do
       [_sid, "primary"] -> true
       _ -> false
@@ -2874,6 +2569,44 @@ defmodule RhoWeb.AppLive do
     Map.new(data, fn {k, v} -> {safe_to_existing_atom(k), v} end)
   end
 
+  defp resolve_mention_target(sid, target) do
+    case Rho.Agent.Worker.whereis(target) do
+      pid when is_pid(pid) -> {:ok, target}
+      nil -> resolve_mention_by_role(sid, target)
+    end
+  end
+
+  defp resolve_mention_by_role(sid, target) do
+    role_atom = safe_to_existing_atom(target)
+
+    if is_atom(role_atom) do
+      case Rho.Agent.Registry.find_by_role(sid, role_atom) do
+        [agent | _] -> {:ok, agent.agent_id}
+        _ -> :error
+      end
+    else
+      :error
+    end
+  end
+
+  defp build_submit_content(content, image_parts, has_text) do
+    if image_parts != [] do
+      parts = if has_text, do: [ReqLLM.Message.ContentPart.text(content)], else: []
+      parts ++ image_parts
+    else
+      content
+    end
+  end
+
+  defp build_display_text(content, image_parts, has_text) do
+    if image_parts != [] do
+      img_label = "#{length(image_parts)} image#{if length(image_parts) > 1, do: "s"}"
+      if has_text, do: "#{content}\n[#{img_label} attached]", else: "[#{img_label} attached]"
+    else
+      content
+    end
+  end
+
   defp safe_to_existing_atom(str) when is_binary(str) do
     String.to_existing_atom(str)
   rescue
@@ -2893,75 +2626,66 @@ defmodule RhoWeb.AppLive do
     Map.merge(defaults, state)
   end
 
-  defp apply_data_table_event(socket, data) when is_map(data) do
-    case data[:event] do
-      :table_changed ->
-        table_name = data[:table_name]
+  defp apply_data_table_event(socket, %{event: :table_changed} = data) do
+    table_name = data[:table_name]
+    state = read_dt_state(socket)
 
-        state =
-          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
-
-        cond do
-          is_nil(table_name) ->
-            refresh_data_table_session(socket)
-
-          table_name == state.active_table ->
-            version = data[:version]
-            current = state.active_version
-
-            if is_integer(version) and is_integer(current) and version <= current do
-              socket
-            else
-              refresh_data_table_active(socket, table_name)
-            end
-
-          true ->
-            refresh_data_table_tables(socket)
-        end
-
-      :table_created ->
+    cond do
+      is_nil(table_name) ->
         refresh_data_table_session(socket)
 
-      :table_removed ->
-        removed = data[:table_name]
+      table_name != state.active_table ->
+        refresh_data_table_tables(socket)
 
-        state =
-          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+      stale_version?(data[:version], state.active_version) ->
+        refresh_data_table_active(socket, table_name)
 
-        socket = refresh_data_table_tables(socket)
-
-        if state.active_table == removed do
-          new_state =
-            ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
-
-          fallback = pick_fallback_active_table(new_state)
-          send(self(), {:data_table_switch_tab, fallback})
-        end
-
-        socket
-
-      :view_change ->
-        view_key = data[:view_key]
-        mode_label = data[:mode_label]
-        table_name = data[:table_name]
-
-        state =
-          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
-
-        if is_binary(table_name) and table_name != state.active_table do
-          send(self(), {:data_table_switch_tab, table_name})
-        end
-
-        metadata = data[:metadata] || %{}
-        new_state = %{state | view_key: view_key, mode_label: mode_label, metadata: metadata}
-        SignalRouter.write_ws_state(socket, :data_table, new_state)
-
-      _ ->
+      true ->
         socket
     end
   end
 
+  defp apply_data_table_event(socket, %{event: :table_created}) do
+    refresh_data_table_session(socket)
+  end
+
+  defp apply_data_table_event(socket, %{event: :table_removed} = data) do
+    removed = data[:table_name]
+    state = read_dt_state(socket)
+    socket = refresh_data_table_tables(socket)
+
+    if state.active_table == removed do
+      new_state = read_dt_state(socket)
+      send(self(), {:data_table_switch_tab, pick_fallback_active_table(new_state)})
+    end
+
+    socket
+  end
+
+  defp apply_data_table_event(socket, %{event: :view_change} = data) do
+    state = read_dt_state(socket)
+
+    if is_binary(data[:table_name]) and data[:table_name] != state.active_table do
+      send(self(), {:data_table_switch_tab, data[:table_name]})
+    end
+
+    metadata = data[:metadata] || %{}
+
+    new_state = %{
+      state
+      | view_key: data[:view_key],
+        mode_label: data[:mode_label],
+        metadata: metadata
+    }
+
+    SignalRouter.write_ws_state(socket, :data_table, new_state)
+  end
+
   defp apply_data_table_event(socket, _), do: socket
+
+  defp stale_version?(version, current) do
+    not (is_integer(version) and is_integer(current) and version <= current)
+  end
 
   defp apply_open_workspace_event(socket, data) when is_map(data) do
     key = data[:key]
@@ -2981,29 +2705,8 @@ defmodule RhoWeb.AppLive do
             socket
 
           ws_mod ->
-            shell =
-              socket.assigns.shell
-              |> Shell.add_workspace(key)
-              |> Shell.show_chat()
-
-            socket =
-              socket
-              |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
-              |> assign(
-                :ws_states,
-                Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
-              )
-              |> assign(:active_workspace_id, key)
-              |> assign(:shell, shell)
-
-            socket =
-              if key == :data_table do
-                refresh_data_table_session(socket)
-              else
-                socket
-              end
-
-            socket
+            socket = init_workspace(socket, key, ws_mod)
+            if key == :data_table, do: refresh_data_table_session(socket), else: socket
         end
     end
   end
@@ -3012,46 +2715,36 @@ defmodule RhoWeb.AppLive do
 
   defp refresh_data_table_session(socket) do
     sid = socket.assigns[:session_id]
-
-    state =
-      ensure_dt_keys(
-        ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
-      )
+    state = read_dt_state(socket)
 
     if is_nil(sid) do
       SignalRouter.write_ws_state(socket, :data_table, state)
     else
-      case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
-        %{tables: tables, table_order: order} ->
-          state = %{state | tables: tables, table_order: order, error: nil}
-          state = maybe_adopt_default_active(state)
+      refresh_dt_session_from_server(socket, sid, state)
+    end
+  end
 
-          state =
-            case Rho.Stdlib.DataTable.get_table_snapshot(sid, state.active_table) do
-              {:ok, snap} ->
-                %{state | active_snapshot: snap, active_version: snap.version}
+  defp refresh_dt_session_from_server(socket, sid, state) do
+    case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
+      %{tables: tables, table_order: order} ->
+        state =
+          %{state | tables: tables, table_order: order, error: nil}
+          |> maybe_adopt_default_active()
+          |> fetch_active_snapshot(sid)
 
-              {:error, :not_running} ->
-                %{state | active_snapshot: nil, active_version: nil, error: :not_running}
+        SignalRouter.write_ws_state(socket, :data_table, state)
 
-              _ ->
-                state
-            end
+      {:error, :not_running} ->
+        SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
 
-          SignalRouter.write_ws_state(socket, :data_table, state)
-
-        {:error, :not_running} ->
-          SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
-
-        _ ->
-          SignalRouter.write_ws_state(socket, :data_table, state)
-      end
+      _ ->
+        SignalRouter.write_ws_state(socket, :data_table, state)
     end
   end
 
   defp refresh_data_table_tables(socket) do
     sid = socket.assigns[:session_id]
-    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+    state = read_dt_state(socket)
 
     if is_nil(sid) do
       socket
@@ -3072,45 +2765,70 @@ defmodule RhoWeb.AppLive do
 
   defp refresh_data_table_active(socket, table_name) do
     sid = socket.assigns[:session_id]
-    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+    state = read_dt_state(socket)
 
-    cond do
-      is_nil(sid) ->
-        socket
+    if is_nil(sid) or state.active_table != table_name do
+      socket
+    else
+      socket = refresh_data_table_tables(socket)
+      state = read_dt_state(socket)
 
-      state.active_table != table_name ->
-        socket
+      case Rho.Stdlib.DataTable.get_table_snapshot(sid, table_name) do
+        {:ok, snap} ->
+          new_state = %{state | active_snapshot: snap, active_version: snap.version, error: nil}
+          SignalRouter.write_ws_state(socket, :data_table, new_state)
 
-      true ->
-        socket = refresh_data_table_tables(socket)
+        {:error, :not_running} ->
+          SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
 
-        state =
-          ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+        {:error, :not_found} ->
+          SignalRouter.write_ws_state(socket, :data_table, %{
+            state
+            | active_snapshot: nil,
+              active_version: nil
+          })
 
-        case Rho.Stdlib.DataTable.get_table_snapshot(sid, table_name) do
-          {:ok, snap} ->
-            new_state = %{
-              state
-              | active_snapshot: snap,
-                active_version: snap.version,
-                error: nil
-            }
+        _ ->
+          socket
+      end
+    end
+  end
 
-            SignalRouter.write_ws_state(socket, :data_table, new_state)
+  defp init_workspace(socket, key, ws_mod) do
+    shell =
+      socket.assigns.shell
+      |> Shell.add_workspace(key)
+      |> Shell.show_chat()
 
-          {:error, :not_running} ->
-            SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
+    socket
+    |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
+    |> assign(:ws_states, Map.put(socket.assigns.ws_states, key, ws_mod.projection().init()))
+    |> assign(:active_workspace_id, key)
+    |> assign(:shell, shell)
+  end
 
-          {:error, :not_found} ->
-            SignalRouter.write_ws_state(socket, :data_table, %{
-              state
-              | active_snapshot: nil,
-                active_version: nil
-            })
+  defp maybe_hydrate_workspace(socket, key, ws_mod) do
+    if socket.assigns.session_id do
+      hydrate_workspace(socket, socket.assigns.session_id, key, ws_mod)
+    else
+      socket
+    end
+  end
 
-          _ ->
-            socket
-        end
+  defp read_dt_state(socket) do
+    ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+  end
+
+  defp fetch_active_snapshot(state, sid) do
+    case Rho.Stdlib.DataTable.get_table_snapshot(sid, state.active_table) do
+      {:ok, snap} ->
+        %{state | active_snapshot: snap, active_version: snap.version}
+
+      {:error, :not_running} ->
+        %{state | active_snapshot: nil, active_version: nil, error: :not_running}
+
+      _ ->
+        state
     end
   end
 
@@ -3378,8 +3096,7 @@ defmodule RhoWeb.AppLive do
   defp role_subtitle(profile) do
     parts =
       [profile.role_family, profile.seniority_label, profile.description]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.reject(&(&1 == ""))
+      |> Enum.reject(&(is_nil(&1) or &1 == ""))
 
     if parts == [], do: nil, else: Enum.join(parts, " - ")
   end

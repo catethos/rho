@@ -12,9 +12,7 @@ defmodule RhoWeb.RoleProfileShowLive do
       if connected?(socket) do
         org = socket.assigns.current_organization
 
-        rp =
-          Roles.get_visible_role_profile!(org.id, id)
-          |> RhoFrameworks.Repo.preload(role_skills: :skill)
+        rp = Roles.get_visible_role_profile_with_skills!(org.id, id)
 
         grouped = group_skills(rp.role_skills)
         {rp, grouped}
@@ -146,8 +144,7 @@ defmodule RhoWeb.RoleProfileShowLive do
   defp role_subtitle(profile) do
     parts =
       [profile.role_family, profile.seniority_label, profile.description]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.reject(&(&1 == ""))
+      |> Enum.reject(&(is_nil(&1) or &1 == ""))
 
     if parts == [], do: nil, else: Enum.join(parts, " - ")
   end

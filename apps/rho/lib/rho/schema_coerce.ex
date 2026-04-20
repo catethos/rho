@@ -39,33 +39,32 @@ defmodule Rho.SchemaCoerce do
       when is_map(args) and is_list(parameter_schema) do
     mode = Keyword.get(opts, :mode, :tool_call)
 
-    result =
-      Enum.reduce_while(parameter_schema, {:ok, args, []}, fn {field, field_opts},
-                                                              {:ok, acc, repairs} ->
-        type = Keyword.get(field_opts, :type, :string)
-        required = Keyword.get(field_opts, :required, false)
+    Enum.reduce_while(parameter_schema, {:ok, args, []}, fn {field, field_opts},
+                                                            {:ok, acc, repairs} ->
+      type = Keyword.get(field_opts, :type, :string)
+      required = Keyword.get(field_opts, :required, false)
+      coerce_field(acc, field, type, required, mode, repairs)
+    end)
+  end
 
-        case Map.fetch(acc, field) do
-          {:ok, value} ->
-            case coerce(value, type, mode: mode) do
-              {:ok, coerced, field_repairs} ->
-                tagged = Enum.map(field_repairs, &Map.put(&1, :field, field))
-                {:cont, {:ok, Map.put(acc, field, coerced), repairs ++ tagged}}
+  defp coerce_field(acc, field, type, required, mode, repairs) do
+    case Map.fetch(acc, field) do
+      {:ok, value} ->
+        case coerce(value, type, mode: mode) do
+          {:ok, coerced, field_repairs} ->
+            tagged = Enum.map(field_repairs, &Map.put(&1, :field, field))
+            {:cont, {:ok, Map.put(acc, field, coerced), repairs ++ tagged}}
 
-              {:error, reason} ->
-                {:halt, {:error, {:coerce_failed, field, reason}}}
-            end
-
-          :error ->
-            if required do
-              {:halt, {:error, {:missing_required, field}}}
-            else
-              {:cont, {:ok, acc, repairs}}
-            end
+          {:error, reason} ->
+            {:halt, {:error, {:coerce_failed, field, reason}}}
         end
-      end)
 
-    result
+      :error when required ->
+        {:halt, {:error, {:missing_required, field}}}
+
+      :error ->
+        {:cont, {:ok, acc, repairs}}
+    end
   end
 
   @doc """
@@ -256,27 +255,25 @@ defmodule Rho.SchemaCoerce do
   # --- {:in, variants} coercion (enum-like) ---
 
   defp coerce_in(value, variants, _opts) do
-    str_value = to_comparable_string(value)
+    case to_comparable_string(value) do
+      nil -> {:error, {:cannot_coerce_to_variant, value}}
+      str -> find_variant(str, value, variants)
+    end
+  end
 
-    case str_value do
-      nil ->
-        {:error, {:cannot_coerce_to_variant, value}}
+  defp find_variant(str, value, variants) do
+    case Enum.find(variants, fn v -> to_string(v) == str end) do
+      nil -> find_variant_case_insensitive(str, value, variants)
+      exact -> {:ok, exact, []}
+    end
+  end
 
-      str ->
-        # Exact match first
-        exact = Enum.find(variants, fn v -> to_string(v) == str end)
+  defp find_variant_case_insensitive(str, value, variants) do
+    lower = String.downcase(str)
 
-        if exact do
-          {:ok, exact, []}
-        else
-          # Case-insensitive match
-          lower = String.downcase(str)
-
-          case Enum.find(variants, fn v -> String.downcase(to_string(v)) == lower end) do
-            nil -> {:error, {:not_a_variant, str, variants}}
-            match -> {:ok, match, [repair(:case_mismatch, :in, value)]}
-          end
-        end
+    case Enum.find(variants, fn v -> String.downcase(to_string(v)) == lower end) do
+      nil -> {:error, {:not_a_variant, str, variants}}
+      match -> {:ok, match, [repair(:case_mismatch, :in, value)]}
     end
   end
 
@@ -347,24 +344,27 @@ defmodule Rho.SchemaCoerce do
         @wrapper_keys
       end
 
-    case Enum.find_value(keys, fn k ->
-           case Map.fetch(map, k) do
-             {:ok, v} -> {:found, v}
-             :error -> nil
-           end
-         end) do
-      {:found, inner} ->
-        {:ok, inner}
-
-      nil ->
-        if mode == :extraction and map_size(map) == 1 do
-          [{_k, v}] = Map.to_list(map)
-          {:ok, v}
-        else
-          :error
-        end
+    case find_wrapper_value(map, keys) do
+      {:found, inner} -> {:ok, inner}
+      nil -> unwrap_singleton(map, mode)
     end
   end
+
+  defp find_wrapper_value(map, keys) do
+    Enum.find_value(keys, fn k ->
+      case Map.fetch(map, k) do
+        {:ok, v} -> {:found, v}
+        :error -> nil
+      end
+    end)
+  end
+
+  defp unwrap_singleton(map, :extraction) when map_size(map) == 1 do
+    [{_k, v}] = Map.to_list(map)
+    {:ok, v}
+  end
+
+  defp unwrap_singleton(_map, _mode), do: :error
 
   # --- Helpers ---
 

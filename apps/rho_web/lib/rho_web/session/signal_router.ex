@@ -89,24 +89,27 @@ defmodule RhoWeb.Session.SignalRouter do
   # Stage 2: Pure workspace projection reduction
   defp update_workspace_states(socket, signal, workspace_modules) do
     Enum.reduce(workspace_modules, socket, fn mod, sock ->
-      key = mod.key()
       projection = mod.projection()
 
       if projection.handles?(signal.type) do
-        ws_state = read_ws_state(sock, key)
-        new_ws_state = projection.reduce(ws_state, signal)
-        sock = write_ws_state(sock, key, new_ws_state)
-
-        if new_ws_state != ws_state do
-          changed = MapSet.put(sock.assigns._changed_ws_keys, key)
-          assign(sock, :_changed_ws_keys, changed)
-        else
-          sock
-        end
+        reduce_workspace(sock, mod.key(), projection, signal)
       else
         sock
       end
     end)
+  end
+
+  defp reduce_workspace(sock, key, projection, signal) do
+    ws_state = read_ws_state(sock, key)
+    new_ws_state = projection.reduce(ws_state, signal)
+    sock = write_ws_state(sock, key, new_ws_state)
+
+    if new_ws_state != ws_state do
+      changed = MapSet.put(sock.assigns._changed_ws_keys, key)
+      assign(sock, :_changed_ws_keys, changed)
+    else
+      sock
+    end
   end
 
   # Stage 3: Pure shell chrome reduction (activity tracking + auto-open)
@@ -119,28 +122,34 @@ defmodule RhoWeb.Session.SignalRouter do
       key = mod.key()
 
       if MapSet.member?(changed_keys, key) do
-        shell = Shell.record_activity(sock.assigns.shell, key, active_ws)
-
-        shell =
-          if mod.auto_open?() do
-            {updated_shell, _opened?} = Shell.maybe_auto_open(shell, key, correlation_id)
-            updated_shell
-          else
-            shell
-          end
-
-        sock =
-          if shell.workspaces[key] && shell.workspaces[key].pulse do
-            collect_effects(sock, [{:send_after, 3_000, {:clear_pulse, key}}])
-          else
-            sock
-          end
-
-        assign(sock, :shell, shell)
+        update_shell_for_key(sock, key, mod, active_ws, correlation_id)
       else
         sock
       end
     end)
+  end
+
+  defp update_shell_for_key(sock, key, mod, active_ws, correlation_id) do
+    shell = Shell.record_activity(sock.assigns.shell, key, active_ws)
+    shell = maybe_auto_open_shell(shell, key, mod, correlation_id)
+
+    sock =
+      if shell.workspaces[key] && shell.workspaces[key].pulse do
+        collect_effects(sock, [{:send_after, 3_000, {:clear_pulse, key}}])
+      else
+        sock
+      end
+
+    assign(sock, :shell, shell)
+  end
+
+  defp maybe_auto_open_shell(shell, key, mod, correlation_id) do
+    if mod.auto_open?() do
+      {updated_shell, _opened?} = Shell.maybe_auto_open(shell, key, correlation_id)
+      updated_shell
+    else
+      shell
+    end
   end
 
   # Stage 4: Apply all collected effects (impure boundary)
@@ -229,28 +238,29 @@ defmodule RhoWeb.Session.SignalRouter do
         _ -> from || "unknown"
       end
 
-    target_agent_id =
-      case Rho.Agent.Worker.whereis(to) do
-        pid when is_pid(pid) ->
-          to
-
-        nil ->
-          role_atom =
-            try do
-              String.to_existing_atom(to)
-            rescue
-              ArgumentError -> nil
-            end
-
-          case role_atom &&
-                 Rho.Agent.Registry.find_by_role(socket.assigns.session_id, role_atom) do
-            [agent | _] -> agent.agent_id
-            _ -> to
-          end
-      end
-
     data
     |> Map.put(:resolved_from_label, from_label)
-    |> Map.put(:resolved_target_agent_id, target_agent_id)
+    |> Map.put(:resolved_target_agent_id, resolve_target_agent_id(to, socket))
+  end
+
+  defp resolve_target_agent_id(to, socket) do
+    case Rho.Agent.Worker.whereis(to) do
+      pid when is_pid(pid) -> to
+      nil -> resolve_target_by_role(to, socket.assigns.session_id)
+    end
+  end
+
+  defp resolve_target_by_role(to, session_id) do
+    role_atom =
+      try do
+        String.to_existing_atom(to)
+      rescue
+        ArgumentError -> nil
+      end
+
+    case role_atom && Rho.Agent.Registry.find_by_role(session_id, role_atom) do
+      [agent | _] -> agent.agent_id
+      _ -> to
+    end
   end
 end

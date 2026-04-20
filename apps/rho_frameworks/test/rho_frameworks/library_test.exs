@@ -226,7 +226,7 @@ defmodule RhoFrameworks.LibraryTest do
       end
 
       dupes = RhoFrameworks.Library.find_duplicates(lib.id)
-      assert length(dupes) >= 1
+      assert dupes != []
       assert hd(dupes).confidence == :high
     end
   end
@@ -242,12 +242,12 @@ defmodule RhoFrameworks.LibraryTest do
         RhoFrameworks.Library.upsert_skill(lib.id, %{name: "SQL Querying", category: "Tech"})
 
       dupes_before = RhoFrameworks.Library.find_duplicates(lib.id)
-      assert length(dupes_before) >= 1
+      assert dupes_before != []
 
       RhoFrameworks.Library.dismiss_duplicate(lib.id, s1.id, s2.id)
 
       dupes_after = RhoFrameworks.Library.find_duplicates(lib.id)
-      assert length(dupes_after) == 0
+      assert dupes_after == []
     end
   end
 
@@ -564,7 +564,7 @@ defmodule RhoFrameworks.LibraryTest do
       report = RhoFrameworks.Library.consolidation_report(lib.id)
 
       assert report.total_skills == 2
-      assert length(report.duplicate_pairs) >= 1
+      assert report.duplicate_pairs != []
     end
 
     test "surfaces draft skills sorted by role count", %{org_id: org_id} do
@@ -635,7 +635,7 @@ defmodule RhoFrameworks.LibraryTest do
       )
 
       dupes = RhoFrameworks.Library.find_duplicates(lib.id)
-      assert length(dupes) >= 1
+      assert dupes != []
 
       pair = hd(dupes)
       assert is_list(pair.roles_a)
@@ -929,7 +929,7 @@ defmodule RhoFrameworks.LibraryTest do
         )
 
       dupes = RhoFrameworks.Library.find_duplicates(combined.id)
-      assert length(dupes) >= 1
+      assert dupes != []
     end
   end
 end

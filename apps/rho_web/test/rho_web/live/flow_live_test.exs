@@ -45,7 +45,7 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
 
       assert socket.assigns.flow_module == RhoFrameworks.Flows.CreateFramework
-      assert length(socket.assigns.flow_steps) == 5
+      assert length(socket.assigns.flow_steps) == 7
       assert socket.assigns.current_step == :intake
       assert socket.assigns.completed_steps == []
       assert socket.assigns.step_status == :idle
@@ -142,7 +142,7 @@ defmodule RhoWeb.FlowLiveTest do
 
       {:noreply, socket} = RhoWeb.FlowLive.handle_event("continue", %{}, socket)
 
-      assert socket.assigns.current_step == :proficiency
+      assert socket.assigns.current_step == :confirm
       assert :review in socket.assigns.completed_steps
 
       DataTable.stop(sid)

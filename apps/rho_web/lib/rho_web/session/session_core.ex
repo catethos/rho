@@ -350,16 +350,13 @@ defmodule RhoWeb.Session.SessionCore do
         socket
 
       msgs ->
-        updated_msgs =
-          Enum.map(msgs, fn msg ->
-            if msg.id == msg_id do
-              %{msg | spec: spec, streaming: streaming?}
-            else
-              msg
-            end
-          end)
-
+        updated_msgs = Enum.map(msgs, &update_msg_spec(&1, msg_id, spec, streaming?))
         assign(socket, :agent_messages, Map.put(agent_messages, agent_id, updated_msgs))
     end
   end
+
+  defp update_msg_spec(%{id: id} = msg, id, spec, streaming?),
+    do: %{msg | spec: spec, streaming: streaming?}
+
+  defp update_msg_spec(msg, _id, _spec, _streaming?), do: msg
 end

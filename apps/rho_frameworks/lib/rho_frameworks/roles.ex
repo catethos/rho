@@ -44,6 +44,12 @@ defmodule RhoFrameworks.Roles do
     Repo.get_by!(RoleProfile, id: id, organization_id: org_id)
   end
 
+  @doc "Fetch a visible role profile with role_skills and nested skill preloaded."
+  def get_visible_role_profile_with_skills!(org_id, id) do
+    get_visible_role_profile!(org_id, id)
+    |> Repo.preload(role_skills: :skill)
+  end
+
   @doc "Fetch a role profile visible to the org: own role or one belonging to a public library."
   def get_visible_role_profile!(org_id, id) do
     case get_role_profile(org_id, id) do
@@ -86,47 +92,9 @@ defmodule RhoFrameworks.Roles do
 
     Ecto.Multi.new()
     |> Ecto.Multi.run(:skills, fn _repo, _ ->
-      resolve_fn =
-        if library && library.immutable do
-          # Immutable library — look up existing skills by name, don't upsert
-          fn row ->
-            name = row[:skill_name] || row["skill_name"] || row[:name] || row["name"]
-            slug = RhoFrameworks.Frameworks.Skill.slugify(name)
+      resolve_fn = skill_resolve_fn(library, library_id)
 
-            case Repo.get_by(RhoFrameworks.Frameworks.Skill,
-                   library_id: library_id,
-                   slug: slug
-                 ) do
-              nil -> {:error, "Skill '#{name}' not found in immutable library"}
-              skill -> {:ok, skill}
-            end
-          end
-        else
-          # Mutable library — upsert as before
-          fn row ->
-            Lib.upsert_skill(library_id, %{
-              category: row[:category] || row["category"] || "",
-              cluster: row[:cluster] || row["cluster"] || "",
-              name: row[:skill_name] || row["skill_name"] || row[:name] || row["name"],
-              description:
-                Map.get(row, :skill_description, Map.get(row, "skill_description", "")),
-              status: "draft"
-            })
-          end
-        end
-
-      results =
-        Enum.reduce_while(role_rows, {:ok, []}, fn row, {:ok, acc} ->
-          case resolve_fn.(row) do
-            {:ok, skill} -> {:cont, {:ok, [{skill, row} | acc]}}
-            {:error, _} = err -> {:halt, err}
-          end
-        end)
-
-      case results do
-        {:ok, pairs} -> {:ok, Enum.reverse(pairs)}
-        {:error, reason} -> {:error, reason}
-      end
+      resolve_all_skills(role_rows, resolve_fn)
     end)
     |> Ecto.Multi.run(:role_profile, fn repo, _ ->
       rp_attrs =
@@ -135,7 +103,7 @@ defmodule RhoFrameworks.Roles do
         |> Map.put(:library_id, library_id)
         |> Map.put(:library_version, library_version)
 
-      case repo.get_by(RoleProfile, organization_id: org_id, name: attrs[:name] || attrs["name"]) do
+      case repo.get_by(RoleProfile, organization_id: org_id, name: attrs[:name]) do
         nil ->
           %RoleProfile{}
           |> RoleProfile.changeset(rp_attrs)
@@ -161,9 +129,9 @@ defmodule RhoFrameworks.Roles do
             id: Ecto.UUID.generate(),
             role_profile_id: profile.id,
             skill_id: skill.id,
-            min_expected_level: row[:required_level] || row["required_level"] || 1,
-            required: Map.get(row, :required, Map.get(row, "required", true)),
-            weight: Map.get(row, :weight, Map.get(row, "weight", 1.0)),
+            min_expected_level: row[:required_level] || 1,
+            required: Map.get(row, :required, true),
+            weight: Map.get(row, :weight, 1.0),
             inserted_at: now,
             updated_at: now
           }
@@ -174,6 +142,43 @@ defmodule RhoFrameworks.Roles do
       {:ok, count}
     end)
     |> Repo.transaction()
+  end
+
+  defp resolve_all_skills(role_rows, resolve_fn) do
+    Enum.reduce_while(role_rows, {:ok, []}, fn row, {:ok, acc} ->
+      case resolve_fn.(row) do
+        {:ok, skill} -> {:cont, {:ok, [{skill, row} | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> then(fn
+      {:ok, pairs} -> {:ok, Enum.reverse(pairs)}
+      {:error, reason} -> {:error, reason}
+    end)
+  end
+
+  defp skill_resolve_fn(%{immutable: true}, library_id) do
+    fn row ->
+      name = row[:skill_name] || row[:name]
+      slug = RhoFrameworks.Frameworks.Skill.slugify(name)
+
+      case Repo.get_by(RhoFrameworks.Frameworks.Skill, library_id: library_id, slug: slug) do
+        nil -> {:error, "Skill '#{name}' not found in immutable library"}
+        skill -> {:ok, skill}
+      end
+    end
+  end
+
+  defp skill_resolve_fn(_library, library_id) do
+    fn row ->
+      Lib.upsert_skill(library_id, %{
+        category: row[:category] || "",
+        cluster: row[:cluster] || "",
+        name: row[:skill_name] || row[:name],
+        description: row[:skill_description] || "",
+        status: "draft"
+      })
+    end
   end
 
   # --- Load Role Profile ---
@@ -395,26 +400,27 @@ defmodule RhoFrameworks.Roles do
       |> Repo.all()
 
     case candidates do
-      [] ->
-        []
+      [] -> []
+      _ -> rank_or_fallback(candidates, org_id, query, limit)
+    end
+  end
 
-      _ ->
-        case rank_similar_via_llm(candidates, query, limit) do
-          {:ok, ranked_ids} ->
-            Logger.warning(
-              "[find_similar_roles] LLM returned #{length(ranked_ids)} ids: #{inspect(ranked_ids)}"
-            )
+  defp rank_or_fallback(candidates, org_id, query, limit) do
+    case rank_similar_via_llm(candidates, query, limit) do
+      {:ok, ranked_ids} ->
+        Logger.warning(
+          "[find_similar_roles] LLM returned #{length(ranked_ids)} ids: #{inspect(ranked_ids)}"
+        )
 
-            id_index = Map.new(candidates, &{&1.id, &1})
-            Enum.flat_map(ranked_ids, fn id -> if m = id_index[id], do: [m], else: [] end)
+        id_index = Map.new(candidates, &{&1.id, &1})
+        ranked_ids |> Enum.map(&id_index[&1]) |> Enum.reject(&is_nil/1)
 
-          {:error, reason} ->
-            Logger.warning(
-              "[find_similar_roles] LLM failed: #{inspect(reason)}, falling back to LIKE"
-            )
+      {:error, reason} ->
+        Logger.warning(
+          "[find_similar_roles] LLM failed: #{inspect(reason)}, falling back to LIKE"
+        )
 
-            find_similar_roles_fallback(org_id, query, limit)
-        end
+        find_similar_roles_fallback(org_id, query, limit)
     end
   end
 
@@ -462,21 +468,23 @@ defmodule RhoFrameworks.Roles do
 
     idx_to_id = Map.new(indexed, fn {c, idx} -> {idx, c.id} end)
 
-    case ReqLLM.generate_object(model, messages, schema, gen_opts ++ [max_tokens: 1024]) do
-      {:ok, response} ->
-        case ReqLLM.Response.object(response) do
-          %{"indices" => idxs} when is_list(idxs) ->
-            ids = Enum.flat_map(idxs, fn i -> if id = idx_to_id[i], do: [id], else: [] end)
-            {:ok, ids}
+    model
+    |> ReqLLM.generate_object(messages, schema, gen_opts ++ [max_tokens: 1024])
+    |> parse_ranked_indices(idx_to_id)
+  end
 
-          _ ->
-            {:error, :unexpected_response}
-        end
+  defp parse_ranked_indices({:ok, response}, idx_to_id) do
+    case ReqLLM.Response.object(response) do
+      %{"indices" => idxs} when is_list(idxs) ->
+        ids = idxs |> Enum.map(&idx_to_id[&1]) |> Enum.reject(&is_nil/1)
+        {:ok, ids}
 
-      {:error, reason} ->
-        {:error, reason}
+      _ ->
+        {:error, :unexpected_response}
     end
   end
+
+  defp parse_ranked_indices({:error, reason}, _idx_to_id), do: {:error, reason}
 
   defp build_llm_gen_opts(nil), do: []
 
@@ -566,45 +574,39 @@ defmodule RhoFrameworks.Roles do
         {:error, :no_library, "Role profile has no linked library"}
 
       rp ->
-        library = Repo.get(RhoFrameworks.Frameworks.Library, rp.library_id)
-
-        if is_nil(library) do
-          {:error, :library_deleted, "Linked library no longer exists"}
-        else
-          latest = Lib.get_latest_version(org_id, library.name)
-
-          cond do
-            is_nil(latest) ->
-              {:ok, :current, %{note: "No published versions — role is against a draft"}}
-
-            rp.library_version == latest.version ->
-              {:ok, :current, %{version: latest.version}}
-
-            true ->
-              # Get diff between role's version and latest
-              diff_result =
-                Lib.diff_versions(org_id, library.name, rp.library_version, latest.version)
-
-              case diff_result do
-                {:ok, diff} ->
-                  {:stale,
-                   %{
-                     role_version: rp.library_version,
-                     latest_version: latest.version,
-                     diff: diff
-                   }}
-
-                {:error, _, _} ->
-                  {:stale,
-                   %{
-                     role_version: rp.library_version,
-                     latest_version: latest.version,
-                     diff: nil
-                   }}
-              end
-          end
-        end
+        check_currency_for_role(org_id, rp)
     end
+  end
+
+  defp check_currency_for_role(org_id, rp) do
+    library = Repo.get(RhoFrameworks.Frameworks.Library, rp.library_id)
+
+    if is_nil(library) do
+      {:error, :library_deleted, "Linked library no longer exists"}
+    else
+      latest = Lib.get_latest_version(org_id, library.name)
+
+      cond do
+        is_nil(latest) ->
+          {:ok, :current, %{note: "No published versions — role is against a draft"}}
+
+        rp.library_version == latest.version ->
+          {:ok, :current, %{version: latest.version}}
+
+        true ->
+          build_stale_result(org_id, library.name, rp.library_version, latest.version)
+      end
+    end
+  end
+
+  defp build_stale_result(org_id, library_name, role_version, latest_version) do
+    diff =
+      case Lib.diff_versions(org_id, library_name, role_version, latest_version) do
+        {:ok, diff} -> diff
+        {:error, _, _} -> nil
+      end
+
+    {:stale, %{role_version: role_version, latest_version: latest_version, diff: diff}}
   end
 
   # --- Private ---

@@ -54,49 +54,8 @@ defmodule RhoWeb.Projections.SessionState do
   # --- Dispatchers ---
 
   defp do_reduce(state, %{type: "rho.session." <> _ = type, data: data} = signal) do
-    cond do
-      String.ends_with?(type, ".text_delta") ->
-        reduce_text_delta(state, data)
-
-      String.ends_with?(type, ".llm_text") ->
-        reduce_text_delta(state, data)
-
-      String.ends_with?(type, ".tool_start") ->
-        reduce_tool_start(state, data)
-
-      String.ends_with?(type, ".tool_result") ->
-        reduce_tool_result(state, data)
-
-      String.ends_with?(type, ".turn_started") ->
-        reduce_turn_started(state, data)
-
-      String.ends_with?(type, ".turn_finished") ->
-        reduce_turn_finished(state, data)
-
-      String.ends_with?(type, ".llm_usage") ->
-        reduce_usage(state, data)
-
-      String.ends_with?(type, ".step_start") ->
-        reduce_step_start(state, data)
-
-      String.ends_with?(type, ".before_llm") ->
-        reduce_before_llm(state, data, signal)
-
-      String.ends_with?(type, ".ui_spec_delta") ->
-        reduce_ui_spec_delta(state, data)
-
-      String.ends_with?(type, ".ui_spec") ->
-        reduce_ui_spec(state, data)
-
-      String.ends_with?(type, ".message_sent") ->
-        reduce_message_sent(state, data)
-
-      String.ends_with?(type, ".error") ->
-        reduce_error(state, data)
-
-      true ->
-        add_signal(state, [], type, data, signal)
-    end
+    suffix = type |> String.split(".") |> List.last()
+    dispatch_session_event(suffix, state, type, data, signal)
   end
 
   defp do_reduce(state, %{type: "rho.agent.started", data: data} = signal) do
@@ -212,36 +171,22 @@ defmodule RhoWeb.Projections.SessionState do
     agent_id = data[:agent_id]
     status = if data[:status] == :error, do: :error, else: :ok
 
-    # Match by worker_agent_id (from save_and_generate) or agent_id (legacy)
-    pred = fn msg ->
-      msg[:type] == :delegation and msg[:status] == :pending and
-        (msg[:worker_agent_id] == agent_id or msg[:agent_id] == agent_id)
-    end
+    {id, state} = next_id(state)
 
-    has_existing? =
-      Enum.any?(state.agent_messages, fn {_aid, msgs} -> Enum.any?(msgs, pred) end)
+    msg = %{
+      id: id,
+      role: :system,
+      type: :delegation,
+      agent_id: agent_id,
+      worker_agent_id: data[:worker_agent_id],
+      target_role: data[:role],
+      task: data[:task],
+      status: status,
+      result: data[:result],
+      content: "Delegated task"
+    }
 
-    state =
-      if has_existing? do
-        update_message_by(state, pred, fn msg ->
-          Map.merge(msg, %{status: status, result: data[:result]})
-        end)
-      else
-        {id, state} = next_id(state)
-
-        msg = %{
-          id: id,
-          role: :system,
-          type: :delegation,
-          agent_id: agent_id,
-          status: status,
-          result: data[:result],
-          content: "Task completed"
-        }
-
-        append_message(state, msg)
-      end
-
+    state = append_message(state, msg)
     add_signal(state, [], type, data, signal)
   end
 
@@ -250,6 +195,50 @@ defmodule RhoWeb.Projections.SessionState do
   end
 
   defp do_reduce(state, _signal), do: {state, []}
+
+  # --- Session event dispatch ---
+
+  defp dispatch_session_event("text_delta", state, _t, data, _s),
+    do: reduce_text_delta(state, data)
+
+  defp dispatch_session_event("llm_text", state, _t, data, _s),
+    do: reduce_text_delta(state, data)
+
+  defp dispatch_session_event("tool_start", state, _t, data, _s),
+    do: reduce_tool_start(state, data)
+
+  defp dispatch_session_event("tool_result", state, _t, data, _s),
+    do: reduce_tool_result(state, data)
+
+  defp dispatch_session_event("turn_started", state, _t, data, _s),
+    do: reduce_turn_started(state, data)
+
+  defp dispatch_session_event("turn_finished", state, _t, data, _s),
+    do: reduce_turn_finished(state, data)
+
+  defp dispatch_session_event("llm_usage", state, _t, data, _s),
+    do: reduce_usage(state, data)
+
+  defp dispatch_session_event("step_start", state, _t, data, _s),
+    do: reduce_step_start(state, data)
+
+  defp dispatch_session_event("before_llm", state, _t, data, signal),
+    do: reduce_before_llm(state, data, signal)
+
+  defp dispatch_session_event("ui_spec_delta", state, _t, data, _s),
+    do: reduce_ui_spec_delta(state, data)
+
+  defp dispatch_session_event("ui_spec", state, _t, data, _s),
+    do: reduce_ui_spec(state, data)
+
+  defp dispatch_session_event("message_sent", state, _t, data, _s),
+    do: reduce_message_sent(state, data)
+
+  defp dispatch_session_event("error", state, _t, data, _s),
+    do: reduce_error(state, data)
+
+  defp dispatch_session_event(_suffix, state, type, data, signal),
+    do: add_signal(state, [], type, data, signal)
 
   # --- Individual reducers ---
 
@@ -318,81 +307,89 @@ defmodule RhoWeb.Projections.SessionState do
     if data[:name] in ["end_turn", "finish", "present_ui"] do
       {state, []}
     else
-      call_id = data[:call_id]
       agent_id = data[:agent_id] || primary_agent_id(state)
-      status = data[:status] || :ok
 
       state =
-        if call_id do
-          update_message_by(state, &(&1[:call_id] == call_id), fn msg ->
-            Map.merge(msg, %{output: data[:output], status: status})
-          end)
-        else
-          {id, state} = next_id(state)
+        state
+        |> apply_tool_result_to_state(data, agent_id)
+        |> maybe_append_image_message(data, agent_id)
+        |> maybe_reset_tokens(data)
 
-          msg = %{
-            id: id,
-            role: :assistant,
-            type: :tool_call,
-            name: data[:name],
-            output: data[:output],
-            call_id: call_id,
-            agent_id: agent_id,
-            status: status,
-            content: "Tool result: #{data[:name]}"
-          }
-
-          append_message(state, msg)
-        end
-
-      state =
-        case RhoWeb.ChatComponents.extract_image_uris(data[:output]) do
-          [] ->
-            state
-
-          image_uris ->
-            {id, state} = next_id(state)
-
-            img_msg = %{
-              id: id,
-              role: :assistant,
-              type: :image,
-              images: image_uris,
-              agent_id: agent_id,
-              content: "Visualization"
-            }
-
-            append_message(state, img_msg)
-        end
-
-      state =
-        if data[:name] == "clear_memory" and data[:status] == :ok do
-          state
-          |> Map.put(:total_input_tokens, 0)
-          |> Map.put(:total_output_tokens, 0)
-          |> Map.put(:total_cost, 0.0)
-          |> Map.put(:total_cached_tokens, 0)
-          |> Map.put(:total_reasoning_tokens, 0)
-          |> Map.put(:step_input_tokens, 0)
-          |> Map.put(:step_output_tokens, 0)
-        else
-          state
-        end
-
-      # Forward tool effects (from %Rho.ToolResponse{}) to the impure boundary
-      effects =
-        case data[:effects] do
-          [_ | _] = tool_effects ->
-            [
-              {:dispatch_tool_effects, tool_effects,
-               %{session_id: state.session_id, agent_id: agent_id}}
-            ]
-
-          _ ->
-            []
-        end
-
+      effects = collect_tool_effects(data, state.session_id, agent_id)
       {state, effects}
+    end
+  end
+
+  defp maybe_append_image_message(state, data, agent_id) do
+    case RhoWeb.ChatComponents.extract_image_uris(data[:output]) do
+      [] ->
+        state
+
+      image_uris ->
+        {id, state} = next_id(state)
+
+        img_msg = %{
+          id: id,
+          role: :assistant,
+          type: :image,
+          images: image_uris,
+          agent_id: agent_id,
+          content: "Visualization"
+        }
+
+        append_message(state, img_msg)
+    end
+  end
+
+  defp maybe_reset_tokens(state, data) do
+    if data[:name] == "clear_memory" and data[:status] == :ok do
+      state
+      |> Map.put(:total_input_tokens, 0)
+      |> Map.put(:total_output_tokens, 0)
+      |> Map.put(:total_cost, 0.0)
+      |> Map.put(:total_cached_tokens, 0)
+      |> Map.put(:total_reasoning_tokens, 0)
+      |> Map.put(:step_input_tokens, 0)
+      |> Map.put(:step_output_tokens, 0)
+    else
+      state
+    end
+  end
+
+  defp collect_tool_effects(data, session_id, agent_id) do
+    case data[:effects] do
+      [_ | _] = tool_effects ->
+        [{:dispatch_tool_effects, tool_effects, %{session_id: session_id, agent_id: agent_id}}]
+
+      _ ->
+        []
+    end
+  end
+
+  defp apply_tool_result_to_state(state, data, agent_id) do
+    call_id = data[:call_id]
+    status = data[:status] || :ok
+
+    if call_id do
+      update_message_by(state, &(&1[:call_id] == call_id), fn msg ->
+        Map.merge(msg, %{output: data[:output], status: status})
+      end)
+    else
+      {id, state} = next_id(state)
+
+      msg = %{
+        id: id,
+        role: :assistant,
+        type: :tool_call,
+        name: data[:name],
+        output: data[:output],
+        call_id: call_id,
+        agent_id: agent_id,
+        status: status,
+        content: "Tool result: #{data[:name]}"
+      }
+
+      append_message(state, msg)
     end
   end
 
@@ -735,6 +732,9 @@ defmodule RhoWeb.Projections.SessionState do
       timestamp: timestamp,
       correlation_id: data[:correlation_id]
     }
+
+    signals = Enum.take(state.signals ++ [sig], -500)
+    state = Map.put(state, :signals, signals)
 
     effects = [{:push_event, "signal", sig} | existing_effects]
     {state, effects}

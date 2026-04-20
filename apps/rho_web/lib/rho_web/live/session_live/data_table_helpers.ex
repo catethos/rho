@@ -25,31 +25,8 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     if is_nil(sid) do
       SignalRouter.write_ws_state(socket, :data_table, state)
     else
-      case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
-        %{tables: tables, table_order: order} ->
-          state = %{state | tables: tables, table_order: order, error: nil}
-          state = maybe_adopt_default_active(state)
-
-          state =
-            case Rho.Stdlib.DataTable.get_table_snapshot(sid, state.active_table) do
-              {:ok, snap} ->
-                %{state | active_snapshot: snap, active_version: snap.version}
-
-              {:error, :not_running} ->
-                %{state | active_snapshot: nil, active_version: nil, error: :not_running}
-
-              _ ->
-                state
-            end
-
-          SignalRouter.write_ws_state(socket, :data_table, state)
-
-        {:error, :not_running} ->
-          SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
-
-        _ ->
-          SignalRouter.write_ws_state(socket, :data_table, state)
-      end
+      state = merge_session_snapshot(sid, state)
+      SignalRouter.write_ws_state(socket, :data_table, state)
     end
   end
 
@@ -132,28 +109,7 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   def apply_data_table_event(socket, data) when is_map(data) do
     case data[:event] do
       :table_changed ->
-        table_name = data[:table_name]
-
-        state = ensure_dt_keys(read_dt_state(socket))
-
-        cond do
-          is_nil(table_name) ->
-            refresh_data_table_session(socket)
-
-          table_name == state.active_table ->
-            version = data[:version]
-            current = state.active_version
-
-            if is_integer(version) and is_integer(current) and version <= current do
-              socket
-            else
-              refresh_data_table_active(socket, table_name)
-            end
-
-          true ->
-            # Background table changed — refresh the tab list only.
-            refresh_data_table_tables(socket)
-        end
+        handle_table_changed(socket, data)
 
       :table_created ->
         refresh_data_table_session(socket)
@@ -195,6 +151,26 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
 
   def apply_data_table_event(socket, _), do: socket
 
+  defp handle_table_changed(socket, data) do
+    table_name = data[:table_name]
+    state = ensure_dt_keys(read_dt_state(socket))
+
+    cond do
+      is_nil(table_name) ->
+        refresh_data_table_session(socket)
+
+      table_name == state.active_table ->
+        already_current? =
+          is_integer(data[:version]) and is_integer(state.active_version) and
+            data[:version] <= state.active_version
+
+        if already_current?, do: socket, else: refresh_data_table_active(socket, table_name)
+
+      true ->
+        refresh_data_table_tables(socket)
+    end
+  end
+
   @doc """
   Handle a workspace_open signal from the EffectDispatcher.
   """
@@ -213,38 +189,29 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
 
       true ->
         case WorkspaceRegistry.get(key) do
-          nil ->
-            socket
-
-          ws_mod ->
-            shell =
-              socket.assigns.shell
-              |> Shell.add_workspace(key)
-              |> Shell.show_chat()
-
-            socket =
-              socket
-              |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
-              |> assign(
-                :ws_states,
-                Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
-              )
-              |> assign(:active_workspace_id, key)
-              |> assign(:shell, shell)
-
-            socket =
-              if key == :data_table do
-                refresh_data_table_session(socket)
-              else
-                socket
-              end
-
-            socket
+          nil -> socket
+          ws_mod -> mount_workspace(socket, key, ws_mod)
         end
     end
   end
 
   def apply_open_workspace_event(socket, _), do: socket
+
+  defp mount_workspace(socket, key, ws_mod) do
+    shell =
+      socket.assigns.shell
+      |> Shell.add_workspace(key)
+      |> Shell.show_chat()
+
+    socket =
+      socket
+      |> assign(:workspaces, Map.put(socket.assigns.workspaces, key, ws_mod))
+      |> assign(:ws_states, Map.put(socket.assigns.ws_states, key, ws_mod.projection().init()))
+      |> assign(:active_workspace_id, key)
+      |> assign(:shell, shell)
+
+    if key == :data_table, do: refresh_data_table_session(socket), else: socket
+  end
 
   @doc """
   Returns the initial data table projection state.
@@ -446,12 +413,7 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   end
 
   defp maybe_rename_library(lib, new_name, sid, old_table_name) do
-    alias RhoFrameworks.Frameworks.Library, as: LibSchema
-
-    case lib
-         |> RhoFrameworks.Repo.preload([])
-         |> LibSchema.changeset(%{name: new_name})
-         |> RhoFrameworks.Repo.update() do
+    case RhoFrameworks.Library.rename_library(lib.organization_id, lib.id, new_name) do
       {:ok, _} ->
         new_table_name = "library:" <> new_name
         rename_data_table(sid, old_table_name, new_table_name)
@@ -483,6 +445,34 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
 
   defp read_dt_state(socket) do
     SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state()
+  end
+
+  defp merge_session_snapshot(sid, state) do
+    case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
+      %{tables: tables, table_order: order} ->
+        state = %{state | tables: tables, table_order: order, error: nil}
+        state = maybe_adopt_default_active(state)
+        apply_active_table_snapshot(sid, state)
+
+      {:error, :not_running} ->
+        %{state | error: :not_running}
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_active_table_snapshot(sid, state) do
+    case Rho.Stdlib.DataTable.get_table_snapshot(sid, state.active_table) do
+      {:ok, snap} ->
+        %{state | active_snapshot: snap, active_version: snap.version}
+
+      {:error, :not_running} ->
+        %{state | active_snapshot: nil, active_version: nil, error: :not_running}
+
+      _ ->
+        state
+    end
   end
 
   defp maybe_adopt_default_active(%{active_table: active, table_order: order} = state) do

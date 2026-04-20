@@ -93,7 +93,7 @@ defmodule Rho.Tool.DSL do
                   {:error, "Missing required parameter(s): #{field}"}
 
                 {:error, keys} when is_list(keys) ->
-                  names = keys |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+                  names = Enum.map_join(keys, ", ", &Atom.to_string/1)
                   {:error, "Missing required parameter(s): #{names}"}
 
                 {:error, reason} ->

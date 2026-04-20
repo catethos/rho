@@ -401,24 +401,7 @@ defmodule RhoWeb.ChatComponents do
 
     parts = Regex.split(combined, output, include_captures: true, trim: true)
 
-    Enum.map(parts, fn part ->
-      cond do
-        match = Regex.run(@image_pattern, part) ->
-          [_full, data_uri] = match
-          {:image, data_uri}
-
-        match = Regex.run(@file_image_pattern, part) ->
-          [_full, path] = match
-
-          case File.read(path) do
-            {:ok, data} -> {:image, "data:image/png;base64," <> Base.encode64(data)}
-            _ -> {:text, part}
-          end
-
-        true ->
-          {:text, part}
-      end
-    end)
+    Enum.map(parts, &classify_image_part/1)
     |> Enum.reject(fn
       {:text, t} -> String.trim(t) == ""
       _ -> false
@@ -426,6 +409,25 @@ defmodule RhoWeb.ChatComponents do
   end
 
   defp split_image_segments(_), do: []
+
+  defp classify_image_part(part) do
+    cond do
+      match = Regex.run(@image_pattern, part) ->
+        [_full, data_uri] = match
+        {:image, data_uri}
+
+      match = Regex.run(@file_image_pattern, part) ->
+        [_full, path] = match
+
+        case File.read(path) do
+          {:ok, data} -> {:image, "data:image/png;base64," <> Base.encode64(data)}
+          _ -> {:text, part}
+        end
+
+      true ->
+        {:text, part}
+    end
+  end
 
   defp truncate_summary(nil), do: nil
 

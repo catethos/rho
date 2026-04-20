@@ -407,7 +407,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
 
   describe "before_llm" do
     test "stores debug projection with signal timestamp" do
-      meta = %{emitted_at: 12345}
+      meta = %{emitted_at: 12_345}
 
       {s, _} =
         reduce(
@@ -417,7 +417,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
           meta
         )
 
-      assert %{timestamp: 12345, step: 1} = s.debug_projections["a1"]
+      assert %{timestamp: 12_345, step: 1} = s.debug_projections["a1"]
     end
   end
 

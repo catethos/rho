@@ -67,19 +67,7 @@ defmodule RhoFrameworks.Lenses do
       lens.axes
       |> Enum.sort_by(& &1.sort_order)
       |> Enum.map(fn axis ->
-        vars =
-          Enum.map(axis.variables, fn var ->
-            raw = Map.fetch!(variable_scores, var.key)
-            adjusted = if var.inverse, do: 100.0 - raw, else: raw
-            weighted = adjusted * var.weight
-
-            %{
-              variable_id: var.id,
-              raw_score: raw,
-              adjusted_score: adjusted,
-              weighted_score: weighted
-            }
-          end)
+        vars = Enum.map(axis.variables, &score_variable(&1, variable_scores))
 
         composite = vars |> Enum.map(& &1.weighted_score) |> Enum.sum()
         band = classify_band(composite, axis.band_thresholds)
@@ -97,6 +85,19 @@ defmodule RhoFrameworks.Lenses do
       error ->
         error
     end
+  end
+
+  defp score_variable(var, variable_scores) do
+    raw = Map.fetch!(variable_scores, var.key)
+    adjusted = if var.inverse, do: 100.0 - raw, else: raw
+    weighted = adjusted * var.weight
+
+    %{
+      variable_id: var.id,
+      raw_score: raw,
+      adjusted_score: adjusted,
+      weighted_score: weighted
+    }
   end
 
   defp classify_band(composite, thresholds) do
@@ -156,17 +157,7 @@ defmodule RhoFrameworks.Lenses do
               })
             )
 
-          Enum.each(axis_result.variable_scores, fn vs ->
-            repo.insert!(
-              LensVariableScore.changeset(%LensVariableScore{}, %{
-                raw_score: vs.raw_score,
-                adjusted_score: vs.adjusted_score,
-                weighted_score: vs.weighted_score,
-                axis_score_id: axis_score.id,
-                variable_id: vs.variable_id
-              })
-            )
-          end)
+          insert_variable_scores(repo, axis_score, axis_result.variable_scores)
 
           axis_score
         end)
@@ -181,6 +172,20 @@ defmodule RhoFrameworks.Lenses do
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
     end
+  end
+
+  defp insert_variable_scores(repo, axis_score, variable_scores) do
+    Enum.each(variable_scores, fn vs ->
+      repo.insert!(
+        LensVariableScore.changeset(%LensVariableScore{}, %{
+          raw_score: vs.raw_score,
+          adjusted_score: vs.adjusted_score,
+          weighted_score: vs.weighted_score,
+          axis_score_id: axis_score.id,
+          variable_id: vs.variable_id
+        })
+      )
+    end)
   end
 
   defp target_to_attrs(%{skill_id: id}), do: %{skill_id: id}
@@ -257,19 +262,11 @@ defmodule RhoFrameworks.Lenses do
     axis_descriptions =
       lens.axes
       |> Enum.sort_by(& &1.sort_order)
-      |> Enum.map(fn axis ->
-        var_lines =
-          Enum.map(axis.variables, fn var ->
-            inverse_note =
-              if var.inverse, do: " (inverse: higher raw = lower contribution)", else: ""
-
-            "  - #{var.key} (#{var.name}, weight: #{var.weight}#{inverse_note}): #{var.description}"
-          end)
-          |> Enum.join("\n")
+      |> Enum.map_join("\n\n", fn axis ->
+        var_lines = Enum.map_join(axis.variables, "\n", &format_variable_line/1)
 
         "Axis: #{axis.name} (#{axis.short_name})\n#{var_lines}"
       end)
-      |> Enum.join("\n\n")
 
     """
     You are a workforce analyst scoring targets using the "#{lens.name}" lens.
@@ -288,6 +285,13 @@ defmodule RhoFrameworks.Lenses do
     """
   end
 
+  defp format_variable_line(var) do
+    inverse_note =
+      if var.inverse, do: " (inverse: higher raw = lower contribution)", else: ""
+
+    "  - #{var.key} (#{var.name}, weight: #{var.weight}#{inverse_note}): #{var.description}"
+  end
+
   defp build_scoring_user_prompt(lens, %{role_profile_id: rp_id})
        when lens.score_target == "role_profile" do
     rp =
@@ -296,10 +300,9 @@ defmodule RhoFrameworks.Lenses do
 
     skills_text =
       rp.role_skills
-      |> Enum.map(fn rs ->
+      |> Enum.map_join("\n", fn rs ->
         "- #{rs.skill.name} (#{rs.skill.category}/#{rs.skill.cluster}) — required level: #{rs.min_expected_level}"
       end)
-      |> Enum.join("\n")
 
     """
     Score this role profile:

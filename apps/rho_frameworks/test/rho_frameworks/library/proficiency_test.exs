@@ -40,7 +40,7 @@ defmodule RhoFrameworks.Library.ProficiencyTest do
     test "returns a non-empty list of tool_defs including finish" do
       tools = Proficiency.resolve_tools()
       assert is_list(tools)
-      assert length(tools) > 0
+      assert tools != []
 
       tool_names = Enum.map(tools, & &1.tool.name)
       assert "finish" in tool_names

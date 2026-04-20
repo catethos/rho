@@ -1,4 +1,5 @@
 defmodule RhoWeb.Plugs.RequireRole do
+  @moduledoc false
   import Plug.Conn
   import Phoenix.Controller
   alias RhoFrameworks.Accounts.Authorization

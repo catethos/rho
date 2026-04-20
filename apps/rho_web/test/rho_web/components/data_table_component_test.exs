@@ -154,7 +154,7 @@ defmodule RhoWeb.DataTableComponentTest do
       assert html =~ "Rust"
       assert html =~ "Software"
       assert html =~ "Languages"
-      assert html =~ "Skill Library"
+      assert html =~ "Skill Framework Editor"
       assert html =~ "2 rows"
     end
 
@@ -176,7 +176,7 @@ defmodule RhoWeb.DataTableComponentTest do
           class: ""
         )
 
-      assert html =~ "Role Profile — Test"
+      assert html =~ "Role Profile Editor"
     end
   end
 end

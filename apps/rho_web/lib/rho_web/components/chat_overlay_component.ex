@@ -292,27 +292,24 @@ defmodule RhoWeb.ChatOverlayComponent do
   end
 
   defp handle_tool_result(socket, data) do
-    if data[:name] in ["end_turn", "finish", "present_ui"] do
-      socket
-    else
-      call_id = data[:call_id]
-      status = data[:status] || :ok
-
-      if call_id do
-        messages =
-          Enum.map(socket.assigns.messages, fn msg ->
-            if msg[:call_id] == call_id do
-              Map.merge(msg, %{status: status, output: data[:output]})
-            else
-              msg
-            end
-          end)
-
-        assign(socket, :messages, messages)
-      else
-        socket
-      end
+    cond do
+      data[:name] in ["end_turn", "finish", "present_ui"] -> socket
+      is_nil(data[:call_id]) -> socket
+      true -> update_tool_call_status(socket, data[:call_id], data[:status] || :ok, data[:output])
     end
+  end
+
+  defp update_tool_call_status(socket, call_id, status, output) do
+    messages =
+      Enum.map(socket.assigns.messages, fn msg ->
+        if msg[:call_id] == call_id do
+          Map.merge(msg, %{status: status, output: output})
+        else
+          msg
+        end
+      end)
+
+    assign(socket, :messages, messages)
   end
 
   defp handle_turn_finished(socket, data) do

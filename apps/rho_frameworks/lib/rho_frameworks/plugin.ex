@@ -45,16 +45,7 @@ defmodule RhoFrameworks.Plugin do
       libraries ->
         lines =
           Enum.map_join(libraries, "\n", fn lib ->
-            version_label =
-              cond do
-                lib.version -> "v#{lib.version}"
-                lib.immutable -> "immutable"
-                true -> "draft"
-              end
-
-            category_names = Enum.map_join(lib.categories, ", ", & &1.category)
-
-            "- **#{lib.name}** (id: #{lib.id}, #{version_label}, #{lib.skill_count} skills) — categories: #{category_names}"
+            "- **#{lib.name}** (id: #{lib.id}, #{version_label(lib)}, #{lib.skill_count} skills) — categories: #{Enum.map_join(lib.categories, ", ", & &1.category)}"
           end)
 
         """
@@ -66,6 +57,10 @@ defmodule RhoFrameworks.Plugin do
   end
 
   defp library_context_section(_), do: nil
+
+  defp version_label(%{version: v}) when not is_nil(v), do: "v#{v}"
+  defp version_label(%{immutable: true}), do: "immutable"
+  defp version_label(_), do: "draft"
 
   defp build_tools(context) do
     LibraryTools.__tools__(context) ++

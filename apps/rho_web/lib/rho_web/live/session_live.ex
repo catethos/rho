@@ -167,23 +167,8 @@ defmodule RhoWeb.SessionLive do
 
       _ = sid
 
-      # Build message content: text + images
-      submit_content =
-        if has_images do
-          parts = if has_text, do: [ReqLLM.Message.ContentPart.text(content)], else: []
-          parts ++ image_parts
-        else
-          content
-        end
-
-      # Add user message to the active agent's message list
-      display_text =
-        if has_images do
-          img_label = "#{length(image_parts)} image#{if length(image_parts) > 1, do: "s"}"
-          if has_text, do: "#{content}\n[#{img_label} attached]", else: "[#{img_label} attached]"
-        else
-          content
-        end
+      submit_content = build_submit_content(content, image_parts, has_text)
+      display_text = build_display_text(content, image_parts, has_text)
 
       SessionCore.send_message(socket, display_text, submit_content: submit_content)
     end
@@ -319,24 +304,18 @@ defmodule RhoWeb.SessionLive do
   def handle_event("validate_upload", _params, socket) do
     # Auto-consume avatar uploads when they arrive
     socket =
-      if socket.assigns.uploads.avatar.entries != [] do
-        entries = socket.assigns.uploads.avatar.entries
-        entry = List.first(entries)
+      with [entry | _] <- socket.assigns.uploads.avatar.entries,
+           true <- entry.done? do
+        [{binary, media_type}] =
+          consume_uploaded_entries(socket, :avatar, fn %{path: path}, entry ->
+            {:ok, {File.read!(path), entry.client_type || "image/png"}}
+          end)
 
-        if entry && entry.done? do
-          [{binary, media_type}] =
-            consume_uploaded_entries(socket, :avatar, fn %{path: path}, entry ->
-              {:ok, {File.read!(path), entry.client_type || "image/png"}}
-            end)
-
-          SessionCore.save_avatar(binary, media_type)
-          data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
-          assign(socket, :user_avatar, data_uri)
-        else
-          socket
-        end
+        SessionCore.save_avatar(binary, media_type)
+        data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
+        assign(socket, :user_avatar, data_uri)
       else
-        socket
+        _ -> socket
       end
 
     {:noreply, socket}
@@ -445,13 +424,7 @@ defmodule RhoWeb.SessionLive do
               |> assign(:active_workspace_id, key)
               |> assign(:shell, shell)
 
-            # Hydrate from tape if session exists
-            socket =
-              if socket.assigns.session_id do
-                hydrate_workspace(socket, socket.assigns.session_id, key, ws_mod)
-              else
-                socket
-              end
+            socket = maybe_hydrate_workspace(socket, key, ws_mod)
 
             {:noreply, socket}
         end
@@ -839,37 +812,9 @@ defmodule RhoWeb.SessionLive do
     sid = socket.assigns.session_id
 
     if sid do
-      # Resolve target: try as agent_id first, then as role
-      target_agent_id =
-        case Rho.Agent.Worker.whereis(target) do
-          pid when is_pid(pid) ->
-            target
-
-          nil ->
-            role_atom =
-              try do
-                String.to_existing_atom(target)
-              rescue
-                ArgumentError -> nil
-              end
-
-            case role_atom && Rho.Agent.Registry.find_by_role(sid, role_atom) do
-              [agent | _] -> agent.agent_id
-              _ -> nil
-            end
-        end
-
-      if target_agent_id do
-        # Temporarily switch active_agent_id so send_message routes to the target
-        prev_agent_id = socket.assigns.active_agent_id
-        socket = assign(socket, :active_agent_id, target_agent_id)
-
-        case SessionCore.send_message(socket, text) do
-          {:noreply, socket} ->
-            {:noreply, assign(socket, :active_agent_id, prev_agent_id)}
-        end
-      else
-        {:noreply, socket}
+      case resolve_mention_target(sid, target) do
+        nil -> {:noreply, socket}
+        agent_id -> route_mention_to_agent(socket, agent_id, text)
       end
     else
       {:noreply, socket}
@@ -1304,6 +1249,62 @@ defmodule RhoWeb.SessionLive do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value) when is_binary(value), do: Map.put(map, key, value)
+
+  defp build_submit_content(content, image_parts, has_text) do
+    if image_parts != [] do
+      parts = if has_text, do: [ReqLLM.Message.ContentPart.text(content)], else: []
+      parts ++ image_parts
+    else
+      content
+    end
+  end
+
+  defp build_display_text(content, image_parts, has_text) do
+    if image_parts != [] do
+      img_label = "#{length(image_parts)} image#{if length(image_parts) > 1, do: "s"}"
+      if has_text, do: "#{content}\n[#{img_label} attached]", else: "[#{img_label} attached]"
+    else
+      content
+    end
+  end
+
+  defp maybe_hydrate_workspace(socket, key, ws_mod) do
+    if socket.assigns.session_id do
+      hydrate_workspace(socket, socket.assigns.session_id, key, ws_mod)
+    else
+      socket
+    end
+  end
+
+  defp resolve_mention_target(sid, target) do
+    case Rho.Agent.Worker.whereis(target) do
+      pid when is_pid(pid) ->
+        target
+
+      nil ->
+        role_atom =
+          try do
+            String.to_existing_atom(target)
+          rescue
+            ArgumentError -> nil
+          end
+
+        case role_atom && Rho.Agent.Registry.find_by_role(sid, role_atom) do
+          [agent | _] -> agent.agent_id
+          _ -> nil
+        end
+    end
+  end
+
+  defp route_mention_to_agent(socket, target_agent_id, text) do
+    prev_agent_id = socket.assigns.active_agent_id
+    socket = assign(socket, :active_agent_id, target_agent_id)
+
+    case SessionCore.send_message(socket, text) do
+      {:noreply, socket} ->
+        {:noreply, assign(socket, :active_agent_id, prev_agent_id)}
+    end
+  end
 
   defp refresh_threads(socket) do
     sid = socket.assigns[:session_id]

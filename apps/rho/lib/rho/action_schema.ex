@@ -167,38 +167,46 @@ defmodule Rho.ActionSchema do
             {:unknown, tag, args}
 
           %{builtin: true, name: "respond", fields: fields} ->
-            case coerce_variant_fields(args, fields) do
-              {:ok, coerced, _repairs} ->
-                {:respond, coerced[:message] || "", thinking: thinking}
-
-              {:error, reason} ->
-                {:parse_error, {:coerce_failed, "respond", reason}}
-            end
+            dispatch_respond(args, fields, thinking)
 
           %{builtin: true, name: "think"} ->
             thought = thinking || Map.get(args, "thought") || Map.get(args, :thought) || ""
             {:think, thought}
 
           %{builtin: false, name: name} ->
-            case Map.get(tool_map, name) do
-              nil ->
-                {:unknown, name, args}
-
-              tool_def ->
-                fields = tool_def.tool.parameter_schema || []
-
-                case coerce_variant_fields(args, fields) do
-                  {:ok, coerced, repairs} ->
-                    {:tool, name, coerced, tool_def, thinking: thinking, repairs: repairs}
-
-                  {:error, reason} ->
-                    {:parse_error, {:coerce_failed, name, reason}}
-                end
-            end
+            dispatch_tool_call(name, args, tool_map, thinking)
         end
 
       _non_string ->
         {:parse_error, :tool_tag_not_string}
+    end
+  end
+
+  defp dispatch_respond(args, fields, thinking) do
+    case coerce_variant_fields(args, fields) do
+      {:ok, coerced, _repairs} ->
+        {:respond, coerced[:message] || "", thinking: thinking}
+
+      {:error, reason} ->
+        {:parse_error, {:coerce_failed, "respond", reason}}
+    end
+  end
+
+  defp dispatch_tool_call(name, args, tool_map, thinking) do
+    case Map.get(tool_map, name) do
+      nil ->
+        {:unknown, name, args}
+
+      tool_def ->
+        fields = tool_def.tool.parameter_schema || []
+
+        case coerce_variant_fields(args, fields) do
+          {:ok, coerced, repairs} ->
+            {:tool, name, coerced, tool_def, thinking: thinking, repairs: repairs}
+
+          {:error, reason} ->
+            {:parse_error, {:coerce_failed, name, reason}}
+        end
     end
   end
 

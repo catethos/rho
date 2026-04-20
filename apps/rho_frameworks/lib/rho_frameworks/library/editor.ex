@@ -191,57 +191,63 @@ defmodule RhoFrameworks.Library.Editor do
           {to_string(MapAccess.get(row, :skill_name)), row}
         end)
 
-      {changes, matched, skipped} =
-        Enum.reduce(skill_levels, {[], [], []}, fn entry, {ch_acc, m_acc, s_acc} ->
-          skill_name = to_string(MapAccess.get(entry, :skill_name))
-
-          levels =
-            MapAccess.get(entry, :levels, nil) ||
-              MapAccess.get(entry, :proficiency_levels, [])
-
-          proficiency_levels =
-            Enum.map(levels, fn lvl ->
-              %{
-                level: MapAccess.get(lvl, :level, 1),
-                level_name: MapAccess.get(lvl, :level_name),
-                level_description: MapAccess.get(lvl, :level_description)
-              }
-            end)
-
-          case Map.get(rows_by_name, skill_name) do
-            nil ->
-              {ch_acc, m_acc, [skill_name | s_acc]}
-
-            row ->
-              row_id = to_string(MapAccess.get(row, :id))
-
-              change = %{
-                "id" => row_id,
-                "field" => "proficiency_levels",
-                "value" => proficiency_levels
-              }
-
-              {[change | ch_acc], [skill_name | m_acc], s_acc}
-          end
-        end)
-
-      if changes == [] do
-        {:error, {:no_matches, Enum.reverse(skipped)}}
-      else
-        case DataTable.update_cells(rt.session_id, changes, table: tbl) do
-          :ok ->
-            {:ok, %{updated_count: length(matched), skipped: Enum.reverse(skipped)}}
-
-          {:error, reason} ->
-            {:error, {:update_failed, reason}}
-        end
-      end
+      {changes, matched, skipped} = classify_skill_levels(skill_levels, rows_by_name)
+      apply_changes(changes, matched, skipped, tbl, rt)
     end
   end
 
   # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
+
+  defp classify_skill_levels(skill_levels, rows_by_name) do
+    Enum.reduce(skill_levels, {[], [], []}, fn entry, {ch_acc, m_acc, s_acc} ->
+      skill_name = to_string(MapAccess.get(entry, :skill_name))
+
+      levels =
+        MapAccess.get(entry, :levels, nil) ||
+          MapAccess.get(entry, :proficiency_levels, [])
+
+      proficiency_levels = build_proficiency_levels(levels)
+
+      case Map.get(rows_by_name, skill_name) do
+        nil ->
+          {ch_acc, m_acc, [skill_name | s_acc]}
+
+        row ->
+          row_id = to_string(MapAccess.get(row, :id))
+
+          change = %{
+            "id" => row_id,
+            "field" => "proficiency_levels",
+            "value" => proficiency_levels
+          }
+
+          {[change | ch_acc], [skill_name | m_acc], s_acc}
+      end
+    end)
+  end
+
+  defp build_proficiency_levels(levels) do
+    Enum.map(levels, fn lvl ->
+      %{
+        level: MapAccess.get(lvl, :level, 1),
+        level_name: MapAccess.get(lvl, :level_name),
+        level_description: MapAccess.get(lvl, :level_description)
+      }
+    end)
+  end
+
+  defp apply_changes([], _matched, skipped, _tbl, _rt) do
+    {:error, {:no_matches, Enum.reverse(skipped)}}
+  end
+
+  defp apply_changes(changes, matched, skipped, tbl, rt) do
+    case DataTable.update_cells(rt.session_id, changes, table: tbl) do
+      :ok -> {:ok, %{updated_count: length(matched), skipped: Enum.reverse(skipped)}}
+      {:error, reason} -> {:error, {:update_failed, reason}}
+    end
+  end
 
   defp resolve_target_library(%{library_id: nil}, %Runtime{} = rt) do
     {:ok, LibraryCtx.get_or_create_default_library(rt.organization_id)}

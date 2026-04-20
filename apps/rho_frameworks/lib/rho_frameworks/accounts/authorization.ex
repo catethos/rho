@@ -1,4 +1,5 @@
 defmodule RhoFrameworks.Accounts.Authorization do
+  @moduledoc false
   @role_levels %{"owner" => 4, "admin" => 3, "member" => 2, "viewer" => 1}
 
   def role_at_least?(user_role, minimum_role) do

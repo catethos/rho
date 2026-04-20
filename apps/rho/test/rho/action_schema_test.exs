@@ -131,7 +131,7 @@ defmodule Rho.ActionSchemaTest do
 
       assert args[:path] == "/tmp/f"
       assert args[:offset] == 10
-      assert length(opts[:repairs]) > 0
+      assert opts[:repairs] != []
     end
 
     test "returns unknown for unregistered tool" do

@@ -82,6 +82,15 @@ defmodule RhoFrameworks.Library do
     end
   end
 
+  def get_library_by_name(org_id, name) do
+    from(l in Library,
+      where: l.organization_id == ^org_id and l.name == ^name,
+      order_by: [desc: l.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   def get_library(_org_id, nil), do: nil
 
   def get_library(org_id, id) when is_binary(id) do
@@ -100,6 +109,18 @@ defmodule RhoFrameworks.Library do
   @doc "Fetch a public library by id (no org scoping). Raises if not found or not public."
   def get_public_library!(id) do
     Repo.get_by!(Library, id: id, visibility: "public")
+  end
+
+  def rename_library(org_id, library_id, new_name) do
+    with lib when not is_nil(lib) <- get_library(org_id, library_id),
+         :ok <- ensure_mutable!(lib) do
+      lib
+      |> Library.changeset(%{name: new_name})
+      |> Repo.update()
+    else
+      nil -> {:error, :not_found}
+      error -> error
+    end
   end
 
   def delete_library(org_id, id) do
@@ -235,15 +256,7 @@ defmodule RhoFrameworks.Library do
         })
       end)
       |> Ecto.Multi.run(:skills, fn _repo, %{library: draft} ->
-        source_skills = list_skills(source.id)
-
-        copied =
-          Enum.map(source_skills, fn skill ->
-            {:ok, new_skill} = copy_skill(skill, draft.id, source_skill_id: skill.id)
-            new_skill
-          end)
-
-        {:ok, copied}
+        {:ok, copy_all_skills(source.id, draft.id)}
       end)
       |> Ecto.Multi.run(:link_superseded, fn _repo, %{library: draft} ->
         source
@@ -459,8 +472,7 @@ defmodule RhoFrameworks.Library do
     library = Repo.get!(Library, library_id)
 
     with :ok <- maybe_check_mutable(library, opts) do
-      name = attrs[:name] || attrs["name"]
-      slug = Skill.slugify(name)
+      slug = Skill.slugify(attrs[:name])
 
       case Repo.get_by(Skill, library_id: library_id, slug: slug) do
         nil ->
@@ -469,13 +481,7 @@ defmodule RhoFrameworks.Library do
           |> Repo.insert()
 
         existing ->
-          # Don't downgrade published to draft
-          attrs =
-            if existing.status == "published" do
-              Map.delete(attrs, :status) |> Map.delete("status")
-            else
-              attrs
-            end
+          attrs = guard_status_downgrade(existing, attrs)
 
           existing
           |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
@@ -490,7 +496,7 @@ defmodule RhoFrameworks.Library do
     library = Repo.get!(Library, library_id)
 
     with :ok <- maybe_check_mutable(library, opts) do
-      slugs = Enum.map(skill_attr_list, fn a -> Skill.slugify(a[:name] || a["name"]) end)
+      slugs = Enum.map(skill_attr_list, fn a -> Skill.slugify(a[:name]) end)
 
       existing =
         from(s in Skill, where: s.library_id == ^library_id and s.slug in ^slugs)
@@ -498,29 +504,30 @@ defmodule RhoFrameworks.Library do
         |> Map.new(&{&1.slug, &1})
 
       results =
-        Enum.map(skill_attr_list, fn attrs ->
-          name = attrs[:name] || attrs["name"]
-          slug = Skill.slugify(name)
-          merged = Map.merge(attrs, %{library_id: library_id})
-
-          case Map.get(existing, slug) do
-            nil ->
-              {:ok, skill} = %Skill{} |> Skill.changeset(merged) |> Repo.insert()
-              skill
-
-            existing_skill ->
-              attrs = guard_status_downgrade(existing_skill, attrs)
-
-              {:ok, skill} =
-                existing_skill
-                |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
-                |> Repo.update()
-
-              skill
-          end
-        end)
+        Enum.map(skill_attr_list, &upsert_one_skill(&1, library_id, existing))
 
       {:ok, results}
+    end
+  end
+
+  defp upsert_one_skill(attrs, library_id, existing) do
+    slug = Skill.slugify(attrs[:name])
+    merged = Map.merge(attrs, %{library_id: library_id})
+
+    case Map.get(existing, slug) do
+      nil ->
+        {:ok, skill} = %Skill{} |> Skill.changeset(merged) |> Repo.insert()
+        skill
+
+      existing_skill ->
+        attrs = guard_status_downgrade(existing_skill, attrs)
+
+        {:ok, skill} =
+          existing_skill
+          |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
+          |> Repo.update()
+
+        skill
     end
   end
 
@@ -532,15 +539,11 @@ defmodule RhoFrameworks.Library do
 
   defp normalize_skill_attrs(skill_map) do
     %{
-      category: skill_map[:category] || skill_map["category"] || "",
-      cluster: skill_map[:cluster] || skill_map["cluster"] || "",
-      name:
-        skill_map[:skill_name] || skill_map["skill_name"] || skill_map[:name] ||
-          skill_map["name"],
-      description:
-        skill_map[:skill_description] || skill_map["skill_description"] ||
-          skill_map[:description] || skill_map["description"] || "",
-      proficiency_levels: skill_map[:proficiency_levels] || skill_map["proficiency_levels"] || [],
+      category: skill_map[:category] || "",
+      cluster: skill_map[:cluster] || "",
+      name: skill_map[:skill_name] || skill_map[:name],
+      description: skill_map[:skill_description] || skill_map[:description] || "",
+      proficiency_levels: skill_map[:proficiency_levels] || [],
       status: "published"
     }
   end
@@ -565,23 +568,22 @@ defmodule RhoFrameworks.Library do
         # Published library — auto-create a draft and save there
         case create_draft_from_latest(org_id, lib.name) do
           {:ok, %{library: draft}} ->
-            case do_save_to_library(draft.id, skills) do
-              {:ok, result} -> {:ok, Map.put(result, :draft_library_id, draft.id)}
-              error -> error
-            end
+            save_skills_to_draft(draft.id, skills)
 
           {:error, :draft_exists, _msg} ->
-            # Draft already exists — save to the existing draft
             draft = get_draft(org_id, lib.name)
-
-            case do_save_to_library(draft.id, skills) do
-              {:ok, result} -> {:ok, Map.put(result, :draft_library_id, draft.id)}
-              error -> error
-            end
+            save_skills_to_draft(draft.id, skills)
 
           error ->
             error
         end
+    end
+  end
+
+  defp save_skills_to_draft(draft_id, skills) do
+    case do_save_to_library(draft_id, skills) do
+      {:ok, result} -> {:ok, Map.put(result, :draft_library_id, draft_id)}
+      error -> error
     end
   end
 
@@ -705,6 +707,14 @@ defmodule RhoFrameworks.Library do
     |> Repo.all()
   end
 
+  defp copy_all_skills(source_id, draft_id) do
+    list_skills(source_id)
+    |> Enum.map(fn skill ->
+      {:ok, new_skill} = copy_skill(skill, draft_id, source_skill_id: skill.id)
+      new_skill
+    end)
+  end
+
   def copy_skill(skill, target_library_id, opts \\ []) do
     source_skill_id = Keyword.get(opts, :source_skill_id)
     slug = Skill.slugify(skill.name)
@@ -825,9 +835,7 @@ defmodule RhoFrameworks.Library do
   def diff_against_source(org_id, library_id) do
     lib = get_library!(org_id, library_id) |> Repo.preload(:derived_from)
 
-    unless lib.derived_from_id do
-      {:error, :no_source, "This library was not forked from another library."}
-    else
+    if lib.derived_from_id do
       source_skills = list_skills(lib.derived_from_id) |> Map.new(&{&1.id, &1})
       fork_skills = list_skills(library_id)
       fork_by_source = Map.new(fork_skills, fn s -> {s.source_skill_id, s} end)
@@ -860,6 +868,8 @@ defmodule RhoFrameworks.Library do
          modified: modified,
          unchanged_count: max(unchanged_count, 0)
        }}
+    else
+      {:error, :no_source, "This library was not forked from another library."}
     end
   end
 
@@ -1008,66 +1018,23 @@ defmodule RhoFrameworks.Library do
       })
     end)
     |> Ecto.Multi.run(:skills, fn _repo, %{library: lib} ->
-      all_skills =
-        Enum.flat_map(sources, fn src -> list_skills(src.id) end)
+      eligible_skills =
+        sources
+        |> Enum.flat_map(fn src -> list_skills(src.id) end)
+        |> Enum.reject(&MapSet.member?(skip_ids, &1.id))
 
-      # First pass: copy non-skipped skills (dedup by slug, skip resolved-away skills)
-      {copied, _seen} =
-        Enum.reduce(all_skills, {[], %{}}, fn skill, {acc, slugs} ->
-          if MapSet.member?(skip_ids, skill.id) do
-            {acc, slugs}
-          else
-            slug = Skill.slugify(skill.name)
-
-            case Map.get(slugs, slug) do
-              nil ->
-                {:ok, new_skill} = copy_skill(skill, lib.id, source_skill_id: skill.id)
-                {[new_skill | acc], Map.put(slugs, slug, true)}
-
-              _ ->
-                # Already copied via slug dedup
-                {acc, slugs}
-            end
-          end
-        end)
+      # First pass: copy non-skipped skills (dedup by slug)
+      {copied, _seen} = copy_skills_deduped(eligible_skills, lib.id)
 
       # Second pass: apply merge resolutions (absorb proficiency levels from dropped skill)
       copied_by_source = Map.new(copied, fn s -> {s.source_skill_id, s} end)
 
-      Enum.each(merge_map, fn {keep_id, absorb_id} ->
-        case {Map.get(copied_by_source, keep_id), Repo.get(Skill, absorb_id)} do
-          {%Skill{} = target, %Skill{} = source} ->
-            merge_proficiency_levels(source, target)
-
-          _ ->
-            :ok
-        end
-      end)
+      apply_merge_resolutions(merge_map, copied_by_source)
 
       {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
     end)
     |> Ecto.Multi.run(:role_profiles, fn _repo, %{skills: skill_id_map} ->
-      if include_roles do
-        source_roles =
-          Enum.flat_map(sources, fn src ->
-            list_role_profiles_for_library(src.id)
-          end)
-
-        copied =
-          Enum.reduce_while(source_roles, {:ok, []}, fn role, {:ok, acc} ->
-            case copy_role_profile(role, org_id, skill_id_map, fork_name: new_name) do
-              {:ok, rp} -> {:cont, {:ok, [rp | acc]}}
-              {:error, _step, reason, _} -> {:halt, {:error, reason}}
-            end
-          end)
-
-        case copied do
-          {:ok, list} -> {:ok, Enum.reverse(list)}
-          {:error, reason} -> {:error, reason}
-        end
-      else
-        {:ok, []}
-      end
+      copy_roles_if_included(include_roles, sources, org_id, skill_id_map, new_name)
     end)
     |> Repo.transaction()
     |> case do
@@ -1086,28 +1053,23 @@ defmodule RhoFrameworks.Library do
   defp build_resolution_plan(resolutions) do
     resolutions
     |> Enum.map(&normalize_resolution/1)
-    |> Enum.reduce({MapSet.new(), %{}}, fn res, {skip, merges} ->
-      action = res["action"]
-      keep_id = res["keep"]
-      a_id = res["skill_a_id"]
-      b_id = res["skill_b_id"]
+    |> Enum.reduce({MapSet.new(), %{}}, &apply_resolution/2)
+  end
 
-      case action do
-        "pick" ->
-          drop_id = if keep_id == a_id, do: b_id, else: a_id
-          {MapSet.put(skip, drop_id), merges}
+  defp apply_resolution(res, {skip, merges}) do
+    keep_id = res["keep"]
+    a_id = res["skill_a_id"]
+    b_id = res["skill_b_id"]
 
-        "merge" ->
-          drop_id = if keep_id == a_id, do: b_id, else: a_id
-          {MapSet.put(skip, drop_id), Map.put(merges, keep_id, drop_id)}
+    case res["action"] do
+      action when action in ["pick", "merge"] ->
+        drop_id = if keep_id == a_id, do: b_id, else: a_id
+        merges = if action == "merge", do: Map.put(merges, keep_id, drop_id), else: merges
+        {MapSet.put(skip, drop_id), merges}
 
-        "keep_both" ->
-          {skip, merges}
-
-        _ ->
-          {skip, merges}
-      end
-    end)
+      _ ->
+        {skip, merges}
+    end
   end
 
   # Normalize agent format (conflict_id + keep_skill_id) to canonical format
@@ -1257,58 +1219,41 @@ defmodule RhoFrameworks.Library do
           list_skills(src.id, skills_filter_opts(categories))
         end)
 
-      {copied, _seen} =
-        Enum.reduce(all_skills, {[], %{}}, fn skill, {acc, slugs} ->
-          slug = Skill.slugify(skill.name)
-
-          case Map.get(slugs, slug) do
-            nil ->
-              {:ok, new_skill} = copy_skill(skill, lib.id, source_skill_id: skill.id)
-              {[new_skill | acc], Map.put(slugs, slug, skill.description)}
-
-            existing_desc when existing_desc == skill.description ->
-              {acc, slugs}
-
-            _different_desc ->
-              counter =
-                Enum.count(slugs, fn {k, _} -> String.starts_with?(k, slug <> "-") end) + 2
-
-              disambiguated_name = "#{skill.name} (#{counter})"
-
-              {:ok, new_skill} =
-                copy_skill(%{skill | name: disambiguated_name}, lib.id, source_skill_id: skill.id)
-
-              {[new_skill | acc],
-               Map.put(slugs, Skill.slugify(disambiguated_name), skill.description)}
-          end
-        end)
+      {copied, _seen} = copy_skills_with_disambiguation(all_skills, lib.id)
 
       {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
     end)
     |> Ecto.Multi.run(:role_profiles, fn _repo, %{skills: skill_id_map} ->
-      if include_roles do
-        source_roles =
-          Enum.flat_map(sources, fn src ->
-            list_role_profiles_for_library(src.id, skills_filter_opts(categories))
-          end)
-
-        copied =
-          Enum.reduce_while(source_roles, {:ok, []}, fn role, {:ok, acc} ->
-            case copy_role_profile(role, org_id, skill_id_map, fork_name: new_name) do
-              {:ok, rp} -> {:cont, {:ok, [rp | acc]}}
-              {:error, _step, reason, _} -> {:halt, {:error, reason}}
-            end
-          end)
-
-        case copied do
-          {:ok, list} -> {:ok, Enum.reverse(list)}
-          {:error, reason} -> {:error, reason}
-        end
-      else
-        {:ok, []}
-      end
+      copy_roles_if_included(include_roles, sources, org_id, skill_id_map, new_name,
+        skills_filter: skills_filter_opts(categories)
+      )
     end)
     |> Repo.transaction()
+  end
+
+  defp copy_roles_if_included(include_roles, sources, org_id, skill_id_map, new_name, opts \\ [])
+
+  defp copy_roles_if_included(false, _sources, _org_id, _skill_id_map, _new_name, _opts),
+    do: {:ok, []}
+
+  defp copy_roles_if_included(true, sources, org_id, skill_id_map, new_name, opts) do
+    filter = Keyword.get(opts, :skills_filter, [])
+
+    source_roles =
+      Enum.flat_map(sources, fn src ->
+        list_role_profiles_for_library(src.id, filter)
+      end)
+
+    Enum.reduce_while(source_roles, {:ok, []}, fn role, {:ok, acc} ->
+      case copy_role_profile(role, org_id, skill_id_map, fork_name: new_name) do
+        {:ok, rp} -> {:cont, {:ok, [rp | acc]}}
+        {:error, _step, reason, _} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   # --- Import Library ---
@@ -1349,54 +1294,46 @@ defmodule RhoFrameworks.Library do
       bulk_upsert_skills(lib.id, normalized, skip_mutability: true)
     end)
     |> Ecto.Multi.run(:role_profiles, fn _repo, %{library: lib, skills: skills} ->
-      role_profile_defs = template_data[:role_profiles] || template_data["role_profiles"] || []
-
-      if role_profile_defs == [] do
-        {:ok, []}
-      else
-        # Build skill name → skill lookup from the just-created skills
-        skill_by_name = Map.new(skills, fn skill -> {skill.name, skill} end)
-
-        results =
-          Enum.map(role_profile_defs, fn rp_def ->
-            create_template_role_profile(org_id, lib, rp_def, skill_by_name)
-          end)
-
-        {:ok, results}
-      end
+      role_profile_defs = template_data[:role_profiles] || []
+      {:ok, create_template_role_profiles(org_id, lib, role_profile_defs, skills)}
     end)
     |> Repo.transaction()
+  end
+
+  defp create_template_role_profiles(_org_id, _lib, [], _skills), do: []
+
+  defp create_template_role_profiles(org_id, lib, role_profile_defs, skills) do
+    skill_by_name = Map.new(skills, fn skill -> {skill.name, skill} end)
+    Enum.map(role_profile_defs, &create_template_role_profile(org_id, lib, &1, skill_by_name))
   end
 
   defp create_template_role_profile(org_id, _library, rp_def, skill_by_name) do
     {:ok, rp} =
       %RoleProfile{}
       |> RoleProfile.changeset(%{
-        name: rp_def.name || rp_def["name"],
-        role_family: rp_def[:role_family] || rp_def["role_family"],
-        seniority_level: rp_def[:seniority_level] || rp_def["seniority_level"],
-        seniority_label: rp_def[:seniority_label] || rp_def["seniority_label"],
-        purpose: rp_def[:purpose] || rp_def["purpose"],
+        name: rp_def[:name],
+        role_family: rp_def[:role_family],
+        seniority_level: rp_def[:seniority_level],
+        seniority_label: rp_def[:seniority_label],
+        purpose: rp_def[:purpose],
         immutable: true,
         organization_id: org_id
       })
       |> Repo.insert()
 
-    skill_defs = rp_def[:skills] || rp_def["skills"] || []
+    skill_defs = rp_def[:skills] || []
 
     Enum.each(skill_defs, fn skill_def ->
-      skill_name = skill_def[:skill_name] || skill_def["skill_name"]
-      skill = Map.get(skill_by_name, skill_name)
+      skill = Map.get(skill_by_name, skill_def[:skill_name])
 
       if skill do
         %RoleSkill{}
         |> RoleSkill.changeset(%{
           role_profile_id: rp.id,
           skill_id: skill.id,
-          min_expected_level:
-            skill_def[:min_expected_level] || skill_def["min_expected_level"] || 1,
+          min_expected_level: skill_def[:min_expected_level] || 1,
           weight: 1.0,
-          required: Map.get(skill_def, :required, Map.get(skill_def, "required", true))
+          required: Map.get(skill_def, :required, true)
         })
         |> Repo.insert!()
       end
@@ -1452,30 +1389,17 @@ defmodule RhoFrameworks.Library do
 
       Ecto.Multi.new()
       |> Ecto.Multi.run(:repoint, fn _repo, _ ->
-        Enum.each(clean, fn rs ->
-          rs |> Ecto.Changeset.change(%{skill_id: target_id}) |> Repo.update!()
-        end)
-
+        repoint_role_skills(clean, target_id)
         {:ok, length(clean)}
       end)
       |> Ecto.Multi.run(:conflicts, fn _repo, _ ->
-        results =
-          Enum.map(conflicted, fn source_rs ->
-            target_rs = target_ref_map[source_rs.role_profile_id]
-            resolve_conflict(source_rs, target_rs, conflict_strategy)
-          end)
-
-        {:ok, results}
+        {:ok, resolve_conflicts(conflicted, target_ref_map, conflict_strategy)}
       end)
       |> Ecto.Multi.run(:levels, fn _repo, _ ->
         {:ok, merge_proficiency_levels(source, target)}
       end)
       |> Ecto.Multi.run(:rename, fn _repo, _ ->
-        if new_name do
-          target |> Skill.changeset(%{name: new_name}) |> Repo.update()
-        else
-          {:ok, nil}
-        end
+        maybe_rename_skill(target, new_name)
       end)
       |> Ecto.Multi.run(:delete_source, fn _repo, _ ->
         # Delete orphaned source role_skills first
@@ -1484,6 +1408,82 @@ defmodule RhoFrameworks.Library do
       end)
       |> Repo.transaction()
     end
+  end
+
+  defp apply_merge_resolutions(merge_map, copied_by_source) do
+    Enum.each(merge_map, fn {keep_id, absorb_id} ->
+      case {Map.get(copied_by_source, keep_id), Repo.get(Skill, absorb_id)} do
+        {%Skill{} = target, %Skill{} = source} ->
+          merge_proficiency_levels(source, target)
+
+        _ ->
+          :ok
+      end
+    end)
+  end
+
+  defp repoint_role_skills(role_skills, target_id) do
+    Enum.each(role_skills, fn rs ->
+      rs |> Ecto.Changeset.change(%{skill_id: target_id}) |> Repo.update!()
+    end)
+  end
+
+  defp count_slug_variants(slugs, slug) do
+    Enum.count(slugs, fn {k, _} -> String.starts_with?(k, slug <> "-") end)
+  end
+
+  defp copy_skills_deduped(skills, library_id) do
+    Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
+      slug = Skill.slugify(skill.name)
+
+      case Map.get(slugs, slug) do
+        nil ->
+          {:ok, new_skill} = copy_skill(skill, library_id, source_skill_id: skill.id)
+          {[new_skill | acc], Map.put(slugs, slug, true)}
+
+        _ ->
+          {acc, slugs}
+      end
+    end)
+  end
+
+  defp copy_skills_with_disambiguation(skills, library_id) do
+    Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
+      slug = Skill.slugify(skill.name)
+
+      case Map.get(slugs, slug) do
+        nil ->
+          {:ok, new_skill} = copy_skill(skill, library_id, source_skill_id: skill.id)
+          {[new_skill | acc], Map.put(slugs, slug, skill.description)}
+
+        existing_desc when existing_desc == skill.description ->
+          {acc, slugs}
+
+        _different_desc ->
+          counter = count_slug_variants(slugs, slug) + 2
+
+          disambiguated_name = "#{skill.name} (#{counter})"
+
+          {:ok, new_skill} =
+            copy_skill(%{skill | name: disambiguated_name}, library_id, source_skill_id: skill.id)
+
+          {[new_skill | acc],
+           Map.put(slugs, Skill.slugify(disambiguated_name), skill.description)}
+      end
+    end)
+  end
+
+  defp resolve_conflicts(conflicted, target_ref_map, strategy) do
+    Enum.map(conflicted, fn source_rs ->
+      target_rs = target_ref_map[source_rs.role_profile_id]
+      resolve_conflict(source_rs, target_rs, strategy)
+    end)
+  end
+
+  defp maybe_rename_skill(_skill, nil), do: {:ok, nil}
+
+  defp maybe_rename_skill(skill, new_name) do
+    skill |> Skill.changeset(%{name: new_name}) |> Repo.update()
   end
 
   def dismiss_duplicate(library_id, skill_a_id, skill_b_id) do
@@ -1529,11 +1529,10 @@ defmodule RhoFrameworks.Library do
 
     skill_list =
       skills
-      |> Enum.map(fn s ->
+      |> Enum.map_join("\n", fn s ->
         desc = if s.description && s.description != "", do: " — #{s.description}", else: ""
         "- [#{s.id}] #{s.name} (#{s.category})#{desc}"
       end)
-      |> Enum.join("\n")
 
     task_prompt = """
     Below is a list of skills from a single competency library.
@@ -1582,22 +1581,24 @@ defmodule RhoFrameworks.Library do
           id_b = p["id_b"]
           id_a && id_b && Map.has_key?(skill_index, id_a) && Map.has_key?(skill_index, id_b)
         end)
-        |> Enum.map(fn p ->
-          a = skill_index[p["id_a"]]
-          b = skill_index[p["id_b"]]
-          {sa, sb} = if a.id < b.id, do: {a, b}, else: {b, a}
-
-          %{
-            skill_a: %{id: sa.id, name: sa.name, category: sa.category},
-            skill_b: %{id: sb.id, name: sb.name, category: sb.category},
-            confidence: :low,
-            detection_method: :semantic
-          }
-        end)
+        |> Enum.map(&build_semantic_pair(&1, skill_index))
 
       _ ->
         []
     end
+  end
+
+  defp build_semantic_pair(p, skill_index) do
+    a = skill_index[p["id_a"]]
+    b = skill_index[p["id_b"]]
+    {sa, sb} = if a.id < b.id, do: {a, b}, else: {b, a}
+
+    %{
+      skill_a: %{id: sa.id, name: sa.name, category: sa.category},
+      skill_b: %{id: sb.id, name: sb.name, category: sb.category},
+      confidence: :low,
+      detection_method: :semantic
+    }
   end
 
   # --- Private helpers ---
@@ -1617,29 +1618,30 @@ defmodule RhoFrameworks.Library do
       |> Repo.all()
       |> Enum.group_by(&elem(&1, 0), fn {_, name, level} -> {name, level} end)
 
-    Enum.map(candidates, fn c ->
-      refs_a = Map.get(role_refs, c.skill_a.id, [])
-      refs_b = Map.get(role_refs, c.skill_b.id, [])
+    Enum.map(candidates, &enrich_candidate(&1, role_refs))
+  end
 
-      role_names_a = Enum.map(refs_a, &elem(&1, 0))
-      role_names_b = Enum.map(refs_b, &elem(&1, 0))
+  defp enrich_candidate(c, role_refs) do
+    refs_a = Map.get(role_refs, c.skill_a.id, [])
+    refs_b = Map.get(role_refs, c.skill_b.id, [])
 
-      # level_conflict: true if any shared role has different levels for the two skills
-      shared_roles = MapSet.intersection(MapSet.new(role_names_a), MapSet.new(role_names_b))
+    role_names_a = Enum.map(refs_a, &elem(&1, 0))
+    role_names_b = Enum.map(refs_b, &elem(&1, 0))
 
-      level_conflict =
-        Enum.any?(shared_roles, fn role ->
-          level_a = refs_a |> Enum.find(fn {n, _} -> n == role end) |> elem(1)
-          level_b = refs_b |> Enum.find(fn {n, _} -> n == role end) |> elem(1)
-          level_a != level_b
-        end)
+    shared_roles = MapSet.intersection(MapSet.new(role_names_a), MapSet.new(role_names_b))
 
-      Map.merge(c, %{
-        roles_a: role_names_a,
-        roles_b: role_names_b,
-        level_conflict: level_conflict
-      })
-    end)
+    level_conflict =
+      Enum.any?(shared_roles, fn role ->
+        level_a = refs_a |> Enum.find(fn {n, _} -> n == role end) |> elem(1)
+        level_b = refs_b |> Enum.find(fn {n, _} -> n == role end) |> elem(1)
+        level_a != level_b
+      end)
+
+    Map.merge(c, %{
+      roles_a: role_names_a,
+      roles_b: role_names_b,
+      level_conflict: level_conflict
+    })
   end
 
   defp list_dismissed_pairs(library_id) do

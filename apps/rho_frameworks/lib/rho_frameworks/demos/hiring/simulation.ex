@@ -271,18 +271,16 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
 
       role_scores =
         entries
-        |> Enum.map(fn {_id, role, score} -> "#{role}: #{score}" end)
-        |> Enum.join(", ")
+        |> Enum.map_join(", ", fn {_id, role, score} -> "#{role}: #{score}" end)
 
       {id, spread, role_scores}
     end)
     |> Enum.sort_by(fn {_id, spread, _} -> -spread end)
-    |> Enum.map(fn {id, spread, role_scores} ->
+    |> Enum.map_join("\n", fn {id, spread, role_scores} ->
       candidate = Enum.find(Candidates.all(), &(&1.id == id))
       name = if candidate, do: candidate.name, else: id
       "- #{id} (#{name}): spread #{spread} points — #{role_scores}"
     end)
-    |> Enum.join("\n")
   end
 
   defp compute_final_shortlist(state) do

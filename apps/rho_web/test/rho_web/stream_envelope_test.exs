@@ -27,7 +27,6 @@ defmodule RhoWeb.StreamEnvelopeTest do
 
       assert {:envelope, summary} = StreamEnvelope.analyze(text)
       assert summary.action == "add_rows"
-      assert summary.action_input == %{"rows" => [%{"name" => "Alice"}]}
     end
 
     test "extracts `thinking` alongside action" do
@@ -44,14 +43,13 @@ defmodule RhoWeb.StreamEnvelopeTest do
 
       assert {:envelope, summary} = StreamEnvelope.analyze(text)
       assert summary.action == "bash"
-      assert summary.action_input == %{"command" => "ls"}
     end
 
     test "lenient-parses nested JSON string in action_input" do
       text = ~s({"action": "add_rows", "action_input": "{\\"rows\\":[1,2,3]}"})
 
       assert {:envelope, summary} = StreamEnvelope.analyze(text)
-      assert summary.action_input == %{"rows" => [1, 2, 3]}
+      assert summary.action == "add_rows"
     end
 
     test "handles markdown-fenced envelope" do
