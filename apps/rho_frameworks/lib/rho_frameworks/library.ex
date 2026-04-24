@@ -682,7 +682,6 @@ defmodule RhoFrameworks.Library do
   # --- Fork / Derive ---
 
   def fork_library(org_id, source_library_id, new_name, opts \\ []) do
-    opts = Keyword.put_new(opts, :include_roles, true)
     derive_library(org_id, [source_library_id], new_name, opts)
   end
 
@@ -742,91 +741,6 @@ defmodule RhoFrameworks.Library do
         existing
         |> Skill.changeset(Map.drop(attrs, [:library_id]))
         |> Repo.update()
-    end
-  end
-
-  defp copy_role_profile(role, org_id, skill_id_map, opts) do
-    fork_name = Keyword.get(opts, :fork_name)
-
-    base_name =
-      if fork_name, do: "#{role.name} (#{fork_name})", else: role.name
-
-    name = unique_role_profile_name(org_id, base_name)
-
-    Ecto.Multi.new()
-    |> Ecto.Multi.run(:role_profile, fn _repo, _ ->
-      %RoleProfile{}
-      |> RoleProfile.changeset(%{
-        name: name,
-        role_family: role.role_family,
-        seniority_level: role.seniority_level,
-        seniority_label: role.seniority_label,
-        description: role.description,
-        purpose: role.purpose,
-        accountabilities: role.accountabilities,
-        success_metrics: role.success_metrics,
-        qualifications: role.qualifications,
-        reporting_context: role.reporting_context,
-        headcount: role.headcount,
-        metadata: role.metadata,
-        work_activities: role.work_activities,
-        immutable: false,
-        source_role_profile_id: role.id,
-        organization_id: org_id
-      })
-      |> Repo.insert()
-    end)
-    |> Ecto.Multi.run(:role_skills, fn repo, %{role_profile: new_rp} ->
-      entries =
-        role.role_skills
-        |> Enum.filter(fn rs -> Map.has_key?(skill_id_map, rs.skill_id) end)
-        |> Enum.map(fn rs ->
-          now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-          %{
-            id: Ecto.UUID.generate(),
-            role_profile_id: new_rp.id,
-            skill_id: skill_id_map[rs.skill_id].id,
-            min_expected_level: rs.min_expected_level,
-            weight: rs.weight,
-            required: rs.required,
-            inserted_at: now,
-            updated_at: now
-          }
-        end)
-
-      {count, _} = repo.insert_all(RoleSkill, entries)
-      {:ok, count}
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{role_profile: rp}} -> {:ok, rp}
-      error -> error
-    end
-  end
-
-  defp unique_role_profile_name(org_id, base_name) do
-    existing =
-      from(rp in RoleProfile,
-        where: rp.organization_id == ^org_id and rp.name == ^base_name,
-        select: count()
-      )
-      |> Repo.one()
-
-    if existing == 0 do
-      base_name
-    else
-      # Find next available suffix
-      like_pattern = base_name <> " (%"
-
-      max_suffix =
-        from(rp in RoleProfile,
-          where: rp.organization_id == ^org_id and like(rp.name, ^like_pattern),
-          select: count()
-        )
-        |> Repo.one()
-
-      "#{base_name} (#{max_suffix + 2})"
     end
   end
 
@@ -985,7 +899,6 @@ defmodule RhoFrameworks.Library do
   """
   def combine_commit(org_id, source_library_ids, new_name, resolutions, opts \\ [])
       when is_list(source_library_ids) do
-    include_roles = Keyword.get(opts, :include_roles, true)
     description = Keyword.get(opts, :description)
 
     sources =
@@ -1032,9 +945,6 @@ defmodule RhoFrameworks.Library do
       apply_merge_resolutions(merge_map, copied_by_source)
 
       {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
-    end)
-    |> Ecto.Multi.run(:role_profiles, fn _repo, %{skills: skill_id_map} ->
-      copy_roles_if_included(include_roles, sources, org_id, skill_id_map, new_name)
     end)
     |> Repo.transaction()
     |> case do
@@ -1184,7 +1094,6 @@ defmodule RhoFrameworks.Library do
   def derive_library(org_id, source_library_ids, new_name, opts \\ [])
       when is_list(source_library_ids) do
     categories = Keyword.get(opts, :categories, :all)
-    include_roles = Keyword.get(opts, :include_roles, false)
     description = Keyword.get(opts, :description)
 
     sources =
@@ -1223,37 +1132,7 @@ defmodule RhoFrameworks.Library do
 
       {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
     end)
-    |> Ecto.Multi.run(:role_profiles, fn _repo, %{skills: skill_id_map} ->
-      copy_roles_if_included(include_roles, sources, org_id, skill_id_map, new_name,
-        skills_filter: skills_filter_opts(categories)
-      )
-    end)
     |> Repo.transaction()
-  end
-
-  defp copy_roles_if_included(include_roles, sources, org_id, skill_id_map, new_name, opts \\ [])
-
-  defp copy_roles_if_included(false, _sources, _org_id, _skill_id_map, _new_name, _opts),
-    do: {:ok, []}
-
-  defp copy_roles_if_included(true, sources, org_id, skill_id_map, new_name, opts) do
-    filter = Keyword.get(opts, :skills_filter, [])
-
-    source_roles =
-      Enum.flat_map(sources, fn src ->
-        list_role_profiles_for_library(src.id, filter)
-      end)
-
-    Enum.reduce_while(source_roles, {:ok, []}, fn role, {:ok, acc} ->
-      case copy_role_profile(role, org_id, skill_id_map, fork_name: new_name) do
-        {:ok, rp} -> {:cont, {:ok, [rp | acc]}}
-        {:error, _step, reason, _} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, list} -> {:ok, Enum.reverse(list)}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
   # --- Import Library ---

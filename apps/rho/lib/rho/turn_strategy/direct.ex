@@ -29,12 +29,12 @@ defmodule Rho.TurnStrategy.Direct do
     stream_opts = Keyword.merge([tools: runtime.req_tools], gen_opts)
     process_opts = [on_result: fn chunk -> emit.(%{type: :text_delta, text: chunk}) end]
 
-    Logger.debug("[direct] starting LLM stream")
+    Logger.info("[direct] starting LLM stream model=#{model}")
     t_llm_start = System.monotonic_time(:millisecond)
 
     case stream_with_retry(model, messages, stream_opts, process_opts, emit, 1) do
       {:ok, response} ->
-        Logger.debug(
+        Logger.info(
           "[direct] LLM stream completed in #{System.monotonic_time(:millisecond) - t_llm_start}ms"
         )
 
@@ -96,8 +96,14 @@ defmodule Rho.TurnStrategy.Direct do
       emit.(%{type: :llm_text, text: response_text})
     end
 
+    tool_names = Enum.map(tool_calls, &ReqLLM.ToolCall.name/1)
+    Logger.info("[direct] dispatching #{length(tool_calls)} tool calls: #{inspect(tool_names)}")
+
     dispatched = Enum.map(tool_calls, &dispatch_tool_call(&1, tool_map, emit, ctx))
+
+    Logger.info("[direct] awaiting tool results...")
     awaited = Enum.map(dispatched, &collect_tool_result(&1, emit, ctx))
+    Logger.info("[direct] all tool results collected")
 
     {tool_results, final_outputs} = Enum.unzip(awaited)
     final_output = Enum.find(final_outputs, & &1)

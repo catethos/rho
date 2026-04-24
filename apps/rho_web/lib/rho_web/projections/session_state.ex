@@ -24,7 +24,6 @@ defmodule RhoWeb.Projections.SessionState do
       agent_tab_order: [],
       agent_messages: %{},
       inflight: %{},
-      pending_response: MapSet.new(),
       signals: [],
       ui_streams: %{},
       debug_projections: %{},
@@ -259,9 +258,13 @@ defmodule RhoWeb.Projections.SessionState do
     buffer = IO.iodata_to_binary(entry.chunks)
 
     envelope =
-      case RhoWeb.StreamEnvelope.analyze(buffer) do
-        {:envelope, summary} -> summary
-        :no_envelope -> entry[:envelope]
+      try do
+        case RhoWeb.StreamEnvelope.analyze(buffer) do
+          {:envelope, summary} -> summary
+          :no_envelope -> entry[:envelope]
+        end
+      rescue
+        _ -> entry[:envelope]
       end
 
     entry = Map.put(entry, :envelope, envelope)
@@ -269,7 +272,6 @@ defmodule RhoWeb.Projections.SessionState do
 
     state =
       state
-      |> clear_pending_response(agent_id)
       |> Map.put(:inflight, inflight)
 
     effects = [{:push_event, "text-chunk", %{agent_id: agent_id, text: text}}]
@@ -282,7 +284,6 @@ defmodule RhoWeb.Projections.SessionState do
     else
       agent_id = data[:agent_id] || primary_agent_id(state)
 
-      state = clear_pending_response(state, agent_id)
       {state, flush_effects, _} = flush_inflight_to_thinking(state, agent_id)
 
       {id, state} = next_id(state)
@@ -510,10 +511,7 @@ defmodule RhoWeb.Projections.SessionState do
     agent_id = data[:agent_id] || primary_agent_id(state)
     agents = update_agent_status(state.agents, agent_id, :busy)
 
-    state =
-      state
-      |> clear_pending_response(agent_id)
-      |> Map.put(:agents, agents)
+    state = Map.put(state, :agents, agents)
 
     add_signal(state, [], "turn.started", data, signal)
   end
@@ -521,7 +519,6 @@ defmodule RhoWeb.Projections.SessionState do
   defp reduce_turn_finished(state, data) do
     agent_id = data[:agent_id] || primary_agent_id(state)
 
-    state = clear_pending_response(state, agent_id)
     {state, flush_effects, has_final_answer} = flush_inflight_to_thinking(state, agent_id)
 
     inflight = Map.delete(state.inflight, agent_id)
@@ -635,8 +632,6 @@ defmodule RhoWeb.Projections.SessionState do
     agent_id = data[:agent_id] || primary_agent_id(state)
     reason = data[:reason]
 
-    # Clear pending response and flush any in-flight text
-    state = clear_pending_response(state, agent_id)
     {state, flush_effects, _} = flush_inflight_to_thinking(state, agent_id)
 
     inflight = Map.delete(state.inflight, agent_id)
@@ -707,6 +702,8 @@ defmodule RhoWeb.Projections.SessionState do
       {:ok, %{"tool" => "respond"}} -> true
       _ -> false
     end
+  rescue
+    _ -> false
   end
 
   defp update_agent_status(agents, agent_id, status) do
@@ -714,11 +711,6 @@ defmodule RhoWeb.Projections.SessionState do
       nil -> agents
       agent -> Map.put(agents, agent_id, %{agent | status: status})
     end
-  end
-
-  defp clear_pending_response(state, agent_id) do
-    pending = state[:pending_response] || MapSet.new()
-    Map.put(state, :pending_response, MapSet.delete(pending, agent_id))
   end
 
   defp add_signal(state, existing_effects, type, data, signal) do

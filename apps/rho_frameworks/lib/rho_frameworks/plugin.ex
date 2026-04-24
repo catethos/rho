@@ -13,59 +13,40 @@ defmodule RhoFrameworks.Plugin do
   @behaviour Rho.Plugin
 
   alias RhoFrameworks.Tools.{LibraryTools, RoleTools, LensTools, SharedTools}
-  alias RhoFrameworks.Library
 
   @impl Rho.Plugin
   def tools(_mount_opts, %{organization_id: nil}), do: []
-  def tools(_mount_opts, %{organization_id: _} = context), do: build_tools(context)
+
+  def tools(mount_opts, %{organization_id: _} = context) do
+    all = build_tools(context)
+    mark_deferred(all, mount_opts)
+  end
+
   def tools(_mount_opts, _context), do: []
 
-  @impl Rho.Plugin
-  def prompt_sections(_mount_opts, context) do
-    [static_section(), library_context_section(context)]
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp static_section do
-    """
-    # Skill Library & Role Profile System
-
-    Two data table modes:
-
-    **Library Mode** — category, cluster, skill_name, skill_description, proficiency_levels. Use `save_to_library` to persist.
-    **Role Profile Mode** — category, cluster, skill_name, skill_description, required_level, required. Use `save_role_profile` to persist.
-    """
-  end
-
-  defp library_context_section(%{organization_id: org_id}) when is_binary(org_id) do
-    case Library.library_summary(org_id) do
-      [] ->
-        nil
-
-      libraries ->
-        lines =
-          Enum.map_join(libraries, "\n", fn lib ->
-            "- **#{lib.name}** (id: #{lib.id}, #{version_label(lib)}, #{lib.skill_count} skills) — categories: #{Enum.map_join(lib.categories, ", ", & &1.category)}"
-          end)
-
-        """
-        # Existing Skill Libraries
-
-        #{lines}
-        """
-    end
-  end
-
-  defp library_context_section(_), do: nil
-
-  defp version_label(%{version: v}) when not is_nil(v), do: "v#{v}"
-  defp version_label(%{immutable: true}), do: "immutable"
-  defp version_label(_), do: "draft"
+  # No prompt_sections — library context is available via
+  # manage_library(action: "list") on demand, saving tokens per turn.
 
   defp build_tools(context) do
     LibraryTools.__tools__(context) ++
       RoleTools.__tools__(context) ++
       LensTools.__tools__(context) ++
       SharedTools.__tools__(context)
+  end
+
+  defp mark_deferred(tools, mount_opts) do
+    case Keyword.get(mount_opts, :deferred) do
+      nil ->
+        tools
+
+      names when is_list(names) ->
+        deferred = MapSet.new(names, &to_string/1)
+
+        Enum.map(tools, fn tool_def ->
+          if MapSet.member?(deferred, tool_def.tool.name),
+            do: Map.put(tool_def, :deferred, true),
+            else: tool_def
+        end)
+    end
   end
 end

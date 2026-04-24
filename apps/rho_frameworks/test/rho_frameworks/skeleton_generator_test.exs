@@ -40,12 +40,12 @@ defmodule RhoFrameworks.SkeletonGeneratorTest do
       assert String.contains?(agent_id, "agent_")
     end
 
-    test "resolve_tools/1 includes create_library, save_skeletons, finish" do
+    test "resolve_tools/1 includes manage_library, save_skeletons, finish" do
       ctx = %Rho.Context{agent_name: :spreadsheet}
       tools = SkeletonGenerator.resolve_tools(ctx)
 
       tool_names = Enum.map(tools, fn t -> t.tool.name end)
-      assert "create_library" in tool_names
+      assert "manage_library" in tool_names
       assert "save_skeletons" in tool_names
       assert "finish" in tool_names
     end

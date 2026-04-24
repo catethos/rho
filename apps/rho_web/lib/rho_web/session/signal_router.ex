@@ -21,7 +21,6 @@ defmodule RhoWeb.Session.SignalRouter do
     :agent_tab_order,
     :agent_messages,
     :inflight,
-    :pending_response,
     :signals,
     :ui_streams,
     :debug_projections,

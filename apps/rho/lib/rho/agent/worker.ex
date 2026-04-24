@@ -307,6 +307,14 @@ defmodule Rho.Agent.Worker do
 
   def handle_call({:submit, content, opts}, _from, state) do
     turn_id = new_turn_id()
+    queue_size = :queue.len(state.queue)
+
+    Logger.warning(
+      "[worker] Submit while busy: agent=#{state.agent_id} status=#{state.status} " <>
+        "current_turn=#{state.current_turn_id} task_alive=#{is_pid(state.task_pid) and Process.alive?(state.task_pid)} " <>
+        "queue_size=#{queue_size} idle_ms=#{System.monotonic_time(:millisecond) - (state.last_activity_at || 0)}"
+    )
+
     state = %{state | queue: :queue.in({content, opts, turn_id}, state.queue)}
     {:reply, {:ok, turn_id}, state}
   end

@@ -70,7 +70,7 @@ defmodule RhoFrameworks.LensesTest do
           org_id,
           %{name: "Test Engineer #{System.unique_integer([:positive])}"},
           [%{category: "Technical", cluster: "Dev", skill_name: "Testing", required_level: 3}],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       %{lens: lens, role_profile: rp}
@@ -236,7 +236,7 @@ defmodule RhoFrameworks.LensesTest do
             description: "Analyzes data and produces reports"
           },
           [%{category: "Technical", cluster: "Data", skill_name: "SQL", required_level: 3}],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       %{lens: lens, role_profile: rp}
@@ -328,7 +328,7 @@ defmodule RhoFrameworks.LensesTest do
           org_id,
           %{name: "Boundary Role #{System.unique_integer([:positive])}"},
           [%{category: "Technical", cluster: "Dev", skill_name: "Testing", required_level: 3}],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       scores = %{
@@ -365,7 +365,7 @@ defmodule RhoFrameworks.LensesTest do
           org_id,
           %{name: "High-Risk Role #{System.unique_integer([:positive])}"},
           [%{category: "Technical", cluster: "Dev", skill_name: "Testing", required_level: 3}],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       {:ok, %{role_profile: rp2}} =
@@ -373,7 +373,7 @@ defmodule RhoFrameworks.LensesTest do
           org_id,
           %{name: "Safe Role #{System.unique_integer([:positive])}"},
           [%{category: "Technical", cluster: "Dev", skill_name: "Design", required_level: 2}],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       # rp1: high AI impact + low adaptability → Restructure

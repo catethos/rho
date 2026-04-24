@@ -217,16 +217,17 @@ defmodule RhoWeb.ChatComponents do
           id={"think-answer-#{@msg_id}"} phx-hook="Markdown"
           data-md={map["message"] || ""}></div>
       <% {:json, map} -> %>
-        <details :if={map["thinking"] || map["action"]} class="thinking-block">
+        <% action = map["action"] || map["tool"] %>
+        <details :if={map["thinking"] || action} class="thinking-block">
           <summary class="thinking-summary">
-            <%= truncate_summary(Map.get(map, "thinking")) || Map.get(map, "action", "Thinking") %>
+            <%= truncate_summary(Map.get(map, "thinking")) || action || "Thinking" %>
           </summary>
           <div class="thinking-content">
             <div :if={map["thinking"]} class="thinking-reasoning markdown-body"
               id={"think-md-#{@msg_id}"} phx-hook="Markdown" data-md={map["thinking"]}></div>
-            <div :if={map["action"]} class="thinking-action">
+            <div :if={action} class="thinking-action">
               <span class="thinking-label">Action:</span>
-              <code><%= map["action"] %></code>
+              <code><%= action %></code>
             </div>
           </div>
         </details>
@@ -441,9 +442,19 @@ defmodule RhoWeb.ChatComponents do
     # and render as a proper respond envelope rather than dumping
     # the raw stream (including duplicated thinking text) into the UI.
     case Rho.StructuredOutput.parse(content) do
-      {:ok, map} when is_map(map) -> {:json, map}
+      {:ok, map} when is_map(map) -> {:json, normalize_thinking_key(map)}
       {:ok, list} when is_list(list) -> {:raw_json, length(list)}
       _ -> {:text, content}
     end
   end
+
+  # The think action uses "thought", but the UI renders "thinking".
+  # Normalize so downstream rendering is consistent.
+  defp normalize_thinking_key(%{"thought" => thought} = map) when is_binary(thought) do
+    map
+    |> Map.delete("thought")
+    |> Map.put_new("thinking", thought)
+  end
+
+  defp normalize_thinking_key(map), do: map
 end

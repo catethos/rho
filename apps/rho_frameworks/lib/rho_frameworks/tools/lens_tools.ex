@@ -1,44 +1,21 @@
 defmodule RhoFrameworks.Tools.LensTools do
   @moduledoc """
-  Lens-related tools extracted from RhoFrameworks.Plugin.
-
-  Uses the `Rho.Tool` DSL to define tools with minimal boilerplate.
-  Provides tools for scoring role profiles through lenses, displaying the
-  lens dashboard, and switching the active lens.
+  Consolidated lens tools — 2 tools covering scoring and dashboard.
   """
 
   use Rho.Tool
 
-  tool :score_role,
-       "Score a role profile using a lens (default: ARIA AI Readiness). " <>
-         "Triggers LLM-based scoring that evaluates the role across the lens dimensions. " <>
-         "Results appear in the Lens Dashboard." do
-    param(:role_profile_id, :string,
-      required: true,
-      doc: "ID of the role profile to score"
-    )
+  # ── score_role ─────────────────────────────────────────────────────────
 
+  tool :score_role,
+       "Score a role profile using a lens (default: ARIA AI Readiness). Results appear in dashboard." do
+    param(:role_profile_id, :string, required: true, doc: "Role profile ID to score")
     param(:lens_slug, :string, doc: "Lens slug (default: 'aria')")
 
     run(fn args, ctx ->
       rp_id = args[:role_profile_id]
       slug = args[:lens_slug] || "aria"
-
-      lens =
-        RhoFrameworks.Repo.get_by(RhoFrameworks.Frameworks.Lens,
-          organization_id: ctx.organization_id,
-          slug: slug
-        )
-
-      lens =
-        case {lens, slug} do
-          {nil, "aria"} ->
-            {:ok, seeded} = RhoFrameworks.Lenses.seed_aria_lens(ctx.organization_id)
-            seeded
-
-          _ ->
-            lens
-        end
+      lens = resolve_lens(ctx.organization_id, slug)
 
       case lens do
         nil ->
@@ -64,29 +41,15 @@ defmodule RhoFrameworks.Tools.LensTools do
     end)
   end
 
-  tool :show_lens_dashboard,
-       "Open the Lens Dashboard panel showing scored roles on the active lens. " <>
-         "Loads current scores and publishes them to the dashboard." do
+  # ── lens_dashboard ─────────────────────────────────────────────────────
+
+  tool :lens_dashboard,
+       "Open or switch the Lens Dashboard. Shows scored roles on the specified lens." do
     param(:lens_slug, :string, doc: "Lens slug (default: 'aria')")
 
     run(fn args, ctx ->
       slug = args[:lens_slug] || "aria"
-
-      lens =
-        RhoFrameworks.Repo.get_by(RhoFrameworks.Frameworks.Lens,
-          organization_id: ctx.organization_id,
-          slug: slug
-        )
-
-      lens =
-        case {lens, slug} do
-          {nil, "aria"} ->
-            {:ok, seeded} = RhoFrameworks.Lenses.seed_aria_lens(ctx.organization_id)
-            seeded
-
-          _ ->
-            lens
-        end
+      lens = resolve_lens(ctx.organization_id, slug)
 
       case lens do
         nil ->
@@ -96,7 +59,6 @@ defmodule RhoFrameworks.Tools.LensTools do
           full_lens = RhoFrameworks.Lenses.get_lens!(lens.id)
           scores = RhoFrameworks.Lenses.scores_with_axes(lens.id)
           summary = RhoFrameworks.Lenses.score_summary(lens.id)
-
           lens_data = serialize_lens(full_lens)
 
           topic = "rho.session.#{ctx.session_id}.events.lens_dashboard_init"
@@ -117,44 +79,24 @@ defmodule RhoFrameworks.Tools.LensTools do
     end)
   end
 
-  tool :switch_lens,
-       "Switch the active lens in the dashboard to a different one." do
-    param(:lens_slug, :string, required: true, doc: "Slug of the lens to switch to")
+  # ── Helpers ────────────────────────────────────────────────────────────
 
-    run(fn args, ctx ->
-      slug = args[:lens_slug]
+  defp resolve_lens(org_id, slug) do
+    lens =
+      RhoFrameworks.Repo.get_by(RhoFrameworks.Frameworks.Lens,
+        organization_id: org_id,
+        slug: slug
+      )
 
-      lens =
-        RhoFrameworks.Repo.get_by(RhoFrameworks.Frameworks.Lens,
-          organization_id: ctx.organization_id,
-          slug: slug
-        )
+    case {lens, slug} do
+      {nil, "aria"} ->
+        {:ok, seeded} = RhoFrameworks.Lenses.seed_aria_lens(org_id)
+        seeded
 
-      case lens do
-        nil ->
-          {:error, "Lens '#{slug}' not found"}
-
-        lens ->
-          full_lens = RhoFrameworks.Lenses.get_lens!(lens.id)
-          scores = RhoFrameworks.Lenses.scores_with_axes(lens.id)
-          summary = RhoFrameworks.Lenses.score_summary(lens.id)
-
-          lens_data = serialize_lens(full_lens)
-
-          topic = "rho.session.#{ctx.session_id}.events.lens_switch"
-
-          Rho.Comms.publish(
-            topic,
-            %{lens: lens_data, scores: scores, summary: summary},
-            source: "/system"
-          )
-
-          {:ok, Jason.encode!(%{status: "switched", lens: full_lens.name})}
-      end
-    end)
+      _ ->
+        lens
+    end
   end
-
-  # ── Helpers ─────────────────────────────────────────────────────────────
 
   defp serialize_lens(full_lens) do
     %{

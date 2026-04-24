@@ -24,7 +24,9 @@ defmodule RhoFrameworks.GapAnalysisTest do
     ]
 
     {:ok, %{role_profile: rp}} =
-      RhoFrameworks.Roles.save_role_profile(org_id, %{name: "DE"}, rows, library_id: lib.id)
+      RhoFrameworks.Roles.save_role_profile(org_id, %{name: "DE"}, rows,
+        resolve_library_id: lib.id
+      )
 
     skills = RhoFrameworks.Library.list_skills(lib.id)
     skill_map = Map.new(skills, &{&1.name, &1.id})

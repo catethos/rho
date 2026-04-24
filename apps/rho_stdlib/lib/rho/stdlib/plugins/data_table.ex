@@ -19,11 +19,11 @@ defmodule Rho.Stdlib.Plugins.DataTable do
   # --- Plugin callbacks ---
 
   @impl Rho.Plugin
-  def tools(_mount_opts, %{session_id: session_id}) when is_binary(session_id) do
+  def tools(mount_opts, %{session_id: session_id}) when is_binary(session_id) do
     # Ensure the server exists so tools that read before any write succeed.
     _ = DataTable.ensure_started(session_id)
 
-    [
+    all = [
       describe_table_tool(session_id),
       query_table_tool(session_id),
       list_tables_tool(session_id),
@@ -32,9 +32,27 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       delete_rows_tool(session_id),
       replace_all_tool(session_id)
     ]
+
+    mark_deferred(all, mount_opts)
   end
 
   def tools(_mount_opts, _context), do: []
+
+  defp mark_deferred(tools, mount_opts) do
+    case Keyword.get(mount_opts, :deferred) do
+      nil ->
+        tools
+
+      names when is_list(names) ->
+        deferred = MapSet.new(names, &to_string/1)
+
+        Enum.map(tools, fn tool_def ->
+          if MapSet.member?(deferred, tool_def.tool.name),
+            do: Map.put(tool_def, :deferred, true),
+            else: tool_def
+        end)
+    end
+  end
 
   # --- Tool definitions ---
 
@@ -43,12 +61,9 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "describe_table",
-          description:
-            "Get table shape: row count, column names, and distinct value counts with samples. " <>
-              "Prefer this over query_table — it costs minimal tokens. " <>
-              "Only use query_table when you need actual row data to read or edit.",
+          description: "Data table shape: row count, columns, samples.",
           parameter_schema: [
-            table: [type: :string, required: false, doc: "Table name (default: main)"]
+            table: [type: :string, required: false, doc: "default: main"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -68,23 +83,14 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "query_table",
-          description:
-            "Read specific rows from a table. Expensive — use only when you need actual cell values to read or edit. " <>
-              "Always specify columns to avoid pulling unnecessary fields. " <>
-              "Use describe_table first; only call this when you need row data. " <>
-              "ID column is always included. " <>
-              "Complex (list/map) columns are elided as '<list<N>>' unless listed explicitly in `columns`.",
+          description: "Read data table rows with filtering.",
           parameter_schema: [
-            table: [type: :string, required: false, doc: "Table name (default: main)"],
-            columns: [
-              type: :string,
-              required: false,
-              doc: "Comma-separated column names to return (e.g. 'skill_name,category')"
-            ],
-            filter_field: [type: :string, required: false, doc: "Field name to filter by"],
-            filter_value: [type: :string, required: false, doc: "Value to match"],
-            limit: [type: :string, required: false, doc: "Max rows to return (default: 50)"],
-            offset: [type: :string, required: false, doc: "Rows to skip (default: 0)"]
+            table: [type: :string, required: false, doc: "default: main"],
+            columns: [type: :string, required: false, doc: "comma-separated names"],
+            filter_field: [type: :string, required: false],
+            filter_value: [type: :string, required: false],
+            limit: [type: :string, required: false, doc: "default: 50"],
+            offset: [type: :string, required: false, doc: "default: 0"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -174,7 +180,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "list_tables",
-          description: "List all tables with row counts.",
+          description: "List data tables with row counts.",
           parameter_schema: [],
           callback: fn _args -> :ok end
         ),
@@ -204,15 +210,10 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "update_cells",
-          description: "Update specific cells in existing rows.",
+          description: "Update data table cells.",
           parameter_schema: [
-            changes_json: [
-              type: :string,
-              required: true,
-              doc:
-                ~s(JSON array of changes: [{"id": "<row_id>", "field": "field_name", "value": "New Value"}])
-            ],
-            table: [type: :string, required: false, doc: "Table name (default: main)"]
+            changes_json: [type: :string, required: true, doc: "JSON array of {id, field, value}"],
+            table: [type: :string, required: false, doc: "default: main"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -242,14 +243,10 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "add_rows",
-          description: "Add new rows (no 'id' field — auto-assigned).",
+          description: "Add rows to data table.",
           parameter_schema: [
-            rows_json: [
-              type: :string,
-              required: true,
-              doc: "JSON string of row array"
-            ],
-            table: [type: :string, required: false, doc: "Table name (default: main)"]
+            rows_json: [type: :string, required: true, doc: "JSON row array"],
+            table: [type: :string, required: false, doc: "default: main"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -283,11 +280,11 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "delete_rows",
-          description: "Delete rows by ID list or field filter. Provide ids_json OR filter_json.",
+          description: "Delete data table rows by ID or filter.",
           parameter_schema: [
-            ids_json: [type: :string, doc: ~s(JSON array of row IDs, e.g. ["abc","def"])],
-            filter_json: [type: :string, doc: ~s(JSON filter object, e.g. {"category":"Legacy"})],
-            table: [type: :string, doc: "Table name (default: main)"]
+            ids_json: [type: :string, doc: "JSON array of row IDs"],
+            filter_json: [type: :string, doc: "JSON filter object"],
+            table: [type: :string, doc: "default: main"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -345,14 +342,10 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "replace_all",
-          description: "Replace entire table contents.",
+          description: "Replace all data table rows.",
           parameter_schema: [
-            rows_json: [
-              type: :string,
-              required: true,
-              doc: "JSON string of the complete new dataset array"
-            ],
-            table: [type: :string, required: false, doc: "Table name (default: main)"]
+            rows_json: [type: :string, required: true, doc: "JSON row array"],
+            table: [type: :string, required: false, doc: "default: main"]
           ],
           callback: fn _args -> :ok end
         ),

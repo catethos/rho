@@ -1,25 +1,18 @@
 defmodule Rho.Stdlib.Skill.Plugin do
   @moduledoc """
-  Skill plugin. Surfaces discovered skills to the agent:
+  Skill plugin — exposes the `skill` tool for on-demand workflow expansion.
 
-  - `prompt_sections/2` injects the "Available Skills" reference section.
-  - `tools/2` exposes the `skill` tool for on-demand skill expansion.
+  Skill names are inlined into the tool's parameter `@desc` in the BAML
+  schema (following the GenBaml pattern), so no separate prompt section is
+  needed. The LLM sees available skills directly in the schema line:
+
+      | skill(name: string @desc(create-framework, import-framework, ...))
 
   Skill discovery and parsing live on `Rho.Stdlib.Skill.Loader` / `Rho.Skill`.
-  This module is the `Plugin` adapter that wires them into the turn.
-
-  ## Same-turn injection is NOT allowed
-
-  The `skill` tool returns expanded skill content as tool output. That
-  output becomes a tape entry, and the *next* turn's prompt assembly
-  picks it up. Injecting expanded content into the current turn's
-  prompt mid-call would bypass the tape and break replay determinism.
-  A regression test guards this invariant.
   """
 
   @behaviour Rho.Plugin
 
-  alias Rho.PromptSection
   alias Rho.Stdlib.Skill.Loader
 
   @impl Rho.Plugin
@@ -30,58 +23,33 @@ defmodule Rho.Stdlib.Skill.Plugin do
 
   def tools(_opts, _context), do: []
 
-  @impl Rho.Plugin
-  def prompt_sections(_opts, %{workspace: workspace} = context) when is_binary(workspace) do
-    skills = Loader.discover(workspace)
-
-    if skills == [] do
-      []
-    else
-      messages = Map.get(context, :messages)
-
-      expanded =
-        if messages,
-          do: Loader.expanded_hints(extract_user_text(messages), skills),
-          else: MapSet.new()
-
-      [
-        %PromptSection{
-          key: :skills,
-          heading: "Available Skills",
-          body: Loader.render_prompt(skills, expanded),
-          kind: :reference,
-          priority: :normal
-        }
-      ]
-    end
-  end
-
-  def prompt_sections(_opts, _context), do: []
+  # No prompt_sections — skill names are inlined into the tool's
+  # parameter @desc via the BAML schema, following the GenBaml pattern.
 
   # --- Tool definition ---
 
   defp skill_tool(workspace, skills) do
+    skill_names = Enum.map_join(skills, ", ", & &1.name)
+
     %{
       tool:
         ReqLLM.tool(
           name: "skill",
-          description:
-            "Load a skill's full prompt content by name. Use this when you need the " <>
-              "detailed instructions from a skill listed in <available_skills>.",
+          description: "Load a skill's workflow instructions by name.",
           parameter_schema: [
             name: [
               type: :string,
               required: true,
-              doc: "The skill name to expand (e.g. \"code-review\")"
+              doc: skill_names
             ]
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args, _ctx -> execute_skill_expand(args, workspace, skills) end
+      execute: fn args, ctx -> execute_skill_expand(args, workspace, skills, ctx) end
     }
   end
 
-  defp execute_skill_expand(args, _workspace, skills) do
+  defp execute_skill_expand(args, _workspace, skills, ctx) do
     name = args[:name] || ""
 
     if String.trim(name) == "" do
@@ -93,14 +61,41 @@ defmodule Rho.Stdlib.Skill.Plugin do
           {:ok, "No skill found: \"#{name}\". Available: #{available}"}
 
         skill ->
-          {:ok, "## Skill: #{skill.name}\n\n#{skill.body}"}
+          body = "## Skill: #{skill.name}\n\n#{skill.body}"
+
+          case render_uses_tools(skill.uses, ctx) do
+            "" -> {:ok, body}
+            tool_hints -> {:ok, body <> "\n\n## Workflow tools\n" <> tool_hints}
+          end
       end
     end
   end
 
-  defp extract_user_text(messages) do
-    messages
-    |> Enum.filter(&(Map.get(&1, :role) == :user))
-    |> Enum.map_join(" ", &to_string(Map.get(&1, :content, "")))
+  defp render_uses_tools([], _ctx), do: ""
+
+  defp render_uses_tools(tool_names, ctx) do
+    all_tools = Rho.PluginRegistry.collect_tools(ctx)
+    names_set = MapSet.new(tool_names)
+
+    all_tools
+    |> Enum.filter(fn td -> MapSet.member?(names_set, td.tool.name) end)
+    |> Enum.map_join("\n", fn td ->
+      params = render_tool_params(td.tool.parameter_schema || [])
+      desc = td.tool.description
+      line = "  | #{td.tool.name}(#{params})"
+      if desc, do: "#{line}  // #{desc}", else: line
+    end)
+  end
+
+  defp render_tool_params([]), do: ""
+
+  defp render_tool_params(fields) do
+    Enum.map_join(fields, ", ", fn {name, opts} ->
+      type = Keyword.get(opts, :type, :string)
+      optional = if Keyword.get(opts, :required, false), do: "", else: "?"
+      doc = Keyword.get(opts, :doc)
+      base = "#{name}#{optional}: #{type}"
+      if doc, do: "#{base} @desc(#{doc})", else: base
+    end)
   end
 end

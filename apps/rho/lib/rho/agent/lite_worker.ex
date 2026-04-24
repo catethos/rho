@@ -75,6 +75,7 @@ defmodule Rho.Agent.LiteWorker do
       agent_id: agent_id,
       model: opts[:model] || config.model,
       system_prompt: system_prompt,
+      tool_defs: tools,
       req_tools: Enum.map(tools, & &1.tool),
       tool_map: Map.new(tools, fn t -> {t.tool.name, t} end),
       gen_opts: build_gen_opts(opts[:provider] || config[:provider]),
@@ -226,6 +227,7 @@ defmodule Rho.Agent.LiteWorker do
       model: opts.model,
       emit: opts.emit,
       gen_opts: opts.gen_opts,
+      tool_defs: opts.tool_defs,
       tool_map: opts.tool_map,
       context: opts.context
     }
@@ -421,22 +423,24 @@ defmodule Rho.Agent.LiteWorker do
 
     latency_ms = System.monotonic_time(:millisecond) - t0
 
-    {output_str, status, final} =
+    {output_str, status, final, effects} =
       case result do
-        {:final, output} -> {to_string(output), :ok, to_string(output)}
-        %Rho.ToolResponse{text: text} -> {text || "", :ok, nil}
-        {:ok, output} -> {to_string(output), :ok, nil}
-        {:error, reason} -> {"Error: #{reason}", :error, nil}
+        {:final, output} -> {to_string(output), :ok, to_string(output), []}
+        %Rho.ToolResponse{text: text, effects: fx} -> {text || "", :ok, nil, fx || []}
+        {:ok, output} -> {to_string(output), :ok, nil, []}
+        {:error, reason} -> {"Error: #{reason}", :error, nil, []}
       end
 
-    emit.(%{
+    event = %{
       type: :tool_result,
       name: name,
       status: status,
       output: output_str,
       call_id: call_id,
       latency_ms: latency_ms
-    })
+    }
+
+    emit.(if effects != [], do: Map.put(event, :effects, effects), else: event)
 
     tool_msg =
       case result do

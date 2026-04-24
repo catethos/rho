@@ -39,6 +39,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     memory_mod = ctx[:tape_module] || Rho.Tape.Context.Tape
     parent_emit = get_in(ctx, [:opts, :emit])
     identity = %{user_id: ctx[:user_id], organization_id: ctx[:organization_id]}
+    role_hint = build_role_hint(mount_opts, ctx[:agent_name])
 
     [
       delegate_task_tool(
@@ -48,9 +49,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         depth,
         memory_mod,
         parent_emit,
-        identity
+        identity,
+        role_hint
       ),
-      delegate_task_lite_tool(session_id, agent_id, ctx),
+      delegate_task_lite_tool(session_id, agent_id, ctx, role_hint),
       await_task_tool(session_id),
       await_all_tool(session_id),
       spawn_agent_tool(session_id, agent_id, workspace, depth, memory_mod, parent_emit, identity),
@@ -75,11 +77,13 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   def tools(_mount_opts, _context), do: []
 
-  @impl Rho.Plugin
-  def prompt_sections(mount_opts, %{agent_name: self_name} = _ctx) do
+  # No prompt_sections — available agent roles are inlined into
+  # delegate_task/delegate_task_lite param @desc via the BAML schema.
+
+  defp build_role_hint(mount_opts, self_name) do
     visible = Keyword.get(mount_opts, :visible_agents)
 
-    other_agents =
+    names =
       Rho.Config.agent_names()
       |> Enum.reject(&(&1 == self_name))
       |> then(fn names ->
@@ -87,31 +91,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           do: Enum.filter(names, &(&1 in visible)),
           else: names
       end)
-      |> Enum.map(fn name ->
-        config = Rho.Config.agent_config(name)
-        desc = config[:description] || "no description"
-        skills = config[:skills] || []
-        skills_str = if skills != [], do: " | skills: #{Enum.join(skills, ", ")}", else: ""
-        "- **#{name}**: #{desc}#{skills_str}"
-      end)
 
-    if other_agents == [] do
-      []
-    else
-      [
-        %Rho.PromptSection{
-          key: :available_agents,
-          heading: "Available Specialist Agents",
-          body: Enum.join(other_agents, "\n"),
-          priority: :normal,
-          kind: :reference,
-          position: :prelude
-        }
-      ]
-    end
+    if names == [], do: nil, else: Enum.map_join(names, ", ", &to_string/1)
   end
-
-  def prompt_sections(_mount_opts, _ctx), do: []
 
   # --- Tool definitions ---
 
@@ -122,38 +104,23 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
          parent_depth,
          memory_mod,
          parent_emit,
-         identity
+         identity,
+         role_hint
        ) do
+    role_doc = role_hint || "Agent role name"
+
     %{
       tool:
         ReqLLM.tool(
           name: "delegate_task",
-          description:
-            "Spawn a new agent to handle a subtask. Returns a task_id and agent_id immediately. " <>
-              "Use await_task to get the result later. The new agent runs in parallel with full tool access.",
+          description: "Spawn a sub-agent for a subtask. Use await_task for the result.",
           parameter_schema: [
-            task: [type: :string, required: true, doc: "The task prompt for the delegated agent"],
-            role: [
-              type: :string,
-              doc:
-                "Role for the agent (e.g., 'researcher', 'coder'). Uses role-specific config if available."
-            ],
-            capability: [
-              type: :string,
-              doc:
-                "If set, route to an existing idle agent with this capability (e.g. 'bash', 'python'). " <>
-                  "Falls back to spawning a new agent if none found."
-            ],
-            context_summary: [type: :string, doc: "Brief context about why this task is needed"],
-            inherit_context: [
-              type: :boolean,
-              doc:
-                "If true, fork the parent tape so the child sees conversation history (default: false)"
-            ],
-            max_steps: [
-              type: :integer,
-              doc: "Max steps for the agent (default: #{@default_max_steps})"
-            ]
+            task: [type: :string, required: true, doc: "Task prompt"],
+            role: [type: :string, doc: role_doc],
+            capability: [type: :string, doc: "Route to idle agent with this capability"],
+            context_summary: [type: :string, doc: "Why this task is needed"],
+            inherit_context: [type: :boolean, doc: "Fork parent tape (default: false)"],
+            max_steps: [type: :integer, doc: "Max steps (default: #{@default_max_steps})"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -177,16 +144,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
       tool:
         ReqLLM.tool(
           name: "await_task",
-          description:
-            "Wait for a delegated agent to complete and return its result. " <>
-              "Blocks until the agent finishes or times out (5 min default).",
+          description: "Wait for a delegated agent to finish.",
           parameter_schema: [
-            agent_id: [
-              type: :string,
-              required: true,
-              doc: "The agent_id returned by delegate_task"
-            ],
-            timeout: [type: :integer, doc: "Timeout in seconds (default: 300)"]
+            agent_id: [type: :string, required: true],
+            timeout: [type: :integer, doc: "default: 300"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -196,27 +157,19 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     }
   end
 
-  defp delegate_task_lite_tool(session_id, parent_agent_id, ctx) do
+  defp delegate_task_lite_tool(session_id, parent_agent_id, ctx, role_hint) do
+    role_doc = role_hint || "Role for config lookup (default: worker)"
+
     %{
       tool:
         ReqLLM.tool(
           name: "delegate_task_lite",
           description:
-            "Spawn a lightweight agent for a single-purpose generation task. " <>
-              "Much faster than delegate_task — no persistent state, no multi-turn reasoning. " <>
-              "The agent gets a clean context window, makes 1-3 LLM calls, and returns. " <>
-              "Best for batch-parallel work like generating proficiency levels. " <>
-              "Use await_task or await_all to get the result.",
+            "Spawn a lightweight agent for single-purpose generation. Use await_all for results.",
           parameter_schema: [
-            task: [type: :string, required: true, doc: "The task prompt for the agent"],
-            role: [
-              type: :string,
-              doc: "Role for config lookup (model, system_prompt). Default: 'worker'"
-            ],
-            max_steps: [
-              type: :integer,
-              doc: "Max LLM round-trips (default: 3). Keep small for generation tasks."
-            ]
+            task: [type: :string, required: true, doc: "Task prompt"],
+            role: [type: :string, doc: role_doc],
+            max_steps: [type: :integer, doc: "Max LLM round-trips (default: 3)"]
           ],
           callback: fn _args -> :ok end
         ),
@@ -231,17 +184,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
       tool:
         ReqLLM.tool(
           name: "await_all",
-          description:
-            "Wait for multiple delegated agents to complete and return all results. " <>
-              "More efficient than calling await_task multiple times — collects in parallel. " <>
-              "Works with both delegate_task and delegate_task_lite agents.",
+          description: "Wait for all delegated agents to finish.",
           parameter_schema: [
-            agent_ids: [
-              type: :string,
-              required: true,
-              doc: "JSON array of agent_id strings, e.g. [\"id1\", \"id2\"]"
-            ],
-            timeout: [type: :integer, doc: "Timeout in seconds (default: 300)"]
+            agent_ids: [type: :string, required: true, doc: "JSON array of agent_ids"],
+            timeout: [type: :integer, doc: "default: 300"]
           ],
           callback: fn _args -> :ok end
         ),

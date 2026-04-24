@@ -53,7 +53,6 @@ defmodule RhoWeb.Session.SessionCore do
     |> assign(:signals, [])
     |> assign(:agent_messages, %{})
     |> assign(:ui_streams, %{})
-    |> assign(:pending_response, MapSet.new())
     |> assign(:total_input_tokens, 0)
     |> assign(:total_output_tokens, 0)
     |> assign(:total_cost, 0.0)
@@ -113,6 +112,8 @@ defmodule RhoWeb.Session.SessionCore do
     # Ensure the data table server is running for this session. The
     # server owns row state; tools and the LiveView both read from it.
     Rho.Stdlib.DataTable.ensure_started(session_id)
+
+    schedule_reconciliation()
 
     socket
     |> assign(:session_id, session_id)
@@ -214,9 +215,21 @@ defmodule RhoWeb.Session.SessionCore do
 
     case result do
       {:ok, _turn_id} ->
-        pending_id = target_id || primary_agent_id(sid)
-        pending = MapSet.put(socket.assigns.pending_response, pending_id)
-        {:noreply, assign(socket, :pending_response, pending)}
+        # Eagerly mark agent as busy so the UI shows the loading indicator
+        # immediately, before the turn_started signal arrives from the bus.
+        # The agent status is the single source of truth for "pending" state —
+        # turn_started confirms :busy, turn_finished sets :idle, and the
+        # reconciliation timer self-heals if any signal is lost.
+        agent_id = target_id || primary_agent_id(sid)
+        agents = socket.assigns.agents
+
+        agents =
+          case Map.get(agents, agent_id) do
+            nil -> agents
+            agent -> Map.put(agents, agent_id, %{agent | status: :busy})
+          end
+
+        {:noreply, assign(socket, :agents, agents)}
 
       {:error, reason} ->
         {:noreply,
@@ -252,6 +265,115 @@ defmodule RhoWeb.Session.SessionCore do
 
       _ ->
         {:noreply, socket}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Agent reconciliation
+  # -------------------------------------------------------------------
+
+  @reconcile_interval 5_000
+
+  @doc """
+  Schedule the first reconciliation tick. Call from mount (connected phase).
+  """
+  def schedule_reconciliation do
+    Process.send_after(self(), :reconcile_agents, @reconcile_interval)
+  end
+
+  @doc """
+  Reconcile the LiveView's agent status with AgentRegistry.
+
+  Handles three cases:
+  1. Agent shows :busy in LV but is :idle in registry → update to :idle
+  2. Agent has stale inflight data but is idle → flush to thinking message
+  3. Agent finished but no response message exists → recover from last_result
+
+  Returns `{:noreply, socket}`.
+  """
+  def handle_reconciliation(socket) do
+    sid = socket.assigns[:session_id]
+
+    if sid do
+      registry_agents = Rho.Agent.Registry.list_all(sid)
+      registry_status = Map.new(registry_agents, fn info -> {info.agent_id, info} end)
+
+      {agents, socket} =
+        Enum.reduce(socket.assigns.agents, {socket.assigns.agents, socket}, fn {id, agent},
+                                                                                {agents_acc,
+                                                                                 sock} ->
+          case Map.get(registry_status, id) do
+            %{status: :idle} when agent.status == :busy ->
+              # Agent finished but we missed turn_finished — correct status
+              # and flush any stale inflight data
+              updated_agent = %{agent | status: :idle}
+              sock = flush_stale_inflight(sock, id)
+              sock = maybe_recover_result(sock, id, registry_status)
+              {Map.put(agents_acc, id, updated_agent), sock}
+
+            _ ->
+              {agents_acc, sock}
+          end
+        end)
+
+      Process.send_after(self(), :reconcile_agents, @reconcile_interval)
+      {:noreply, assign(socket, :agents, agents)}
+    else
+      Process.send_after(self(), :reconcile_agents, @reconcile_interval)
+      {:noreply, socket}
+    end
+  end
+
+  defp flush_stale_inflight(socket, agent_id) do
+    case Map.get(socket.assigns.inflight, agent_id) do
+      %{chunks: chunks} when chunks != [] ->
+        raw = Enum.join(chunks)
+
+        if String.trim(raw) != "" do
+          msg = %{
+            id: "reconcile_#{System.unique_integer([:positive])}",
+            role: :assistant,
+            type: :thinking,
+            content: raw,
+            agent_id: agent_id
+          }
+
+          socket
+          |> RhoWeb.Session.SignalRouter.append_message(msg)
+          |> assign(:inflight, Map.delete(socket.assigns.inflight, agent_id))
+        else
+          assign(socket, :inflight, Map.delete(socket.assigns.inflight, agent_id))
+        end
+
+      _ ->
+        socket
+    end
+  end
+
+  defp maybe_recover_result(socket, agent_id, registry_status) do
+    # If the last message for this agent is from the user (no assistant reply),
+    # recover the response from the registry's last_result.
+    messages = Map.get(socket.assigns.agent_messages, agent_id, [])
+    last_msg = List.last(messages)
+
+    if last_msg && last_msg.role == :user do
+      case get_in(registry_status, [agent_id, :last_result]) do
+        {:ok, text} when is_binary(text) and text != "" ->
+          msg = %{
+            id: "recovered_#{System.unique_integer([:positive])}",
+            role: :assistant,
+            type: :text,
+            content: text,
+            agent_id: agent_id
+          }
+
+          RhoWeb.Session.SignalRouter.append_message(socket, msg)
+
+        _ ->
+          socket
+      end
+    else
+      socket
     end
   end
 

@@ -31,7 +31,8 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
   @impl Rho.TurnStrategy
   def prompt_sections(tool_defs, _context) do
-    [build_prompt_section(tool_defs)]
+    visible = Enum.reject(tool_defs, & &1[:deferred])
+    [build_prompt_section(visible)]
   end
 
   # --- Run ---
@@ -68,8 +69,11 @@ defmodule Rho.TurnStrategy.TypedStructured do
             error = "Error: unknown tool '#{name}'. Available: respond, think, #{available}"
             {:continue, build_error_step(text, error)}
 
-          {:parse_error, reason} ->
-            {:parse_error, reason, text}
+          {:parse_error, _reason} ->
+            # Treat unparseable text as a plain respond — avoids costly
+            # correction-prompt retries. The LLM was trying to talk to
+            # the user, just not in JSON format.
+            {:done, %{type: :response, text: String.trim(text)}}
         end
 
       {:error, reason} ->
@@ -243,10 +247,32 @@ defmodule Rho.TurnStrategy.TypedStructured do
   end
 
   defp do_stream(model, context, stream_opts, emit) do
+    Logger.info("[typed_structured] starting stream model=#{model}")
+    t0 = System.monotonic_time(:millisecond)
+
     with {:ok, stream_response} <- ReqLLM.stream_text(model, context, stream_opts),
+         _ =
+           Logger.info(
+             "[typed_structured] stream opened in #{System.monotonic_time(:millisecond) - t0}ms"
+           ),
          {:ok, accumulated} <- consume_stream(stream_response, emit),
+         _ =
+           Logger.info(
+             "[typed_structured] stream consumed in #{System.monotonic_time(:millisecond) - t0}ms (#{byte_size(accumulated)} bytes)"
+           ),
          {:ok, usage} <- get_stream_metadata(stream_response) do
+      Logger.info(
+        "[typed_structured] stream complete in #{System.monotonic_time(:millisecond) - t0}ms"
+      )
+
       {:ok, accumulated, usage}
+    else
+      error ->
+        Logger.warning(
+          "[typed_structured] stream failed in #{System.monotonic_time(:millisecond) - t0}ms: #{inspect(error)}"
+        )
+
+        error
     end
   end
 
@@ -309,28 +335,13 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
     %PromptSection{
       key: :output_format,
-      heading: "OUTPUT FORMAT — MANDATORY",
+      heading: "OUTPUT FORMAT",
       body: """
-      You MUST ALWAYS respond with a single JSON object. No exceptions, no plain text, no markdown fences.
-      Your VERY FIRST character must be `{`.
+      Always respond with a single JSON object. First character must be `{`.
 
       #{String.trim(schema_text)}
 
-      Format: flat JSON with "tool" as the discriminant key.
-
-      Examples:
-        {"tool": "respond", "message": "Here is your answer."}
-        {"tool": "think", "thought": "I need to reconsider..."}
-        {"tool": "bash", "cmd": "ls -la", "thinking": "Check directory"}
-
-      Rules:
-      - EVERY response must be a JSON object with a "tool" field
-      - The "tool" field must be exactly one of the ActionName variants above
-      - Tool parameters go as top-level fields (NOT nested in "action_input")
-      - "thinking" is an optional field on ANY action for brief reasoning (≤ 2 sentences)
-      - Use "respond" to answer the user. Use "think" for standalone reasoning
-      - String values must use valid JSON escaping: \\" for quotes, \\n for newlines
-      - Never paste arrays, row data, or tool output into "thinking" — summarize instead\
+      Example: {"tool": "respond", "message": "Hello!"}\
       """,
       kind: :instructions,
       priority: :low

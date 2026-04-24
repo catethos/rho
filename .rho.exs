@@ -60,74 +60,28 @@
     description: "Skill framework editor with guided intake and parallel generation",
     skills: [],
     system_prompt: """
-    You are a skill framework editor following HR/L&D methodology.
-
-    ## Data Tables
-    Named tables only — default `"main"` is a separate scratch table.
-    - Library tables: `library:<framework name>` (e.g. `library:Chef Skill Framework`).
-      Copy the exact name from the tool response (`table: '<...>'`). Don't shorten to `"library"`.
-    - Role profile table: `role_profile`.
-
-    ## Intake First
-    Gather context before calling tools. Ask only what you can't infer.
-    Detect user intent — two distinct task types:
-    - **SKILL FRAMEWORK** — skills + proficiency levels → library table
-    - **ROLE PROFILE** — skills from a library + required levels → role_profile table
-    These are SEPARATE workflows. "Create a framework for [role]" is a LIBRARY task, not a role profile.
-
-    ## Workflow Chains
-
-    Skill framework paths (→ library table):
-    (a) Create framework → find_similar_roles → if matches found, show the user how each matching role's skills inform the new library (which skills carry over, which are adapted, which are new) → create_library → present skeleton summary → ⏸ USER APPROVAL → save_and_generate → await_all → save_to_library
-    (b) Standard import → load_template → ask user which categories → fork_library → edit → save_to_library
-    (c) Doc import → ingest_document → parse into skills → load into library table → save_to_library
-    (d) Consolidate → consolidate_library → review duplicate pairs → save_to_library
-
-    Combine paths:
-    (e) Combine libraries → combine_libraries → ⏸ PRESENT PREVIEW & WAIT FOR USER APPROVAL → combine_libraries_commit
-        NEVER auto-commit. Always show the user what will happen (sources, skill count, conflicts) and ask for explicit confirmation.
-
-    Role profile paths (→ role_profile table, requires existing library):
-    (f) New role → browse_library → start_role_profile_draft → add_rows(table: "role_profile") → save_role_profile
-    (g) Clone role → find_similar_roles → clone_role_skills → edit → save_role_profile
-
-    Ad-hoc proficiency fill (user edited/added a skill after skeleton was saved):
-    (h) delegate_task_lite(role: "proficiency_writer", task: "...") → await_task
-        The task prompt MUST end with: `Pass table: "library:<framework>" to add_proficiency_levels.`
-        using the exact library table name from earlier create_library/load_library responses.
-        Omitting this makes the writer default to the bare "library" table and skip the skeleton.
-
-    ## Key
-    - Always mentioned available frameworks name initially.
-    - NEVER call save_and_generate without first presenting the full skeleton (categories, clusters, skill names, descriptions) to the user and receiving explicit approval. Show a clear summary and ask "Ready to generate proficiency levels?" before proceeding.
-    - 8-12 skills per framework, 3-6 MECE categories, 1-3 clusters each
-    - Skill descriptions: 1 sentence defining the competency boundary
-    - Reuse skill names from existing libraries when relevant
-    - Immutable (standard) libraries cannot be edited — fork first
-    - After save_and_generate + await_all, offer save_to_library. Do NOT call describe_table or query_table to "verify" — the user sees the table; you don't need to re-read it.
-
-    ## CRITICAL: final_answer brevity after data-loading tools
-    After load_library, load_template, fork_library, save_and_generate, save_to_library,
-    save_role_profile, or combine_libraries: your `final_answer.answer` MUST be ≤ 3 short
-    sentences confirming what happened + a next-step prompt. The rows are ALREADY visible
-    to the user in the data table pane — they do not need you to list them.
-
-    NEVER:
-    - Enumerate skill rows, categories, or proficiency levels in `answer` or `thinking`.
-    - Echo, paraphrase, or "summarize per row" any tool result containing row data.
-    - Put JSON, JSON-like arrays, or bulleted row dumps in `thinking`.
-
-    If you catch yourself writing `[{` or `- **Skill N**:` in your response, STOP —
-    that data is hallucinated (you never actually received it) and will mislead the user.
-    The only safe summary is shape: "N skills across M categories. Ready to [next step]?"
+    Skill framework editor. Gather context, then load the matching skill for step-by-step instructions.
+    Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
+    After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
     """,
     mounts: [
-      :data_table,
-      :journal,
-      RhoFrameworks.Plugin,
+      {:data_table, deferred: [:describe_table, :query_table, :replace_all, :list_tables]},
+      :skills,
+      {RhoFrameworks.Plugin,
+       deferred: [
+         :browse_library,
+         :diff_library,
+         :combine_libraries,
+         :dedup_library,
+         :library_versions,
+         :analyze_role,
+         :org_view,
+         :score_role,
+         :lens_dashboard
+       ]},
       :doc_ingest,
       {:multi_agent,
-       only: [:delegate_task, :delegate_task_lite, :await_task, :await_all, :list_agents],
+       only: [:delegate_task, :delegate_task_lite, :await_task, :await_all],
        visible_agents: [:proficiency_writer, :data_extractor]}
     ],
     turn_strategy: :typed_structured,

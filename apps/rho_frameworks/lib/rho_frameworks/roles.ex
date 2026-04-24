@@ -4,7 +4,7 @@ defmodule RhoFrameworks.Roles do
   require Logger
   import Ecto.Query
   alias RhoFrameworks.Repo
-  alias RhoFrameworks.Frameworks.{Library, RoleProfile, RoleSkill}
+  alias RhoFrameworks.Frameworks.{RoleProfile, RoleSkill}
   alias RhoFrameworks.Library, as: Lib
 
   # --- Role Profile CRUD ---
@@ -50,15 +50,13 @@ defmodule RhoFrameworks.Roles do
     |> Repo.preload(role_skills: :skill)
   end
 
-  @doc "Fetch a role profile visible to the org: own role or one belonging to a public library."
+  @doc "Fetch a role profile visible to the org: own role or any public role."
   def get_visible_role_profile!(org_id, id) do
     case get_role_profile(org_id, id) do
       nil ->
         Repo.one!(
           from(rp in RoleProfile,
-            join: lib in Library,
-            on: lib.id == rp.library_id,
-            where: rp.id == ^id and lib.visibility == "public"
+            where: rp.id == ^id and rp.visibility == "public"
           )
         )
 
@@ -81,18 +79,16 @@ defmodule RhoFrameworks.Roles do
   # --- Save Role Profile ---
 
   def save_role_profile(org_id, attrs, role_rows, opts \\ []) do
-    library_id =
-      Keyword.get_lazy(opts, :library_id, fn ->
+    resolve_library_id =
+      Keyword.get_lazy(opts, :resolve_library_id, fn ->
         Lib.get_or_create_default_library(org_id).id
       end)
 
-    # Look up library to stamp version
-    library = Repo.get(RhoFrameworks.Frameworks.Library, library_id)
-    library_version = if library, do: library.version || "draft", else: nil
+    library = Repo.get(RhoFrameworks.Frameworks.Library, resolve_library_id)
 
     Ecto.Multi.new()
     |> Ecto.Multi.run(:skills, fn _repo, _ ->
-      resolve_fn = skill_resolve_fn(library, library_id)
+      resolve_fn = skill_resolve_fn(library, resolve_library_id)
 
       resolve_all_skills(role_rows, resolve_fn)
     end)
@@ -100,8 +96,6 @@ defmodule RhoFrameworks.Roles do
       rp_attrs =
         attrs
         |> Map.put(:organization_id, org_id)
-        |> Map.put(:library_id, library_id)
-        |> Map.put(:library_version, library_version)
 
       case repo.get_by(RoleProfile, organization_id: org_id, name: attrs[:name]) do
         nil ->
@@ -383,9 +377,7 @@ defmodule RhoFrameworks.Roles do
     # Fetch all roles visible to the org (own + public) with their skill counts
     candidates =
       from(rp in RoleProfile,
-        left_join: lib in Library,
-        on: lib.id == rp.library_id,
-        where: rp.organization_id == ^org_id or lib.visibility == "public",
+        where: rp.organization_id == ^org_id or rp.visibility == "public",
         left_join: rs in RoleSkill,
         on: rs.role_profile_id == rp.id,
         group_by: rp.id,
@@ -496,9 +488,7 @@ defmodule RhoFrameworks.Roles do
     pattern = "%#{sanitize_query(query)}%"
 
     from(rp in RoleProfile,
-      left_join: lib in Library,
-      on: lib.id == rp.library_id,
-      where: rp.organization_id == ^org_id or lib.visibility == "public",
+      where: rp.organization_id == ^org_id or rp.visibility == "public",
       where:
         like(rp.name, ^pattern) or
           like(rp.role_family, ^pattern) or
@@ -561,54 +551,6 @@ defmodule RhoFrameworks.Roles do
 
   # --- Version Currency ---
 
-  @doc """
-  Check if a role profile's skills are current relative to the latest
-  published library version. Returns {:ok, :current} | {:stale, diff}.
-  """
-  def check_version_currency(org_id, role_profile_id) do
-    case get_role_profile(org_id, role_profile_id) do
-      nil ->
-        {:error, :not_found}
-
-      %{library_id: nil} ->
-        {:error, :no_library, "Role profile has no linked library"}
-
-      rp ->
-        check_currency_for_role(org_id, rp)
-    end
-  end
-
-  defp check_currency_for_role(org_id, rp) do
-    library = Repo.get(RhoFrameworks.Frameworks.Library, rp.library_id)
-
-    if is_nil(library) do
-      {:error, :library_deleted, "Linked library no longer exists"}
-    else
-      latest = Lib.get_latest_version(org_id, library.name)
-
-      cond do
-        is_nil(latest) ->
-          {:ok, :current, %{note: "No published versions — role is against a draft"}}
-
-        rp.library_version == latest.version ->
-          {:ok, :current, %{version: latest.version}}
-
-        true ->
-          build_stale_result(org_id, library.name, rp.library_version, latest.version)
-      end
-    end
-  end
-
-  defp build_stale_result(org_id, library_name, role_version, latest_version) do
-    diff =
-      case Lib.diff_versions(org_id, library_name, role_version, latest_version) do
-        {:ok, diff} -> diff
-        {:error, _, _} -> nil
-      end
-
-    {:stale, %{role_version: role_version, latest_version: latest_version, diff: diff}}
-  end
-
   # --- Private ---
 
   defp add_progressive_diffs(profiles) do
@@ -628,9 +570,7 @@ defmodule RhoFrameworks.Roles do
 
   defp maybe_include_public_roles(query, org_id, true) do
     from(rp in query,
-      left_join: lib in Library,
-      on: lib.id == rp.library_id,
-      where: rp.organization_id == ^org_id or lib.visibility == "public"
+      where: rp.organization_id == ^org_id or rp.visibility == "public"
     )
   end
 

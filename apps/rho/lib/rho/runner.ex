@@ -263,8 +263,20 @@ defmodule Rho.Runner do
          {:ok, projection} <- run_prompt_out(context, runtime, step) do
       t2 = System.monotonic_time(:millisecond)
       warn_if_slow(t2 - t1, 5_000, "[runner] prompt_out took #{t2 - t1}ms at step #{step}")
+
+      Logger.info(
+        "[runner] step #{step} calling strategy #{inspect(runtime.turn_strategy)} " <>
+          "agent=#{runtime.context.agent_name} agent_id=#{runtime.context.agent_id}"
+      )
+
       result = runtime.turn_strategy.run(projection, runtime)
       t3 = System.monotonic_time(:millisecond)
+
+      Logger.info(
+        "[runner] step #{step} strategy returned in #{t3 - t2}ms " <>
+          "result_type=#{elem(result, 0)} agent_id=#{runtime.context.agent_id}"
+      )
+
       warn_if_slow(t3 - t2, 30_000, "[runner] strategy.run took #{t3 - t2}ms at step #{step}")
 
       handle_strategy_result(result, context, runtime, step, max)

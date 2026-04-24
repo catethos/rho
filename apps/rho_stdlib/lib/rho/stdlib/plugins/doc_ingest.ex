@@ -24,17 +24,8 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
               "Returns the extracted content as text or structured table data. " <>
               "Use the extracted content to populate the spreadsheet with add_rows.",
           parameter_schema: [
-            file_path: [
-              type: :string,
-              required: true,
-              doc: "Absolute path to the file to ingest"
-            ],
-            format: [
-              type: :string,
-              required: false,
-              doc:
-                "File format: \"excel\", \"pdf\", \"word\". Auto-detected from extension if omitted."
-            ]
+            file_path: [type: :string, required: true, doc: "absolute path"],
+            format: [type: :string, required: false, doc: "excel|pdf|word, auto-detected"]
           ],
           callback: fn _args -> :ok end
         ),

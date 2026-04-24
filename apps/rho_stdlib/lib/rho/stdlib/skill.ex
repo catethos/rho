@@ -7,7 +7,7 @@ defmodule Rho.Stdlib.Skill do
   """
 
   @enforce_keys [:name, :description, :location, :source]
-  defstruct [:name, :description, :location, :source, :body, metadata: %{}]
+  defstruct [:name, :description, :location, :source, :body, uses: [], metadata: %{}]
 
   @type t :: %__MODULE__{
           name: String.t(),
@@ -15,6 +15,7 @@ defmodule Rho.Stdlib.Skill do
           location: String.t(),
           source: String.t(),
           metadata: map(),
+          uses: [String.t()],
           body: String.t() | nil
         }
 
@@ -59,6 +60,7 @@ defmodule Rho.Stdlib.Skill do
          location: path,
          source: source,
          metadata: meta["metadata"] || %{},
+         uses: List.wrap(meta["uses"]),
          body: String.trim(body)
        }}
     else

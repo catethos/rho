@@ -380,7 +380,7 @@ defmodule RhoFrameworks.LibraryTest do
       assert fork.derived_from_id == source.id
     end
 
-    test "category filter also filters role profiles to those with matching skills", %{
+    test "category filter copies only matching skills (no role profiles)", %{
       org_id: org_id
     } do
       template_data = %{
@@ -402,20 +402,6 @@ defmodule RhoFrameworks.LibraryTest do
               %{"level" => 1, "level_name" => "Basic", "level_description" => "Simple"}
             ]
           }
-        ],
-        role_profiles: [
-          %{
-            name: "Data Engineer",
-            role_family: "Engineering",
-            seniority_level: 2,
-            skills: [%{skill_name: "SQL", min_expected_level: 3, required: true}]
-          },
-          %{
-            name: "Manager",
-            role_family: "Management",
-            seniority_level: 3,
-            skills: [%{skill_name: "Leadership", min_expected_level: 2, required: true}]
-          }
         ]
       }
 
@@ -423,23 +409,18 @@ defmodule RhoFrameworks.LibraryTest do
         RhoFrameworks.Library.load_template(org_id, "cat_filter", template_data)
 
       # Fork only "Data" category
-      {:ok, %{skills: skill_map, role_profiles: roles}} =
+      {:ok, %{skills: skill_map}} =
         RhoFrameworks.Library.fork_library(org_id, source.id, "Data Only Fork",
           categories: ["Data"]
         )
 
       assert map_size(skill_map) == 1
       assert hd(Map.values(skill_map)).name == "SQL"
-
-      # Only Data Engineer should be copied (it has a skill in "Data" category)
-      role_names = Enum.map(roles, & &1.name)
-      assert length(roles) == 1
-      assert hd(role_names) =~ "Data Engineer"
     end
   end
 
-  describe "fork_library/4 with role profiles" do
-    test "deep-copies role profiles with remapped skill FKs", %{org_id: org_id} do
+  describe "fork_library/4 independence" do
+    test "fork only copies skills, not role profiles", %{org_id: org_id} do
       template_data = %{
         name: "Fork Source",
         skills: [
@@ -465,22 +446,15 @@ defmodule RhoFrameworks.LibraryTest do
       {:ok, %{library: source}} =
         RhoFrameworks.Library.load_template(org_id, "fork_src", template_data)
 
-      {:ok, %{library: fork, skills: skill_map, role_profiles: roles}} =
+      {:ok, %{library: fork, skills: skill_map}} =
         RhoFrameworks.Library.fork_library(org_id, source.id, "My Fork")
 
       assert fork.immutable == false
       assert map_size(skill_map) == 1
-      assert length(roles) == 1
 
-      forked_rp = hd(roles)
-      assert forked_rp.name == "DBA (My Fork)"
-      assert forked_rp.immutable == false
-      assert forked_rp.source_role_profile_id != nil
-
-      # Role skill should point to forked skill, not source skill
-      forked_rp_loaded = Repo.preload(forked_rp, role_skills: :skill)
-      rs = hd(forked_rp_loaded.role_skills)
-      assert rs.skill.library_id == fork.id
+      # Result should NOT contain role_profiles key
+      {:ok, result} = RhoFrameworks.Library.fork_library(org_id, source.id, "My Fork 2")
+      refute Map.has_key?(result, :role_profiles)
     end
   end
 
@@ -576,12 +550,16 @@ defmodule RhoFrameworks.LibraryTest do
         %{category: "Tech", skill_name: "Phoenix", required_level: 2}
       ]
 
-      RhoFrameworks.Roles.save_role_profile(org_id, %{name: "Dev"}, rows, library_id: lib.id)
+      RhoFrameworks.Roles.save_role_profile(org_id, %{name: "Dev"}, rows,
+        resolve_library_id: lib.id
+      )
 
       # Create a second role referencing Elixir
       rows2 = [%{category: "Tech", skill_name: "Elixir", required_level: 4}]
 
-      RhoFrameworks.Roles.save_role_profile(org_id, %{name: "Sr Dev"}, rows2, library_id: lib.id)
+      RhoFrameworks.Roles.save_role_profile(org_id, %{name: "Sr Dev"}, rows2,
+        resolve_library_id: lib.id
+      )
 
       report = RhoFrameworks.Library.consolidation_report(lib.id)
 
@@ -624,14 +602,14 @@ defmodule RhoFrameworks.LibraryTest do
         org_id,
         %{name: "Data Engineer"},
         [%{category: "Tech", skill_name: "SQL Programming", required_level: 4}],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       RhoFrameworks.Roles.save_role_profile(
         org_id,
         %{name: "ML Engineer"},
         [%{category: "Tech", skill_name: "SQL Querying", required_level: 3}],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       dupes = RhoFrameworks.Library.find_duplicates(lib.id)
@@ -663,7 +641,7 @@ defmodule RhoFrameworks.LibraryTest do
           %{category: "Tech", skill_name: "SQL Programming", required_level: 4},
           %{category: "Tech", skill_name: "SQL Querying", required_level: 2}
         ],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       dupes = RhoFrameworks.Library.find_duplicates(lib.id)
@@ -707,14 +685,14 @@ defmodule RhoFrameworks.LibraryTest do
         org_id,
         %{name: "Data Engineer"},
         [%{category: "Tech", skill_name: "SQL Programming", required_level: 4}],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       RhoFrameworks.Roles.save_role_profile(
         org_id,
         %{name: "ML Engineer"},
         [%{category: "Tech", skill_name: "SQL Querying", required_level: 3}],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       {:ok, _result} = RhoFrameworks.Library.merge_skills(source.id, target.id)
@@ -743,7 +721,7 @@ defmodule RhoFrameworks.LibraryTest do
           %{category: "Tech", skill_name: "SQL Programming", required_level: 5},
           %{category: "Tech", skill_name: "SQL Querying", required_level: 3}
         ],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       {:ok, _result} =
@@ -772,7 +750,7 @@ defmodule RhoFrameworks.LibraryTest do
           %{category: "Tech", skill_name: "SQL Programming", required_level: 5},
           %{category: "Tech", skill_name: "SQL Querying", required_level: 3}
         ],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       {:ok, _result} =
@@ -800,7 +778,7 @@ defmodule RhoFrameworks.LibraryTest do
           %{category: "Tech", skill_name: "SQL Programming", required_level: 5},
           %{category: "Tech", skill_name: "SQL Querying", required_level: 3}
         ],
-        library_id: lib.id
+        resolve_library_id: lib.id
       )
 
       {:ok, result} =

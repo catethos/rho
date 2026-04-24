@@ -27,13 +27,12 @@ defmodule RhoFrameworks.Frameworks.RoleProfile do
     field(:metadata, :map, default: %{})
     field(:work_activities, {:array, :map}, default: [])
 
+    # Visibility
+    field(:visibility, :string, default: "private")
+
     # Fork lineage
     field(:immutable, :boolean, default: false)
     belongs_to(:source_role_profile, __MODULE__)
-
-    # Library version pinning
-    belongs_to(:library, RhoFrameworks.Frameworks.Library)
-    field(:library_version, :string)
 
     belongs_to(:organization, RhoFrameworks.Accounts.Organization)
     belongs_to(:created_by, RhoFrameworks.Accounts.User)
@@ -58,15 +57,15 @@ defmodule RhoFrameworks.Frameworks.RoleProfile do
       :headcount,
       :metadata,
       :work_activities,
+      :visibility,
       :immutable,
       :source_role_profile_id,
-      :library_id,
-      :library_version,
       :organization_id,
       :created_by_id
     ])
     |> validate_required([:name, :organization_id])
     |> validate_length(:name, min: 1, max: 255)
+    |> validate_inclusion(:visibility, ["public", "private"])
     |> unique_constraint([:organization_id, :name],
       name: :role_profiles_organization_id_name_index,
       message: "a role profile with this name already exists"

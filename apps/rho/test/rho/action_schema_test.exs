@@ -194,9 +194,9 @@ defmodule Rho.ActionSchemaTest do
     test "renders all variants" do
       output = ActionSchema.render_prompt(schema())
       assert output =~ "ActionName ="
-      assert output =~ "respond(message: string)"
-      assert output =~ "think(thought: string)"
-      assert output =~ "bash(cmd: string)"
+      assert output =~ "respond(message: string"
+      assert output =~ "think(thought: string"
+      assert output =~ "bash(cmd: string @desc(Command to run))"
       assert output =~ "fs_read(path: string, offset?: integer)"
       assert output =~ "thinking?: string"
     end
@@ -216,6 +216,37 @@ defmodule Rho.ActionSchemaTest do
       assert output =~ "respond"
       assert output =~ "think"
       refute output =~ "bash"
+    end
+  end
+
+  describe "deferred tools" do
+    test "tool not in schema but in tool_map dispatches successfully" do
+      # Build schema with only fs_read — bash is "deferred" (not in schema)
+      visible_defs = [
+        make_tool_def("fs_read", path: [type: :string, required: true])
+      ]
+
+      schema = ActionSchema.build(visible_defs)
+      refute Map.has_key?(schema.variants, "bash")
+
+      # But bash IS in tool_map (deferred = callable but not in prompt)
+      full_map = tool_map()
+      assert Map.has_key?(full_map, "bash")
+
+      text = ~s({"tool": "bash", "cmd": "ls -la"})
+
+      assert {:tool, "bash", args, _td, _opts} =
+               ActionSchema.parse_and_dispatch(text, schema, full_map)
+
+      assert args[:cmd] == "ls -la"
+    end
+
+    test "tool not in schema and not in tool_map returns unknown" do
+      schema = ActionSchema.build([])
+      text = ~s({"tool": "nonexistent", "foo": "bar"})
+
+      assert {:unknown, "nonexistent", _args} =
+               ActionSchema.parse_and_dispatch(text, schema, %{})
     end
   end
 end

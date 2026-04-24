@@ -33,7 +33,7 @@ defmodule RhoFrameworks.RolesTest do
           org_id,
           %{name: "Data Engineer"},
           rows,
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       assert rp.name == "Data Engineer"
@@ -58,12 +58,12 @@ defmodule RhoFrameworks.RolesTest do
 
       {:ok, _} =
         RhoFrameworks.Roles.save_role_profile(org_id, %{name: "Data Engineer"}, rows1,
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       {:ok, _} =
         RhoFrameworks.Roles.save_role_profile(org_id, %{name: "ML Engineer"}, rows2,
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       skills = RhoFrameworks.Library.list_skills(lib.id)
@@ -76,7 +76,7 @@ defmodule RhoFrameworks.RolesTest do
           org_id,
           %{name: "Minimal Role"},
           [%{category: "General", skill_name: "Communication", required_level: 1}],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       assert rp.purpose == nil
@@ -105,7 +105,7 @@ defmodule RhoFrameworks.RolesTest do
 
       {:ok, _} =
         RhoFrameworks.Roles.save_role_profile(org_id, %{name: "ML Engineer"}, rows,
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       {:ok, %{rows: loaded_rows}} = RhoFrameworks.Roles.load_role_profile(org_id, "ML Engineer")
@@ -132,7 +132,7 @@ defmodule RhoFrameworks.RolesTest do
 
       {:ok, _} =
         RhoFrameworks.Roles.save_role_profile(org_id, %{name: "To Delete"}, rows,
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       {:ok, _} = RhoFrameworks.Roles.delete_role_profile(org_id, "To Delete")
@@ -156,7 +156,7 @@ defmodule RhoFrameworks.RolesTest do
             %{category: "Tech", skill_name: "SQL", required_level: 3},
             %{category: "Tech", skill_name: "Python", required_level: 3}
           ],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       {:ok, _} =
@@ -167,7 +167,7 @@ defmodule RhoFrameworks.RolesTest do
             %{category: "Tech", skill_name: "SQL", required_level: 4},
             %{category: "Tech", skill_name: "Rust", required_level: 2}
           ],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       result = RhoFrameworks.Roles.compare_role_profiles(org_id, ["Role A", "Role B"])
@@ -192,7 +192,7 @@ defmodule RhoFrameworks.RolesTest do
             %{category: "Tech", skill_name: "SQL", required_level: 3},
             %{category: "Tech", skill_name: "Linux", required_level: 4}
           ],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       {:ok, %{role_profile: rp2}} =
@@ -203,7 +203,7 @@ defmodule RhoFrameworks.RolesTest do
             %{category: "Tech", skill_name: "SQL", required_level: 5},
             %{category: "Tech", skill_name: "Terraform", required_level: 3}
           ],
-          library_id: lib.id
+          resolve_library_id: lib.id
         )
 
       cloned = RhoFrameworks.Roles.clone_role_skills(org_id, [rp1.id, rp2.id])

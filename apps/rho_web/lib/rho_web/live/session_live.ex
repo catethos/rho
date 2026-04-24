@@ -5,6 +5,8 @@ defmodule RhoWeb.SessionLive do
   """
   use Phoenix.LiveView
 
+  require Logger
+
   import RhoWeb.SignalComponents
   import RhoWeb.SessionLive.LayoutComponents
 
@@ -859,7 +861,23 @@ defmodule RhoWeb.SessionLive do
         correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
         data = Map.put(data, :correlation_id, correlation_id)
         # Route through full registry so closed workspaces also project
-        {:noreply, SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())}
+        # Wrap in rescue to prevent signal processing crashes from killing
+        # the LiveView (which would cause lost signals on reconnect).
+        socket =
+          try do
+            SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
+          rescue
+            e ->
+              Logger.error(
+                "[session_live] Signal processing crashed: #{Exception.message(e)} " <>
+                  "signal_type=#{type} agent_id=#{data[:agent_id]}\n" <>
+                  Exception.format(:error, e, __STACKTRACE__)
+              )
+
+              socket
+          end
+
+        {:noreply, socket}
 
       true ->
         {:noreply, socket}
@@ -868,6 +886,10 @@ defmodule RhoWeb.SessionLive do
 
   def handle_info({:ui_spec_tick, message_id}, socket) do
     SessionCore.handle_ui_spec_tick(socket, message_id)
+  end
+
+  def handle_info(:reconcile_agents, socket) do
+    SessionCore.handle_reconciliation(socket)
   end
 
   def handle_info(_msg, socket) do
@@ -914,7 +936,7 @@ defmodule RhoWeb.SessionLive do
     shared_ws_assigns = %{
       session_id: assigns.session_id,
       agents: assigns.agents,
-      streaming: MapSet.size(assigns.pending_response) > 0,
+      streaming: any_agent_busy?(assigns.agents),
       total_cost: assigns.total_cost
     }
 
@@ -952,7 +974,7 @@ defmodule RhoWeb.SessionLive do
         active={@active_workspace_id}
         available={@available_workspaces}
         shell={@shell}
-        pending={MapSet.size(@pending_response) > 0}
+        pending={any_agent_busy?(@agents)}
       />
 
       <div class="main-panels">
@@ -986,7 +1008,7 @@ defmodule RhoWeb.SessionLive do
           active_agent_id={@active_agent_id || ""}
           user_avatar={@user_avatar}
           agent_avatar={@agent_avatar}
-          pending={MapSet.member?(@pending_response, @active_agent_id || SessionCore.primary_agent_id(@session_id))}
+          pending={agent_busy?(@agents, @active_agent_id || SessionCore.primary_agent_id(@session_id))}
           agents={@agents}
           agent_tab_order={@agent_tab_order}
           chat_status={chat_status(assigns)}
@@ -1063,11 +1085,22 @@ defmodule RhoWeb.SessionLive do
   end
 
   defp chat_status(assigns) do
-    if MapSet.size(assigns.pending_response) > 0 or map_size(assigns.inflight) > 0 do
+    if any_agent_busy?(assigns.agents) or map_size(assigns.inflight) > 0 do
       :busy
     else
       :idle
     end
+  end
+
+  defp agent_busy?(agents, agent_id) do
+    case Map.get(agents, agent_id) do
+      %{status: :busy} -> true
+      _ -> false
+    end
+  end
+
+  defp any_agent_busy?(agents) do
+    Enum.any?(agents, fn {_id, agent} -> agent[:status] == :busy end)
   end
 
   @doc false

@@ -13,6 +13,8 @@ defmodule RhoWeb.AppLive do
   use Phoenix.LiveView
   use Phoenix.VerifiedRoutes, endpoint: RhoWeb.Endpoint, router: RhoWeb.Router
 
+  require Logger
+
   import RhoWeb.CoreComponents
   import RhoWeb.ChatComponents
   import RhoWeb.SignalComponents
@@ -383,7 +385,7 @@ defmodule RhoWeb.AppLive do
     shared_ws_assigns = %{
       session_id: assigns.session_id,
       agents: assigns.agents,
-      streaming: MapSet.size(assigns.pending_response) > 0,
+      streaming: any_agent_busy?(assigns.agents),
       total_cost: assigns.total_cost
     }
 
@@ -421,7 +423,7 @@ defmodule RhoWeb.AppLive do
         active={@active_workspace_id}
         available={@available_workspaces}
         shell={@shell}
-        pending={MapSet.size(@pending_response) > 0}
+        pending={any_agent_busy?(@agents)}
       />
 
       <div class="main-panels">
@@ -453,7 +455,7 @@ defmodule RhoWeb.AppLive do
           active_agent_id={@active_agent_id || ""}
           user_avatar={@user_avatar}
           agent_avatar={@agent_avatar}
-          pending={MapSet.member?(@pending_response, @active_agent_id || SessionCore.primary_agent_id(@session_id))}
+          pending={agent_busy?(@agents, @active_agent_id || SessionCore.primary_agent_id(@session_id))}
           agents={@agents}
           agent_tab_order={@agent_tab_order}
           chat_status={chat_status(assigns)}
@@ -1968,7 +1970,22 @@ defmodule RhoWeb.AppLive do
       SessionCore.signal_for_session?(data, sid) ->
         correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
         data = Map.put(data, :correlation_id, correlation_id)
-        {:noreply, SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())}
+
+        socket =
+          try do
+            SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
+          rescue
+            e ->
+              Logger.error(
+                "[app_live] Signal processing crashed: #{Exception.message(e)} " <>
+                  "signal_type=#{type} agent_id=#{data[:agent_id]}\n" <>
+                  Exception.format(:error, e, __STACKTRACE__)
+              )
+
+              socket
+          end
+
+        {:noreply, socket}
 
       true ->
         {:noreply, socket}
@@ -1977,6 +1994,10 @@ defmodule RhoWeb.AppLive do
 
   def handle_info({:ui_spec_tick, message_id}, socket) do
     SessionCore.handle_ui_spec_tick(socket, message_id)
+  end
+
+  def handle_info(:reconcile_agents, socket) do
+    SessionCore.handle_reconciliation(socket)
   end
 
   def handle_info(_msg, socket) do
@@ -2493,11 +2514,22 @@ defmodule RhoWeb.AppLive do
   defp page_for_action(_), do: :chat
 
   defp chat_status(assigns) do
-    if MapSet.size(assigns.pending_response) > 0 or map_size(assigns.inflight) > 0 do
+    if any_agent_busy?(assigns.agents) or map_size(assigns.inflight) > 0 do
       :busy
     else
       :idle
     end
+  end
+
+  defp agent_busy?(agents, agent_id) do
+    case Map.get(agents, agent_id) do
+      %{status: :busy} -> true
+      _ -> false
+    end
+  end
+
+  defp any_agent_busy?(agents) do
+    Enum.any?(agents, fn {_id, agent} -> agent[:status] == :busy end)
   end
 
   defp truncate_id(id) when byte_size(id) > 16, do: String.slice(id, 0, 16) <> "..."

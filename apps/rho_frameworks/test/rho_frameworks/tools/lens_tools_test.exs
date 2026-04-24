@@ -10,9 +10,8 @@ defmodule RhoFrameworks.Tools.LensToolsTest do
 
       expected =
         [
-          "score_role",
-          "show_lens_dashboard",
-          "switch_lens"
+          "lens_dashboard",
+          "score_role"
         ]
 
       assert names == expected
@@ -44,15 +43,6 @@ defmodule RhoFrameworks.Tools.LensToolsTest do
 
       assert schema[:role_profile_id][:type] == :string
       assert schema[:role_profile_id][:required] == true
-    end
-
-    test "switch_lens has required lens_slug" do
-      tools = LensTools.__tools__()
-      switch = Enum.find(tools, &(&1.tool.name == "switch_lens"))
-      schema = switch.tool.parameter_schema
-
-      assert schema[:lens_slug][:type] == :string
-      assert schema[:lens_slug][:required] == true
     end
   end
 end

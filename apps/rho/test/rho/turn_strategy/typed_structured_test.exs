@@ -184,21 +184,21 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
     end
   end
 
-  describe "run/2 — parse error" do
-    test "returns {:parse_error, reason, text} for unparseable input" do
+  describe "run/2 — parse error fallback to respond" do
+    test "treats plain text as respond" do
       stub_stream_text("This is plain text, not JSON")
 
       runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
 
-      assert {:parse_error, _reason, "This is plain text, not JSON"} = result
+      assert {:done, %{type: :response, text: "This is plain text, not JSON"}} = result
     end
 
-    test "returns parse_error for missing tool tag" do
+    test "treats JSON without tool tag as respond" do
       stub_stream_text(~s({"cmd": "ls"}))
 
       runtime = build_runtime()
-      assert {:parse_error, :missing_tool_tag, _text} = TypedStructured.run(projection(), runtime)
+      assert {:done, %{type: :response, text: _}} = TypedStructured.run(projection(), runtime)
     end
   end
 
@@ -253,7 +253,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       assert section.body =~ "think"
       assert section.body =~ "bash"
       assert section.body =~ "fs_read"
-      assert section.body =~ ~s("tool")
+      assert section.body =~ "tool: ActionName"
     end
   end
 

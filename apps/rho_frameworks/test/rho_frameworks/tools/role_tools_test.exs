@@ -10,16 +10,9 @@ defmodule RhoFrameworks.Tools.RoleToolsTest do
 
       expected =
         [
-          "check_role_currency",
-          "clone_role_skills",
-          "find_similar_roles",
-          "gap_analysis",
-          "get_org_view",
-          "list_role_profiles",
-          "load_role_profile",
-          "save_role_profile",
-          "show_career_ladder",
-          "start_role_profile_draft"
+          "analyze_role",
+          "manage_role",
+          "org_view"
         ]
 
       assert names == expected
@@ -44,24 +37,22 @@ defmodule RhoFrameworks.Tools.RoleToolsTest do
   end
 
   describe "parameter schemas" do
-    test "save_role_profile has required name" do
+    test "manage_role has required action" do
       tools = RoleTools.__tools__()
-      save = Enum.find(tools, &(&1.tool.name == "save_role_profile"))
-      schema = save.tool.parameter_schema
+      manage = Enum.find(tools, &(&1.tool.name == "manage_role"))
+      schema = manage.tool.parameter_schema
 
-      assert schema[:name][:type] == :string
-      assert schema[:name][:required] == true
+      assert schema[:action][:type] == :string
+      assert schema[:action][:required] == true
     end
 
-    test "gap_analysis has required role_profile_id and snapshot_json" do
+    test "analyze_role has required action" do
       tools = RoleTools.__tools__()
-      gap = Enum.find(tools, &(&1.tool.name == "gap_analysis"))
-      schema = gap.tool.parameter_schema
+      analyze = Enum.find(tools, &(&1.tool.name == "analyze_role"))
+      schema = analyze.tool.parameter_schema
 
-      assert schema[:role_profile_id][:type] == :string
-      assert schema[:role_profile_id][:required] == true
-      assert schema[:snapshot_json][:type] == :string
-      assert schema[:snapshot_json][:required] == true
+      assert schema[:action][:type] == :string
+      assert schema[:action][:required] == true
     end
   end
 end

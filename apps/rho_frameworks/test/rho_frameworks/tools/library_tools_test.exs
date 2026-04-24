@@ -12,25 +12,13 @@ defmodule RhoFrameworks.Tools.LibraryToolsTest do
         [
           "browse_library",
           "combine_libraries",
-          "combine_libraries_commit",
-          "consolidate_library",
-          "create_library",
-          "create_library_draft",
+          "dedup_library",
           "diff_library",
-          "diff_library_versions",
-          "dismiss_duplicate",
-          "find_duplicates",
           "fork_library",
-          "list_libraries",
-          "list_library_versions",
+          "library_versions",
           "load_library",
-          "load_template",
-          "merge_skills",
-          "publish_library_version",
-          "save_and_generate",
-          "save_to_library",
-          "search_skills_cross_library",
-          "set_default_library_version"
+          "manage_library",
+          "save_library"
         ]
 
       assert names == expected
@@ -62,25 +50,26 @@ defmodule RhoFrameworks.Tools.LibraryToolsTest do
 
       assert schema[:library_id][:type] == :string
       assert schema[:library_name][:type] == :string
-      # Neither is individually required — the tool enforces
-      # "at least one" at runtime and returns a friendly error.
       refute Keyword.get(schema[:library_id], :required)
       refute Keyword.get(schema[:library_name], :required)
     end
 
-    test "create_library has required name" do
+    test "manage_library has required action" do
       tools = LibraryTools.__tools__()
-      create = Enum.find(tools, &(&1.tool.name == "create_library"))
-      schema = create.tool.parameter_schema
+      manage = Enum.find(tools, &(&1.tool.name == "manage_library"))
+      schema = manage.tool.parameter_schema
 
-      assert schema[:name][:type] == :string
-      assert schema[:name][:required] == true
+      assert schema[:action][:type] == :string
+      assert schema[:action][:required] == true
     end
 
-    test "list_libraries has no parameters" do
+    test "save_library has required action" do
       tools = LibraryTools.__tools__()
-      list = Enum.find(tools, &(&1.tool.name == "list_libraries"))
-      assert list.tool.parameter_schema == []
+      save = Enum.find(tools, &(&1.tool.name == "save_library"))
+      schema = save.tool.parameter_schema
+
+      assert schema[:action][:type] == :string
+      assert schema[:action][:required] == true
     end
   end
 end

@@ -111,10 +111,10 @@ defmodule RhoFrameworks.SkeletonGenerator do
   def resolve_tools(ctx) do
     library_tools = RhoFrameworks.Tools.LibraryTools.__tools__(ctx)
 
-    # Only include create_library (not save_and_generate which also spawns proficiency writers)
-    create_tool = Enum.find(library_tools, fn t -> t.tool.name == "create_library" end)
+    # Only include manage_library (for create action)
+    manage_tool = Enum.find(library_tools, fn t -> t.tool.name == "manage_library" end)
 
-    [create_tool, save_skeletons_tool(), Rho.Stdlib.Tools.Finish.tool_def()]
+    [manage_tool, save_skeletons_tool(), Rho.Stdlib.Tools.Finish.tool_def()]
     |> Enum.reject(&is_nil/1)
   end
 

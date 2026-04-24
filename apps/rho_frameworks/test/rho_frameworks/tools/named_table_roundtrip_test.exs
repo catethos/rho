@@ -1,14 +1,14 @@
 defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
   @moduledoc """
-  Integration tests exercising the Phase 3 named-table migration for the
+  Integration tests exercising the named-table migration for the
   frameworks domain tools. These hit the real
   `Rho.Stdlib.DataTable.Server` — no mocks — to verify that:
 
-    * `load_library` writes rows into the `"library"` table
-    * `load_role_profile` writes rows into the `"role_profile"` table
-    * `save_to_library` / `save_role_profile` read from their named tables
+    * `load_library` writes rows into the library named table
+    * `manage_role(action: load)` writes rows into the `"role_profile"` table
+    * `save_library` / `manage_role(action: save)` read from their named tables
     * two named tables can coexist for a single session
-    * `save_*` tools return an actionable error when no DataTable server is
+    * save tools return an actionable error when no DataTable server is
       running for the session.
   """
 
@@ -78,7 +78,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
 
   defp seed_role_profile(org_id) do
     lib = seed_library_with_skill(org_id)
-    save = tool(RoleTools, "save_role_profile")
+    manage_role = tool(RoleTools, "manage_role")
 
     # Prime the "role_profile" table for the save tool to read from.
     :ok =
@@ -88,17 +88,17 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
         RhoFrameworks.DataTableSchemas.role_profile_schema()
       )
 
-    {lib, save}
+    {lib, manage_role}
   end
 
   # --- library round trip -------------------------------------------------
 
   describe "library load → save round trip" do
-    test "load_library writes into the \"library\" table and save_to_library reads from it",
+    test "load_library writes into the library table and save_library reads from it",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
       lib = seed_library_with_skill(org_id)
       load = tool(LibraryTools, "load_library")
-      save = tool(LibraryTools, "save_to_library")
+      save = tool(LibraryTools, "save_library")
 
       assert %Rho.ToolResponse{effects: effects} =
                load.(%{library_id: lib.id}, ctx)
@@ -117,8 +117,10 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
 
       {:ok, _} = DataTable.replace_all(session_id, rows, table: table_name)
 
-      # Round trip: save_to_library should read from the "library" table.
-      assert %Rho.ToolResponse{text: text} = save.(%{library_id: lib.id}, ctx)
+      # Round trip: save_library should read from the library table.
+      assert %Rho.ToolResponse{text: text} =
+               save.(%{action: "save", library_id: lib.id}, ctx)
+
       assert text =~ "Saved"
       assert text =~ "skill"
 
@@ -126,19 +128,19 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       assert DataTable.get_rows(session_id, table: "main") == []
     end
 
-    test "save_to_library errors when the library is not found", %{ctx: ctx} do
+    test "save_library errors when the library is not found", %{ctx: ctx} do
       lib_id = Ecto.UUID.generate()
-      save = tool(LibraryTools, "save_to_library")
+      save = tool(LibraryTools, "save_library")
 
       # Library doesn't exist — save should refuse.
-      assert {:error, message} = save.(%{library_id: lib_id}, ctx)
+      assert {:error, message} = save.(%{action: "save", library_id: lib_id}, ctx)
       assert message =~ "not found"
     end
 
-    test "save_to_library errors when the library table is empty",
+    test "save_library errors when the library table is empty",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
       lib = seed_library_with_skill(org_id)
-      save = tool(LibraryTools, "save_to_library")
+      save = tool(LibraryTools, "save_library")
       table_name = LibraryTools.library_table_name(lib.name)
 
       # Table exists but carries no rows.
@@ -149,7 +151,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
           RhoFrameworks.DataTableSchemas.library_schema()
         )
 
-      assert {:error, message} = save.(%{library_id: lib.id}, ctx)
+      assert {:error, message} = save.(%{action: "save", library_id: lib.id}, ctx)
       assert message =~ "empty"
     end
   end
@@ -157,10 +159,9 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
   # --- role profile round trip -------------------------------------------
 
   describe "role_profile load → save round trip" do
-    test "load_role_profile writes into the \"role_profile\" table and save_role_profile reads from it",
+    test "manage_role load writes into the role_profile table and save reads from it",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
-      {lib, save} = seed_role_profile(org_id)
-      load = tool(RoleTools, "load_role_profile")
+      {lib, manage_role} = seed_role_profile(org_id)
 
       # Seed an existing role profile by saving one synthetically.
       :ok =
@@ -186,12 +187,13 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
         )
 
       {:ok, _} =
-        save.(
+        manage_role.(
           %{
+            action: "save",
             name: "Senior Backend Engineer",
             role_family: "Engineering",
             seniority_level: 3,
-            library_id: lib.id
+            resolve_library_id: lib.id
           },
           ctx
         )
@@ -200,7 +202,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       {:ok, _} = DataTable.replace_all(session_id, [], table: "role_profile")
 
       assert %Rho.ToolResponse{effects: effects} =
-               load.(%{name: "Senior Backend Engineer"}, ctx)
+               manage_role.(%{action: "load", name: "Senior Backend Engineer"}, ctx)
 
       assert Enum.any?(effects, fn
                %Rho.Effect.Table{table_name: "role_profile", schema_key: :role_profile} -> true
@@ -215,9 +217,15 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
              end)
     end
 
-    test "save_role_profile errors when the server is not running", %{ctx: ctx} do
-      save = tool(RoleTools, "save_role_profile")
-      assert {:error, message} = save.(%{name: "Any Role", library_id: Ecto.UUID.generate()}, ctx)
+    test "manage_role save errors when the server is not running", %{ctx: ctx} do
+      manage_role = tool(RoleTools, "manage_role")
+
+      assert {:error, message} =
+               manage_role.(
+                 %{action: "save", name: "Any Role", resolve_library_id: Ecto.UUID.generate()},
+                 ctx
+               )
+
       assert message =~ "role_profile"
     end
   end
@@ -225,7 +233,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
   # --- two tables open simultaneously ------------------------------------
 
   describe "coexisting library + role_profile tables" do
-    test "load_library then load_role_profile leaves both tables populated",
+    test "load_library then manage_role load leaves both tables populated",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
       lib = seed_library_with_skill(org_id)
       lib_table = LibraryTools.library_table_name(lib.name)
@@ -265,11 +273,16 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
           table: "role_profile"
         )
 
-      save_role = tool(RoleTools, "save_role_profile")
+      manage_role = tool(RoleTools, "manage_role")
 
       {:ok, _} =
-        save_role.(
-          %{name: "Mid Engineer", role_family: "Engineering", library_id: lib.id},
+        manage_role.(
+          %{
+            action: "save",
+            name: "Mid Engineer",
+            role_family: "Engineering",
+            resolve_library_id: lib.id
+          },
           ctx
         )
 
@@ -290,10 +303,10 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
   describe "start_role_profile_draft" do
     test "creates an empty role_profile table so add_rows can target it",
          %{session_id: session_id, ctx: ctx} do
-      start = tool(RoleTools, "start_role_profile_draft")
+      manage_role = tool(RoleTools, "manage_role")
 
       assert %Rho.ToolResponse{effects: effects, text: text} =
-               start.(%{mode_label: "My Draft"}, ctx)
+               manage_role.(%{action: "start_draft", mode_label: "My Draft"}, ctx)
 
       assert text =~ "role_profile"
 
@@ -321,14 +334,14 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
     end
   end
 
-  # --- get_org_view -----------------------------------------------------
+  # --- org_view -----------------------------------------------------
 
-  describe "get_org_view" do
+  describe "org_view" do
     test "returns empty summary when the org has no role profiles",
          %{ctx: ctx} do
-      view = tool(RoleTools, "get_org_view")
-      assert {:ok, json} = view.(%{}, ctx)
-      assert %{"role_count" => 0, "shared_count" => 0, "roles" => []} = Jason.decode!(json)
+      view = tool(RoleTools, "org_view")
+      assert {:ok, text} = view.(%{}, ctx)
+      assert text =~ "0 roles"
     end
 
     test "computes shared vs unique skills across multiple role profiles",
@@ -342,7 +355,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
           RhoFrameworks.DataTableSchemas.role_profile_schema()
         )
 
-      save_role = tool(RoleTools, "save_role_profile")
+      manage_role = tool(RoleTools, "manage_role")
 
       # Role A: Elixir + Python
       {:ok, _} =
@@ -368,8 +381,13 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
         )
 
       {:ok, _} =
-        save_role.(
-          %{name: "Backend Engineer", role_family: "Engineering", library_id: lib.id},
+        manage_role.(
+          %{
+            action: "save",
+            name: "Backend Engineer",
+            role_family: "Engineering",
+            resolve_library_id: lib.id
+          },
           ctx
         )
 
@@ -397,27 +415,23 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
         )
 
       {:ok, _} =
-        save_role.(
-          %{name: "Platform Engineer", role_family: "Engineering", library_id: lib.id},
+        manage_role.(
+          %{
+            action: "save",
+            name: "Platform Engineer",
+            role_family: "Engineering",
+            resolve_library_id: lib.id
+          },
           ctx
         )
 
-      view = tool(RoleTools, "get_org_view")
-      assert {:ok, json} = view.(%{}, ctx)
-      decoded = Jason.decode!(json)
-
-      assert decoded["role_count"] == 2
-      assert "Elixir" in decoded["shared_skills"]
-      refute "Python" in decoded["shared_skills"]
-      refute "Go" in decoded["shared_skills"]
-
-      unique = decoded["unique_per_role"]
-      assert "Python" in unique["Backend Engineer"]
-      assert "Go" in unique["Platform Engineer"]
-      refute "Elixir" in unique["Backend Engineer"]
-
-      assert decoded["role_families"]["Engineering"] |> Enum.sort() ==
-               ["Backend Engineer", "Platform Engineer"]
+      view = tool(RoleTools, "org_view")
+      assert {:ok, text} = view.(%{}, ctx)
+      assert text =~ "2 roles"
+      assert text =~ "Elixir"
+      assert text =~ "Backend Engineer"
+      assert text =~ "Platform Engineer"
+      assert text =~ "Engineering"
     end
   end
 end

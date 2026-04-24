@@ -33,12 +33,12 @@ defmodule Rho.ActionSchema do
   @reserved_variants %{
     "respond" => %{
       name: "respond",
-      fields: [message: [type: :string, required: true, doc: "Response message to the user"]],
+      fields: [message: [type: :string, required: true]],
       builtin: true
     },
     "think" => %{
       name: "think",
-      fields: [thought: [type: :string, required: true, doc: "Reasoning step"]],
+      fields: [thought: [type: :string, required: true]],
       builtin: true
     }
   }
@@ -75,6 +75,7 @@ defmodule Rho.ActionSchema do
         {td.tool.name,
          %{
            name: td.tool.name,
+           description: td.tool.description,
            fields: td.tool.parameter_schema || [],
            builtin: false
          }}
@@ -135,7 +136,9 @@ defmodule Rho.ActionSchema do
     variant_lines =
       Enum.map_join(sorted, "\n", fn variant ->
         params = render_fields(variant.fields)
-        "  | #{variant.name}(#{params})"
+        desc = Map.get(variant, :description)
+        line = "  | #{variant.name}(#{params})"
+        if desc, do: "#{line}  // #{desc}", else: line
       end)
 
     """
@@ -161,10 +164,18 @@ defmodule Rho.ActionSchema do
         thinking = Map.get(parsed, "thinking")
         thinking = if is_binary(thinking) and thinking != "", do: thinking
         args = Map.drop(parsed, [schema.tag_key, "thinking"])
+        # Unwrap nested "args" — some LLMs wrap params instead of using flat format
+        args =
+          if is_map(args["args"]),
+            do: Map.merge(args, args["args"]) |> Map.delete("args"),
+            else: args
 
         case Map.get(schema.variants, tag) do
           nil ->
-            {:unknown, tag, args}
+            # Deferred tool: not in schema (saves prompt tokens) but still
+            # callable via tool_map. Skills teach the LLM about these tools
+            # on demand, so dispatch falls through to tool_map lookup.
+            dispatch_tool_call(tag, args, tool_map, thinking)
 
           %{builtin: true, name: "respond", fields: fields} ->
             dispatch_respond(args, fields, thinking)
@@ -228,7 +239,9 @@ defmodule Rho.ActionSchema do
     Enum.map_join(fields, ", ", fn {name, opts} ->
       type = Keyword.get(opts, :type, :string) |> render_type()
       optional = if Keyword.get(opts, :required, false), do: "", else: "?"
-      "#{name}#{optional}: #{type}"
+      desc = Keyword.get(opts, :doc)
+      base = "#{name}#{optional}: #{type}"
+      if desc, do: "#{base} @desc(#{desc})", else: base
     end)
   end
 

@@ -54,7 +54,7 @@ defmodule RhoWeb.StreamEnvelope do
 
   defp from_map(map) do
     action = map["tool"] || map["action"] || map["tool_name"] || map["name"]
-    thinking = map["thinking"] || map["reasoning"]
+    thinking = map["thinking"] || map["reasoning"] || map["thought"]
     message = map["message"]
 
     cond do

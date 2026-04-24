@@ -43,7 +43,7 @@ defmodule RhoWeb.SessionLiveDataTableTest do
       signals: [],
       agent_messages: %{},
       ui_streams: %{},
-      pending_response: MapSet.new(),
+
       total_input_tokens: 0,
       total_output_tokens: 0,
       total_cost: 0.0,

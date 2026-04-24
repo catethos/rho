@@ -98,8 +98,20 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     alias RhoFrameworks.Repo
     alias RhoFrameworks.Frameworks.{Library, Skill, RoleProfile, RoleSkill}
 
-    # 1. Resolve user and org
-    user = Repo.get_by!(RhoFrameworks.Accounts.User, email: email)
+    # 1. Resolve user and org (auto-create if missing)
+    user =
+      case Repo.get_by(RhoFrameworks.Accounts.User, email: email) do
+        nil ->
+          Mix.shell().info("User #{email} not found, creating...")
+
+          {:ok, user} =
+            RhoFrameworks.Accounts.register_user(%{email: email, password: "password123456"})
+
+          user
+
+        user ->
+          user
+      end
 
     org =
       if org_name do
@@ -182,7 +194,7 @@ defmodule Mix.Tasks.Rho.ImportFramework do
 
         {:ok, results}
       end)
-      |> Ecto.Multi.run(:role_profiles, fn _repo, %{library: library} ->
+      |> Ecto.Multi.run(:role_profiles, fn _repo, %{library: _library} ->
         results =
           Enum.map(roles_data, fn role_attrs ->
             case Repo.get_by(RoleProfile, organization_id: org.id, name: role_attrs[:name]) do
@@ -191,8 +203,7 @@ defmodule Mix.Tasks.Rho.ImportFramework do
                 |> RoleProfile.changeset(
                   Map.merge(role_attrs, %{
                     organization_id: org.id,
-                    created_by_id: user.id,
-                    library_id: library.id
+                    created_by_id: user.id
                   })
                 )
                 |> Repo.insert!()
@@ -208,23 +219,25 @@ defmodule Mix.Tasks.Rho.ImportFramework do
       end)
       |> Ecto.Multi.run(:role_skills, fn _repo, %{skills: skills, role_profiles: rps} ->
         skill_by_name =
-          Map.new(skills, fn s -> {String.trim(String.downcase(s.name)), s} end)
+          Map.new(skills, fn s -> {normalize_name(s.name), s} end)
 
         rp_by_name =
-          Map.new(rps, fn rp -> {String.trim(String.downcase(rp.name)), rp} end)
+          Map.new(rps, fn rp -> {normalize_name(rp.name), rp} end)
 
         results =
           Enum.flat_map(mapping_data, fn {role_name, skill_names} ->
-            rp_key = String.trim(String.downcase(role_name))
+            rp_key = normalize_name(role_name)
 
-            case Map.get(rp_by_name, rp_key) do
+            rp = Map.get(rp_by_name, rp_key) || fuzzy_match(rp_key, rp_by_name, role_name)
+
+            case rp do
               nil ->
                 Mix.shell().info("  WARN: role '#{role_name}' not found, skipping mappings")
                 []
 
               rp ->
                 Enum.flat_map(skill_names, fn skill_name ->
-                  sk_key = String.trim(String.downcase(skill_name))
+                  sk_key = normalize_name(skill_name)
 
                   case Map.get(skill_by_name, sk_key) do
                     nil ->
@@ -408,4 +421,49 @@ defmodule Mix.Tasks.Rho.ImportFramework do
   defp safe_trim(nil), do: nil
   defp safe_trim(v) when is_binary(v), do: String.trim(v)
   defp safe_trim(v), do: v
+
+  # Collapse whitespace, newlines, and normalize for comparison
+  defp normalize_name(name) do
+    name
+    |> String.replace(~r/[\r\n]+/, " ")
+    |> String.replace(~r/[-–—]/, " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  # Fuzzy match: try substring/starts-with first, then Jaro distance
+  defp fuzzy_match(key, name_map, original_name) do
+    # First try: one name starts with the other (handles truncation)
+    substring_match =
+      Enum.find(name_map, fn {k, _} ->
+        String.starts_with?(k, key) or String.starts_with?(key, k)
+      end)
+
+    case substring_match do
+      {_, matched} ->
+        Mix.shell().info("  FUZZY: '#{original_name}' -> '#{matched.name}' (prefix match)")
+        matched
+
+      nil ->
+        # Fallback: Jaro distance
+        {best_score, best_key} =
+          name_map
+          |> Map.keys()
+          |> Enum.map(fn k -> {String.jaro_distance(key, k), k} end)
+          |> Enum.max_by(&elem(&1, 0))
+
+        if best_score >= 0.88 do
+          matched = Map.get(name_map, best_key)
+
+          Mix.shell().info(
+            "  FUZZY: '#{original_name}' -> '#{matched.name}' (jaro: #{Float.round(best_score, 3)})"
+          )
+
+          matched
+        else
+          nil
+        end
+    end
+  end
 end

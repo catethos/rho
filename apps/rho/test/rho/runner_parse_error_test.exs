@@ -50,14 +50,9 @@ defmodule Rho.RunnerParseErrorTest do
 
   # -- Tests --
 
-  describe "parse-error retry via TypedStructured" do
-    test "Runner retries on parse_error and succeeds on second attempt" do
-      expect_stream_text_sequence([
-        # First attempt: triggers parse_error
-        "This is not JSON at all",
-        # Second attempt: valid response
-        ~s({"tool": "respond", "message": "Hello!"})
-      ])
+  describe "plain text fallback via TypedStructured" do
+    test "Runner treats plain text as respond (no retry)" do
+      stub_stream_text("This is not JSON at all")
 
       {result, events} =
         collect_events(fn on_event ->
@@ -68,26 +63,11 @@ defmodule Rho.RunnerParseErrorTest do
           )
         end)
 
-      assert {:ok, "Hello!"} = result
+      assert {:ok, "This is not JSON at all"} = result
 
-      # Should have gone through 2 steps
+      # Should complete in 1 step (no retry)
       step_starts = Enum.filter(events, &match?(%{type: :step_start}, &1))
-      assert length(step_starts) == 2
-    end
-
-    test "parse_error exhausts step budget" do
-      stub_stream_text("not json")
-
-      {result, _events} =
-        collect_events(fn on_event ->
-          Rho.Runner.run("mock:model", [ReqLLM.Context.user("hi")],
-            turn_strategy: Rho.TurnStrategy.TypedStructured,
-            on_event: on_event,
-            max_steps: 2
-          )
-        end)
-
-      assert {:error, "max steps exceeded (2)"} = result
+      assert length(step_starts) == 1
     end
   end
 end
