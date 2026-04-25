@@ -37,8 +37,93 @@ defmodule Rho.Runner do
 
   require Logger
 
-  alias Rho.AgentLoop.{Recorder, Runtime, Tape}
   alias Rho.Context
+  alias Rho.Recorder
+
+  # ===================================================================
+  # Runner.Runtime — immutable run configuration for one agent loop
+  # ===================================================================
+
+  defmodule Runtime do
+    @moduledoc """
+    Immutable run configuration for one agent loop invocation.
+
+    Bundles everything that stays constant across loop iterations:
+    the LLM model, tool definitions, system prompt, emit callback, tape
+    config, and lifecycle hooks.
+    """
+
+    @enforce_keys [
+      :model,
+      :turn_strategy,
+      :emit,
+      :gen_opts,
+      :tool_defs,
+      :req_tools,
+      :tool_map,
+      :system_prompt,
+      :subagent,
+      :depth,
+      :tape,
+      :context
+    ]
+    defstruct [
+      :model,
+      :turn_strategy,
+      :emit,
+      :gen_opts,
+      :tool_defs,
+      :req_tools,
+      :tool_map,
+      :system_prompt,
+      :subagent,
+      :depth,
+      :tape,
+      :context,
+      :lifecycle
+    ]
+
+    @type t :: %__MODULE__{
+            model: term(),
+            turn_strategy: module(),
+            emit: (map() -> :ok),
+            gen_opts: keyword(),
+            tool_defs: [map()],
+            req_tools: [ReqLLM.Tool.t()],
+            tool_map: %{String.t() => map()},
+            system_prompt: String.t(),
+            subagent: boolean(),
+            depth: non_neg_integer(),
+            tape: Rho.Runner.TapeConfig.t(),
+            context: Context.t(),
+            lifecycle: any()
+          }
+  end
+
+  # ===================================================================
+  # Runner.TapeConfig — tape configuration for the loop
+  # ===================================================================
+
+  defmodule TapeConfig do
+    @moduledoc """
+    Configuration for the tape — the persistent conversation log.
+
+    When `name` is `nil`, no tape recording occurs and context lives only
+    in-memory for the current loop invocation.
+    """
+
+    defstruct name: nil,
+              tape_module: Rho.Tape.Projection.JSONL,
+              compact_threshold: 100_000,
+              compact_supported: false
+
+    @type t :: %__MODULE__{
+            name: String.t() | nil,
+            tape_module: module(),
+            compact_threshold: pos_integer(),
+            compact_supported: boolean()
+          }
+  end
 
   # Tools whose invocation terminates the agent loop regardless of
   # their return value.
@@ -175,7 +260,7 @@ defmodule Rho.Runner do
   end
 
   defp build_tape(tape_name, memory_mod, opts) do
-    %Tape{
+    %TapeConfig{
       name: tape_name,
       tape_module: memory_mod,
       compact_threshold: opts[:compact_threshold] || 100_000,
@@ -364,12 +449,14 @@ defmodule Rho.Runner do
 
   # -- Compaction --
 
-  defp maybe_compact(context, %Runtime{tape: %Tape{name: nil}}), do: {:ok, context}
-  defp maybe_compact(context, %Runtime{tape: %Tape{compact_supported: false}}), do: {:ok, context}
+  defp maybe_compact(context, %Runtime{tape: %TapeConfig{name: nil}}), do: {:ok, context}
+
+  defp maybe_compact(context, %Runtime{tape: %TapeConfig{compact_supported: false}}),
+    do: {:ok, context}
 
   defp maybe_compact(context, runtime) do
     %Runtime{
-      tape: %Tape{name: tape, tape_module: mem, compact_threshold: threshold},
+      tape: %TapeConfig{name: tape, tape_module: mem, compact_threshold: threshold},
       model: model,
       gen_opts: gen_opts
     } = runtime
@@ -592,7 +679,12 @@ defmodule Rho.Runner do
 
   # -- Context advancement --
 
-  defp advance_context(_context, _entries, _injected, %Runtime{tape: %Tape{name: tape}} = runtime)
+  defp advance_context(
+         _context,
+         _entries,
+         _injected,
+         %Runtime{tape: %TapeConfig{name: tape}} = runtime
+       )
        when tape != nil do
     Recorder.rebuild_context(runtime)
   end

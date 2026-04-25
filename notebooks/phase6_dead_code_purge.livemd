@@ -1,0 +1,173 @@
+# Phase 6 — Dead Code Purge & File Consolidation
+
+## The Problem
+
+After five phases of refactoring, Rho carried dead backward-compatibility
+shims, scattered small files that belonged together, and internal modules
+whose namespaces no longer matched their role. The codebase compiled clean
+but was littered with files that existed only for historical reasons.
+
+Three categories of waste:
+
+1. **Dead code** — backward-compat delegator files with zero callers
+2. **File scatter** — related modules split across many tiny files (3 fs
+   tools in 3 files, 4 tape tools in 4 files) that could be read as one
+3. **Misplaced internals** — `Rho.AgentLoop.{Runtime, Recorder, Tape}`
+   were Runner-private but lived in their own namespace and directory
+
+Additionally, the `reach` hex package was added as a dev dep for dead-code
+analysis but turned out to be incompatible with umbrella projects. We used
+`mix xref callers`, `mix xref graph`, and grep instead.
+
+## Dead Code Analysis Methodology
+
+Reach's API (`Reach.unreachable/0`) expects a single-app project and fails
+on umbrella structures. The alternative approach:
+
+```
+mix xref callers Rho.Tape.Context       → 0 callers (only in docs)
+mix xref callers Rho.Tape.Context.Tape  → 0 callers (only in docs)
+grep -r "active_mounts" apps/           → only the definition itself
+grep -r "Rho.Config\." apps/            → all functions have callers
+grep -r "PluginRegistry.apply_stage"    → many callers, keep the delegate
+```
+
+`mix xref` + grep gave us confidence that the findings were correct. Every
+deletion was verified by `mix compile --warnings-as-errors` before
+proceeding.
+
+---
+
+## 6A: Dead Code Purge
+
+### Tape.Context backward-compat shims
+
+Phase 5 renamed `Rho.Tape.Context` to `Rho.Tape.Projection` and left
+backward-compat delegator files at the old paths. Phase 6 analysis confirmed
+zero callers in code — references existed only in markdown docs.
+
+**Deleted:**
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `apps/rho/lib/rho/tape/context.ex` | 9 | Delegated `build/1` to `Tape.Projection` |
+| `apps/rho/lib/rho/tape/context/tape.ex` | 22 | Delegated all callbacks to `Tape.Projection.JSONL` |
+
+### PluginRegistry.active_mounts/1
+
+A `@doc false` alias for `active_plugins/1`, left over from the Mount →
+Plugin rename. Zero external callers. Deleted.
+
+### What survived the audit
+
+| Module/Function | Callers | Verdict |
+|-----------------|---------|---------|
+| `Rho.Config.tape_module/0` | 7 files | Keep |
+| `Rho.Config.agent_config/1` | 6 files | Keep |
+| `Rho.Config.sandbox_enabled?/0` | worker.ex | Keep |
+| `Rho.Config.parse_command/1` | worker.ex | Keep |
+| `Rho.Config.capabilities_from_plugins/1` | worker.ex | Keep |
+| `Rho.Config.agent_names/0` | multi_agent.ex | Keep |
+| `PluginRegistry.apply_stage/3` | 6 files | Keep (delegate to TransformerRegistry) |
+
+### Reach removal
+
+The `{:reach, ...}` dev dep was already absent from `mix.exs` (removed in a
+prior session). No cleanup needed.
+
+---
+
+## 6B: File Consolidation
+
+### Filesystem tools → fs.ex
+
+Three single-module files with no shared private functions:
+
+| Before | Lines |
+|--------|-------|
+| `fs_read.ex` | 57 |
+| `fs_write.ex` | 40 |
+| `fs_edit.ex` | 64 |
+| **Total** | **161** |
+
+**After:** One file `apps/rho_stdlib/lib/rho/stdlib/tools/fs.ex` (161 lines)
+containing all three modules. Module names unchanged — `Rho.Stdlib.Tools.FsRead`,
+`FsWrite`, `FsEdit` — so no callers needed updating.
+
+### Tape tools → tape_tools.ex
+
+Four tool modules that all follow the same pattern (closure over `tape_name`):
+
+| Before | Lines |
+|--------|-------|
+| `anchor.ex` | 50 |
+| `search_history.ex` | 49 |
+| `recall_context.ex` | 98 |
+| `clear_memory.ex` | 43 |
+| **Total** | **240** |
+
+**After:** One file `apps/rho_stdlib/lib/rho/stdlib/tools/tape_tools.ex` (240 lines)
+containing all four modules. Module names unchanged.
+
+### AgentLoop internals → Runner + Recorder
+
+Runner.ex was 639 lines before this change (>350 threshold), so Recorder
+stays as a separate module but is flattened out of the `AgentLoop` namespace.
+
+| Before | After |
+|--------|-------|
+| `Rho.AgentLoop.Runtime` (67 lines, in `agent_loop/runtime.ex`) | `Rho.Runner.Runtime` (inlined in `runner.ex`) |
+| `Rho.AgentLoop.Tape` (26 lines, in `agent_loop/tape.ex`) | `Rho.Runner.TapeConfig` (inlined in `runner.ex`) |
+| `Rho.AgentLoop.Recorder` (174 lines, in `agent_loop/recorder.ex`) | `Rho.Recorder` (in `recorder.ex`) |
+
+The `agent_loop/` directory is now deleted entirely. References updated in:
+
+- `apps/rho/lib/rho/runner.ex` — aliases
+- `apps/rho/lib/rho/recorder.ex` — new file, new module name
+- `apps/rho/test/support/turn_strategy_harness.ex` — aliases + struct refs
+- `apps/rho/test/rho/turn_strategy/typed_structured_test.exs` — struct refs
+
+### Line count summary
+
+| Area | Before (files) | After (files) | Lines saved |
+|------|---------------|--------------|-------------|
+| Tape.Context shims | 2 | 0 | -31 |
+| active_mounts alias | 1 function | 0 | -1 |
+| fs tools | 3 files | 1 file | 0 (same content) |
+| tape tools | 4 files | 1 file | 0 (same content) |
+| AgentLoop directory | 3 files | 0 (inlined/flattened) | 0 (same content) |
+| **Net file reduction** | **12 files** | **2 files** | **-10 files** |
+
+---
+
+## 6C: Documentation Updates
+
+### CLAUDE.md
+
+- Added `Rho.Session`, `Rho.RunSpec`, `Rho.ToolExecutor`, `Rho.Recorder`,
+  `Rho.Runner.Runtime`, `Rho.Runner.TapeConfig` to module listings
+- Updated `Rho.AgentLoop.Runtime` → `Rho.Runner.Runtime`
+- Updated Tools listing to reflect fs.ex and tape_tools.ex consolidation
+- Removed `mounts:` / `reasoner:` legacy alias mentions from config section
+- Updated Runner + TurnStrategy section with new module descriptions
+
+### README.md
+
+- `Rho.Tape.Context.Tape` → `Rho.Tape.Projection.JSONL`
+- `Rho.Tape.Context` → `Rho.Tape.Projection`
+- All `mounts:` config examples → `plugins:`
+- `:memory_module` config key → `:tape_module`
+- `memory_mod:` Context field → `tape_module:`
+- Removed legacy subagent section
+- Removed `Rho.Mount` / `Rho.MountRegistry` legacy alias note
+- Updated `%Rho.Mount.PromptSection{}` → `%Rho.PromptSection{}`
+- Rewrote File Structure section to reflect current layout
+
+## Verification
+
+All checks pass after every sub-task:
+
+- `mix compile --warnings-as-errors` — clean
+- `mix rho.smoke` — 4 tests, 0 failures
+- `mix rho.verify` — 12 tests, 0 failures
+- `mix test apps/rho/test/` — 303 tests, 0 failures, 5 skipped

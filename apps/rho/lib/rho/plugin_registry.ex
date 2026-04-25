@@ -90,9 +90,6 @@ defmodule Rho.PluginRegistry do
     end)
   end
 
-  @doc false
-  def active_mounts(context), do: active_plugins(context)
-
   # --- Affordance collection ---
 
   @doc "Collect tools from all active plugins."

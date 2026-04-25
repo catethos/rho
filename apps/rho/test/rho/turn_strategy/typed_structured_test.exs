@@ -42,7 +42,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       :ok
     end
 
-    %Rho.AgentLoop.Runtime{
+    %Rho.Runner.Runtime{
       model: "mock:model",
       turn_strategy: TypedStructured,
       emit: emit,
@@ -53,7 +53,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       system_prompt: "You are helpful.",
       subagent: false,
       depth: 0,
-      tape: %Rho.AgentLoop.Tape{
+      tape: %Rho.Runner.TapeConfig{
         name: nil,
         tape_module: Rho.Tape.Projection.JSONL,
         compact_threshold: 100_000,

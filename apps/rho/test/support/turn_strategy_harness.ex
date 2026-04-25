@@ -23,8 +23,8 @@ defmodule Rho.Test.TurnStrategyHarness do
       }
   """
 
-  alias Rho.AgentLoop.{Runtime, Tape}
   alias Rho.Context
+  alias Rho.Runner.{Runtime, TapeConfig}
 
   @doc """
   Run `strategy_mod` against `fixture_text` with a synthetic tool map.
@@ -67,7 +67,7 @@ defmodule Rho.Test.TurnStrategyHarness do
       system_prompt: "",
       subagent: false,
       depth: 0,
-      tape: %Tape{},
+      tape: %TapeConfig{},
       context: %Context{
         tape_name: nil,
         tape_module: Rho.Tape.Projection.JSONL,

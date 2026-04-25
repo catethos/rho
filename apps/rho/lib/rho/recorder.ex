@@ -1,4 +1,4 @@
-defmodule Rho.AgentLoop.Recorder do
+defmodule Rho.Recorder do
   @moduledoc """
   Unified tape recording for the agent loop.
 
@@ -11,7 +11,7 @@ defmodule Rho.AgentLoop.Recorder do
   from the tape after recording or compaction.
   """
 
-  alias Rho.AgentLoop.Runtime
+  alias Rho.Runner.Runtime
 
   @spec record_input_messages(Runtime.t(), [map()]) :: :ok
   def record_input_messages(%Runtime{tape: %{name: nil}}, _messages), do: :ok

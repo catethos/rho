@@ -33,8 +33,14 @@ rho/
 No Phoenix, Ecto, or external tool deps. Deps: `req_llm`, `jido_signal`, `jason`, `nimble_options`.
 
 Key modules:
+- `Rho.Session` — programmatic session API (single entry point for CLI, web, tests)
+- `Rho.RunSpec` / `Rho.RunSpec.FromConfig` — explicit agent configuration struct
 - `Rho.Runner` — outer agent loop (step budget, compaction, tape recording)
-- `Rho.TurnStrategy` — behaviour for inner turn (LLM call, tool dispatch)
+- `Rho.Runner.Runtime` — immutable run config struct (inlined in runner.ex)
+- `Rho.Runner.TapeConfig` — tape configuration struct (inlined in runner.ex)
+- `Rho.Recorder` — unified tape recording for the agent loop
+- `Rho.ToolExecutor` — shared tool dispatch (transformer pipeline, timeout, normalization)
+- `Rho.TurnStrategy` — behaviour for inner turn (LLM call, response classification)
 - `Rho.TurnStrategy.Direct` / `Rho.TurnStrategy.TypedStructured` — implementations
 - `Rho.ActionSchema` — tagged union builder for TypedStructured
 - `Rho.SchemaCoerce` — schema-guided type coercion engine
@@ -45,7 +51,7 @@ Key modules:
 - `Rho.Tape.*` — append-only event history
 - `Rho.Agent.*` — Worker, Registry, Primary, Supervisor, EventLog
 - `Rho.Comms` / `Rho.Comms.SignalBus` — signal bus
-- `Rho.Config` — core config (only `tape_module/0`)
+- `Rho.Config` — core config (tape_module, agent_config, etc.)
 
 ### `apps/rho_stdlib/` — Built-in Tools & Plugins
 
@@ -53,7 +59,7 @@ Deps: `rho` (in_umbrella), `floki`, `pythonx`, `erlang_python`, `xlsxir`, `live_
 
 Module namespaces:
 - `Rho.Stdlib` — plugin module map and `resolve_plugin/1`
-- `Rho.Stdlib.Tools.*` — Bash, FsRead, FsWrite, FsEdit, WebFetch, Python, Sandbox, PathUtils, Finish, EndTurn, Anchor, SearchHistory, RecallContext, ClearMemory
+- `Rho.Stdlib.Tools.*` — Bash, FsRead/FsWrite/FsEdit (in fs.ex), WebFetch, Python, Sandbox, PathUtils, Finish, EndTurn, Anchor/SearchHistory/RecallContext/ClearMemory (in tape_tools.ex)
 - `Rho.Stdlib.Plugins.*` — MultiAgent, StepBudget, LiveRender, PyAgent, Spreadsheet, DocIngest, Tape, Control, DataTable
 - `Rho.Stdlib.DataTable` — client API for the per-session data table server (synchronous row ops, named tables). Callers pass `table: "name"` in opts; default is `"main"`. Entry points: `ensure_started/1`, `ensure_table/4`, `add_rows/3`, `get_rows/2`, `update_cells/3`, `replace_all/3`, `delete_rows/3`, `delete_by_filter/3`, `get_table_snapshot/2`, `list_tables/1`, `summarize_table/2`.
 - `Rho.Stdlib.DataTable.Server` — per-session `GenServer` that owns table state and publishes coarse invalidation events via `Rho.Comms` (`rho.session.<sid>.events.data_table`). Uses `restart: :temporary` — a crashed server stays down with `{:error, :not_running}` returned to callers rather than silently restarting empty.
@@ -160,9 +166,12 @@ The final system prompt = agent `system_prompt` + all plugin `prompt_sections` +
 
 ## Runner + TurnStrategy
 
-- **`Rho.Runner`** — outer loop: step budget, compaction, tape recording, transformer dispatch
-- **`Rho.TurnStrategy`** — inner turn: LLM call, tool dispatch, response parsing
-- `Rho.AgentLoop.Runtime` — immutable run config struct (fields: `model`, `turn_strategy`, `context`, `tape`, etc.)
+- **`Rho.Runner`** — outer loop: step budget, compaction, tape recording, tool execution (via `ToolExecutor`), transformer dispatch
+- **`Rho.TurnStrategy`** — inner turn: LLM call, response classification into intents
+- `Rho.Runner.Runtime` — immutable run config struct (fields: `model`, `turn_strategy`, `context`, `tape`, etc.)
+- `Rho.Runner.TapeConfig` — tape configuration (name, module, compact threshold)
+- `Rho.Recorder` — tape writes during the agent loop (messages, tool calls, results)
+- `Rho.ToolExecutor` — shared tool dispatch with transformer pipeline integration
 
 ## Agent System
 
@@ -175,8 +184,8 @@ The final system prompt = agent `system_prompt` + all plugin `prompt_sections` +
 ## Config System
 
 - `.rho.exs` — per-agent config. Keys: `model`, `system_prompt`, `max_steps`, `max_tokens`, `provider`, `description`, `skills`, `prompt_format`, `avatar`
-  - `plugins:` (canonical) / `mounts:` (legacy alias) — list of plugin entries
-  - `turn_strategy:` (canonical) / `reasoner:` (legacy alias) — strategy atom or module
+  - `plugins:` — list of plugin entries (atom shorthand, `{atom, opts}` tuple, or raw module)
+  - `turn_strategy:` — strategy atom or module
 - `Rho.CLI.Config` — full config loader, normalizes legacy keys
 - `Rho.Config` — core-only config (`tape_module/0`)
 - `Rho.Stdlib` — plugin module map and `resolve_plugin/1`
