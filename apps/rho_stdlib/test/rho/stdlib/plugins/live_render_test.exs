@@ -93,7 +93,7 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
     test "accepts valid spec without session (no signal emitted)" do
       context = %{depth: 0, session_id: nil, agent_id: "a1"}
       [%{execute: execute}] = LiveRender.tools([], context)
-      assert {:ok, "UI rendered successfully."} = execute.(%{spec: @valid_spec}, %{})
+      assert {:ok, "Rendered."} = execute.(%{spec: @valid_spec}, %{})
     end
   end
 end

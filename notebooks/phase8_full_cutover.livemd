@@ -1,0 +1,227 @@
+# Phase 8: Full LiveView Cutover (AppLive, FlowLive, ChatOverlay)
+
+```elixir
+Mix.install([
+  {:phoenix_pubsub, "~> 2.1"},
+  {:jason, "~> 1.4"}
+])
+```
+
+## What Changed
+
+Phase 7 migrated SessionLive to LiveEvents. Phase 8 completes the
+migration by moving the last three Comms consumers in `rho_web`:
+
+- **AppLive** — the unified root LiveView
+- **FlowLive** — the step-by-step wizard
+- **ChatOverlayComponent** — the floating chat panel on the Libraries page
+
+After this phase, the entire `rho_web` LiveView layer has **zero**
+`Comms.subscribe` calls and **zero** `handle_info({:signal, ...})` clauses.
+
+```
+Before (Phase 7 state):
+
+  Worker.emit ──► Comms.publish ──► {:signal, ...} ──► AppLive / FlowLive  ← REMOVED
+             └──► LiveEvents.broadcast ──► %LiveEvent{} ──► SessionLive
+
+After (Phase 8):
+
+  Worker.emit ──► Comms.publish ──► (non-LV consumers: EventLog, REPL)
+             └──► LiveEvents.broadcast ──► %LiveEvent{} ──► ALL LiveViews
+```
+
+## FlowLive
+
+The simplest migration. FlowLive subscribed to two Comms topics and
+had a `{:signal, %Jido.Signal{}}` handler with string suffix matching.
+
+### Subscription
+
+```elixir
+# REMOVED
+{:ok, sub1} = Rho.Comms.subscribe("rho.task.*")
+{:ok, sub2} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
+
+# REPLACED WITH
+RhoWeb.LiveEvents.subscribe(session_id)
+```
+
+### Signal handler → LiveEvent handler
+
+The old handler matched on string suffixes like
+`String.ends_with?(type, ".events.text_delta")`. The new handler
+matches on atom kinds directly — cleaner and no bridge function needed:
+
+```elixir
+def handle_info(%LiveEvent{kind: kind, data: data}, socket) do
+  case kind do
+    k when k in [:text_delta, :llm_text, :structured_partial] ->
+      {:noreply, handle_text_delta(socket, data)}
+    :tool_start -> {:noreply, handle_tool_event(socket, :start, data)}
+    :tool_result -> {:noreply, handle_tool_event(socket, :result, data)}
+    :data_table -> {:noreply, handle_data_table_event(socket, data)}
+    :task_completed -> {:noreply, handle_worker_completed(socket, data)}
+    _ -> {:noreply, socket}
+  end
+end
+```
+
+Note: `"rho.task.completed"` becomes `:task_completed` — the LiveEvent
+kind already carries the structured atom.
+
+### Terminate
+
+`Comms.unsubscribe` loop replaced with `LiveEvents.unsubscribe(sid)`.
+
+### bus_subs removed
+
+The `:bus_subs` assign tracked Comms subscription references for
+cleanup. With LiveEvents using PubSub topic-based subscribe/unsubscribe,
+no reference tracking is needed. Removed from `assign_static` and
+`boot_flow`.
+
+## AppLive
+
+AppLive had two subscription sites, one signal handler, and three
+cleanup sites.
+
+### Chat overlay subscription
+
+```elixir
+# REMOVED (handle_info {:chat_overlay_started, ...})
+{:ok, sub1} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
+{:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
+
+# REPLACED WITH
+RhoWeb.LiveEvents.subscribe(session_id)
+```
+
+### Signal handler → LiveEvent handler
+
+Same pattern as SessionLive (Phase 7). The `live_event_to_signal/1`
+bridge converts atom kinds back to dotted-string types for SignalRouter
+compatibility:
+
+```elixir
+def handle_info(%LiveEvent{} = event, socket) do
+  # Forward to ChatOverlayComponent when overlay is open
+  if socket.assigns.active_page == :libraries && socket.assigns[:chat_overlay_open] do
+    send_update(RhoWeb.ChatOverlayComponent, id: "chat-overlay", signal: event)
+  end
+
+  # Route through live_event_to_signal → SignalRouter (same as SessionLive)
+  ...
+end
+```
+
+Key change: the `send_update` call now forwards `%LiveEvent{}` structs
+instead of raw `{:signal, %Jido.Signal{}}` tuples.
+
+### correlation_id
+
+Same bridge as SessionLive — `Map.put_new(data, :correlation_id, data[:turn_id])`.
+
+### Cleanup sites
+
+Three locations (`cleanup_libraries_page`, `close_overlay`, `terminate`)
+replaced `Comms.unsubscribe` loops with `LiveEvents.unsubscribe(overlay_sid)`.
+
+### bus_subs removed
+
+All `assign(:bus_subs, ...)` and `assign_new(:bus_subs, ...)` calls
+removed from mount, apply_page, cleanup_libraries_page, close_overlay,
+and terminate.
+
+## ChatOverlayComponent
+
+Option A was chosen (less invasive): keep the `send_update` forwarding
+from AppLive but accept `%LiveEvent{}` structs instead of raw signals.
+
+### update/2
+
+```elixir
+# BEFORE
+def update(%{signal: {:signal, %Jido.Signal{type: type, data: data} = signal}}, socket) do
+  if sid && SessionCore.signal_for_session?(data, sid) do
+    correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
+    ...
+
+# AFTER
+def update(%{signal: %LiveEvent{kind: kind, data: data} = event}, socket) do
+  if sid && event.session_id == sid do
+    data = Map.put_new(data, :correlation_id, data[:turn_id])
+    ...
+```
+
+Two simplifications:
+1. **Session check**: `signal_for_session?` parsed atom/string keys —
+   `event.session_id == sid` is a direct struct field comparison.
+2. **correlation_id**: extracted from `signal.extensions` map —
+   now from `data[:turn_id]` (same value, set by Worker.build_emit).
+
+### route_signal → route_event
+
+String suffix matching replaced with atom kind matching:
+
+```elixir
+defp route_event(socket, kind, data) do
+  case kind do
+    k when k in [:text_delta, :llm_text] -> handle_text_delta(socket, data)
+    :tool_start -> handle_tool_start(socket, data)
+    :tool_result -> handle_tool_result(socket, data)
+    :turn_finished -> handle_turn_finished(socket, data)
+    :step_finished -> handle_step_finished(socket, data)
+    _ -> socket
+  end
+end
+```
+
+## SessionCore cleanup
+
+`signal_for_session?/2` deleted — no callers remain in `rho_web`.
+The function checked `data[:session_id] || data["session_id"]` because
+Comms signals had inconsistent key types. LiveEvent structs have a
+typed `session_id` field, making the helper unnecessary.
+
+## Snapshot test cleanup
+
+Removed `bus_subs` from test fixtures and assertions in `snapshot_test.exs`.
+The snapshot uses an allowlist (`@snapshot_fields`), so `bus_subs` was
+already excluded — the tests just confirmed that.
+
+## Verification
+
+```elixir
+# All Comms.subscribe calls gone from rho_web
+rho_web_files =
+  Path.wildcard("apps/rho_web/**/*.ex")
+  |> Enum.map(&File.read!/1)
+  |> Enum.join("\n")
+
+IO.puts("Comms.subscribe: #{!String.contains?(rho_web_files, "Comms.subscribe")}")
+IO.puts("handle_info({:signal: #{!String.contains?(rho_web_files, "handle_info({:signal,")}")
+IO.puts("signal_for_session?: #{!String.contains?(rho_web_files, "signal_for_session?")}")
+IO.puts("bus_subs: #{!String.contains?(rho_web_files, "bus_subs")}")
+```
+
+## What was NOT changed
+
+- **Comms.publish in publishers** — Worker, MultiAgent, AgentJobs,
+  SkeletonGenerator, Proficiency, Lenses, LensTools, EffectDispatcher
+  all still dual-publish. Non-LiveView consumers (EventLog, REPL) may
+  still rely on the signal bus. Removing the publish side is a separate
+  phase.
+- **SignalRouter / SessionState** — still dispatch on dotted-string
+  types. The `live_event_to_signal` bridge converts for compatibility.
+  Migrating these to atom kinds would be a larger refactor.
+
+## What comes next
+
+With all LiveView consumers on LiveEvents, the next phase can:
+
+1. Remove `Comms.publish` calls from all publishers (if EventLog and
+   REPL are also migrated or have their own subscription path).
+2. Remove the `live_event_to_signal` bridges from SessionLive and
+   AppLive by migrating SignalRouter to atom-kind dispatch.
+3. Remove `Jido.Signal` dependency from `rho_web` entirely.

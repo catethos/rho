@@ -4,7 +4,7 @@ defmodule RhoWeb.ChatOverlayComponent do
 
   Opens a floating panel with a chat connected to an agent session.
   The parent LiveView must:
-  1. Forward `{:signal, _}` messages via `send_update/3`
+  1. Forward `%LiveEvent{}` structs via `send_update/3`
   2. Handle the `{:chat_overlay_started, session_id}` info message
   3. Handle the `{:chat_overlay_closed, session_id}` info message
   """
@@ -12,7 +12,7 @@ defmodule RhoWeb.ChatOverlayComponent do
 
   import RhoWeb.ChatComponents, only: [message_row: 1, envelope_preview: 1]
 
-  alias RhoWeb.Session.SessionCore
+  alias RhoWeb.LiveEvents.Event, as: LiveEvent
 
   @impl true
   def mount(socket) do
@@ -28,13 +28,12 @@ defmodule RhoWeb.ChatOverlayComponent do
   end
 
   @impl true
-  def update(%{signal: {:signal, %Jido.Signal{type: type, data: data} = signal}}, socket) do
+  def update(%{signal: %LiveEvent{kind: kind, data: data} = event}, socket) do
     sid = socket.assigns.session_id
 
-    if sid && SessionCore.signal_for_session?(data, sid) do
-      correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
-      data = Map.put(data, :correlation_id, correlation_id)
-      socket = route_signal(socket, type, data)
+    if sid && event.session_id == sid do
+      data = Map.put_new(data, :correlation_id, data[:turn_id])
+      socket = route_event(socket, kind, data)
       {:ok, socket}
     else
       {:ok, socket}
@@ -205,31 +204,17 @@ defmodule RhoWeb.ChatOverlayComponent do
     {"overlay_msg_#{id}", assign(socket, :next_id, id + 1)}
   end
 
-  # --- Signal routing ---
+  # --- Event routing ---
   # Mirrors SessionState reducer logic for the overlay context.
 
-  defp route_signal(socket, type, data) do
-    cond do
-      String.ends_with?(type, ".text_delta") ->
-        handle_text_delta(socket, data)
-
-      String.ends_with?(type, ".llm_text") ->
-        handle_text_delta(socket, data)
-
-      String.ends_with?(type, ".tool_start") ->
-        handle_tool_start(socket, data)
-
-      String.ends_with?(type, ".tool_result") ->
-        handle_tool_result(socket, data)
-
-      String.ends_with?(type, ".turn_finished") ->
-        handle_turn_finished(socket, data)
-
-      String.ends_with?(type, ".step_finished") ->
-        handle_step_finished(socket, data)
-
-      true ->
-        socket
+  defp route_event(socket, kind, data) do
+    case kind do
+      k when k in [:text_delta, :llm_text] -> handle_text_delta(socket, data)
+      :tool_start -> handle_tool_start(socket, data)
+      :tool_result -> handle_tool_result(socket, data)
+      :turn_finished -> handle_turn_finished(socket, data)
+      :step_finished -> handle_step_finished(socket, data)
+      _ -> socket
     end
   end
 

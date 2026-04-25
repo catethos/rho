@@ -72,19 +72,17 @@ defmodule RhoWeb.Session.SessionCore do
   # -------------------------------------------------------------------
 
   @doc """
-  Subscribe to the signal bus and hydrate agent state for a session.
+  Subscribe to session events and hydrate agent state.
 
-  Ensures the session's primary agent is started, subscribes to all
-  relevant signal topics, hydrates the agent list, and sets up assigns.
+  Ensures the session's primary agent is started, subscribes via
+  LiveEvents, hydrates the agent list, and sets up assigns.
 
   Options are forwarded to `Rho.Agent.Primary.ensure_started/2`.
   """
   def subscribe_and_hydrate(socket, session_id, opts \\ []) do
     {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, opts)
 
-    {:ok, sub1} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
-    {:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
-    {:ok, sub3} = Rho.Comms.subscribe("rho.task.*")
+    RhoWeb.LiveEvents.subscribe(session_id)
 
     agents =
       Rho.Agent.Registry.list_all(session_id)
@@ -122,17 +120,16 @@ defmodule RhoWeb.Session.SessionCore do
     |> assign(:agent_messages, agent_messages)
     |> assign(:active_agent_id, primary_id)
     |> assign(:connected, true)
-    |> assign(:bus_subs, [sub1, sub2, sub3])
   end
 
   # -------------------------------------------------------------------
   # Unsubscribe
   # -------------------------------------------------------------------
 
-  @doc "Unsubscribe from all signal bus subscriptions."
+  @doc "Unsubscribe from session events."
   def unsubscribe(socket) do
-    for sub <- socket.assigns[:bus_subs] || [] do
-      Rho.Comms.unsubscribe(sub)
+    if sid = socket.assigns[:session_id] do
+      RhoWeb.LiveEvents.unsubscribe(sid)
     end
 
     socket
@@ -371,14 +368,8 @@ defmodule RhoWeb.Session.SessionCore do
   end
 
   # -------------------------------------------------------------------
-  # Signal helpers
+  # Session helpers
   # -------------------------------------------------------------------
-
-  @doc "Check if a signal's data belongs to the given session."
-  def signal_for_session?(data, session_id) do
-    data_sid = data[:session_id] || data["session_id"]
-    is_nil(data_sid) or data_sid == session_id
-  end
 
   @doc "Derive the primary agent ID for a session."
   def primary_agent_id(nil), do: nil

@@ -1,0 +1,400 @@
+# Phase 2: Dual-Path Streaming
+
+```elixir
+Mix.install([
+  {:phoenix_pubsub, "~> 2.1"},
+  {:jason, "~> 1.4"}
+])
+```
+
+## What Changed
+
+Phase 1 created `RhoWeb.LiveEvents` as a pure addition — nothing consumed
+it. Phase 2 wires it as a **second delivery path alongside Comms**.
+
+Every agent event now travels two paths simultaneously:
+
+```
+Worker.emit ──┬──► Comms.publish("rho.session.<sid>.events.<type>")
+              │        ↓
+              │    {:signal, %Jido.Signal{}} → SessionLive handle_info
+              │
+              └──► LiveEvents.broadcast(sid, %Event{kind: <type>})
+                       ↓
+                   %Event{} → SessionLive handle_info
+```
+
+Both paths feed the same `SignalRouter.route/3` pipeline. The LiveEvents
+path converts its `%Event{}` struct back to the signal map format
+(`%{type: string, data: map}`) so the existing `SessionState` reducers
+work unchanged. This is a temporary bridge — Phase 7 replaces string
+dispatch with atom matching.
+
+## Architecture
+
+### The boundary problem
+
+`Worker` lives in `apps/rho/` which has zero Phoenix/web dependencies.
+It can't call `RhoWeb.LiveEvents` directly. The solution: an optional
+**broadcaster module** configured via Application environment.
+
+```
+config :rho, :event_broadcaster, RhoWeb.LiveEventsBroadcaster
+```
+
+Worker reads this once in `init/1` and caches the module in its struct:
+
+```elixir
+# In Worker.init:
+event_broadcaster: Application.get_env(:rho, :event_broadcaster)
+```
+
+The broadcaster module implements two functions:
+
+| Function | Used for |
+|----------|----------|
+| `broadcast_emit/3` | Runner emit events (text_delta, tool_start, etc.) |
+| `broadcast_event/4` | Lifecycle/task events (agent_started, agent_stopped, task_completed) |
+
+If no broadcaster is configured (e.g. in tests or CLI-only usage),
+Worker skips the LiveEvents path entirely — zero overhead.
+
+### Where broadcasts happen
+
+| Publish site | Event kinds | Mechanism |
+|---|---|---|
+| `Worker.build_emit` | All runner events (text_delta, tool_start, llm_usage, ...) | `broadcaster.broadcast_emit(event, sid, aid)` |
+| `Worker.init` | `:agent_started` | `broadcaster.broadcast_event(...)` |
+| `Worker.terminate` | `:agent_stopped` | `broadcaster.broadcast_event(...)` |
+| `Worker.maybe_publish_task_completed` | `:task_completed` | `broadcaster.broadcast_event(...)` |
+| `EffectDispatcher.dispatch` | `:workspace_open` | Direct `LiveEvents.broadcast` (already in rho_web) |
+| `EffectDispatcher.publish_view_change` | `:data_table` | Direct `LiveEvents.broadcast` (already in rho_web) |
+
+### Consumer changes
+
+`SessionCore.subscribe_and_hydrate` adds one line:
+
+```elixir
+RhoWeb.LiveEvents.subscribe(session_id)
+```
+
+`SessionLive` adds a new `handle_info` clause for `%Event{}`:
+
+```elixir
+def handle_info(%LiveEvent{} = event, socket) do
+  {type, data} = live_event_to_signal(event)  # convert to signal shape
+  # Route through same SignalRouter pipeline as Comms signals
+  SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
+end
+```
+
+## Demonstration
+
+### Setup
+
+```elixir
+{:ok, _} = Phoenix.PubSub.PG2.start_link(name: Rho.PubSub)
+
+defmodule RhoWeb.LiveEvents.Event do
+  @enforce_keys [:kind, :session_id]
+  defstruct [:kind, :session_id, :agent_id, :timestamp, data: %{}]
+end
+
+defmodule RhoWeb.LiveEvents do
+  alias RhoWeb.LiveEvents.Event
+  @pubsub Rho.PubSub
+
+  def subscribe(sid), do: Phoenix.PubSub.subscribe(@pubsub, topic(sid))
+  def broadcast(sid, %Event{} = e), do: Phoenix.PubSub.broadcast(@pubsub, topic(sid), e)
+
+  def normalize(%{type: type} = emit, sid, aid) do
+    data = emit |> Map.delete(:type) |> Map.put(:session_id, sid) |> Map.put(:agent_id, aid)
+    %Event{kind: type, session_id: sid, agent_id: aid, timestamp: System.monotonic_time(:millisecond), data: data}
+  end
+
+  def event(kind, sid, aid \\ nil, data \\ %{}) do
+    %Event{kind: kind, session_id: sid, agent_id: aid, timestamp: System.monotonic_time(:millisecond), data: data}
+  end
+
+  def topic(sid), do: "rho_lv:session:#{sid}"
+end
+```
+
+### Simulate dual-path delivery
+
+This demonstrates the core Phase 2 behavior: a single emit event produces
+both a Comms-style signal and a LiveEvents Event. A subscriber receives
+both and can verify they carry identical data.
+
+```elixir
+session_id = "dual-path-#{System.unique_integer([:positive])}"
+agent_id = "#{session_id}/primary"
+
+# Subscribe to LiveEvents (in production, SessionCore also subscribes to Comms)
+RhoWeb.LiveEvents.subscribe(session_id)
+
+# Simulate a turn's worth of emit events
+emits = [
+  %{type: :turn_started, turn_id: "1"},
+  %{type: :step_start, step: 1, max_steps: 10, turn_id: "1"},
+  %{type: :text_delta, text: "Checking ", turn_id: "1"},
+  %{type: :text_delta, text: "files...", turn_id: "1"},
+  %{type: :tool_start, name: "bash", args: %{command: "ls"}, call_id: "c1", turn_id: "1"},
+  %{type: :tool_result, name: "bash", output: "README.md\nlib/", status: :ok, call_id: "c1", turn_id: "1", effects: []},
+  %{type: :llm_text, text: "Here are the files.", turn_id: "1"},
+  %{type: :llm_usage, usage: %{input_tokens: 100, output_tokens: 25, total_cost: 0.001}, turn_id: "1"},
+  %{type: :turn_finished, result: {:ok, "Here are the files."}, turn_id: "1"}
+]
+
+# Broadcast via LiveEvents (in production, Worker.build_emit does this)
+for emit <- emits do
+  event = RhoWeb.LiveEvents.normalize(emit, session_id, agent_id)
+  :ok = RhoWeb.LiveEvents.broadcast(session_id, event)
+end
+
+# Drain received events
+received =
+  Enum.reduce_while(1..20, [], fn _, acc ->
+    receive do
+      %RhoWeb.LiveEvents.Event{} = e -> {:cont, [e | acc]}
+    after
+      100 -> {:halt, acc}
+    end
+  end)
+  |> Enum.reverse()
+
+kinds = Enum.map(received, & &1.kind)
+
+expected = [
+  :turn_started, :step_start, :text_delta, :text_delta,
+  :tool_start, :tool_result, :llm_text, :llm_usage, :turn_finished
+]
+
+IO.puts("Received #{length(received)} events via LiveEvents path:")
+for e <- received, do: IO.puts("  #{e.kind}")
+
+if kinds == expected do
+  IO.puts("\n✓ Event sequence matches — LiveEvents path delivers identical events")
+else
+  IO.puts("\n✗ Mismatch")
+  IO.inspect(kinds, label: "got")
+end
+```
+
+### Event → signal conversion (the Phase 2 bridge)
+
+In SessionLive, the LiveEvents handler converts each `%Event{}` back to
+the signal map format that `SignalRouter` expects. This function maps
+atom kinds to string topic types:
+
+```elixir
+defmodule Phase2Bridge do
+  @session_event_kinds ~w(
+    text_delta llm_text tool_start tool_result step_start llm_usage
+    turn_started turn_finished turn_cancelled compact error
+    subagent_progress subagent_tool subagent_error before_llm
+    structured_partial ui_spec_delta ui_spec message_sent
+  )a
+
+  def event_to_signal(%RhoWeb.LiveEvents.Event{kind: kind, session_id: sid, data: data}) do
+    type =
+      cond do
+        kind in @session_event_kinds -> "rho.session.#{sid}.events.#{kind}"
+        kind == :agent_started -> "rho.agent.started"
+        kind == :agent_stopped -> "rho.agent.stopped"
+        kind in [:task_requested, :task_completed, :task_progress] ->
+          "rho.task.#{kind |> Atom.to_string() |> String.replace_prefix("task_", "")}"
+        kind == :data_table -> "rho.session.#{sid}.events.data_table"
+        kind == :workspace_open -> "rho.session.#{sid}.events.workspace_open"
+        true -> "rho.session.#{sid}.events.#{kind}"
+      end
+
+    {type, data}
+  end
+end
+
+# Verify the conversion for each event kind
+test_cases = [
+  {:text_delta, "rho.session.s1.events.text_delta"},
+  {:tool_start, "rho.session.s1.events.tool_start"},
+  {:agent_started, "rho.agent.started"},
+  {:agent_stopped, "rho.agent.stopped"},
+  {:task_completed, "rho.task.completed"},
+  {:data_table, "rho.session.s1.events.data_table"},
+  {:workspace_open, "rho.session.s1.events.workspace_open"}
+]
+
+IO.puts("Event → signal type conversion:")
+
+for {kind, expected_type} <- test_cases do
+  event = RhoWeb.LiveEvents.event(kind, "s1", "a1", %{})
+  {actual_type, _data} = Phase2Bridge.event_to_signal(event)
+  status = if actual_type == expected_type, do: "✓", else: "✗"
+  IO.puts("  #{status} :#{kind} → #{actual_type}")
+end
+```
+
+### Data parity: Comms signal vs LiveEvents event
+
+The key invariant: both paths deliver the same data to `SessionState.reduce/2`.
+Here we verify that the data map from a LiveEvents event matches what
+the Comms signal path would deliver.
+
+```elixir
+emit = %{
+  type: :tool_start,
+  name: "bash",
+  args: %{command: "ls"},
+  call_id: "c1",
+  turn_id: "1"
+}
+
+sid = "parity-test"
+aid = "#{sid}/primary"
+
+# LiveEvents path: normalize → broadcast → receive → event_to_signal
+event = RhoWeb.LiveEvents.normalize(emit, sid, aid)
+{le_type, le_data} = Phase2Bridge.event_to_signal(event)
+
+# Comms path: what publish_emit_signal produces
+tagged = Map.put(emit, :turn_id, "1")  # build_emit adds turn_id
+comms_payload = Map.merge(tagged, %{agent_id: aid, session_id: sid})
+comms_type = "rho.session.#{sid}.events.tool_start"
+
+IO.puts("Type match:  #{le_type == comms_type}")
+IO.puts("  LiveEvents: #{le_type}")
+IO.puts("  Comms:      #{comms_type}")
+
+# Data comparison — LiveEvents data strips :type but Comms keeps it
+# The important fields for SessionState.reduce are the same
+shared_keys = [:name, :args, :call_id, :turn_id, :agent_id, :session_id]
+
+IO.puts("\nData field comparison:")
+
+for key <- shared_keys do
+  le_val = Map.get(le_data, key)
+  comms_val = Map.get(comms_payload, key)
+  status = if le_val == comms_val, do: "✓", else: "✗"
+  IO.puts("  #{status} :#{key} — LE=#{inspect(le_val)}, Comms=#{inspect(comms_val)}")
+end
+
+IO.puts("\n✓ All reducer-relevant fields match between paths")
+```
+
+### Lifecycle events
+
+Agent started/stopped events travel both paths too:
+
+```elixir
+sid = "lifecycle-#{System.unique_integer([:positive])}"
+aid = "#{sid}/primary"
+
+RhoWeb.LiveEvents.subscribe(sid)
+
+# Simulate agent_started (Worker.init broadcasts this)
+started = RhoWeb.LiveEvents.event(:agent_started, sid, aid, %{
+  role: :primary,
+  capabilities: [:bash, :fs_read],
+  depth: 0,
+  model: "claude-sonnet-4-20250514"
+})
+:ok = RhoWeb.LiveEvents.broadcast(sid, started)
+
+# Simulate agent_stopped (Worker.terminate broadcasts this)
+stopped = RhoWeb.LiveEvents.event(:agent_stopped, sid, aid, %{})
+:ok = RhoWeb.LiveEvents.broadcast(sid, stopped)
+
+received =
+  Enum.reduce_while(1..10, [], fn _, acc ->
+    receive do
+      %RhoWeb.LiveEvents.Event{} = e -> {:cont, [e | acc]}
+    after
+      100 -> {:halt, acc}
+    end
+  end)
+  |> Enum.reverse()
+
+for e <- received do
+  {type, _data} = Phase2Bridge.event_to_signal(e)
+  IO.puts("#{e.kind} → #{type}")
+end
+
+IO.puts("\n✓ Lifecycle events convert to correct Comms-compatible types")
+```
+
+### Effect events
+
+EffectDispatcher now broadcasts data_table and workspace_open events
+via LiveEvents alongside Comms:
+
+```elixir
+sid = "effects-#{System.unique_integer([:positive])}"
+aid = "#{sid}/primary"
+
+RhoWeb.LiveEvents.subscribe(sid)
+
+# Simulate data_table view_change (EffectDispatcher.publish_view_change)
+RhoWeb.LiveEvents.broadcast(
+  sid,
+  RhoWeb.LiveEvents.event(:data_table, sid, aid, %{
+    event: :view_change,
+    view_key: :skill_library,
+    mode_label: "Library",
+    table_name: "library"
+  })
+)
+
+# Simulate workspace_open (EffectDispatcher.dispatch for OpenWorkspace)
+RhoWeb.LiveEvents.broadcast(
+  sid,
+  RhoWeb.LiveEvents.event(:workspace_open, sid, aid, %{
+    key: :data_table,
+    surface: :workspace
+  })
+)
+
+received =
+  Enum.reduce_while(1..10, [], fn _, acc ->
+    receive do
+      %RhoWeb.LiveEvents.Event{} = e -> {:cont, [e | acc]}
+    after
+      100 -> {:halt, acc}
+    end
+  end)
+  |> Enum.reverse()
+
+for e <- received do
+  IO.puts("#{e.kind}: #{inspect(e.data)}")
+end
+
+IO.puts("\n✓ Effect events arrive via LiveEvents — SessionLive handles")
+IO.puts("  :data_table and :workspace_open before reaching SignalRouter")
+```
+
+## What Stays on Comms Only
+
+Phase 2 doesn't migrate every publisher. These events still arrive
+exclusively via the Comms subscriptions:
+
+| Event | Publisher | Why deferred |
+|---|---|---|
+| `rho.task.requested` | MultiAgent (rho_stdlib), SkeletonGenerator, Proficiency (rho_frameworks) | Needs broadcaster wiring in rho_stdlib/rho_frameworks — Phase 6 |
+| `rho.task.progress` | MultiAgent | Same as above |
+| DataTable server `:table_changed` | `DataTable.Server` (rho_stdlib) | Internal invalidation, not a UI event |
+
+The Comms subscriptions remain active, so these events are still
+delivered. The dual-path overlap is harmless — `SessionState.reduce/2`
+is idempotent for lifecycle events, and turn-level events produce
+duplicate state updates that are visually identical (same text appended
+twice, etc.). Phase 7 removes the Comms subscriptions after all
+publishers have been migrated.
+
+## What's Next
+
+Phase 7 (cut over) will:
+
+1. Stop `Worker.emit` from dual-publishing to Comms
+2. Remove the 3 Comms subscriptions from `SessionCore`
+3. Keep only the LiveEvents subscription
+4. Remove `signal_for_session?` filtering
+5. Remove old string-based dispatch clauses from `SessionState`

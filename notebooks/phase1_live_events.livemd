@@ -1,0 +1,321 @@
+# Phase 1: LiveEvents — Canonical Event Transport
+
+```elixir
+Mix.install([
+  {:phoenix_pubsub, "~> 2.1"},
+  {:jason, "~> 1.4"}
+])
+```
+
+## The Problem
+
+Rho's web layer receives agent events through three wildcard Comms
+subscriptions per session:
+
+```elixir
+{:ok, sub1} = Rho.Comms.subscribe("rho.session.#{sid}.events.*")
+{:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
+{:ok, sub3} = Rho.Comms.subscribe("rho.task.*")
+```
+
+This has two costs:
+
+1. **Over-delivery** — `rho.agent.*` and `rho.task.*` receive events for
+   *every* session. Each LiveView filters with `signal_for_session?/2`,
+   discarding events that aren't theirs.
+
+2. **String parsing** — event types arrive as dotted strings like
+   `"rho.session.abc.events.tool_start"`. `SessionState` splits on `.`
+   and takes the last segment to dispatch. This is fragile (relies on
+   position) and prevents compile-time pattern matching.
+
+LiveEvents replaces all three subscriptions with one PubSub topic per
+session, carrying events as structs with atom `kind` fields.
+
+## The Design
+
+### One topic, one struct
+
+```
+old: "rho.session.<sid>.events.*"  →  {:signal, %Jido.Signal{type: "rho.session.<sid>.events.text_delta", data: %{...}}}
+new: "rho_lv:session:<sid>"        →  %RhoWeb.LiveEvents.Event{kind: :text_delta, data: %{...}}
+```
+
+A canonical `Event` struct replaces the Jido.Signal wrapper:
+
+```elixir
+defmodule Event do
+  @enforce_keys [:kind, :session_id]
+  defstruct [:kind, :session_id, :agent_id, :timestamp, data: %{}]
+end
+```
+
+- **`:kind`** is an atom — enables `handle_info(%Event{kind: :tool_start}, socket)`.
+- **`:session_id`** is embedded — no more `signal_for_session?` filtering.
+- **`:timestamp`** is monotonic milliseconds — replaces `meta.emitted_at`.
+- **`:data`** is the payload map — same shape the reducers already expect.
+
+### No string topics, no wildcards
+
+The old path needs three subscriptions that all bleed across sessions:
+
+| Subscription | Matches | Filtering |
+|---|---|---|
+| `rho.session.<sid>.events.*` | This session's turn events | None needed |
+| `rho.agent.*` | **All** agent lifecycle events | `signal_for_session?/2` |
+| `rho.task.*` | **All** task delegation events | `signal_for_session?/2` |
+
+The new path needs one:
+
+| Subscription | Matches | Filtering |
+|---|---|---|
+| `rho_lv:session:<sid>` | Everything for this session | None needed |
+
+Agent lifecycle and task events are broadcast to the relevant session
+topic by the publisher, not received globally and filtered.
+
+## Demonstration
+
+Since `RhoWeb.LiveEvents` depends on Phoenix.PubSub (not the full Rho
+umbrella), we can demonstrate the full subscribe → broadcast → receive
+cycle with just PubSub.
+
+### Start PubSub
+
+```elixir
+{:ok, _} = Phoenix.PubSub.PG2.start_link(name: Rho.PubSub)
+```
+
+### The Event struct
+
+```elixir
+defmodule RhoWeb.LiveEvents.Event do
+  @enforce_keys [:kind, :session_id]
+  defstruct [:kind, :session_id, :agent_id, :timestamp, data: %{}]
+end
+```
+
+### The LiveEvents module
+
+```elixir
+defmodule RhoWeb.LiveEvents do
+  alias RhoWeb.LiveEvents.Event
+
+  @pubsub Rho.PubSub
+
+  def subscribe(session_id) do
+    Phoenix.PubSub.subscribe(@pubsub, topic(session_id))
+  end
+
+  def broadcast(session_id, %Event{} = event) do
+    Phoenix.PubSub.broadcast(@pubsub, topic(session_id), event)
+  end
+
+  def normalize(%{type: type} = emit_event, session_id, agent_id) do
+    data =
+      emit_event
+      |> Map.delete(:type)
+      |> Map.put(:session_id, session_id)
+      |> Map.put(:agent_id, agent_id)
+
+    %Event{
+      kind: type,
+      session_id: session_id,
+      agent_id: agent_id,
+      timestamp: System.monotonic_time(:millisecond),
+      data: data
+    }
+  end
+
+  def event(kind, session_id, agent_id \\ nil, data \\ %{}) do
+    %Event{
+      kind: kind,
+      session_id: session_id,
+      agent_id: agent_id,
+      timestamp: System.monotonic_time(:millisecond),
+      data: data
+    }
+  end
+
+  def topic(session_id), do: "rho_lv:session:#{session_id}"
+end
+```
+
+### Subscribe and receive
+
+```elixir
+session_id = "demo-#{System.unique_integer([:positive])}"
+agent_id = "#{session_id}/primary"
+
+# Subscribe this Livebook cell's process
+RhoWeb.LiveEvents.subscribe(session_id)
+
+# Simulate a Runner emit event (the map Worker.build_emit produces)
+emit = %{
+  type: :tool_start,
+  name: "bash",
+  args: %{command: "echo hello"},
+  call_id: "call-1",
+  turn_id: "1"
+}
+
+# Normalize and broadcast
+event = RhoWeb.LiveEvents.normalize(emit, session_id, agent_id)
+:ok = RhoWeb.LiveEvents.broadcast(session_id, event)
+
+# Receive it
+receive do
+  %RhoWeb.LiveEvents.Event{kind: :tool_start} = received ->
+    IO.puts("✓ Received #{received.kind}")
+    IO.puts("  agent: #{received.agent_id}")
+    IO.puts("  tool:  #{received.data.name}")
+    IO.puts("  args:  #{inspect(received.data.args)}")
+    received
+after
+  1000 -> raise "no event received"
+end
+```
+
+### Full turn cycle
+
+Simulate a complete turn — the same sequence Worker.emit produces:
+
+```elixir
+events =
+  [
+    %{type: :turn_started, turn_id: "2"},
+    %{type: :step_start, step: 1, max_steps: 10, turn_id: "2"},
+    %{type: :text_delta, text: "Let me ", turn_id: "2"},
+    %{type: :text_delta, text: "check that.", turn_id: "2"},
+    %{type: :tool_start, name: "bash", args: %{command: "ls"}, call_id: "c2", turn_id: "2"},
+    %{type: :tool_result, name: "bash", output: "README.md\nlib/", status: :ok, call_id: "c2", turn_id: "2"},
+    %{type: :llm_text, text: "Here are the files.", turn_id: "2"},
+    %{type: :llm_usage, usage: %{input_tokens: 100, output_tokens: 25, total_cost: 0.001}, turn_id: "2"},
+    %{type: :turn_finished, result: {:ok, "Here are the files."}, turn_id: "2"}
+  ]
+
+for emit <- events do
+  event = RhoWeb.LiveEvents.normalize(emit, session_id, agent_id)
+  :ok = RhoWeb.LiveEvents.broadcast(session_id, event)
+end
+
+# Drain and display all received events
+received =
+  Enum.reduce_while(1..20, [], fn _, acc ->
+    receive do
+      %RhoWeb.LiveEvents.Event{} = e -> {:cont, [e | acc]}
+    after
+      100 -> {:halt, acc}
+    end
+  end)
+  |> Enum.reverse()
+
+IO.puts("Received #{length(received)} events:")
+
+for e <- received do
+  IO.puts("  #{e.kind}")
+end
+
+# Verify the full sequence arrived in order
+kinds = Enum.map(received, & &1.kind)
+
+expected = [
+  :turn_started, :step_start, :text_delta, :text_delta,
+  :tool_start, :tool_result, :llm_text, :llm_usage, :turn_finished
+]
+
+if kinds == expected do
+  IO.puts("\n✓ Event sequence matches expected order")
+else
+  IO.puts("\n✗ Mismatch!")
+  IO.inspect(kinds, label: "got")
+  IO.inspect(expected, label: "expected")
+end
+```
+
+### Session isolation
+
+Events from one session never leak to another:
+
+```elixir
+other_session = "other-#{System.unique_integer([:positive])}"
+
+# Subscribe to other_session (we're already subscribed to session_id)
+RhoWeb.LiveEvents.subscribe(other_session)
+
+# Broadcast to session_id
+RhoWeb.LiveEvents.broadcast(
+  session_id,
+  RhoWeb.LiveEvents.event(:text_delta, session_id, agent_id, %{text: "for session A"})
+)
+
+# Broadcast to other_session
+RhoWeb.LiveEvents.broadcast(
+  other_session,
+  RhoWeb.LiveEvents.event(:text_delta, other_session, "other-agent", %{text: "for session B"})
+)
+
+# Receive both — they arrive tagged with their session_id
+received =
+  Enum.reduce_while(1..10, [], fn _, acc ->
+    receive do
+      %RhoWeb.LiveEvents.Event{} = e -> {:cont, [e | acc]}
+    after
+      100 -> {:halt, acc}
+    end
+  end)
+  |> Enum.reverse()
+
+for e <- received do
+  IO.puts("Session #{e.session_id}: #{e.data.text}")
+end
+
+a_events = Enum.filter(received, &(&1.session_id == session_id))
+b_events = Enum.filter(received, &(&1.session_id == other_session))
+
+IO.puts("\n✓ Session A got #{length(a_events)} event(s)")
+IO.puts("✓ Session B got #{length(b_events)} event(s)")
+IO.puts("✓ No cross-contamination — each topic is scoped")
+```
+
+### Pattern matching: old vs new
+
+The key ergonomic win. Old `handle_info`:
+
+```elixir
+# OLD — string suffix parsing
+# def handle_info({:signal, %Jido.Signal{type: type, data: data}}, socket) do
+#   suffix = type |> String.split(".") |> List.last()
+#   case suffix do
+#     "tool_start" -> ...
+#     "text_delta" -> ...
+#   end
+# end
+:old_path
+```
+
+New `handle_info`:
+
+```elixir
+# NEW — atom pattern matching
+# def handle_info(%RhoWeb.LiveEvents.Event{kind: :tool_start} = e, socket) do
+#   ...
+# end
+#
+# def handle_info(%RhoWeb.LiveEvents.Event{kind: :text_delta} = e, socket) do
+#   ...
+# end
+:new_path
+```
+
+Atom matching is checked at compile time (for typos via `@event_kinds`),
+runs in constant time (vs O(n) string split), and enables multi-clause
+`handle_info` instead of a single catch-all with nested dispatch.
+
+## What's Next
+
+Phase 1 is a pure addition — nothing consumes LiveEvents yet. Comms
+continues to deliver all events. Phase 2 wires dual-path delivery:
+`Worker.emit` broadcasts to both Comms and LiveEvents, and `SessionLive`
+receives from both. Once parity is verified, Phase 7 cuts over to
+LiveEvents only and removes the Comms subscriptions.

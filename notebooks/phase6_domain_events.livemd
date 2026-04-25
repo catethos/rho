@@ -1,0 +1,325 @@
+# Phase 6: Domain Event Dual-Path
+
+```elixir
+Mix.install([
+  {:phoenix_pubsub, "~> 2.1"},
+  {:jason, "~> 1.4"}
+])
+```
+
+## What Changed
+
+Phase 2 wired dual-path delivery for Worker and EffectDispatcher — the
+two publish sites that live inside `rho` core and `rho_web`. Phase 6
+extends the same pattern to **domain-level publishers** in `rho_stdlib`
+and `rho_frameworks`.
+
+Every `Comms.publish` in those apps now has a matching
+`maybe_broadcast_event` or `maybe_broadcast_emit` call that sends the
+same data through the LiveEvents PubSub path.
+
+```
+MultiAgent.do_delegate ──┬──► Comms.publish("rho.task.requested")
+                         └──► broadcaster.broadcast_event(:task_requested, ...)
+
+AgentJobs.publish_event ──┬──► Comms.publish("rho.session.<sid>.events.<type>")
+                          └──► broadcaster.broadcast_emit(payload, ...)
+
+Lenses.score_via_llm ──┬──► Comms.publish("rho.session.<sid>.events.lens_score_update")
+                       └──► broadcaster.broadcast_event(:lens_score_update, ...)
+```
+
+## The boundary constraint
+
+`rho_stdlib` and `rho_frameworks` cannot depend on `rho_web`. They
+use the same dependency-inversion pattern as Worker: read the configured
+broadcaster module from Application env and call it conditionally.
+
+```elixir
+defp maybe_broadcast_event(kind, session_id, agent_id, data)
+     when is_binary(session_id) do
+  case Application.get_env(:rho, :event_broadcaster) do
+    nil -> :ok
+    mod -> mod.broadcast_event(kind, session_id, agent_id, data)
+  end
+end
+
+defp maybe_broadcast_event(_, _, _, _), do: :ok
+```
+
+Unlike Worker (which caches the module in GenServer state), these are
+stateless tool/context functions — they read the env on each call. This
+is fine for event-publishing hot paths that already do a `Comms.publish`
+(which itself does ETS lookups).
+
+## Publish sites covered
+
+### rho_stdlib — MultiAgent
+
+| Function | Event kind | Broadcaster call |
+|---|---|---|
+| `route_by_capability/4` | `:task_requested` | `broadcast_event` |
+| `do_delegate/2` | `:task_requested` | `broadcast_event` |
+| `execute_delegate_lite/4` | `:task_requested` | `broadcast_event` |
+| `publish_lite_event/3` | emit types (`:text_delta`, `:tool_start`, etc.) | `broadcast_emit` |
+| `publish_lite_completion/3` | `:task_completed` | `broadcast_event` |
+| `execute_spawn/8` | `:agent_spawned` | `broadcast_event` |
+| `execute_send_message/3` | `:message_sent` | `broadcast_event` |
+| `execute_broadcast_message/3` | `:broadcast` | `broadcast_event` |
+
+### rho_frameworks — AgentJobs
+
+| Function | Event kind | Broadcaster call |
+|---|---|---|
+| `publish_completion/3` | `:task_completed` | `broadcast_event` |
+| `publish_event/3` | emit types | `broadcast_emit` |
+
+### rho_frameworks — Domain modules
+
+| Module | Function | Event kind |
+|---|---|---|
+| `SkeletonGenerator` | `publish_started/2` | `:task_requested` |
+| `Proficiency` | `publish_delegation/4` | `:task_requested` |
+| `LensTools` | `lens_dashboard` tool | `:lens_dashboard_init` |
+| `Lenses` | `maybe_publish_score_update/3` | `:lens_score_update` |
+
+## Intentionally Comms-only
+
+These `Comms.publish` calls do **not** get a LiveEvents broadcast:
+
+| Module | Topic | Reason |
+|---|---|---|
+| `DataTable.Server` | `rho.session.<sid>.events.data_table` | Internal invalidation; LiveView subscribes directly via Comms for snapshot refetches. Will migrate in a later phase. |
+| `LiveRender` | `ui_spec_delta`, `ui_spec` | Custom streaming protocol with incremental element accumulation. Needs its own migration path. |
+| `Hiring.Simulation` | `rho.hiring.*` | Demo module, not production. |
+| `Hiring.Tools` | `rho.hiring.scores.submitted` | Demo module, not production. |
+
+## Demonstration
+
+### Setup
+
+```elixir
+{:ok, _} = Phoenix.PubSub.PG2.start_link(name: Rho.PubSub)
+
+defmodule RhoWeb.LiveEvents.Event do
+  @enforce_keys [:kind, :session_id]
+  defstruct [:kind, :session_id, :agent_id, :timestamp, data: %{}]
+end
+
+defmodule RhoWeb.LiveEvents do
+  alias RhoWeb.LiveEvents.Event
+  @pubsub Rho.PubSub
+
+  def subscribe(sid), do: Phoenix.PubSub.subscribe(@pubsub, topic(sid))
+  def broadcast(sid, %Event{} = e), do: Phoenix.PubSub.broadcast(@pubsub, topic(sid), e)
+
+  def event(kind, sid, aid \\ nil, data \\ %{}) do
+    %Event{
+      kind: kind,
+      session_id: sid,
+      agent_id: aid,
+      timestamp: System.monotonic_time(:millisecond),
+      data: data
+    }
+  end
+
+  def topic(sid), do: "rho_lv:session:#{sid}"
+end
+
+# Simulate the broadcaster module that rho_stdlib/rho_frameworks call
+defmodule FakeBroadcaster do
+  def broadcast_event(kind, session_id, agent_id, data) do
+    event = RhoWeb.LiveEvents.event(kind, session_id, agent_id, data)
+    RhoWeb.LiveEvents.broadcast(session_id, event)
+    :ok
+  end
+
+  def broadcast_emit(%{type: _} = emit_event, session_id, agent_id) do
+    data =
+      emit_event
+      |> Map.delete(:type)
+      |> Map.put(:session_id, session_id)
+      |> Map.put(:agent_id, agent_id)
+
+    event = %RhoWeb.LiveEvents.Event{
+      kind: emit_event.type,
+      session_id: session_id,
+      agent_id: agent_id,
+      timestamp: System.monotonic_time(:millisecond),
+      data: data
+    }
+
+    RhoWeb.LiveEvents.broadcast(session_id, event)
+    :ok
+  end
+end
+
+# Wire up the broadcaster (matches config :rho, :event_broadcaster)
+Application.put_env(:rho, :event_broadcaster, FakeBroadcaster)
+```
+
+### Simulate MultiAgent task delegation
+
+This mimics `do_delegate/2` publishing a `:task_requested` event through
+both paths. A subscriber should receive the LiveEvents event with the
+same data that Comms would carry.
+
+```elixir
+session_id = "phase6-#{System.unique_integer([:positive])}"
+agent_id = "#{session_id}/worker-1"
+
+RhoWeb.LiveEvents.subscribe(session_id)
+
+# Simulate the maybe_broadcast_event call from MultiAgent.do_delegate
+task_data = %{
+  task_id: "task_42",
+  session_id: session_id,
+  agent_id: agent_id,
+  parent_agent_id: "#{session_id}/primary",
+  role: "analyst",
+  task: "Analyze the data",
+  max_steps: 30
+}
+
+# This is what MultiAgent does after Comms.publish:
+case Application.get_env(:rho, :event_broadcaster) do
+  nil -> :ok
+  mod -> mod.broadcast_event(:task_requested, session_id, agent_id, task_data)
+end
+
+# Verify receipt
+received =
+  receive do
+    %RhoWeb.LiveEvents.Event{} = e -> e
+  after
+    500 -> nil
+  end
+
+if received do
+  IO.puts("✓ Received :#{received.kind} event")
+  IO.puts("  session_id: #{received.session_id}")
+  IO.puts("  agent_id: #{received.agent_id}")
+  IO.puts("  task_id: #{received.data.task_id}")
+  IO.puts("  role: #{received.data.role}")
+else
+  IO.puts("✗ No event received")
+end
+```
+
+### Simulate lite worker event streaming
+
+This mimics `publish_lite_event/3` and `publish_lite_completion/3` — the
+lite worker emit path that goes through `broadcast_emit` for streaming
+events and `broadcast_event` for the final completion.
+
+```elixir
+session_id = "phase6-lite-#{System.unique_integer([:positive])}"
+agent_id = "#{session_id}/lite-1"
+
+RhoWeb.LiveEvents.subscribe(session_id)
+
+# Simulate streaming events (broadcast_emit path)
+emit_events = [
+  %{type: :step_start, step: 1, max_steps: 5, agent_id: agent_id, session_id: session_id, lite: true},
+  %{type: :text_delta, text: "Working...", agent_id: agent_id, session_id: session_id, lite: true},
+  %{type: :tool_start, name: "bash", args: %{}, call_id: "c1", agent_id: agent_id, session_id: session_id, lite: true},
+  %{type: :tool_result, name: "bash", output: "ok", status: :ok, call_id: "c1", agent_id: agent_id, session_id: session_id, lite: true}
+]
+
+for emit <- emit_events do
+  broadcaster = Application.get_env(:rho, :event_broadcaster)
+  broadcaster.broadcast_emit(emit, session_id, agent_id)
+end
+
+# Simulate completion (broadcast_event path)
+completion_data = %{session_id: session_id, agent_id: agent_id, status: :ok, result: "Done."}
+broadcaster = Application.get_env(:rho, :event_broadcaster)
+broadcaster.broadcast_event(:task_completed, session_id, agent_id, completion_data)
+
+# Drain all events
+received =
+  Enum.reduce_while(1..10, [], fn _, acc ->
+    receive do
+      %RhoWeb.LiveEvents.Event{} = e -> {:cont, [e | acc]}
+    after
+      100 -> {:halt, acc}
+    end
+  end)
+  |> Enum.reverse()
+
+kinds = Enum.map(received, & &1.kind)
+IO.puts("Received #{length(received)} events:")
+for e <- received, do: IO.puts("  #{e.kind}")
+
+expected = [:step_start, :text_delta, :tool_start, :tool_result, :task_completed]
+
+if kinds == expected do
+  IO.puts("\n✓ Lite worker event sequence correct — streaming + completion both delivered")
+else
+  IO.puts("\n✗ Mismatch")
+  IO.inspect(kinds, label: "got")
+end
+```
+
+### Simulate lens score update
+
+Lens events (`lens_score_update`, `lens_dashboard_init`) previously only
+traveled via Comms. Now they also broadcast through LiveEvents, which
+means the `LensDashboardProjection` can eventually consume them from
+either path.
+
+```elixir
+session_id = "phase6-lens-#{System.unique_integer([:positive])}"
+agent_id = "#{session_id}/primary"
+
+RhoWeb.LiveEvents.subscribe(session_id)
+
+# Simulate Lenses.maybe_publish_score_update
+score_data = %{
+  lens_id: 1,
+  score: %{
+    score_id: 42,
+    classification: "augmented",
+    axes: [%{name: "Impact", composite: 3.5}, %{name: "Readiness", composite: 4.0}]
+  }
+}
+
+broadcaster = Application.get_env(:rho, :event_broadcaster)
+broadcaster.broadcast_event(:lens_score_update, session_id, agent_id, score_data)
+
+received =
+  receive do
+    %RhoWeb.LiveEvents.Event{} = e -> e
+  after
+    500 -> nil
+  end
+
+if received && received.kind == :lens_score_update do
+  IO.puts("✓ Received :lens_score_update via LiveEvents")
+  IO.puts("  lens_id: #{received.data.lens_id}")
+  IO.puts("  classification: #{received.data.score.classification}")
+else
+  IO.puts("✗ No lens event received")
+end
+```
+
+### Nil broadcaster safety
+
+When `event_broadcaster` is not configured (CLI mode, tests without
+web), the helper is a no-op.
+
+```elixir
+Application.put_env(:rho, :event_broadcaster, nil)
+
+# This should silently succeed — no crash, no event
+result =
+  case Application.get_env(:rho, :event_broadcaster) do
+    nil -> :ok
+    mod -> mod.broadcast_event(:task_requested, "s1", "a1", %{})
+  end
+
+IO.puts("✓ Nil broadcaster returns #{inspect(result)} — safe no-op")
+
+# Restore for any subsequent cells
+Application.put_env(:rho, :event_broadcaster, FakeBroadcaster)
+```

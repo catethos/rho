@@ -224,7 +224,7 @@ definition, SchemaCompiler output, and a round-trip `RhoBaml.Function.call/2`
 against a live model. Show rationale: single schema definition produces
 struct + typespec + BAML class. Compare before/after with `ReqLLM.generate_object`.
 
-### [ ] Phase 1: LiveEvents + canonical events (1d)
+### [x] Phase 1: LiveEvents + canonical events (1d)
 
 Create the new event transport. Nothing consumes it yet.
 
@@ -237,7 +237,7 @@ Create the new event transport. Nothing consumes it yet.
 LiveEvents, trigger an agent run, show canonical events arriving as atoms.
 Compare side-by-side with the old Comms string-based topic events.
 
-### [ ] Phase 2: Dual-path streaming (1d)
+### [x] Phase 2: Dual-path streaming (1d)
 
 Wire LiveEvents as a second delivery path alongside Comms.
 
@@ -316,23 +316,64 @@ composition. Compare weight: Runner.run with `tape_name: nil` vs old
 LiteWorker (demonstrate equivalent behavior, no tape/transformer overhead).
 Show Scope struct replacing Runtime.
 
-### [ ] Phase 6: Domain events → LiveEvents (0.5d)
+### [x] Phase 6: Domain events → LiveEvents (0.5d)
 
-Move remaining Comms usage to LiveEvents.
+Added dual-path LiveEvents broadcasts alongside existing Comms.publish
+calls in rho_stdlib and rho_frameworks. Uses the same
+`Application.get_env(:rho, :event_broadcaster)` pattern as Worker.
 
-1. EffectDispatcher broadcasts via LiveEvents after durable writes
-2. Lens tools return effects instead of publishing `lens_score_update`/`lens_dashboard_init`
-3. Remove all `Rho.Comms.publish` from frameworks modules
+**Covered:**
+- MultiAgent: task_requested (3 sites), task_completed, lite event
+  streaming, agent_spawned, message_sent, broadcast
+- AgentJobs: task_completed, event streaming
+- SkeletonGenerator: task_requested
+- Proficiency: task_requested
+- LensTools: lens_dashboard_init
+- Lenses: lens_score_update
 
-**Notebook:** `notebooks/phase6_domain_events.livemd` — trigger a lens score
-and an effect dispatch, show events arriving via LiveEvents. Verify no
-Comms.publish calls remain in frameworks (grep results).
+**Intentionally Comms-only:** DataTable.Server (internal invalidation),
+LiveRender (custom streaming protocol), Hiring demos.
+
+**Notebook:** `notebooks/phase6_domain_events.livemd`
 
 ### Pre-Phase 7: Audit simulation module
 
-Before cutting over, audit `RhoFrameworks.Demos.Hiring.Simulation` for
-breakage from Phases 5–6 (Comms API changes, LiteWorker removal, Runtime
-deletion). Document what's broken so it can be fixed after Phase 7.
+**Result: No breakage found.** Audited 2026-04-25.
+
+Files checked:
+- `demos/hiring/simulation.ex` — coordinator GenServer
+- `demos/hiring/tools.ex` — submit_scores tool builder
+- `demos/hiring/candidates.ex` — static data, no runtime deps
+
+#### Deleted-module references (Runtime, LiteWorker, TapeConfig): **None**
+
+The simulation never used these modules. It spawns agents via
+`Rho.Agent.Supervisor.start_worker/1` → `Worker` directly.
+
+#### API compatibility: **OK**
+
+| Call site | API | Status |
+|-----------|-----|--------|
+| simulation.ex:93 | `Rho.Config.agent_config/1` | exists, unchanged |
+| simulation.ex:111 | `PluginRegistry.collect_tools/1` | accepts plain map via `Map.get` — OK |
+| simulation.ex:115 | `Rho.Stdlib.Tools.Finish.tool_def/0` | exists |
+| simulation.ex:119-121 | `Rho.Config.tape_module/0`, `.bootstrap/1` | exist |
+| simulation.ex:124 | `Supervisor.start_worker/1` | exists, takes keyword opts |
+| simulation.ex:169 | `Worker.whereis/1` | exists |
+| simulation.ex:174 | `Worker.submit/3` | exists, `tools:`/`system_prompt:`/`model:` opts handled in legacy path |
+| simulation.ex:92 | `Rho.Agent.Primary.{agent_id,new_agent_id}` | exist |
+
+#### Comms usage: **OK, intentionally Comms-only**
+
+Topics: `rho.hiring.scores.submitted` (subscribe), `rho.hiring.simulation.started`,
+`rho.hiring.round.started`, `rho.hiring.simulation.completed` (publish).
+`Comms.publish/3` and `Comms.subscribe/1` signatures unchanged.
+
+#### Note: legacy worker path
+
+The simulation doesn't pass `:run_spec`, so Worker falls into the legacy
+`build_turn_opts_legacy` code path (worker.ex:763). This works today but
+should be migrated to RunSpec when the legacy path is eventually removed.
 
 ### [ ] Phase 7: Cut over — collapse subscriptions (0.5d)
 

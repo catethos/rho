@@ -27,7 +27,9 @@ config :req_llm,
 config :phoenix, :json_library, Jason
 
 # Core rho app config
-config :rho, tape_module: Rho.Tape.Projection.JSONL
+config :rho,
+  tape_module: Rho.Tape.Projection.JSONL,
+  event_broadcaster: RhoWeb.LiveEventsBroadcaster
 
 # Phoenix endpoint configuration
 config :rho_web, RhoWeb.Endpoint,

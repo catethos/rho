@@ -23,6 +23,7 @@ defmodule RhoWeb.Session.EffectDispatcher do
 
   alias Rho.Comms
   alias Rho.Stdlib.DataTable
+  alias RhoWeb.LiveEvents
 
   @type dispatch_context :: %{
           session_id: String.t(),
@@ -84,6 +85,14 @@ defmodule RhoWeb.Session.EffectDispatcher do
       source: "/session/#{session_id}/agent/#{agent_id}"
     )
 
+    LiveEvents.broadcast(
+      session_id,
+      LiveEvents.event(:workspace_open, session_id, agent_id, %{
+        key: effect.key,
+        surface: effect.surface
+      })
+    )
+
     :ok
   end
 
@@ -118,6 +127,11 @@ defmodule RhoWeb.Session.EffectDispatcher do
         agent_id: agent_id
       }),
       source: "/session/#{session_id}/agent/#{agent_id}"
+    )
+
+    LiveEvents.broadcast(
+      session_id,
+      LiveEvents.event(:data_table, session_id, agent_id, Map.put(payload, :event, :view_change))
     )
   end
 end

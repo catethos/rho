@@ -1,0 +1,118 @@
+# Phase 7: SessionLive Comms Cutover
+
+```elixir
+Mix.install([
+  {:phoenix_pubsub, "~> 2.1"},
+  {:jason, "~> 1.4"}
+])
+```
+
+## What Changed
+
+Phases 2 and 6 established dual-path delivery — every event travelled
+both the old Comms/SignalBus path and the new LiveEvents PubSub path.
+Phase 7 removes the **consumer side** of the old path from SessionLive
+and SessionCore. Publishers (Worker, MultiAgent, AgentJobs, etc.) still
+dual-publish because AppLive and FlowLive have not migrated yet (Phase 8).
+
+```
+Before (dual consumer):
+
+  Worker.emit ──► Comms.publish ──► {:signal, %Jido.Signal{}} ──► SessionLive  ← REMOVED
+             └──► LiveEvents.broadcast ──► %LiveEvent{} ──────► SessionLive    ← sole path
+
+After (single consumer):
+
+  Worker.emit ──► Comms.publish ──► {:signal, ...} ──► AppLive / FlowLive  (still needed)
+             └──► LiveEvents.broadcast ──► %LiveEvent{} ──► SessionLive
+```
+
+## Changes
+
+### SessionCore.subscribe_and_hydrate
+
+Removed the three `Comms.subscribe` calls:
+
+```elixir
+# REMOVED
+{:ok, sub1} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
+{:ok, sub2} = Rho.Comms.subscribe("rho.agent.*")
+{:ok, sub3} = Rho.Comms.subscribe("rho.task.*")
+```
+
+Only `RhoWeb.LiveEvents.subscribe(session_id)` remains. The `bus_subs`
+assign and its cleanup in `unsubscribe/1` are also removed — LiveEvents
+unsubscription is the only cleanup needed.
+
+### SessionLive.handle_info({:signal, ...})
+
+The entire `handle_info({:signal, %Jido.Signal{...}})` clause (formerly
+lines 878-924) is deleted. All events now arrive as `%LiveEvent{}`
+structs via the handler at line 841.
+
+### correlation_id bridge
+
+The old Comms path carried `correlation_id` in `signal.extensions`
+(set to the turn_id by Worker). SignalRouter reads
+`data[:correlation_id]` for shell auto-open logic. LiveEvent data
+has `:turn_id` but not `:correlation_id`, so the LiveEvent handler
+now injects it:
+
+```elixir
+data = Map.put_new(data, :correlation_id, data[:turn_id])
+```
+
+### What was NOT changed
+
+- **`signal_for_session?/2`** — still used by AppLive and
+  ChatOverlayComponent. Removal deferred to Phase 8.
+- **`live_event_to_signal/1`** — bridge that converts atom kinds back
+  to dotted-string types for SignalRouter/SessionState. Kept because
+  SessionState dispatches on string types — changing that is a separate
+  concern.
+- **All publishers** — Worker, MultiAgent, AgentJobs, SkeletonGenerator,
+  Proficiency, Lenses, LensTools, EffectDispatcher all keep their
+  `Comms.publish` calls for AppLive/FlowLive (Phase 8).
+
+## Event kind coverage
+
+The `handle_info(%LiveEvent{})` handler covers every event kind that
+the old `{:signal, ...}` handler processed:
+
+| Category | Kinds | Routing |
+|---|---|---|
+| DataTable | `:data_table` | `apply_data_table_event` (before SignalRouter) |
+| Workspace open | `:workspace_open` | `apply_open_workspace_event` (before SignalRouter) |
+| Session-scoped | `@session_event_kinds` (text_delta, tool_start, turn_finished, ...) | `live_event_to_signal` -> SignalRouter |
+| Agent lifecycle | `:agent_started`, `:agent_stopped` | `live_event_to_signal` -> SignalRouter |
+| Task events | `:task_requested`, `:task_completed`, `:task_progress` | `live_event_to_signal` -> SignalRouter |
+| Domain (Phase 6) | `:agent_spawned`, `:lens_score_update`, `:broadcast`, `:message_sent` | `live_event_to_signal` catch-all -> SignalRouter |
+
+## Verification
+
+```elixir
+# The old signal handler is gone — only LiveEvent handler remains
+# Confirm no handle_info({:signal, ...}) in session_live.ex:
+session_live = File.read!("apps/rho_web/lib/rho_web/live/session_live.ex")
+refute = String.contains?(session_live, "handle_info({:signal,")
+IO.puts("Signal handler removed: #{!refute}")
+
+# Confirm no Comms.subscribe in session_core.ex:
+session_core = File.read!("apps/rho_web/lib/rho_web/session/session_core.ex")
+refute2 = String.contains?(session_core, "Comms.subscribe")
+IO.puts("Comms.subscribe removed: #{!refute2}")
+
+# Confirm bus_subs assign removed:
+refute3 = String.contains?(session_core, "bus_subs")
+IO.puts("bus_subs removed: #{!refute3}")
+
+# Confirm correlation_id injection present:
+has_correlation = String.contains?(session_live, "Map.put_new(data, :correlation_id")
+IO.puts("correlation_id bridge: #{has_correlation}")
+```
+
+## What comes next
+
+**Phase 8** migrates AppLive and FlowLive to LiveEvents, after which
+the Comms.publish calls in all publishers can be removed and
+`signal_for_session?/2` can be deleted.

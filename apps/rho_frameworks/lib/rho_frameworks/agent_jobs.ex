@@ -122,11 +122,15 @@ defmodule RhoFrameworks.AgentJobs do
         {:error, r} -> {:error, inspect(r)}
       end
 
+    data = %{session_id: session_id, agent_id: agent_id, status: status, result: text}
+
     Rho.Comms.publish(
       "rho.task.completed",
-      %{session_id: session_id, agent_id: agent_id, status: status, result: text},
+      data,
       source: "/session/#{session_id}/agent/#{agent_id}"
     )
+
+    maybe_broadcast_event(:task_completed, session_id, agent_id, data)
   end
 
   defp publish_completion(_, _, _), do: :ok
@@ -155,6 +159,8 @@ defmodule RhoFrameworks.AgentJobs do
           payload,
           source: "/session/#{session_id}/agent/#{agent_id}"
         )
+
+        maybe_broadcast_emit(payload, session_id, agent_id)
     end
   end
 
@@ -162,4 +168,26 @@ defmodule RhoFrameworks.AgentJobs do
     do: Atom.to_string(type)
 
   defp event_to_signal_type(_), do: nil
+
+  # --- LiveEvents broadcaster helpers ---
+
+  defp maybe_broadcast_event(kind, session_id, agent_id, data)
+       when is_binary(session_id) do
+    case Application.get_env(:rho, :event_broadcaster) do
+      nil -> :ok
+      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
+    end
+  end
+
+  defp maybe_broadcast_event(_, _, _, _), do: :ok
+
+  defp maybe_broadcast_emit(event, session_id, agent_id)
+       when is_binary(session_id) do
+    case Application.get_env(:rho, :event_broadcaster) do
+      nil -> :ok
+      mod -> mod.broadcast_emit(event, session_id, agent_id)
+    end
+  end
+
+  defp maybe_broadcast_emit(_, _, _), do: :ok
 end

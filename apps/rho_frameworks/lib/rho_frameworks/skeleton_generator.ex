@@ -186,16 +186,30 @@ defmodule RhoFrameworks.SkeletonGenerator do
   defp publish_started(%Scope{session_id: nil}, _agent_id), do: :ok
 
   defp publish_started(%Scope{} = scope, agent_id) do
+    data = %{
+      session_id: scope.session_id,
+      agent_id: scope.session_id,
+      worker_agent_id: agent_id,
+      role: :skeleton_generator,
+      task: "Generating skill framework"
+    }
+
     Rho.Comms.publish(
       "rho.task.requested",
-      %{
-        session_id: scope.session_id,
-        agent_id: scope.session_id,
-        worker_agent_id: agent_id,
-        role: :skeleton_generator,
-        task: "Generating skill framework"
-      },
+      data,
       source: "/session/#{scope.session_id}/agent/#{agent_id}"
     )
+
+    maybe_broadcast_event(:task_requested, scope.session_id, agent_id, data)
   end
+
+  defp maybe_broadcast_event(kind, session_id, agent_id, data)
+       when is_binary(session_id) do
+    case Application.get_env(:rho, :event_broadcaster) do
+      nil -> :ok
+      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
+    end
+  end
+
+  defp maybe_broadcast_event(_, _, _, _), do: :ok
 end

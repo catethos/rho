@@ -220,7 +220,6 @@ defmodule RhoWeb.Session.SnapshotTest do
           ws_states: %{spreadsheet: %{rows_map: %{}, next_id: 1, partial_streamed: %{}}},
           # Excluded fields (process-specific)
           inflight: %{"a1" => "streaming..."},
-          bus_subs: [:some_ref],
           connected: true,
           uploads: %{},
           ui_streams: %{},
@@ -239,7 +238,6 @@ defmodule RhoWeb.Session.SnapshotTest do
 
       # Excluded
       refute Map.has_key?(snapshot, :inflight)
-      refute Map.has_key?(snapshot, :bus_subs)
       refute Map.has_key?(snapshot, :connected)
       refute Map.has_key?(snapshot, :uploads)
       refute Map.has_key?(snapshot, :ui_streams)
@@ -321,7 +319,6 @@ defmodule RhoWeb.Session.SnapshotTest do
         },
         # These should be excluded
         inflight: %{"primary_agent" => %{text: "thinking..."}},
-        bus_subs: [make_ref()],
         connected: true
       }
 
@@ -367,7 +364,6 @@ defmodule RhoWeb.Session.SnapshotTest do
 
       # Process-specific state was NOT restored
       refute Map.has_key?(restored.assigns, :inflight)
-      refute Map.has_key?(restored.assigns, :bus_subs)
     end
   end
 

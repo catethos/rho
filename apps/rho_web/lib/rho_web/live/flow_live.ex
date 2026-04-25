@@ -14,6 +14,7 @@ defmodule RhoWeb.FlowLive do
   alias RhoFrameworks.Flows.Registry, as: FlowRegistry
   alias RhoFrameworks.Scope
   alias RhoWeb.FlowComponents
+  alias RhoWeb.LiveEvents.Event, as: LiveEvent
 
   import FlowComponents
 
@@ -57,7 +58,6 @@ defmodule RhoWeb.FlowLive do
     |> assign(:session_id, nil)
     |> assign(:scope, nil)
     |> assign(:page_title, flow_mod.label())
-    |> assign(:bus_subs, [])
     |> assign(:generate_agent_id, nil)
     |> assign(:streaming_text, "")
     |> assign(:tool_events, [])
@@ -78,14 +78,12 @@ defmodule RhoWeb.FlowLive do
       user_id: socket.assigns.current_user.id
     }
 
-    {:ok, sub1} = Rho.Comms.subscribe("rho.task.*")
-    {:ok, sub2} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
+    RhoWeb.LiveEvents.subscribe(session_id)
 
     socket
     |> assign_static(flow_mod)
     |> assign(:session_id, session_id)
     |> assign(:scope, scope)
-    |> assign(:bus_subs, [sub1, sub2])
   end
 
   # -------------------------------------------------------------------
@@ -247,37 +245,28 @@ defmodule RhoWeb.FlowLive do
   end
 
   # -------------------------------------------------------------------
-  # handle_info — Comms signals
+  # handle_info — LiveEvents
   # -------------------------------------------------------------------
 
   @impl true
-  def handle_info({:signal, %Jido.Signal{type: type, data: data}}, socket) do
-    cond do
-      # Streaming text from agent job
-      String.ends_with?(type, ".events.text_delta") or
-          String.ends_with?(type, ".events.llm_text") ->
+  def handle_info(%LiveEvent{kind: kind, data: data}, socket) do
+    case kind do
+      k when k in [:text_delta, :llm_text, :structured_partial] ->
         {:noreply, handle_text_delta(socket, data)}
 
-      # Structured strategy partial output
-      String.ends_with?(type, ".events.structured_partial") ->
-        {:noreply, handle_text_delta(socket, data)}
-
-      # Tool execution events
-      String.ends_with?(type, ".events.tool_start") ->
+      :tool_start ->
         {:noreply, handle_tool_event(socket, :start, data)}
 
-      String.ends_with?(type, ".events.tool_result") ->
+      :tool_result ->
         {:noreply, handle_tool_event(socket, :result, data)}
 
-      # DataTable changed
-      String.ends_with?(type, ".events.data_table") ->
+      :data_table ->
         {:noreply, handle_data_table_event(socket, data)}
 
-      # Worker completed
-      type == "rho.task.completed" ->
+      :task_completed ->
         {:noreply, handle_worker_completed(socket, data)}
 
-      true ->
+      _ ->
         {:noreply, socket}
     end
   end
@@ -292,8 +281,8 @@ defmodule RhoWeb.FlowLive do
 
   @impl true
   def terminate(_reason, socket) do
-    for sub <- socket.assigns[:bus_subs] || [] do
-      Rho.Comms.unsubscribe(sub)
+    if sid = socket.assigns[:session_id] do
+      RhoWeb.LiveEvents.unsubscribe(sid)
     end
 
     :ok

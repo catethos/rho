@@ -54,7 +54,8 @@ defmodule Rho.Agent.Worker do
     organization_id: nil,
     subagent: false,
     last_result: nil,
-    current_task_id: nil
+    current_task_id: nil,
+    event_broadcaster: nil
   ]
 
   # --- Public API ---
@@ -263,7 +264,8 @@ defmodule Rho.Agent.Worker do
       capabilities: capabilities,
       user_id: Keyword.get(opts, :user_id),
       organization_id: Keyword.get(opts, :organization_id),
-      subagent: Keyword.get(opts, :subagent, false)
+      subagent: Keyword.get(opts, :subagent, false),
+      event_broadcaster: Application.get_env(:rho, :event_broadcaster)
     }
 
     # Register in agent registry
@@ -290,6 +292,13 @@ defmodule Rho.Agent.Worker do
       },
       source: "/session/#{session_id}/agent/#{agent_id}"
     )
+
+    maybe_broadcast_event(state, :agent_started, %{
+      role: role,
+      capabilities: capabilities,
+      depth: depth,
+      model: if(run_spec, do: run_spec.model)
+    })
 
     Logger.debug("Agent worker started: #{agent_id} (session: #{session_id}, role: #{role})")
 
@@ -643,6 +652,8 @@ defmodule Rho.Agent.Worker do
       source: "/session/#{state.session_id}/agent/#{state.agent_id}"
     )
 
+    maybe_broadcast_event(state, :agent_stopped, %{})
+
     # Stop any live descendants (grandchildren etc.) so they don't orphan
     # when a parent worker exits mid-flight. Best-effort: Registry entries
     # may race with terminations, and :noproc is ignored.
@@ -918,12 +929,14 @@ defmodule Rho.Agent.Worker do
     session_id = state.session_id
     agent_id = state.agent_id
     worker_pid = self()
+    broadcaster = state.event_broadcaster
 
     fn event ->
       tagged = Map.put(event, :turn_id, turn_id)
       send_meta_updates(worker_pid, event)
       send(worker_pid, {:meta_update, :last_activity_at, System.monotonic_time(:millisecond)})
       publish_emit_signal(tagged, session_id, agent_id, turn_id, event)
+      if broadcaster, do: broadcaster.broadcast_emit(tagged, session_id, agent_id)
       :ok
     end
   end
@@ -1000,6 +1013,12 @@ defmodule Rho.Agent.Worker do
     )
   end
 
+  defp maybe_broadcast_event(%{event_broadcaster: nil}, _kind, _data), do: :ok
+
+  defp maybe_broadcast_event(state, kind, data) do
+    state.event_broadcaster.broadcast_event(kind, state.session_id, state.agent_id, data)
+  end
+
   defp maybe_publish_task_completed(state, result) do
     if agent_depth(state) > 0 do
       result_text =
@@ -1022,6 +1041,8 @@ defmodule Rho.Agent.Worker do
         data,
         source: "/session/#{state.session_id}/agent/#{state.agent_id}"
       )
+
+      maybe_broadcast_event(state, :task_completed, data)
     end
   end
 

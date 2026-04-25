@@ -62,11 +62,15 @@ defmodule RhoFrameworks.Tools.LensTools do
           lens_data = serialize_lens(full_lens)
 
           topic = "rho.session.#{ctx.session_id}.events.lens_dashboard_init"
+          data = %{lens: lens_data, scores: scores, summary: summary}
 
-          Rho.Comms.publish(
-            topic,
-            %{lens: lens_data, scores: scores, summary: summary},
-            source: "/system"
+          Rho.Comms.publish(topic, data, source: "/system")
+
+          maybe_broadcast_event(
+            :lens_dashboard_init,
+            ctx.session_id,
+            ctx.agent_id,
+            data
           )
 
           {:ok,
@@ -126,4 +130,14 @@ defmodule RhoFrameworks.Tools.LensTools do
         end)
     }
   end
+
+  defp maybe_broadcast_event(kind, session_id, agent_id, data)
+       when is_binary(session_id) do
+    case Application.get_env(:rho, :event_broadcaster) do
+      nil -> :ok
+      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
+    end
+  end
+
+  defp maybe_broadcast_event(_, _, _, _), do: :ok
 end

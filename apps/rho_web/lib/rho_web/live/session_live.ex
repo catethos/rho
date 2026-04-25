@@ -1,7 +1,7 @@
 defmodule RhoWeb.SessionLive do
   @moduledoc """
   Main LiveView — single state owner for the entire session UI.
-  Subscribes to the signal bus and projects all events into assigns.
+  Subscribes via LiveEvents and projects all events into assigns.
   """
   use Phoenix.LiveView
 
@@ -16,6 +16,7 @@ defmodule RhoWeb.SessionLive do
   alias RhoWeb.Session.Snapshot
   alias RhoWeb.Session.Threads
   alias RhoWeb.SessionLive.DataTableHelpers
+  alias RhoWeb.LiveEvents.Event, as: LiveEvent
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   @impl true
@@ -834,53 +835,46 @@ defmodule RhoWeb.SessionLive do
     end
   end
 
-  # --- Signal bus events ---
+  # --- LiveEvents ---
 
   @impl true
-  def handle_info({:signal, %Jido.Signal{type: type, data: data} = signal}, socket) do
+  def handle_info(%LiveEvent{} = event, socket) do
     sid = socket.assigns.session_id
 
-    cond do
-      # DataTable server invalidation events — refetch snapshot.
-      # These are published by `Rho.Stdlib.DataTable.Server` (and
-      # EffectDispatcher view-change hints) on the session-scoped
-      # `rho.session.<sid>.events.data_table` topic and caught here
-      # before they reach the generic signal router.
-      sid && is_binary(type) && String.ends_with?(type, ".events.data_table") ->
-        {:noreply, apply_data_table_event(socket, data)}
+    if sid do
+      {type, data} = live_event_to_signal(event)
 
-      # Workspace-open effects — `%Rho.Effect.OpenWorkspace{key: :data_table}`
-      # is published by `EffectDispatcher` on
-      # `rho.session.<sid>.events.workspace_open`. Since `determine_workspaces/1`
-      # starts empty, the workspace has to be added to `@workspaces` on demand
-      # when a tool asks for it (mirroring the `add_workspace` handle_event).
-      sid && is_binary(type) && String.ends_with?(type, ".events.workspace_open") ->
-        {:noreply, apply_open_workspace_event(socket, data)}
+      cond do
+        event.kind == :data_table ->
+          {:noreply, apply_data_table_event(socket, data)}
 
-      SessionCore.signal_for_session?(data, sid) ->
-        correlation_id = get_in(signal.extensions || %{}, ["correlation_id"])
-        data = Map.put(data, :correlation_id, correlation_id)
-        # Route through full registry so closed workspaces also project
-        # Wrap in rescue to prevent signal processing crashes from killing
-        # the LiveView (which would cause lost signals on reconnect).
-        socket =
-          try do
-            SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
-          rescue
-            e ->
-              Logger.error(
-                "[session_live] Signal processing crashed: #{Exception.message(e)} " <>
-                  "signal_type=#{type} agent_id=#{data[:agent_id]}\n" <>
-                  Exception.format(:error, e, __STACKTRACE__)
-              )
+        event.kind == :workspace_open ->
+          {:noreply, apply_open_workspace_event(socket, data)}
 
-              socket
-          end
+        true ->
+          # Inject correlation_id for SignalRouter shell auto-open logic.
+          # The old Comms path carried it in signal.extensions; LiveEvent
+          # data has turn_id instead (same value — set by Worker.build_emit).
+          data = Map.put_new(data, :correlation_id, data[:turn_id])
 
-        {:noreply, socket}
+          socket =
+            try do
+              SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
+            rescue
+              e ->
+                Logger.error(
+                  "[session_live] LiveEvent processing crashed: #{Exception.message(e)} " <>
+                    "kind=#{event.kind} agent_id=#{event.agent_id}\n" <>
+                    Exception.format(:error, e, __STACKTRACE__)
+                )
 
-      true ->
-        {:noreply, socket}
+                socket
+            end
+
+          {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
@@ -1168,6 +1162,44 @@ defmodule RhoWeb.SessionLive do
   end
 
   defp safe_to_existing_atom(other), do: other
+
+  # --- LiveEvent → signal conversion (Phase 2 bridge) ---
+
+  # Session-scoped event kinds that map to "rho.session.<sid>.events.<kind>"
+  @session_event_kinds ~w(
+    text_delta llm_text tool_start tool_result step_start llm_usage
+    turn_started turn_finished turn_cancelled compact error
+    subagent_progress subagent_tool subagent_error before_llm
+    structured_partial ui_spec_delta ui_spec message_sent
+  )a
+
+  defp live_event_to_signal(%LiveEvent{kind: kind, session_id: sid, data: data}) do
+    type =
+      cond do
+        kind in @session_event_kinds ->
+          "rho.session.#{sid}.events.#{kind}"
+
+        kind == :agent_started ->
+          "rho.agent.started"
+
+        kind == :agent_stopped ->
+          "rho.agent.stopped"
+
+        kind in [:task_requested, :task_completed, :task_progress] ->
+          "rho.task.#{kind |> Atom.to_string() |> String.replace_prefix("task_", "")}"
+
+        kind == :data_table ->
+          "rho.session.#{sid}.events.data_table"
+
+        kind == :workspace_open ->
+          "rho.session.#{sid}.events.workspace_open"
+
+        true ->
+          "rho.session.#{sid}.events.#{kind}"
+      end
+
+    {type, data}
+  end
 
   # --- DataTable helpers (delegated to DataTableHelpers) ---
 
