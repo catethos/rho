@@ -58,7 +58,7 @@ defmodule Rho.AgentLoop.Recorder do
     end
 
     if tool_calls == [] do
-      # Structured reasoner: record as plain assistant + user messages
+      # TypedStructured strategy: record as plain assistant + user messages
       %{assistant_msg: assistant_msg} = entries
 
       append_with_tape_write(runtime, mem, tape, :message, %{
@@ -73,7 +73,7 @@ defmodule Rho.AgentLoop.Recorder do
         })
       end
     else
-      # Direct reasoner: record as tool_call/tool_result entries
+      # Direct strategy: record as tool_call/tool_result entries
       Enum.each(tool_calls, fn tc ->
         append_with_tape_write(runtime, mem, tape, :tool_call, %{
           "name" => ReqLLM.ToolCall.name(tc),
@@ -98,7 +98,10 @@ defmodule Rho.AgentLoop.Recorder do
   @spec record_injected_messages(Runtime.t(), [String.t()]) :: :ok
   def record_injected_messages(%Runtime{tape: %{name: nil}}, _messages), do: :ok
 
-  def record_injected_messages(%Runtime{tape: %{name: tape, tape_module: mem}} = runtime, messages) do
+  def record_injected_messages(
+        %Runtime{tape: %{name: tape, tape_module: mem}} = runtime,
+        messages
+      ) do
     for msg <- messages do
       append_with_tape_write(runtime, mem, tape, :message, %{"role" => "user", "content" => msg})
     end
@@ -115,7 +118,7 @@ defmodule Rho.AgentLoop.Recorder do
         })
       ])
 
-    [system_msg | Rho.Tape.Context.build(tape)]
+    [system_msg | Rho.Tape.Projection.build(tape)]
   end
 
   # -- Tape-write transformer pipeline --

@@ -199,7 +199,7 @@ defmodule Rho.Agent.Worker do
 
     memory_mod =
       if run_spec,
-        do: run_spec.tape_module || Rho.Tape.Context.Tape,
+        do: run_spec.tape_module || Rho.Tape.Projection.JSONL,
         else: Rho.Config.tape_module()
 
     sandbox_enabled =
@@ -768,7 +768,7 @@ defmodule Rho.Agent.Worker do
         tape_module: state.tape_module,
         emit: emit,
         workspace: state.workspace,
-        reasoner: config.turn_strategy,
+        turn_strategy: config.turn_strategy,
         depth: agent_depth(state),
         prompt_format: config[:prompt_format] || :markdown,
         session_id: state.session_id,

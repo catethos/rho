@@ -5,7 +5,7 @@ defmodule Rho.AgentLoop.Tape do
   A tape records every message, tool call, and tool result so that context
   can be rebuilt across turns or after compaction. The `name` identifies the
   tape instance, `memory_mod` is the storage backend (default:
-  `Rho.Tape.Context.Tape`), and `compact_threshold` controls when automatic
+  `Rho.Tape.Projection.JSONL`), and `compact_threshold` controls when automatic
   summarization triggers.
 
   When `name` is `nil`, no tape recording occurs and context lives only
@@ -13,7 +13,7 @@ defmodule Rho.AgentLoop.Tape do
   """
 
   defstruct name: nil,
-            tape_module: Rho.Tape.Context.Tape,
+            tape_module: Rho.Tape.Projection.JSONL,
             compact_threshold: 100_000,
             compact_supported: false
 

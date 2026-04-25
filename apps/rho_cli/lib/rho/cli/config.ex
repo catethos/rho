@@ -136,9 +136,16 @@ defmodule Rho.CLI.Config do
     |> normalize_key(:tape_module, :tape_module)
   end
 
+  defp normalize_key(config, old_key, new_key) when old_key == new_key, do: config
+
   defp normalize_key(config, old_key, new_key) do
     case {Keyword.fetch(config, old_key), Keyword.fetch(config, new_key)} do
       {{:ok, val}, :error} ->
+        IO.warn(
+          "#{old_key}: is deprecated in .rho.exs — use #{new_key}: instead",
+          []
+        )
+
         config |> Keyword.delete(old_key) |> Keyword.put(new_key, val)
 
       _ ->

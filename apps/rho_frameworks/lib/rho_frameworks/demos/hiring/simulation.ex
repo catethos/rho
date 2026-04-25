@@ -90,7 +90,7 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
     evaluators =
       Map.new(roles, fn role ->
         agent_id = Rho.Agent.Primary.new_agent_id(Rho.Agent.Primary.agent_id(state.session_id))
-        config = Rho.CLI.Config.agent(role)
+        config = Rho.Config.agent_config(role)
 
         # Build tools: multi-agent tools + submit_scores
         tool_context = %{

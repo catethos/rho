@@ -1,6 +1,6 @@
 defmodule Rho.Stdlib.Plugins.MultiAgent do
   @moduledoc """
-  Mount providing multi-agent coordination tools.
+  Plugin providing multi-agent coordination tools.
 
   Replaces Rho.Plugins.Subagent with a signal-based delegation model
   where every agent is a first-class peer that communicates via signals.
@@ -29,14 +29,14 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     Rho.Config.agent_names() |> Enum.map(&Atom.to_string/1)
   end
 
-  # --- Mount callbacks ---
+  # --- Plugin callbacks ---
 
   @impl Rho.Plugin
   def tools(mount_opts, %{depth: depth} = ctx) when depth < @max_depth do
     session_id = ctx[:session_id] || ctx[:tape_name]
     agent_id = ctx[:agent_id]
     workspace = ctx[:workspace]
-    memory_mod = ctx[:tape_module] || Rho.Tape.Context.Tape
+    memory_mod = ctx[:tape_module] || Rho.Tape.Projection.JSONL
     parent_emit = get_in(ctx, [:opts, :emit])
     identity = %{user_id: ctx[:user_id], organization_id: ctx[:organization_id]}
     role_hint = build_role_hint(mount_opts, ctx[:agent_name])

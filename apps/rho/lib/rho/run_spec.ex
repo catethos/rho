@@ -109,7 +109,7 @@ defmodule Rho.RunSpec do
     tools: nil,
     turn_strategy: Rho.TurnStrategy.Direct,
     prompt_format: :markdown,
-    tape_module: Rho.Tape.Context.Tape,
+    tape_module: Rho.Tape.Projection.JSONL,
     agent_name: :default,
     depth: 0,
     subagent: false,

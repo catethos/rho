@@ -27,7 +27,7 @@ config :req_llm,
 config :phoenix, :json_library, Jason
 
 # Core rho app config
-config :rho, tape_module: Rho.Tape.Context.Tape
+config :rho, tape_module: Rho.Tape.Projection.JSONL
 
 # Phoenix endpoint configuration
 config :rho_web, RhoWeb.Endpoint,

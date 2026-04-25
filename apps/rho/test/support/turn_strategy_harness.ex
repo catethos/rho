@@ -70,7 +70,7 @@ defmodule Rho.Test.TurnStrategyHarness do
       tape: %Tape{},
       context: %Context{
         tape_name: nil,
-        tape_module: Rho.Tape.Context.Tape,
+        tape_module: Rho.Tape.Projection.JSONL,
         workspace: ".",
         agent_name: :default,
         depth: 0,

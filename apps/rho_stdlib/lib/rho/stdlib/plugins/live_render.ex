@@ -1,6 +1,6 @@
 defmodule Rho.Stdlib.Plugins.LiveRender do
   @moduledoc """
-  Mount providing a `present_ui` tool that lets agents render structured UI
+  Plugin providing a `present_ui` tool that lets agents render structured UI
   via the LiveRender library.
 
   The agent produces a LiveRender spec map (with elements, root, and optional state),

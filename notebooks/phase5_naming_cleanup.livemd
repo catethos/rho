@@ -1,0 +1,154 @@
+# Phase 5 — Naming Cleanup & Frameworks Boundary
+
+## The Problem
+
+Rho accumulated multiple names for the same concepts. Config files used `mounts:`
+while the code used `plugins:`. Comments said "reasoner" while the module was
+`TurnStrategy`. The tape projection behaviour was `Rho.Tape.Context` even though
+"context" collided with `Rho.Context` (the ambient state struct). And
+`rho_frameworks` depended on `rho_cli` for a single config lookup call.
+
+This naming confusion imposes a tax on every reader: which name is canonical?
+Are `Mount` and `Plugin` different things? (No.) Is `reasoner` deprecated? (Yes,
+but it's still in comments and one config key.)
+
+## What Phase 5 Does
+
+Two independent sub-tasks: **5A** kills naming aliases, **5B** cuts a spurious
+dependency.
+
+---
+
+## 5A: Naming Cleanup
+
+### Tape.Context -> Tape.Projection
+
+The behaviour that turns a durable tape into LLM message history was called
+`Rho.Tape.Context` with its default implementation `Rho.Tape.Context.Tape`.
+Both names are confusing:
+
+- "Context" collides with `Rho.Context`, the ambient state struct
+- "Tape" as both the behaviour name and the implementation name
+  (`Tape.Context.Tape`) is circular
+
+**After:**
+
+| Before | After |
+|--------|-------|
+| `Rho.Tape.Context` | `Rho.Tape.Projection` |
+| `Rho.Tape.Context.Tape` | `Rho.Tape.Projection.JSONL` |
+
+The new name `Projection` describes what the module does: it projects
+(transforms) a tape into a form the LLM can consume. The implementation name
+`JSONL` describes the storage format.
+
+Backward-compatible delegator modules remain at the old paths so that any
+external code using `Rho.Tape.Context` or `Rho.Tape.Context.Tape` continues
+to work.
+
+**Files changed:**
+
+```
+# New files (canonical)
+apps/rho/lib/rho/tape/projection.ex          — behaviour
+apps/rho/lib/rho/tape/projection/jsonl.ex     — default implementation
+
+# Old files (backward-compatible delegators)
+apps/rho/lib/rho/tape/context.ex              — delegates build/1
+apps/rho/lib/rho/tape/context/tape.ex         — delegates all callbacks
+
+# Updated references (~15 files)
+config/config.exs                             — tape_module config
+apps/rho/config/config.exs                    — tape_module config
+apps/rho/lib/rho/config.ex                    — default fallback
+apps/rho/lib/rho/run_spec.ex                  — @defaults
+apps/rho/lib/rho/runner.ex                    — 3 references
+apps/rho/lib/rho/agent_loop/tape.ex           — struct default + moduledoc
+apps/rho/lib/rho/agent_loop/recorder.ex       — rebuild_context/1
+apps/rho/lib/rho/context.ex                   — comment
+apps/rho/lib/rho/agent/worker.ex              — memory_mod fallback
+apps/rho_stdlib/lib/rho/stdlib/plugins/multi_agent.ex — memory_mod fallback
+apps/rho_stdlib/lib/rho/stdlib/plugins/tape.ex        — moduledoc
+apps/rho/test/support/turn_strategy_harness.ex         — test fixture
+apps/rho/test/rho/turn_strategy/typed_structured_test.exs — test fixture
+```
+
+### Config Keys: mounts -> plugins, reasoner -> turn_strategy
+
+The `.rho.exs` config file used `mounts:` (9 agent definitions) and
+`reasoner:` (4 agents). These are legacy names from before the Plugin/
+TurnStrategy rename.
+
+**After:** All occurrences updated to `plugins:` and `turn_strategy:`.
+
+`Rho.CLI.Config.normalize_keys/1` still handles the old keys for backward
+compatibility, but now emits `IO.warn` deprecation warnings when they're
+encountered.
+
+### Stale Comment Cleanup
+
+| Location | Before | After |
+|----------|--------|-------|
+| `recorder.ex` | "Structured reasoner" / "Direct reasoner" | "TypedStructured strategy" / "Direct strategy" |
+| `plugin.ex` moduledoc | References `Rho.Mount` legacy alias | Removed, describes behaviour directly |
+| `runtime.ex` moduledoc | "the reasoner" | "the turn strategy" |
+| `runner.ex` opts doc | `reasoner (alias)` | "legacy alias" |
+| `worker.ex` | `reasoner: config.turn_strategy` | `turn_strategy: config.turn_strategy` |
+| Plugin moduledocs | "Mount providing..." | "Plugin providing..." |
+
+---
+
+## 5B: Frameworks Boundary
+
+### The Dependency
+
+`rho_frameworks` declared a dependency on `:rho_cli`:
+
+```elixir
+# apps/rho_frameworks/mix.exs (before)
+defp deps do
+  [
+    {:rho, in_umbrella: true},
+    {:rho_stdlib, in_umbrella: true},
+    {:rho_cli, in_umbrella: true},    # <-- unnecessary
+    ...
+  ]
+end
+```
+
+The only usage was a single call in the hiring demo:
+
+```elixir
+# apps/rho_frameworks/lib/rho_frameworks/demos/hiring/simulation.ex:93
+config = Rho.CLI.Config.agent(role)
+```
+
+### The Fix
+
+`Rho.Config.agent_config/1` (in `apps/rho/lib/rho/config.ex`) already
+discovers `Rho.CLI.Config` at runtime via `Code.ensure_loaded?/1`. It
+returns the same config map with a fallback when CLI is not loaded.
+
+```elixir
+# After — uses the core module's runtime discovery
+config = Rho.Config.agent_config(role)
+```
+
+`:rho_cli` removed from `rho_frameworks/mix.exs` deps. The dependency
+graph is now:
+
+```
+rho_frameworks -> rho, rho_stdlib     (no more rho_cli)
+rho_web        -> rho, rho_stdlib, rho_cli, rho_frameworks
+rho_cli        -> rho, rho_stdlib
+rho_stdlib     -> rho
+```
+
+## Verification
+
+All checks pass after both sub-tasks:
+
+- `mix compile --warnings-as-errors` — clean
+- `mix rho.smoke` — 4 tests, 0 failures
+- `mix rho.verify` — 12 tests, 0 failures
+- `mix test apps/rho/test/` — 303 tests, 0 failures

@@ -17,7 +17,7 @@ defmodule Rho.Context do
     # purpose: tape reference this agent reads/writes; `nil` when no
     # persistent tape is configured.
     :tape_name,
-    # purpose: tape backend module (e.g. `Rho.Tape.Context.Tape`);
+    # purpose: tape backend module (e.g. `Rho.Tape.Projection.JSONL`);
     # plugins like subagent/multi_agent use it to spin up child tapes.
     :tape_module,
     # purpose: working directory for filesystem/bash tools. May be a

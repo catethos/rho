@@ -1,7 +1,6 @@
 defmodule Rho.Plugin do
   @moduledoc """
-  Contribution behaviour — the "capability" role split out of the old
-  `Rho.Mount` bundle.
+  Capability contribution behaviour.
 
   A plugin contributes LLM-visible material to a turn: tools, prompt
   sections, and/or bindings. All callbacks are optional; a plugin
@@ -11,13 +10,7 @@ defmodule Rho.Plugin do
   the plugin registration (e.g. `{:multi_agent, except: [...]}`).
 
   Hooks (policy, denial, injection) are out of scope for this
-  behaviour — they live on `Rho.Transformer` (Phase 3).
-
-  ## Legacy alias
-
-  `Rho.Mount` is retained as a delegated alias with the same three
-  capability callbacks. Existing modules may continue to declare
-  `@behaviour Rho.Mount`; new code should declare `@behaviour Rho.Plugin`.
+  behaviour — they live on `Rho.Transformer`.
   """
 
   @type tool_def :: %{

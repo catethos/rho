@@ -55,13 +55,13 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       depth: 0,
       tape: %Rho.AgentLoop.Tape{
         name: nil,
-        tape_module: Rho.Tape.Context.Tape,
+        tape_module: Rho.Tape.Projection.JSONL,
         compact_threshold: 100_000,
         compact_supported: false
       },
       context: %Rho.Context{
         tape_name: nil,
-        tape_module: Rho.Tape.Context.Tape,
+        tape_module: Rho.Tape.Projection.JSONL,
         workspace: "/tmp",
         agent_name: :test,
         depth: 0,

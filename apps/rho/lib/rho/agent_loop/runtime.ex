@@ -6,10 +6,10 @@ defmodule Rho.AgentLoop.Runtime do
   the LLM model, tool definitions, system prompt, emit callback, tape
   config, and lifecycle hooks. It is built once at the start of
   `AgentLoop.run/3` and threaded through every function in the loop,
-  including the reasoner.
+  including the turn strategy.
 
-  The reasoner receives the Runtime as its `context` parameter, so it can
-  access the model, emit callback, and lifecycle hooks without knowing
+  The turn strategy receives the Runtime as its `context` parameter, so it
+  can access the model, emit callback, and lifecycle hooks without knowing
   where they came from.
   """
 

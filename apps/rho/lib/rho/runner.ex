@@ -31,7 +31,7 @@ defmodule Rho.Runner do
     * `:max_steps` — loop budget (default from `Rho.Config`)
     * `:emit` / `:on_event` / `:on_text` — event callbacks
     * `:tape_name` — tape reference for persistent context
-    * `:turn_strategy` / `:reasoner` (alias) — strategy module
+    * `:turn_strategy` — strategy module (`:reasoner` accepted as legacy alias)
     * `:depth`, `:subagent`, `:workspace`, `:agent_name`, `:prompt_format`
   """
 
@@ -81,7 +81,7 @@ defmodule Rho.Runner do
   defp build_runtime_from_spec(_messages, %Rho.RunSpec{} = spec) do
     tool_defs = spec.tools || []
     tape_name = spec.tape_name
-    memory_mod = spec.tape_module || Rho.Tape.Context.Tape
+    memory_mod = spec.tape_module || Rho.Tape.Projection.JSONL
     subagent = spec.subagent || false
 
     context = %Context{
@@ -129,7 +129,7 @@ defmodule Rho.Runner do
   defp build_runtime(model, _messages, opts) do
     tool_defs = opts[:tools] || []
     tape_name = opts[:tape_name]
-    memory_mod = opts[:tape_module] || Rho.Tape.Context.Tape
+    memory_mod = opts[:tape_module] || Rho.Tape.Projection.JSONL
     subagent = opts[:subagent] || false
 
     context = build_context_struct(opts, tape_name, memory_mod, subagent)
@@ -302,7 +302,7 @@ defmodule Rho.Runner do
 
     tail =
       if runtime.tape.name,
-        do: Rho.Tape.Context.build(runtime.tape.name),
+        do: Rho.Tape.Projection.build(runtime.tape.name),
         else: messages
 
     [system_msg | tail]

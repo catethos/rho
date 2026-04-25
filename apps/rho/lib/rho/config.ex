@@ -12,12 +12,12 @@ defmodule Rho.Config do
   @compile {:no_warn_undefined, [Rho.CLI.Config, Rho.CLI.CommandParser, Rho.Stdlib]}
 
   @doc """
-  Returns the configured tape-context projection module.
+  Returns the configured tape projection module.
 
-  Defaults to `Rho.Tape.Context.Tape`.
+  Defaults to `Rho.Tape.Projection.JSONL`.
   """
   def tape_module do
-    mod = Application.get_env(:rho, :tape_module, Rho.Tape.Context.Tape)
+    mod = Application.get_env(:rho, :tape_module, Rho.Tape.Projection.JSONL)
     Code.ensure_loaded!(mod)
     mod
   end

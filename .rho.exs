@@ -39,9 +39,7 @@
     - If a tool returns an error, diagnose the issue and try a different approach rather than retrying the same call.
     - Be concise. Prefer a single well-crafted tool call over multiple redundant ones.
     """,
-    # `mounts:` — list of plugins (atom shorthand, {atom, opts}, or module).
-    # Still the canonical key even after the Mount → Plugin rename.
-    mounts: [
+    plugins: [
       {:multi_agent, except: [:collect_results]},
       :journal,
       :skills,
@@ -64,7 +62,7 @@
     Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
     After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
     """,
-    mounts: [
+    plugins: [
       {:data_table, deferred: [:describe_table, :query_table, :replace_all, :list_tables]},
       :skills,
       {RhoFrameworks.Plugin,
@@ -137,7 +135,7 @@
 
     Do NOT call delete_rows, add_rows, or any other tool. Only call add_proficiency_levels, then finish.
     """,
-    mounts: [:data_table],
+    plugins: [:data_table],
     turn_strategy: :typed_structured,
     max_steps: 15
   ],
@@ -200,10 +198,10 @@
     - When a skill appears in multiple places with different names, pick the most specific one
       and note the ambiguity in `issues`
     """,
-    mounts: [
+    plugins: [
       :doc_ingest
     ],
-    reasoner: :direct,
+    turn_strategy: :direct,
     max_steps: 10
   ],
   coder: [
@@ -211,7 +209,7 @@
     description: "Senior Elixir developer that writes clean, idiomatic code",
     skills: ["elixir", "code writing", "refactoring", "debugging"],
     system_prompt: "You are a senior Elixir developer. Write clean, idiomatic code.",
-    mounts: [:bash, :fs_read, :fs_write, :fs_edit, :step_budget],
+    plugins: [:bash, :fs_read, :fs_write, :fs_edit, :step_budget],
     max_steps: 30,
     provider: %{
       order: ["anthropic"],
@@ -223,7 +221,7 @@
     description: "Research assistant that finds information and cites sources",
     skills: ["web research"],
     system_prompt: "You are a research assistant called Guagua. Be concise and cite sources.",
-    mounts: [:multi_agent],
+    plugins: [:multi_agent],
     max_steps: 10
   ],
   technical_evaluator: [
@@ -243,11 +241,11 @@
     support their conclusions based on your technical perspective.
     When you have nothing more to add, call `end_turn`.
     """,
-    mounts: [
+    plugins: [
       {:multi_agent, only: [:send_message, :broadcast_message, :list_agents, :get_agent_card]},
       :journal
     ],
-    reasoner: :direct,
+    turn_strategy: :direct,
     max_steps: 5
   ],
   culture_evaluator: [
@@ -267,11 +265,11 @@
     support their conclusions based on your culture perspective.
     When you have nothing more to add, call `end_turn`.
     """,
-    mounts: [
+    plugins: [
       {:multi_agent, only: [:send_message, :broadcast_message, :list_agents, :get_agent_card]},
       :journal
     ],
-    reasoner: :direct,
+    turn_strategy: :direct,
     max_steps: 5
   ],
   compensation_evaluator: [
@@ -291,11 +289,11 @@
     their findings, engage with the budget/compensation implications.
     When you have nothing more to add, call `end_turn`.
     """,
-    mounts: [
+    plugins: [
       {:multi_agent, only: [:send_message, :broadcast_message, :list_agents, :get_agent_card]},
       :journal
     ],
-    reasoner: :direct,
+    turn_strategy: :direct,
     max_steps: 5
   ]
 }

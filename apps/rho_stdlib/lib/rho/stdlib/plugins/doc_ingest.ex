@@ -1,6 +1,6 @@
 defmodule Rho.Stdlib.Plugins.DocIngest do
   @moduledoc """
-  Mount that provides a tool for extracting text/data from external documents
+  Plugin that provides a tool for extracting text/data from external documents
   (Excel, PDF, Word) so the agent can create skill frameworks from them.
 
   Returns raw extracted content — the agent interprets and structures it

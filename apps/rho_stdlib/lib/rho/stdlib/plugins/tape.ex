@@ -1,10 +1,10 @@
 defmodule Rho.Stdlib.Plugins.Tape do
   @moduledoc """
-  Mount that provides tape tools (anchor, search, recall, clear) and
+  Plugin that provides tape tools (anchor, search, recall, clear) and
   exposes the tape as a binding.
 
   All tool modules call `Rho.Tape.Service` directly for storage operations,
-  bypassing the `Rho.Tape.Context` behaviour which handles only core
+  bypassing the `Rho.Tape.Projection` behaviour which handles only core
   projection concerns.
   """
 
