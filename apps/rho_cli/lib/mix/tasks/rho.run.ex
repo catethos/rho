@@ -21,32 +21,14 @@ defmodule Mix.Tasks.Rho.Run do
       exit({:shutdown, 1})
     end
 
-    agent_name = if opts[:agent], do: String.to_atom(opts[:agent]), else: :default
-    config = Rho.CLI.Config.agent(agent_name)
+    agent_name = if opts[:agent], do: String.to_existing_atom(opts[:agent]), else: :default
 
-    model = opts[:model] || config.model
-    messages = [ReqLLM.Context.user(message)]
-
-    run_opts =
-      [
-        system_prompt: opts[:system] || config.system_prompt,
-        tools:
-          Rho.PluginRegistry.collect_tools(%{
-            workspace: File.cwd!(),
-            agent_name: agent_name,
-            depth: 0,
-            sandbox: nil
-          }),
-        max_steps: opts[:max_steps] || config.max_steps,
-        reasoner: config.turn_strategy
-      ]
-      |> then(fn o ->
-        if config.provider, do: Keyword.put(o, :provider, config.provider), else: o
-      end)
-
-    case Rho.Runner.run(model, messages, run_opts) do
+    case Rho.run(message, agent: agent_name) do
       {:ok, response} ->
         IO.puts(response)
+
+      {:final, value} ->
+        IO.puts(inspect(value))
 
       {:error, reason} ->
         Mix.shell().error("Error: #{reason}")

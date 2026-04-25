@@ -94,63 +94,40 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
     |> Enum.map(&elem(&1, 1))
   end
 
-  defp extract_text(content) when is_binary(content), do: content
-
-  defp extract_text(parts) when is_list(parts) do
-    Enum.map_join(parts, "", fn
-      %{text: t} -> t
-      %{"text" => t} -> t
-      _ -> ""
-    end)
-  end
-
   # --- Tests ---
 
   describe "run/2 — respond" do
-    test "returns {:done, response} for respond action" do
+    test "returns {:respond, text} for respond action" do
       stub_stream_text(~s({"tool": "respond", "message": "Hello!"}))
 
       runtime = build_runtime()
 
-      result = TypedStructured.run(projection(), runtime)
-      assert {:done, %{type: :response, text: "Hello!"}} = result
+      assert {:respond, "Hello!"} = TypedStructured.run(projection(), runtime)
     end
   end
 
   describe "run/2 — think" do
-    test "returns {:continue, think_step} for think action" do
-      events = :ets.new(:events, [:ordered_set, :public])
-      counter = :counters.new(1, [:atomics])
-
+    test "returns {:think, thought} for think action" do
       stub_stream_text(~s({"tool": "think", "thought": "Let me reconsider..."}))
 
-      runtime = build_runtime(events: events, counter: counter)
+      runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
 
-      assert {:continue, step} = result
-      assert step.type == :tool_step
-
-      emitted = collect_events(events)
-      assert Enum.any?(emitted, &match?(%{type: :llm_text, text: "Let me reconsider..."}, &1))
+      assert {:think, "Let me reconsider..."} = result
     end
   end
 
   describe "run/2 — tool call" do
-    test "executes tool and returns {:continue, tool_step}" do
-      events = :ets.new(:events, [:ordered_set, :public])
-      counter = :counters.new(1, [:atomics])
-
+    test "returns {:call_tools, tool_calls, nil} for tool action" do
       stub_stream_text(~s({"tool": "bash", "cmd": "ls -la"}))
 
-      runtime = build_runtime(events: events, counter: counter)
+      runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
 
-      assert {:continue, step} = result
-      assert step.type == :tool_step
-
-      emitted = collect_events(events)
-      assert Enum.any?(emitted, &match?(%{type: :tool_start, name: "bash"}, &1))
-      assert Enum.any?(emitted, &match?(%{type: :tool_result, name: "bash", status: :ok}, &1))
+      assert {:call_tools, [tc], nil} = result
+      assert tc.name == "bash"
+      assert tc.args == %{cmd: "ls -la"}
+      assert is_binary(tc.call_id)
     end
 
     test "emits thinking side-channel on tool calls" do
@@ -160,7 +137,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       stub_stream_text(~s({"tool": "bash", "cmd": "ls", "thinking": "Check directory"}))
 
       runtime = build_runtime(events: events, counter: counter)
-      TypedStructured.run(projection(), runtime)
+      assert {:call_tools, _, nil} = TypedStructured.run(projection(), runtime)
 
       emitted = collect_events(events)
       assert Enum.any?(emitted, &match?(%{type: :llm_text, text: "Check directory"}, &1))
@@ -168,19 +145,14 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
   end
 
   describe "run/2 — unknown tool" do
-    test "returns {:continue, error_step} for unknown tool" do
+    test "returns {:parse_error, reason, raw_text} for unknown tool" do
       stub_stream_text(~s({"tool": "nonexistent", "foo": "bar"}))
 
       runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
 
-      assert {:continue, step} = result
-      assert step.type == :tool_step
-
-      [error_result] = step.tool_results
-      text = extract_text(error_result.content)
-      assert text =~ "unknown tool"
-      assert text =~ "nonexistent"
+      assert {:parse_error, reason, _raw_text} = result
+      assert reason =~ "nonexistent"
     end
   end
 
@@ -189,21 +161,21 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       stub_stream_text("This is plain text, not JSON")
 
       runtime = build_runtime()
-      result = TypedStructured.run(projection(), runtime)
 
-      assert {:done, %{type: :response, text: "This is plain text, not JSON"}} = result
+      assert {:respond, "This is plain text, not JSON"} =
+               TypedStructured.run(projection(), runtime)
     end
 
     test "treats JSON without tool tag as respond" do
       stub_stream_text(~s({"cmd": "ls"}))
 
       runtime = build_runtime()
-      assert {:done, %{type: :response, text: _}} = TypedStructured.run(projection(), runtime)
+      assert {:respond, _text} = TypedStructured.run(projection(), runtime)
     end
   end
 
   describe "run/2 — tool returning {:final, value}" do
-    test "returns {:done, response} when tool returns {:final, _}" do
+    test "returns {:call_tools, ...} (Runner handles :final disposition)" do
       final_tool =
         make_tool_def(
           "finish",
@@ -214,14 +186,15 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       stub_stream_text(~s({"tool": "finish", "result": "done"}))
 
       runtime = build_runtime(tool_defs: [final_tool])
+      result = TypedStructured.run(projection(), runtime)
 
-      assert {:done, %{type: :response, text: "All done"}} =
-               TypedStructured.run(projection(), runtime)
+      assert {:call_tools, [tc], nil} = result
+      assert tc.name == "finish"
     end
   end
 
   describe "run/2 — tool returning {:error, reason}" do
-    test "returns {:continue, error_step} when tool errors" do
+    test "returns {:call_tools, ...} (Runner handles error results)" do
       error_tool =
         make_tool_def(
           "failing",
@@ -234,10 +207,8 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       runtime = build_runtime(tool_defs: [error_tool])
       result = TypedStructured.run(projection(), runtime)
 
-      assert {:continue, step} = result
-      [error_result] = step.tool_results
-      text = extract_text(error_result.content)
-      assert text =~ "Error: something broke"
+      assert {:call_tools, [tc], nil} = result
+      assert tc.name == "failing"
     end
   end
 
@@ -268,6 +239,41 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       runtime = build_runtime(events: events, counter: counter)
 
       assert {:error, _reason} = TypedStructured.run(projection(), runtime)
+    end
+  end
+
+  # --- build_tool_step/3 ---
+
+  describe "build_tool_step/3" do
+    test "builds structured tool step entries" do
+      tool_calls = [%{name: "bash", args: %{cmd: "echo hi"}, call_id: "tc_1"}]
+
+      results = [
+        %{
+          name: "bash",
+          args: %{cmd: "echo hi"},
+          call_id: "tc_1",
+          result: "hi",
+          status: :ok,
+          disposition: :normal,
+          event: %{}
+        }
+      ]
+
+      step = TypedStructured.build_tool_step(tool_calls, results, nil)
+
+      assert step.type == :tool_step
+      assert step.tool_calls == []
+      assert [{_, _}] = step.structured_calls
+    end
+  end
+
+  describe "build_think_step/1" do
+    test "builds think step entries" do
+      step = TypedStructured.build_think_step("Considering options...")
+
+      assert step.type == :tool_step
+      assert step.assistant_msg.content |> hd() |> Map.get(:text) =~ "think"
     end
   end
 end

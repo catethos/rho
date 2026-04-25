@@ -9,7 +9,17 @@ defmodule Rho.Umbrella.MixProject do
       consolidate_protocols: Mix.env() != :dev,
       listeners: [Phoenix.CodeReloader],
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      cli: cli()
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        "rho.smoke": :test,
+        "rho.verify": :test
+      ]
     ]
   end
 

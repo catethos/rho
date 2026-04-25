@@ -14,6 +14,9 @@ defmodule Rho.Agent.Worker do
 
   use GenServer, restart: :transient
 
+  # Rho.Stdlib lives in a sibling umbrella app — discovered at runtime.
+  @compile {:no_warn_undefined, Rho.Stdlib}
+
   require Logger
 
   @ask_inactivity_timeout 120_000
@@ -33,6 +36,7 @@ defmodule Rho.Agent.Worker do
     :tape_module,
     :tape_ref,
     :agent_name,
+    :run_spec,
     :task_ref,
     :task_pid,
     :current_turn_id,
@@ -190,7 +194,16 @@ defmodule Rho.Agent.Worker do
 
     depth = Rho.Agent.Primary.depth_of(agent_id)
 
-    memory_mod = Rho.Config.tape_module()
+    # Accept an explicit RunSpec, or fall back to Rho.Config for legacy callers
+    run_spec = opts[:run_spec]
+
+    memory_mod =
+      if run_spec,
+        do: run_spec.tape_module || Rho.Tape.Context.Tape,
+        else: Rho.Config.tape_module()
+
+    sandbox_enabled =
+      if run_spec, do: run_spec.sandbox_enabled, else: Rho.Config.sandbox_enabled?()
 
     {memory_ref, effective_workspace, sandbox} =
       if opts[:tape_ref] do
@@ -200,16 +213,41 @@ defmodule Rho.Agent.Worker do
         # Primary agent — bootstrap memory and maybe sandbox
         ref = memory_mod.memory_ref(session_id, workspace)
         memory_mod.bootstrap(ref)
-        {eff_ws, sb} = maybe_start_sandbox(session_id, workspace)
+        {eff_ws, sb} = maybe_start_sandbox(session_id, workspace, sandbox_enabled)
         {ref, eff_ws, sb}
       end
 
-    # Pull id card from config and derive capabilities from mounts
-    config = Rho.Config.agent_config(agent_name)
+    # Derive capabilities: from RunSpec plugins or legacy config
+    {description, skills, config_capabilities} =
+      if run_spec do
+        caps = derive_capabilities(run_spec.plugins)
+        {run_spec.description, run_spec.skills || [], caps}
+      else
+        config = Rho.Config.agent_config(agent_name)
+        caps = Rho.Config.capabilities_from_plugins(config.plugins)
+        {config.description, config.skills, caps}
+      end
 
-    capabilities =
-      (Rho.Config.capabilities_from_plugins(config.plugins) ++ capabilities)
-      |> Enum.uniq()
+    capabilities = (config_capabilities ++ capabilities) |> Enum.uniq()
+
+    # Finalize the RunSpec with runtime-resolved fields
+    run_spec =
+      if run_spec do
+        %{
+          run_spec
+          | agent_id: agent_id,
+            session_id: session_id,
+            workspace: effective_workspace,
+            depth: depth,
+            tape_name: memory_ref,
+            tape_module: memory_mod,
+            agent_name: agent_name,
+            user_id: Keyword.get(opts, :user_id) || run_spec.user_id,
+            organization_id: Keyword.get(opts, :organization_id) || run_spec.organization_id
+        }
+      else
+        nil
+      end
 
     state = %__MODULE__{
       agent_id: agent_id,
@@ -221,13 +259,14 @@ defmodule Rho.Agent.Worker do
       tape_module: memory_mod,
       tape_ref: memory_ref,
       agent_name: agent_name,
+      run_spec: run_spec,
       capabilities: capabilities,
       user_id: Keyword.get(opts, :user_id),
       organization_id: Keyword.get(opts, :organization_id),
       subagent: Keyword.get(opts, :subagent, false)
     }
 
-    # Register in agent registry (with id card from config or opts)
+    # Register in agent registry
     AgentRegistry.register(agent_id, %{
       session_id: session_id,
       role: role,
@@ -235,8 +274,8 @@ defmodule Rho.Agent.Worker do
       pid: self(),
       status: :idle,
       depth: depth,
-      description: Keyword.get(opts, :description) || config.description,
-      skills: Keyword.get(opts, :skills) || config.skills,
+      description: Keyword.get(opts, :description) || description,
+      skills: Keyword.get(opts, :skills) || skills,
       tape_ref: memory_ref
     })
 
@@ -627,13 +666,23 @@ defmodule Rho.Agent.Worker do
   defp start_turn(content, opts, state) do
     turn_id = new_turn_id()
     emit = build_emit(state, turn_id)
-    {model, agent_opts, task_id} = build_turn_opts(opts, state, emit)
+    task_id = opts[:task_id]
     messages = [ReqLLM.Context.user(content)]
 
     task =
-      Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
-        run_turn(emit, state, turn_id, model, messages, agent_opts)
-      end)
+      if state.run_spec do
+        turn_spec = build_turn_spec(opts, state, emit)
+
+        Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+          run_turn_spec(emit, state, turn_id, messages, turn_spec)
+        end)
+      else
+        {model, agent_opts, _task_id} = build_turn_opts_legacy(opts, state, emit)
+
+        Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+          run_turn_legacy(emit, state, turn_id, model, messages, agent_opts)
+        end)
+      end
 
     AgentRegistry.update_status(state.agent_id, :busy)
     maybe_publish_task_accepted(state, task_id)
@@ -653,53 +702,92 @@ defmodule Rho.Agent.Worker do
     }
   end
 
-  defp build_turn_opts(opts, state, emit) do
+  # -- RunSpec path --
+
+  defp build_turn_spec(opts, state, emit) do
+    spec = state.run_spec
+
+    tools =
+      opts[:tools] || state.persistent_tools || spec.tools ||
+        resolve_all_tools(state, depth: agent_depth(state), emit: emit)
+
+    is_delegated = opts[:delegated] || false
+    subagent_flag = state.subagent or (is_delegated and agent_depth(state) > 0)
+
+    %{
+      spec
+      | tools: tools,
+        emit: emit,
+        system_prompt: opts[:system_prompt] || spec.system_prompt,
+        max_steps: opts[:max_steps] || spec.max_steps,
+        model: opts[:model] || spec.model,
+        subagent: subagent_flag || spec.subagent
+    }
+  end
+
+  defp run_turn_spec(emit, state, turn_id, messages, spec) do
+    emit.(%{type: :turn_started})
+    publish_event(state, "rho.turn.started", %{turn_id: turn_id})
+
+    result =
+      try do
+        Rho.Runner.run(messages, spec)
+      rescue
+        error ->
+          Logger.error("AgentLoop crashed: #{Exception.format(:error, error, __STACKTRACE__)}")
+          {:error, Exception.message(error)}
+      catch
+        kind, reason ->
+          Logger.error("AgentLoop crashed: #{Exception.format(kind, reason, __STACKTRACE__)}")
+          {:error, "#{kind}: #{inspect(reason)}"}
+      end
+
+    emit.(%{type: :turn_finished, result: result})
+    publish_event(state, "rho.turn.finished", %{turn_id: turn_id, result: inspect(result)})
+    result
+  end
+
+  # -- Legacy opts path (no RunSpec) --
+
+  defp build_turn_opts_legacy(opts, state, emit) do
     config = Rho.Config.agent_config(state.agent_name)
     model = opts[:model] || config.model
     task_id = opts[:task_id]
-    tools = resolve_turn_tools(opts, state, emit)
+
+    tools =
+      opts[:tools] || state.persistent_tools ||
+        resolve_all_tools(state, depth: agent_depth(state), emit: emit)
 
     agent_opts =
-      build_agent_opts(opts, config, state, emit, tools)
+      [
+        system_prompt: opts[:system_prompt] || config.system_prompt,
+        tools: tools,
+        agent_name: state.agent_name,
+        max_steps: opts[:max_steps] || config.max_steps,
+        tape_name: state.tape_ref,
+        tape_module: state.tape_module,
+        emit: emit,
+        workspace: state.workspace,
+        reasoner: config.turn_strategy,
+        depth: agent_depth(state),
+        prompt_format: config[:prompt_format] || :markdown,
+        session_id: state.session_id,
+        agent_id: state.agent_id,
+        user_id: state.user_id,
+        organization_id: state.organization_id
+      ]
       |> maybe_put(:provider, config.provider)
       |> maybe_put(:task_id, task_id)
-      |> maybe_add_subagent_flag(opts, state)
+      |> then(fn ao ->
+        is_delegated = opts[:delegated] || false
+        subagent_flag = state.subagent or (is_delegated and agent_depth(state) > 0)
+        if subagent_flag, do: Keyword.put(ao, :subagent, true), else: ao
+      end)
 
     {model, agent_opts, task_id}
   end
 
-  defp resolve_turn_tools(opts, state, emit) do
-    opts[:tools] || state.persistent_tools ||
-      resolve_all_tools(state, depth: agent_depth(state), emit: emit)
-  end
-
-  defp build_agent_opts(opts, config, state, emit, tools) do
-    [
-      system_prompt: opts[:system_prompt] || config.system_prompt,
-      tools: tools,
-      agent_name: state.agent_name,
-      max_steps: opts[:max_steps] || config.max_steps,
-      tape_name: state.tape_ref,
-      tape_module: state.tape_module,
-      emit: emit,
-      workspace: state.workspace,
-      reasoner: config.turn_strategy,
-      depth: agent_depth(state),
-      prompt_format: config[:prompt_format] || :markdown,
-      session_id: state.session_id,
-      agent_id: state.agent_id,
-      user_id: state.user_id,
-      organization_id: state.organization_id
-    ]
-  end
-
-  defp maybe_add_subagent_flag(agent_opts, opts, state) do
-    is_delegated = opts[:delegated] || false
-    subagent_flag = state.subagent or (is_delegated and agent_depth(state) > 0)
-    if subagent_flag, do: Keyword.put(agent_opts, :subagent, true), else: agent_opts
-  end
-
-  defp run_turn(emit, state, turn_id, model, messages, agent_opts) do
+  defp run_turn_legacy(emit, state, turn_id, model, messages, agent_opts) do
     emit.(%{type: :turn_started})
     publish_event(state, "rho.turn.started", %{turn_id: turn_id})
 
@@ -973,8 +1061,8 @@ defmodule Rho.Agent.Worker do
     }
   end
 
-  defp maybe_start_sandbox(session_id, workspace) do
-    if Rho.Config.sandbox_enabled?() do
+  defp maybe_start_sandbox(session_id, workspace, sandbox_enabled) do
+    if sandbox_enabled do
       case Rho.Sandbox.start(session_id, workspace) do
         {:ok, sandbox} ->
           {sandbox.mount_path, sandbox}
@@ -1035,4 +1123,18 @@ defmodule Rho.Agent.Worker do
   defp agent_depth(%__MODULE__{agent_id: agent_id}) do
     Rho.Agent.Primary.depth_of(agent_id)
   end
+
+  # Derive capability atoms from plugin config entries.
+  # Mirrors Rho.Stdlib.capabilities_from_plugins/1 but without
+  # requiring the stdlib dependency at compile time.
+  defp derive_capabilities(plugins) when is_list(plugins) do
+    if Code.ensure_loaded?(Rho.Stdlib) and
+         function_exported?(Rho.Stdlib, :capabilities_from_plugins, 1) do
+      Rho.Stdlib.capabilities_from_plugins(plugins)
+    else
+      []
+    end
+  end
+
+  defp derive_capabilities(_), do: []
 end

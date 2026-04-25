@@ -1,0 +1,235 @@
+# ToolExecutor — Strategy Intent Separation
+
+## The Duplication Problem
+
+After Phase 3, every change to Rho could be verified in seconds. Time to fix the
+core architecture issue: both turn strategies duplicate ~200 lines of identical
+tool dispatch code.
+
+Here is what `TurnStrategy.Direct` and `TurnStrategy.TypedStructured` each
+independently implement:
+
+```
+1. Emit :tool_start event
+2. Run :tool_args_out transformer (deny / halt / cont)
+3. Prepare args via ToolArgs.prepare (cast, coerce, validate)
+4. Spawn Task.async for tool execution
+5. Await with inactivity timeout
+6. Normalize result (ToolResponse, {:final}, {:ok}, {:error})
+7. Run :tool_result_in transformer
+8. Emit :tool_result event
+9. Classify outcome (terminal / final / continue)
+```
+
+Nine steps, implemented twice. The two implementations differ in minor ways —
+Direct processes tools in parallel, TypedStructured one at a time; Direct runs
+`ToolArgs.prepare`, TypedStructured skips it because ActionSchema already
+coerced — but the core pipeline is identical.
+
+Worse, the strategies *execute* tools and *build step entries*. A strategy
+should decide **what the LLM wants to do** (call a tool, respond, think), not
+perform the side effects. This coupling means:
+
+- Adding a new strategy requires copy-pasting the tool dispatch pipeline
+- Testing a strategy requires mocking tool execution
+- Changes to the dispatch pipeline (e.g. adding telemetry, changing timeout
+  logic) must be made in two places
+
+## The Design
+
+Phase 4 introduces a separation between **intent** and **execution**:
+
+```
+Strategy: "The LLM wants to call tool X with args Y"
+          → {:call_tools, [%{name: "bash", args: %{cmd: "ls"}, call_id: "c1"}], nil}
+
+Runner:   Receives intent, delegates to ToolExecutor
+          → ToolExecutor.run(tool_calls, tool_map, context, emit)
+
+Strategy: "Here's how to format tool results for the conversation"
+          → build_tool_step(tool_calls, results, response_text)
+```
+
+Three new concepts:
+
+1. **Intent types** — the strategy's return contract
+2. **ToolExecutor** — shared tool dispatch, written once
+3. **build_tool_step** — strategy-specific message formatting
+
+## Intent Types
+
+The `TurnStrategy` behaviour defines five intent types:
+
+```elixir
+@type turn_result ::
+  {:respond, text}                        # LLM responded, no tools
+  | {:call_tools, [tool_call], text | nil}  # LLM wants to call tools
+  | {:think, thought}                       # LLM wants to reason (structured only)
+  | {:parse_error, reason, raw_text}        # LLM output couldn't be parsed
+  | {:error, reason}                        # infrastructure error
+```
+
+Before this change, strategies returned `{:done, entries}` or
+`{:continue, entries}` — tagged maps that mixed *what happened* with *how to
+record it*. The new types separate the decision from its consequences.
+
+A strategy's `run/2` function now does exactly one thing: call the LLM and
+classify the response. No tool execution, no event emission (beyond LLM-level
+events like `:text_delta`), no step building.
+
+## ToolExecutor
+
+`Rho.ToolExecutor` consolidates the nine-step dispatch pipeline into a single
+module. Two entry points:
+
+```elixir
+# Parallel execution (Direct uses this)
+ToolExecutor.run(tool_calls, tool_map, context, emit)
+# → [%{name, args, call_id, result, status, disposition, event}]
+
+# Single execution (TypedStructured uses this internally,
+# but after Phase 4 the Runner calls run/5 for both)
+ToolExecutor.execute_one(name, args, call_id, tool_map, context, emit)
+```
+
+The internal structure mirrors the original code:
+
+**Dispatch phase** — for each tool call:
+- Emit `:tool_start`
+- Apply `:tool_args_out` transformer (deny → immediate result, halt → throw)
+- Prepare args (unless `skip_prepare: true`)
+- Spawn `Task.async` for execution
+
+**Collect phase** — for each dispatched tool:
+- Await with inactivity timeout
+- Normalize result (`ToolResponse`, `{:final}`, `{:ok}`, `{:error}`)
+- Apply `:tool_result_in` transformer
+- Emit `:tool_result`
+- Return result map
+
+The `skip_prepare` option exists because TypedStructured uses `ActionSchema`
+for schema-guided coercion before the tool call reaches ToolExecutor, while
+Direct relies on `ToolArgs.prepare` inside the dispatch pipeline.
+
+## Runner as Orchestrator
+
+The Runner's `handle_strategy_result` dispatches on the new intent types:
+
+```elixir
+case strategy.run(projection, runtime) do
+  {:respond, text} ->
+    # Subagent? Inject nudge and loop. Otherwise: done.
+
+  {:call_tools, tool_calls, response_text} ->
+    # 1. Execute via ToolExecutor
+    # 2. Check terminal tools / final disposition
+    # 3. If continue: strategy.build_tool_step → record → loop
+
+  {:think, thought} ->
+    # strategy.build_think_step → record → loop
+
+  {:parse_error, reason, raw} ->
+    # Inject correction message → loop
+
+  {:error, reason} ->
+    # Return error
+end
+```
+
+Terminal tool detection (`finish`, `end_turn`, `create_anchor`, `clear_memory`)
+moved from Direct into Runner. This is a general concern — if a tool signals
+end-of-turn, the loop should stop regardless of which strategy dispatched it.
+
+## build_tool_step: Strategy-Specific Formatting
+
+The conversation message format differs between strategies. Direct uses native
+tool_use/tool_result messages; TypedStructured uses JSON text + user messages.
+The `build_tool_step/3` callback lets each strategy format tool results for its
+message format:
+
+**Direct:**
+```elixir
+def build_tool_step(tool_calls, results, response_text) do
+  originals = Enum.map(tool_calls, & &1[:original])
+  assistant_msg = ReqLLM.Context.assistant("", tool_calls: originals)
+  tool_results = Enum.map(results, &ReqLLM.Context.tool_result(&1.call_id, &1.result))
+  %{type: :tool_step, assistant_msg: assistant_msg, tool_results: tool_results, ...}
+end
+```
+
+**TypedStructured:**
+```elixir
+def build_tool_step(tool_calls, results, _response_text) do
+  [tc] = tool_calls
+  [r] = results
+  assistant_text = Jason.encode!(%{tool: tc.name, args: tc.args})
+  result_text = "[Tool Result: #{tc.name}]\n#{r.result}"
+  %{type: :tool_step, assistant_msg: ReqLLM.Context.assistant(assistant_text), ...}
+end
+```
+
+Direct carries `original: %ReqLLM.ToolCall{}` in each tool call map so
+`build_tool_step` can reconstruct the native assistant message. TypedStructured
+doesn't need this — it builds plain JSON text.
+
+## Line Count
+
+| Module | Before | After | Delta |
+|--------|--------|-------|-------|
+| Direct | 412 | 163 | **-249** |
+| TypedStructured | 415 | 268 | **-147** |
+| Shared | 121 | 121 | 0 |
+| TurnStrategy (behaviour) | 44 | 87 | +43 |
+| Runner | 489 | 639 | +150 |
+| ToolExecutor | — | 299 | +299 |
+| **Strategies total** | **827** | **431** | **-396** |
+
+The strategies shed 48% of their code. Direct dropped from 412 to 163 lines —
+it's now a pure LLM-call-and-classify module. Adding a new strategy means
+implementing `run/2` and `build_tool_step/3`. No tool dispatch copy-paste.
+
+The Runner grew because it absorbed tool execution orchestration that was
+previously scattered across both strategies. ToolExecutor is new shared code
+that replaces the duplicated implementations.
+
+## What Changed for Each Module
+
+**TurnStrategy.Direct** (412 → 163 lines)
+- Deleted: `dispatch_tool_call`, `prepare_and_execute`, `execute_tool_def`,
+  `collect_tool_result`, `normalize_tool_result` (5 functions),
+  `classify_tool_outcome`, `extract_finish_text`,
+  `await_tool_with_inactivity`, `@terminal_tools`
+- Renamed: `process_response` → `classify_response`
+- Added: `build_tool_step/3`
+- `handle_no_tool_calls` inlined (2 lines)
+
+**TurnStrategy.TypedStructured** (415 → 268 lines)
+- Deleted: `execute_tool`, `handle_tool_result` (4 clauses),
+  `apply_tool_result_in`, `build_error_step`
+- Added: `classify_action/3`, `build_tool_step/3`, `build_think_step/1`
+- Unknown tools now return `{:parse_error, ...}` (Runner injects correction)
+- `build_tool_step_from_result` → `build_tool_step` callback
+- `build_think_step` and `build_error_step` are now strategy callbacks
+
+**Rho.Runner** (489 → 639 lines)
+- `handle_strategy_result` rewritten for intent dispatch
+- Added: `classify_tool_outcome`, `extract_finish_text`, `@terminal_tools`
+- Old clause patterns (`{:done, ...}`, `{:continue, ...}`, `{:final, ...}`)
+  replaced by new intents (`{:respond, ...}`, `{:call_tools, ...}`, etc.)
+- Subagent nudge logic moved from Direct into Runner's `{:respond, ...}` handler
+
+**Rho.ToolExecutor** (new, 299 lines)
+- `run/5` — parallel tool dispatch + collect
+- `execute_one/7` — single tool convenience
+- `dispatch/5` → `collect/3` pipeline
+- All shared logic: transformer stages, arg preparation, timeout, normalization,
+  telemetry, event emission
+
+## Verification
+
+```
+mix compile --warnings-as-errors  → clean
+mix rho.smoke                     → 4 tests, 0 failures
+mix rho.verify                    → 12 tests, 0 failures
+mix test apps/rho/test/           → 303 tests, 0 failures, 5 skipped
+```

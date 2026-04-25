@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Rho.Chat do
         ]
       )
 
-    agent_name = if opts[:agent], do: String.to_atom(opts[:agent]), else: :default
+    agent_name = if opts[:agent], do: String.to_existing_atom(opts[:agent]), else: :default
     config = Rho.CLI.Config.agent(agent_name)
     model = opts[:model] || config.model
 
@@ -32,7 +32,7 @@ defmodule Mix.Tasks.Rho.Chat do
     session_id = opts[:session] || "cli:default"
 
     session_opts =
-      [agent_name: agent_name]
+      [agent: agent_name]
       |> maybe_put(:model, opts[:model])
       |> maybe_put(:system_prompt, opts[:system])
       |> maybe_put(:max_steps, opts[:max_steps])

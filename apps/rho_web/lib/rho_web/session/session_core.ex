@@ -156,23 +156,17 @@ defmodule RhoWeb.Session.SessionCore do
     id_prefix = Keyword.get(opts, :id_prefix, "lv")
     workspace = Keyword.get(opts, :workspace, File.cwd!())
 
+    session_start_opts =
+      session_opts(socket)
+      |> then(fn o -> if agent_name, do: Keyword.put(o, :agent, agent_name), else: o end)
+
     if session_id do
-      start_opts = session_opts(socket)
-
-      start_opts =
-        if agent_name, do: Keyword.put(start_opts, :agent_name, agent_name), else: start_opts
-
-      {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, start_opts)
+      {:ok, _handle} = Rho.Session.start([session_id: session_id] ++ session_start_opts)
       init_threads(session_id, workspace)
       {session_id, socket}
     else
       new_sid = "#{id_prefix}_#{System.unique_integer([:positive])}"
-      start_opts = session_opts(socket)
-
-      start_opts =
-        if agent_name, do: Keyword.put(start_opts, :agent_name, agent_name), else: start_opts
-
-      {:ok, _pid} = Rho.Agent.Primary.ensure_started(new_sid, start_opts)
+      {:ok, _handle} = Rho.Session.start([session_id: new_sid] ++ session_start_opts)
       init_threads(new_sid, workspace)
       {new_sid, assign(socket, :session_id, new_sid)}
     end
@@ -300,8 +294,7 @@ defmodule RhoWeb.Session.SessionCore do
 
       {agents, socket} =
         Enum.reduce(socket.assigns.agents, {socket.assigns.agents, socket}, fn {id, agent},
-                                                                                {agents_acc,
-                                                                                 sock} ->
+                                                                               {agents_acc, sock} ->
           case Map.get(registry_status, id) do
             %{status: :idle} when agent.status == :busy ->
               # Agent finished but we missed turn_finished — correct status

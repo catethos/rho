@@ -1,0 +1,234 @@
+# Rho.RunSpec
+
+## The Problem With Scattered Config
+
+An agent needs many pieces of configuration: which model to call, what system prompt
+to use, which tools to load, how many steps to allow, where to persist the tape. Before
+RunSpec, this configuration was assembled in three different places:
+
+1. `.rho.exs` was loaded by `Rho.CLI.Config` and stashed in application env.
+2. `Rho.Config` delegated queries through `{mod, fun}` callbacks registered at boot.
+3. `Worker.build_turn_opts` re-assembled everything per-turn by calling `Rho.Config.agent_config`.
+
+The result: you couldn't grep for where a config value was consumed, you couldn't
+build an agent without booting the CLI application, and tests had to set up application
+env to get anything working.
+
+## What RunSpec Is
+
+`Rho.RunSpec` is a struct that carries all agent configuration explicitly. It is built
+once, stored in the Worker, and passed to the Runner. No global registries, no
+application env callbacks, no `{mod, fun}` indirection.
+
+```elixir
+alias Rho.RunSpec
+
+spec = RunSpec.build(
+  model: "openrouter:anthropic/claude-sonnet",
+  system_prompt: "You are a helpful assistant.",
+  plugins: [:bash, :fs_read],
+  max_steps: 10
+)
+
+spec
+```
+
+## Building a RunSpec
+
+`RunSpec.build/1` takes a keyword list and fills in sensible defaults for anything
+not specified. The only required field is `:model` — everything else has a default.
+
+```elixir
+# Minimal spec — just a model
+minimal = RunSpec.build(model: "mock:test")
+IO.inspect(minimal.max_steps, label: "max_steps")
+IO.inspect(minimal.turn_strategy, label: "turn_strategy")
+IO.inspect(minimal.system_prompt, label: "system_prompt")
+IO.inspect(minimal.plugins, label: "plugins")
+```
+
+The defaults are chosen so that a bare `RunSpec.build(model: "...")` produces a
+working agent — it just won't have any tools.
+
+## Fields
+
+A RunSpec has four groups of fields.
+
+**LLM configuration** controls how the model is called:
+
+* `model` — the model string (`"openrouter:anthropic/claude-sonnet"`)
+* `provider` — provider routing (e.g. `"anthropic"` for OpenRouter)
+* `turn_strategy` — the module that owns the inner turn (default: `Rho.TurnStrategy.Direct`)
+* `max_tokens` — max tokens per LLM response
+* `system_prompt` — the base system prompt string
+* `prompt_format` — `:markdown` or `:xml`
+
+**Loop configuration** controls the outer agent loop:
+
+* `max_steps` — step budget before the loop stops (default: 50)
+* `compact_threshold` — token count that triggers auto-compaction
+
+**Plugin configuration** determines what capabilities the agent has:
+
+* `plugins` — list of plugin entries (atoms like `:bash`, tuples like `{:python, max_iterations: 20}`)
+* `transformers` — list of transformer entries
+* `tools` — pre-resolved tool definitions, or `nil` to resolve from plugins at turn time
+
+**Identity and context** tell the agent who it is and where it operates:
+
+* `agent_name`, `agent_id`, `session_id`
+* `workspace` — working directory for file tools
+* `depth` — delegation depth (0 = primary)
+* `subagent` — whether this is a delegated agent
+* `tape_name`, `tape_module` — tape persistence
+* `user_id`, `organization_id` — multi-tenant scoping
+* `emit` — event callback function
+
+```elixir
+spec = RunSpec.build(
+  model: "mock:test",
+  plugins: [:bash, :fs_read, :fs_write],
+  workspace: File.cwd!(),
+  agent_name: :coder,
+  max_steps: 25
+)
+
+IO.inspect(spec.agent_name, label: "agent_name")
+IO.inspect(spec.workspace, label: "workspace")
+IO.inspect(spec.plugins, label: "plugins")
+IO.inspect(spec.turn_strategy, label: "turn_strategy")
+```
+
+## FromConfig: The .rho.exs Bridge
+
+Most users configure agents via `.rho.exs`. `Rho.RunSpec.FromConfig` is the bridge
+between that config file and a RunSpec. It reads `.rho.exs` via `Rho.CLI.Config.agent/1`,
+and returns a fully-populated RunSpec.
+
+This is the **only** module in the system that touches `.rho.exs` or application env
+for agent configuration. Everything downstream receives an explicit struct.
+
+```elixir
+# This requires the rho_cli app to be loaded (which it is in this notebook).
+# It reads from the .rho.exs in the current directory.
+spec = Rho.RunSpec.FromConfig.build(:default)
+IO.inspect(spec.model, label: "model")
+IO.inspect(spec.plugins, label: "plugins")
+IO.inspect(spec.turn_strategy, label: "turn_strategy")
+```
+
+`FromConfig.build/2` accepts override options — anything you pass takes precedence
+over what `.rho.exs` says:
+
+```elixir
+spec = Rho.RunSpec.FromConfig.build(:default, max_steps: 3, workspace: "/tmp")
+IO.inspect(spec.max_steps, label: "max_steps (overridden)")
+IO.inspect(spec.workspace, label: "workspace (overridden)")
+```
+
+## How It Flows Through the Stack
+
+The RunSpec flows through four layers:
+
+1. **Session.start** builds or accepts a RunSpec.
+2. **Primary.ensure_started** passes it to the Worker.
+3. **Worker.init** stores it in state and finalizes runtime fields (agent_id, tape_name).
+4. **Worker.start_turn** builds a per-turn copy with overrides (emit, tools) and calls `Runner.run/2`.
+
+```
+Session.start(agent: :coder)
+  |
+  v
+RunSpec.FromConfig.build(:coder)    <- reads .rho.exs, returns %RunSpec{}
+  |
+  v
+Primary.ensure_started(sid, run_spec: spec)
+  |
+  v
+Worker.init(run_spec: spec)         <- stores spec, resolves tape/sandbox
+  |
+  v
+Worker.start_turn(content, opts)
+  |
+  v
+build_turn_spec(opts, state, emit)  <- merges per-turn overrides into spec
+  |
+  v
+Runner.run(messages, %RunSpec{})    <- explicit data, no global lookups
+```
+
+When `Session.start` is called without an explicit `run_spec:`, it tries
+`RunSpec.FromConfig.build` if the CLI app is loaded. If not (e.g. in a minimal
+test environment), the Worker falls back to the legacy `Rho.Config` path.
+
+## Using RunSpec Directly (No .rho.exs)
+
+The real power of RunSpec is that you don't need a config file at all. You can
+build a fully-configured agent from code:
+
+```elixir
+spec = RunSpec.build(
+  model: "openrouter:anthropic/claude-sonnet",
+  plugins: [:bash, :fs_read],
+  max_steps: 5,
+  system_prompt: "You are a focused code assistant. Be concise."
+)
+
+{:ok, session} = Rho.Session.start(run_spec: spec)
+info = Rho.Session.info(session)
+IO.inspect(info.agent_name, label: "agent")
+IO.inspect(info.status, label: "status")
+Rho.Session.stop(session)
+```
+
+This is what makes agents testable without boot-time setup. A test can build a
+RunSpec with a mock model, specific tools, and a small step budget — no `.rho.exs`,
+no application env, no `Application.put_env` dance.
+
+## What Changed in Rho.Config
+
+`Rho.Config` used to delegate through `{mod, fun}` callbacks registered via
+`Application.put_env` at boot time. Five callbacks were set by `CLI.Application.start`:
+
+```
+Application.put_env(:rho, :agent_config_loader, {Rho.CLI.Config, :agent})
+Application.put_env(:rho, :sandbox_enabled_fn, {Rho.CLI.Config, :sandbox_enabled?})
+Application.put_env(:rho, :command_parser_fn, {Rho.CLI.CommandParser, :parse})
+Application.put_env(:rho, :capabilities_fn, {Rho.Stdlib, :capabilities_from_plugins})
+Application.put_env(:rho, :agent_names_fn, {Rho.CLI.Config, :agent_names})
+```
+
+These are gone. `Rho.Config` now discovers CLI modules at runtime via
+`Code.ensure_loaded?/1` — no registration step, no boot-order dependency.
+
+External callers that still use `Rho.Config.agent_config/1` (MultiAgent,
+LiteWorker, frameworks) continue to work. The function just resolves
+differently now — direct module call instead of `{mod, fun}` indirection.
+
+## The Legacy Path
+
+The old `Runner.run(model, messages, opts)` 3-arity form still works for
+backward compatibility. Existing tests and any code that calls it directly
+will continue to function. The new `Runner.run(messages, %RunSpec{})` 2-arity
+form is preferred for new code — it takes an explicit struct instead of a
+keyword list with dozens of optional keys.
+
+```elixir
+# Both work:
+# Runner.run("mock:test", messages, system_prompt: "...", tools: [...])  <- legacy
+# Runner.run(messages, %RunSpec{model: "mock:test", ...})                <- new
+```
+
+## Summary
+
+| Before                                              | After                                                |
+| --------------------------------------------------- | ---------------------------------------------------- |
+| Config assembled per-turn from app env callbacks    | RunSpec built once at session start                  |
+| `{mod, fun}` indirection in `Rho.Config`            | Direct `Code.ensure_loaded?` discovery               |
+| 5 `Application.put_env` calls at boot               | Zero boot-time coupling                              |
+| Can't build agent without CLI app loaded            | `RunSpec.build(model: "...")` works anywhere         |
+| `Runner.run(model, messages, opts)` with loose opts | `Runner.run(messages, %RunSpec{})` with typed struct |
+
+The RunSpec is the foundation for the next phases: test harness (Phase 3) can build
+mock agents from RunSpecs without any config setup, and Worker decomposition (Phase 4)
+can extract turn execution into pure functions that take a RunSpec.

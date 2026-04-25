@@ -24,14 +24,6 @@ defmodule Rho.CLI.Application do
     sources = [".env", System.get_env("DOTENV_FILE")] |> Enum.reject(&is_nil/1)
     Dotenvy.source(sources)
 
-    # Register config callbacks so core Worker can resolve config
-    # without compile-time deps on CLI/stdlib modules
-    Application.put_env(:rho, :agent_config_loader, {Rho.CLI.Config, :agent})
-    Application.put_env(:rho, :sandbox_enabled_fn, {Rho.CLI.Config, :sandbox_enabled?})
-    Application.put_env(:rho, :command_parser_fn, {Rho.CLI.CommandParser, :parse})
-    Application.put_env(:rho, :capabilities_fn, {Rho.Stdlib, :capabilities_from_plugins})
-    Application.put_env(:rho, :agent_names_fn, {Rho.CLI.Config, :agent_names})
-
     # Initialize skill loader cache ETS table
     Rho.Stdlib.Skill.Loader.init_cache_table()
 

@@ -2,15 +2,13 @@ defmodule Rho.TurnStrategy.TypedStructured do
   @moduledoc """
   Typed structured-output strategy using `Rho.ActionSchema`.
 
-  Structured-output strategy using `Rho.ActionSchema` for typed dispatch.
-
   Describes tools in the prompt and asks the LLM to produce a flat JSON
   response with `"tool"` as discriminant. Parsing is handled by
   `ActionSchema.parse_and_dispatch/3` — a tagged union dispatcher with
   schema-guided coercion.
 
-  Parse errors are returned as `{:parse_error, reason, text}` for the
-  Runner to handle via correction-prompt retry.
+  Returns intent tuples — the Runner handles tool execution via
+  `Rho.ToolExecutor` and step recording.
 
   ## Configuration
 
@@ -35,7 +33,7 @@ defmodule Rho.TurnStrategy.TypedStructured do
     [build_prompt_section(visible)]
   end
 
-  # --- Run ---
+  # --- Run: call LLM and classify response as intent ---
 
   @impl Rho.TurnStrategy
   def run(projection, runtime) do
@@ -51,30 +49,7 @@ defmodule Rho.TurnStrategy.TypedStructured do
         step = Map.get(projection, :step)
         emit.(%{type: :llm_usage, step: step, usage: usage, model: model})
 
-        case ActionSchema.parse_and_dispatch(text, schema, runtime.tool_map) do
-          {:respond, message, opts} ->
-            maybe_emit_thinking(opts, emit)
-            {:done, %{type: :response, text: message}}
-
-          {:think, thought} ->
-            emit.(%{type: :llm_text, text: thought})
-            {:continue, build_think_step(thought)}
-
-          {:tool, name, args, _tool_def, opts} ->
-            maybe_emit_thinking(opts, emit)
-            execute_tool(name, args, runtime.tool_map, runtime)
-
-          {:unknown, name, _args} ->
-            available = Map.keys(runtime.tool_map) |> Enum.join(", ")
-            error = "Error: unknown tool '#{name}'. Available: respond, think, #{available}"
-            {:continue, build_error_step(text, error)}
-
-          {:parse_error, _reason} ->
-            # Treat unparseable text as a plain respond — avoids costly
-            # correction-prompt retries. The LLM was trying to talk to
-            # the user, just not in JSON format.
-            {:done, %{type: :response, text: String.trim(text)}}
-        end
+        classify_action(text, schema, runtime)
 
       {:error, reason} ->
         emit.(%{type: :error, reason: reason})
@@ -82,149 +57,69 @@ defmodule Rho.TurnStrategy.TypedStructured do
     end
   end
 
-  # --- Tool execution ---
-
-  defp execute_tool(name, args, tool_map, runtime) do
-    tool_def = Map.fetch!(tool_map, name)
-    call_id = "typed_structured_#{System.unique_integer([:positive])}"
+  defp classify_action(text, schema, runtime) do
     emit = runtime.emit
-    ctx = runtime.context
 
-    emit.(%{type: :tool_start, name: name, args: args, call_id: call_id})
+    case ActionSchema.parse_and_dispatch(text, schema, runtime.tool_map) do
+      {:respond, message, opts} ->
+        maybe_emit_thinking(opts, emit)
+        {:respond, message}
 
-    args_data = %{tool_name: name, args: args}
+      {:think, thought} ->
+        {:think, thought}
 
-    case Rho.PluginRegistry.apply_stage(:tool_args_out, args_data, ctx) do
-      {:deny, reason} ->
-        result = "Denied: #{reason}"
+      {:tool, name, args, _tool_def, opts} ->
+        maybe_emit_thinking(opts, emit)
+        call_id = "typed_structured_#{System.unique_integer([:positive])}"
 
-        emit.(%{
-          type: :tool_result,
-          name: name,
-          status: :error,
-          output: result,
-          call_id: call_id,
-          latency_ms: 0,
-          error_type: :denied
-        })
+        {:call_tools, [%{name: name, args: args, call_id: call_id}], nil}
 
-        {:continue, build_tool_step_from_result(name, args, result)}
+      {:unknown, name, _args} ->
+        available = Map.keys(runtime.tool_map) |> Enum.join(", ")
+        reason = "unknown tool '#{name}'. Available: respond, think, #{available}"
+        {:parse_error, reason, text}
 
-      {:halt, reason} ->
-        emit.(%{type: :error, reason: {:halt, reason}})
-        {:error, {:halt, reason}}
-
-      {:cont, %{args: new_args}} ->
-        # ActionSchema already ran coercion via SchemaCoerce, so we pass
-        # the args straight to the tool callback. The PluginRegistry
-        # :tool_args_out stage may have mutated them, though, so we use
-        # new_args from that stage.
-        task =
-          Task.async(fn ->
-            t0 = System.monotonic_time(:millisecond)
-            result = tool_def.execute.(new_args, ctx)
-            latency_ms = System.monotonic_time(:millisecond) - t0
-            {result, latency_ms}
-          end)
-
-        timeout = Shared.tool_inactivity_timeout()
-
-        case Shared.await_tool_with_inactivity(task, timeout) do
-          {result, latency_ms} ->
-            call = %{name: name, args: new_args, call_id: call_id}
-            handle_tool_result(result, call, latency_ms, runtime)
-
-          :timeout ->
-            emit.(%{
-              type: :tool_result,
-              name: name,
-              status: :error,
-              output: "tool execution inactive",
-              call_id: call_id,
-              latency_ms: timeout,
-              error_type: :timeout
-            })
-
-            {:continue,
-             build_tool_step_from_result(
-               name,
-               new_args,
-               "Error: tool execution inactive for #{div(timeout, 1000)}s"
-             )}
-        end
+      {:parse_error, _reason} ->
+        # Treat unparseable text as a plain respond — avoids costly
+        # correction-prompt retries. The LLM was trying to talk to
+        # the user, just not in JSON format.
+        {:respond, String.trim(text)}
     end
   end
 
-  defp handle_tool_result(%Rho.ToolResponse{} = resp, call, latency_ms, runtime) do
-    output_str = resp.text || ""
-    result = apply_tool_result_in(call.name, output_str, runtime.context)
+  # --- Build step entries from tool results ---
 
-    runtime.emit.(%{
-      type: :tool_result,
-      name: call.name,
-      status: :ok,
-      output: result,
-      call_id: call.call_id,
-      latency_ms: latency_ms,
-      effects: resp.effects
-    })
+  @impl Rho.TurnStrategy
+  def build_tool_step(tool_calls, results, _response_text) do
+    [tc] = tool_calls
+    [r] = results
 
-    {:continue, build_tool_step_from_result(call.name, call.args, result)}
+    args_json = Jason.encode!(tc.args)
+    assistant_text = Jason.encode!(%{tool: tc.name, args: tc.args})
+    result_text = "[Tool Result: #{tc.name}]\n#{r.result}"
+
+    %{
+      type: :tool_step,
+      assistant_msg: ReqLLM.Context.assistant(assistant_text),
+      tool_results: [ReqLLM.Context.user(result_text)],
+      tool_calls: [],
+      structured_calls: [{tc.name, args_json}],
+      response_text: nil
+    }
   end
 
-  defp handle_tool_result({:final, output}, call, latency_ms, runtime) do
-    output_str = to_string(output)
-    result = apply_tool_result_in(call.name, output_str, runtime.context)
-
-    runtime.emit.(%{
-      type: :tool_result,
-      name: call.name,
-      status: :ok,
-      output: result,
-      call_id: call.call_id,
-      latency_ms: latency_ms
-    })
-
-    {:done, %{type: :response, text: result}}
-  end
-
-  defp handle_tool_result({:ok, output}, call, latency_ms, runtime) do
-    output_str = to_string(output)
-    result = apply_tool_result_in(call.name, output_str, runtime.context)
-
-    runtime.emit.(%{
-      type: :tool_result,
-      name: call.name,
-      status: :ok,
-      output: result,
-      call_id: call.call_id,
-      latency_ms: latency_ms
-    })
-
-    {:continue, build_tool_step_from_result(call.name, call.args, result)}
-  end
-
-  defp handle_tool_result({:error, reason}, call, latency_ms, runtime) do
-    error_str = "Error: #{reason}"
-
-    runtime.emit.(%{
-      type: :tool_result,
-      name: call.name,
-      status: :error,
-      output: to_string(reason),
-      call_id: call.call_id,
-      latency_ms: latency_ms,
-      error_type: :runtime_error
-    })
-
-    {:continue, build_tool_step_from_result(call.name, call.args, error_str)}
-  end
-
-  defp apply_tool_result_in(name, result, ctx) do
-    case Rho.PluginRegistry.apply_stage(:tool_result_in, %{tool_name: name, result: result}, ctx) do
-      {:cont, %{result: new}} -> to_string(new)
-      {:halt, _reason} -> to_string(result)
-    end
+  @impl Rho.TurnStrategy
+  def build_think_step(thought) do
+    %{
+      type: :tool_step,
+      assistant_msg: ReqLLM.Context.assistant(Jason.encode!(%{tool: "think", thought: thought})),
+      tool_results: [
+        ReqLLM.Context.user("[System] Thought noted. Continue with your next action.")
+      ],
+      tool_calls: [],
+      structured_calls: [],
+      response_text: nil
+    }
   end
 
   # --- Streaming ---
@@ -238,7 +133,6 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
       {:error, :acquire_timeout} = err ->
         Logger.error("[typed_structured] admission timeout — no LLM slot available after 60s")
-
         err
 
       {:error, reason} ->
@@ -345,47 +239,6 @@ defmodule Rho.TurnStrategy.TypedStructured do
       """,
       kind: :instructions,
       priority: :low
-    }
-  end
-
-  # --- Step builders ---
-
-  defp build_tool_step_from_result(name, args, result) do
-    args_json = Jason.encode!(args)
-    assistant_text = Jason.encode!(%{tool: name, args: args})
-    result_text = "[Tool Result: #{name}]\n#{result}"
-
-    %{
-      type: :tool_step,
-      assistant_msg: ReqLLM.Context.assistant(assistant_text),
-      tool_results: [ReqLLM.Context.user(result_text)],
-      tool_calls: [],
-      structured_calls: [{name, args_json}],
-      response_text: nil
-    }
-  end
-
-  defp build_think_step(thought) do
-    %{
-      type: :tool_step,
-      assistant_msg: ReqLLM.Context.assistant(Jason.encode!(%{tool: "think", thought: thought})),
-      tool_results: [
-        ReqLLM.Context.user("[System] Thought noted. Continue with your next action.")
-      ],
-      tool_calls: [],
-      structured_calls: [],
-      response_text: nil
-    }
-  end
-
-  defp build_error_step(raw_text, error_msg) do
-    %{
-      type: :tool_step,
-      assistant_msg: ReqLLM.Context.assistant(raw_text),
-      tool_results: [ReqLLM.Context.user(error_msg)],
-      tool_calls: [],
-      structured_calls: [],
-      response_text: nil
     }
   end
 

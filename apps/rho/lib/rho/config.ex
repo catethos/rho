@@ -2,88 +2,89 @@ defmodule Rho.Config do
   @moduledoc """
   Core configuration accessors for the Rho runtime.
 
-  This module provides only the runtime-relevant config queries.
+  Functions in this module discover CLI modules at runtime via
+  `Code.ensure_loaded?/1` — no application env callbacks needed.
   The full config file loader (.rho.exs) lives in `Rho.CLI.Config`.
   """
+
+  # These modules live in sibling umbrella apps and are discovered
+  # at runtime via Code.ensure_loaded?/1.
+  @compile {:no_warn_undefined, [Rho.CLI.Config, Rho.CLI.CommandParser, Rho.Stdlib]}
 
   @doc """
   Returns the configured tape-context projection module.
 
-  Defaults to `Rho.Tape.Context.Tape`. Accepts both `:tape_module`
-  (canonical) and `:tape_module` (legacy alias).
+  Defaults to `Rho.Tape.Context.Tape`.
   """
   def tape_module do
-    mod =
-      Application.get_env(:rho, :tape_module) ||
-        Application.get_env(:rho, :tape_module, Rho.Tape.Context.Tape)
-
+    mod = Application.get_env(:rho, :tape_module, Rho.Tape.Context.Tape)
     Code.ensure_loaded!(mod)
     mod
   end
 
-  @doc "Legacy alias for `tape_module/0`."
-  def memory_module, do: tape_module()
-
   @doc """
   Returns the agent config for the given agent name.
 
-  Delegates to the `:agent_config_loader` callback set via
-  `Application.put_env(:rho, :agent_config_loader, {Mod, :fun})`.
-  Falls back to a minimal default config when no loader is configured.
+  Discovers `Rho.CLI.Config` at runtime. Falls back to a minimal
+  default config when the CLI app is not loaded.
   """
   def agent_config(name \\ :default) do
-    case Application.get_env(:rho, :agent_config_loader) do
-      {mod, fun} -> apply(mod, fun, [name])
-      nil -> default_agent_config()
+    if cli_config_available?() do
+      Rho.CLI.Config.agent(name)
+    else
+      default_agent_config()
     end
   end
 
   @doc """
   Returns whether sandbox mode is enabled.
-
-  Delegates to `:sandbox_enabled_fn` or returns false.
   """
   def sandbox_enabled? do
-    case Application.get_env(:rho, :sandbox_enabled_fn) do
-      {mod, fun} -> apply(mod, fun, [])
-      nil -> false
+    if cli_config_available?() do
+      Rho.CLI.Config.sandbox_enabled?()
+    else
+      false
     end
   end
 
   @doc """
   Parses a direct command string into `{tool_name, args}`.
-
-  Delegates to `:command_parser_fn` or returns an error.
   """
   def parse_command(command) do
-    case Application.get_env(:rho, :command_parser_fn) do
-      {mod, fun} -> apply(mod, fun, [command])
-      nil -> {"unknown", %{"error" => "no command parser configured"}}
+    if Code.ensure_loaded?(Rho.CLI.CommandParser) and
+         function_exported?(Rho.CLI.CommandParser, :parse, 1) do
+      Rho.CLI.CommandParser.parse(command)
+    else
+      {"unknown", %{"error" => "no command parser configured"}}
     end
   end
 
   @doc """
   Derives capabilities from a list of plugin entries.
-
-  Delegates to `:capabilities_fn` or returns [].
   """
   def capabilities_from_plugins(plugins) do
-    case Application.get_env(:rho, :capabilities_fn) do
-      {mod, fun} -> apply(mod, fun, [plugins])
-      nil -> []
+    if Code.ensure_loaded?(Rho.Stdlib) and
+         function_exported?(Rho.Stdlib, :capabilities_from_plugins, 1) do
+      Rho.Stdlib.capabilities_from_plugins(plugins)
+    else
+      []
     end
   end
 
   @doc """
   Returns the list of configured agent names.
-
-  Delegates to `:agent_names_fn` or returns `[:default]`.
   """
   def agent_names do
-    case Application.get_env(:rho, :agent_names_fn) do
-      {mod, fun} -> apply(mod, fun, [])
-      nil -> [:default]
+    if cli_config_available?() do
+      Rho.CLI.Config.agent_names()
+    else
+      [:default]
     end
+  end
+
+  defp cli_config_available? do
+    Code.ensure_loaded?(Rho.CLI.Config) and
+      function_exported?(Rho.CLI.Config, :agent, 1)
   end
 
   defp default_agent_config do

@@ -7,7 +7,7 @@ defmodule Rho.CLI.Repl do
   use GenServer
 
   defstruct [
-    :session_id,
+    :handle,
     :repl_pid,
     :stop_event,
     :current_turn_id,
@@ -40,10 +40,10 @@ defmodule Rho.CLI.Repl do
     gl = opts[:group_leader]
     session_opts = Keyword.drop(opts, [:stop_event, :group_leader])
 
-    # Ensure session exists
-    {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, session_opts)
+    # Start session via unified API
+    {:ok, handle} = Rho.Session.start([session_id: session_id] ++ session_opts)
 
-    # Subscribe to signal bus (sole event delivery path)
+    # Subscribe to signal bus for event rendering
     bus_sub_id =
       case Rho.Comms.subscribe("rho.session.#{session_id}.events.*") do
         {:ok, id} -> id
@@ -64,7 +64,7 @@ defmodule Rho.CLI.Repl do
 
     {:noreply,
      %__MODULE__{
-       session_id: session_id,
+       handle: handle,
        repl_pid: repl_pid,
        stop_event: stop_event,
        group_leader: gl,
@@ -94,8 +94,7 @@ defmodule Rho.CLI.Repl do
 
   # REPL submitted a line
   def handle_info({:submit, content}, state) do
-    pid = Rho.Agent.Primary.whereis(state.session_id)
-    {:ok, turn_id} = Rho.Agent.Worker.submit(pid, content)
+    {:ok, turn_id} = Rho.Session.send_async(state.handle, content)
     {:noreply, %{state | current_turn_id: turn_id}}
   end
 

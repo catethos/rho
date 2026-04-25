@@ -1,0 +1,248 @@
+# Test Harness — Make Coding Agents Fast
+
+## The Feedback Loop Problem
+
+After Phase 2, you can build a fully-configured agent from code:
+
+```
+spec = RunSpec.build(model: "mock:test", plugins: [:bash], max_steps: 5)
+{:ok, session} = Rho.Session.start(run_spec: spec)
+```
+
+No `.rho.exs`. No application env. No boot-time side effects. But what about tests?
+
+The existing test suite (`runner_test.exs`) tests `Runner.run` directly — it stubs
+`ReqLLM.stream_text` via Mimic, builds canned `%ReqLLM.Response{}` structs, and
+verifies that the right events come out. This works, but it tests the *inner loop*
+only. The full stack — Session start, Worker GenServer, RunSpec passing, tool
+resolution, turn lifecycle — is untested except by booting a REPL and typing manually.
+
+Phase 3 fixes this. The goal is a development workflow that looks like:
+
+```
+1. Make a change
+2. mix rho.smoke        → 5 seconds, core path
+3. mix rho.verify       → 15 seconds, full coverage
+4. mix test             → unit tests
+```
+
+## Anatomy of an LLM Mock
+
+Rho talks to language models through `ReqLLM`. The call chain is:
+
+```
+ReqLLM.stream_text(model, context, opts)
+→ {:ok, stream_ref}
+
+ReqLLM.StreamResponse.process_stream(stream_ref, opts)
+→ {:ok, %ReqLLM.Response{}}
+```
+
+Two functions, called in sequence. To mock the LLM, we stub both:
+
+```elixir
+# What the mock does:
+Mimic.stub(ReqLLM, :stream_text, fn _model, _ctx, _opts ->
+  {:ok, :mock_stream}
+end)
+
+Mimic.stub(ReqLLM.StreamResponse, :process_stream, fn :mock_stream, _opts ->
+  {:ok, %ReqLLM.Response{
+    message: %ReqLLM.Message{
+      role: :assistant,
+      content: [ReqLLM.Message.ContentPart.text("Hello!")],
+      tool_calls: nil
+    },
+    usage: %{input_tokens: 10, output_tokens: 5},
+    ...
+  }}
+end)
+```
+
+The `runner_test.exs` file had private helper functions doing exactly this. Phase 3
+extracts them into `Rho.Test` — a public module in `test/support/` that any test
+file can use.
+
+## The Rho.Test Module
+
+`Rho.Test` provides four layers of helpers, from low-level to high-level:
+
+**Response builders** — construct `%ReqLLM.Response{}` structs:
+
+```elixir
+# A text-only response (no tool calls)
+text_response("Hello, world!")
+
+# A response that calls tools
+tool_call_response("Let me check.", [
+  {"call_1", "bash", %{"cmd" => "echo hi"}}
+])
+```
+
+**LLM stubbing** — wire the mocks into Mimic:
+
+```elixir
+# Single response (stub, reusable)
+stub_llm(text_response("Always this"))
+
+# Ordered sequence (expect, counted)
+stub_llm_sequence([
+  tool_call_response("Calling bash.", [{"c1", "bash", %{"cmd" => "ls"}}]),
+  text_response("Done listing files")
+])
+```
+
+**One-shot runner** — mock + run in one call:
+
+```elixir
+{:ok, "Hello!"} = run_with_responses("hi", [text_response("Hello!")])
+```
+
+**Session helpers** — full-stack with mocked LLM:
+
+```elixir
+stub_llm(text_response("I'm alive"))
+{:ok, session} = start_mock_session(tools: [echo_tool()])
+{:ok, text} = Rho.Session.send(session, "hello")
+Rho.Session.stop(session)
+```
+
+## The Cross-Process Problem
+
+There's a subtlety that tripped up the initial implementation. Mimic stubs are
+per-process by default. When you call `Rho.Session.send`, the message flows:
+
+```
+Test process → Worker GenServer → Task.Supervisor.async_nolink → Runner.run
+```
+
+The Runner executes in a *spawned Task*, not in the test process. A per-process
+Mimic stub set in the test process is invisible to the Task. The LLM call hits
+the real `ReqLLM.stream_text`, which fails with `:unknown_provider` for the
+`"mock:test"` model.
+
+The fix: `setup :set_mimic_global` in the test module. This makes Mimic stubs
+apply across all processes for the duration of each test. The existing
+`runner_test.exs` doesn't need this because it calls `Runner.run` directly
+in the test process.
+
+## Tool Resolution
+
+Another subtlety: where do tools come from in the Session path?
+
+The Worker's `build_turn_spec` resolves tools with this priority chain:
+
+```elixir
+tools = opts[:tools]               # per-submit override
+     || state.persistent_tools     # sticky from first submit
+     || spec.tools                 # pre-resolved in RunSpec (NEW)
+     || resolve_all_tools(state)   # PluginRegistry ETS lookup
+```
+
+The third option — `spec.tools` — was added in Phase 3. Before this, even if
+you built a RunSpec with `tools: [my_tool]`, the Worker would ignore it and
+fall through to the global PluginRegistry. Tests that didn't register plugins
+globally got an empty tool list.
+
+Now `start_mock_session(tools: [echo_tool()])` passes tools through the RunSpec,
+and the Worker respects them without touching global state.
+
+## Inline Tool Builders
+
+For tests, you often need a quick throwaway tool. `Rho.Test.inline_tool/4`
+builds a tool definition without the `Rho.Tool` DSL macro:
+
+```elixir
+# The echo tool used throughout the test suite:
+echo_tool = inline_tool(
+  "echo",
+  "Echoes the message back",
+  [msg: [type: :string, required: true, doc: "Message"]],
+  fn %{msg: msg}, _ctx -> {:ok, "echoed: #{msg}"} end
+)
+```
+
+This is the same `%{tool: ReqLLM.tool(...), execute: fn ...}` map that
+plugins return from their `tools/2` callback, just assembled inline.
+
+## The Test Suite
+
+The integration tests live in `apps/rho/test/integration/session_test.exs` and
+exercise the full Session → Worker → Runner → Strategy stack. They're tagged
+for selective running:
+
+**`:smoke` tests** (4 tests, ~0.2s) — the critical path:
+
+* Session starts, accepts a message, returns text
+* `Rho.run/2` one-shot works
+* Tool call executes and feeds result back to LLM
+* Custom inline tool works end-to-end
+
+**`:integration` tests** (8 more tests, ~0.3s total) — broader coverage:
+
+* Multi-turn conversation maintains context
+* Custom system prompt passes through
+* `max_steps` budget stops the loop
+* Session info returns metadata
+* Stop is idempotent
+* `run_with_responses` helper works (Runner-level)
+* Event collection captures emitted events
+
+## The Mix Tasks
+
+Two new mix tasks wire it all up:
+
+```
+mix rho.smoke     →  runs :smoke tests only    (~5s with compile)
+mix rho.verify    →  runs all integration tests (~15s with compile)
+```
+
+Both are configured with `preferred_envs: :test` in the umbrella `mix.exs`
+so they automatically set `MIX_ENV=test`.
+
+## What This Enables
+
+Before Phase 3, verifying a change to the agent stack meant:
+
+1. `mix compile` — does it build?
+2. `mix rho.chat` — boot the REPL, type something, read the output, ctrl-C
+3. Hope you tested the right thing
+
+After Phase 3:
+
+```elixir
+# In a test file:
+use Rho.Test
+
+test "my new feature works" do
+  stub_llm_sequence([
+    tool_call_response("Using new tool.", [{"c1", "my_tool", %{"x" => 1}}]),
+    text_response("Feature works!")
+  ])
+
+  {:ok, session} = start_mock_session(tools: [my_new_tool()])
+  assert {:ok, "Feature works!"} = Rho.Session.send(session, "test it")
+  Rho.Session.stop(session)
+end
+```
+
+The remaining phases — ToolExecutor extraction (Phase 4), naming cleanup
+(Phase 5), dead code purge (Phase 6) — can each be verified with
+`mix rho.smoke && mix rho.verify` after every sub-task. No manual testing.
+
+## Verification
+
+Let's confirm the harness works by running it:
+
+```elixir
+# This cell won't run in Livebook (needs Mimic in test env),
+# but documents what the commands produce:
+
+# mix rho.smoke
+# → 4 tests, 0 failures (8 excluded)
+# → Finished in 0.2 seconds
+
+# mix rho.verify
+# → 12 tests, 0 failures
+# → Finished in 0.3 seconds
+```

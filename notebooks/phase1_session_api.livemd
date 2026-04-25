@@ -1,0 +1,286 @@
+# Rho.Session — A Unified Entry Point
+
+## The Problem of Three Doors
+
+An agent framework has a simple job: accept a message, think, act, respond.
+But Rho grew three separate ways to do this, each wiring the same internals differently:
+
+```
+CLI (mix rho.chat)   →  Repl → Primary.ensure_started → Worker.submit → bus → Repl renders
+Web (SessionLive)    →  SessionCore → Primary.ensure_started → Worker.submit → bus → LiveView renders
+Script (mix rho.run) →  Runner.run(model, messages, opts) — bypasses Worker entirely
+```
+
+The third path is the dangerous one. `mix rho.run` calls `Runner.run` directly,
+skipping the Worker GenServer, the signal bus, tape bootstrap, and plugin registration.
+Any feature that depends on those layers — multi-agent coordination, event logging,
+tool transformers — simply doesn't work through this path.
+
+A coding agent writing tests or verifying features cannot use `mix rho.run` to test
+interactive behavior, and cannot use `mix rho.chat` without a human at the terminal.
+
+The fix is not to patch the third path. The fix is to make one path and use it everywhere.
+
+## The Handle: What You Hold Onto
+
+A session is a live thing — processes, subscriptions, state. We need a token that
+represents "I have a running session" without exposing the internals. That's `Handle`:
+
+```elixir
+defmodule Rho.Session.Handle do
+  @enforce_keys [:session_id, :primary_pid]
+  defstruct [:session_id, :primary_pid, :emit]
+end
+```
+
+Three fields. `session_id` names the session (for bus topics, tape paths, registry lookups).
+`primary_pid` is the Worker GenServer — cached for the common case where you talk to
+the primary agent. `emit` is an optional callback for custom event routing.
+
+`@enforce_keys` means you cannot accidentally create a handle without the two things
+that must always be known. Let's see what one looks like:
+
+```elixir
+{:ok, handle} = Rho.Session.start(agent: :default)
+handle
+```
+
+## Starting a Session
+
+`Rho.Session.start/1` wraps the two-step dance that CLI and web both did independently:
+generate an ID, call `Primary.ensure_started`, get back a pid.
+
+```elixir
+# The implementation:
+#
+#   def start(opts \\ []) do
+#     session_id = opts[:session_id] || generate_session_id()
+#     agent_name = opts[:agent] || :default
+#
+#     primary_opts =
+#       [agent_name: agent_name]
+#       |> maybe_put(:workspace, opts[:workspace])
+#       |> maybe_put(:user_id, opts[:user_id])
+#       |> maybe_put(:organization_id, opts[:organization_id])
+#       |> maybe_put(:tape_ref, opts[:tape_ref])
+#
+#     case Primary.ensure_started(session_id, primary_opts) do
+#       {:ok, pid} ->
+#         {:ok, %Handle{session_id: session_id, primary_pid: pid, emit: opts[:emit]}}
+#       {:error, _} = error ->
+#         error
+#     end
+#   end
+#
+# The key decision: Session.start accepts :agent (the config name) and translates
+# it to :agent_name for Primary. This is a deliberate rename — the public API says
+# "which agent" while the internal API says "which agent config to load." The
+# distinction matters because Primary.ensure_started also accepts :workspace,
+# :user_id, :organization_id — operational concerns that Session.start passes
+# through but doesn't interpret.
+
+# We can verify the handle points to a real process:
+{:ok, h} = Rho.Session.start(session_id: "notebook_demo")
+IO.inspect(Process.alive?(h.primary_pid), label: "agent alive?")
+Rho.Session.stop(h)
+```
+
+## Talking to the Agent
+
+Two modes: synchronous (block until done) and asynchronous (fire and forget).
+
+**Synchronous** is what scripts and tests want. "Send this, give me the answer."
+Under the hood it calls `Worker.ask/3`, which subscribes to the bus, submits the
+message, and collects signals until `turn_finished` arrives:
+
+```elixir
+{:ok, h} = Rho.Session.start(agent: :default)
+{:ok, text} = Rho.Session.send(h, "What is 2 + 2? Reply with just the number.")
+IO.puts("Agent says: #{text}")
+Rho.Session.stop(h)
+```
+
+**Asynchronous** is what the REPL and web want. "Send this, I'll listen for events
+on the bus myself." Returns a `turn_id` immediately:
+
+```elixir
+{:ok, h} = Rho.Session.start(agent: :default)
+{:ok, turn_id} = Rho.Session.send_async(h, "hello")
+IO.inspect(turn_id, label: "turn submitted")
+
+# Events would arrive via bus subscription — we won't set that up here.
+# The point is: the caller controls how it listens.
+Process.sleep(3000)
+Rho.Session.stop(h)
+```
+
+The REPL uses `send_async` because it has its own bus subscription and rendering
+pipeline. The web uses `Worker.submit` for the same reason (it routes events through
+`SignalRouter` into LiveView assigns). `Rho.Session.send` is for the case where you
+just want the answer.
+
+## resolve_pid: Surviving Process Death
+
+A subtle detail in `send` and `send_async`:
+
+```elixir
+#   defp resolve_pid(%Handle{session_id: session_id, primary_pid: pid}) do
+#     if Process.alive?(pid), do: pid, else: Primary.whereis(session_id)
+#   end
+```
+
+The handle caches `primary_pid` from session start, but Workers are `:transient`
+GenServers under a DynamicSupervisor — they can restart. If the cached pid is dead,
+we fall back to a registry lookup. This means a handle remains valid across agent
+restarts within the same session.
+
+## The One-Liner: Rho.run/2
+
+The most common use case is: start, send, stop, return. That's `Rho.run/2`:
+
+```elixir
+# The implementation:
+#
+#   def run(message, opts \\ []) do
+#     {:ok, session} = Rho.Session.start(opts)
+#     try do
+#       Rho.Session.send(session, message)
+#     after
+#       Rho.Session.stop(session)
+#     end
+#   end
+#
+# try/after ensures cleanup even if the send crashes.
+# The return value is whatever Session.send returns — {:ok, text} or {:error, reason}.
+
+{:ok, text} = Rho.run("What is the capital of France? One word.")
+IO.puts(text)
+```
+
+This is what `mix rho.run` now uses internally. Before, it called `Runner.run` directly,
+assembling tools and config by hand. Now:
+
+```elixir
+# mix rho.run "hello" is now just:
+#
+#   agent_name = if opts[:agent], do: String.to_existing_atom(opts[:agent]), else: :default
+#   case Rho.run(message, agent: agent_name) do
+#     {:ok, response} -> IO.puts(response)
+#     {:final, value} -> IO.puts(inspect(value))
+#     {:error, reason} -> Mix.shell().error("Error: #{reason}")
+#   end
+#
+# 54 lines → 35 lines. More importantly: the message now flows through Worker,
+# which means tools, tape, transformers, and the signal bus all work.
+```
+
+## Rewiring the REPL
+
+The REPL is a GenServer that owns a spawned IO loop. The loop reads stdin, sends
+`{:submit, content}` to the GenServer, and waits for `:prompt_ready`. The GenServer
+forwards the submit to the agent, and when `turn_finished` arrives on the bus, it
+signals the IO loop to prompt again.
+
+The change is small. The REPL's state struct replaces `:session_id` with `:handle`:
+
+```elixir
+# Before:                           After:
+# defstruct [                       defstruct [
+#   :session_id,          →           :handle,
+#   :repl_pid,                        :repl_pid,
+#   ...                               ...
+# ]                                 ]
+```
+
+Session startup replaces two calls with one:
+
+```elixir
+# Before:
+#   {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, session_opts)
+#
+# After:
+#   {:ok, handle} = Rho.Session.start([session_id: session_id] ++ session_opts)
+```
+
+And message submission goes through the handle:
+
+```elixir
+# Before:
+#   pid = Rho.Agent.Primary.whereis(state.session_id)
+#   {:ok, turn_id} = Rho.Agent.Worker.submit(pid, content)
+#
+# After:
+#   {:ok, turn_id} = Rho.Session.send_async(state.handle, content)
+```
+
+The REPL still subscribes to the bus directly — it needs the raw signal stream for
+its rendering pipeline. `Session.start` doesn't subscribe for you. That's deliberate:
+subscription is a policy decision (what topics? which process receives?), and the
+Session API doesn't impose one.
+
+## Rewiring the Web
+
+`SessionCore.ensure_session` had two nearly-identical branches (session_id given vs.
+generated) both calling `Primary.ensure_started`. Both now call `Session.start`:
+
+```elixir
+# Before:
+#   {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, start_opts)
+#
+# After:
+#   {:ok, _handle} = Rho.Session.start([session_id: session_id] ++ session_start_opts)
+```
+
+The handle is discarded (`_handle`) because the web path manages agents through the
+registry and bus — it targets specific agents by `agent_id`, not just the primary. The
+value of the change is not the handle; it's that session creation is now a single
+function call with a stable contract, instead of each frontend assembling
+`Primary.ensure_started` options independently.
+
+## What Changed, What Didn't
+
+| Layer          | Changed? | Notes                                                    |
+| -------------- | -------- | -------------------------------------------------------- |
+| `Rho.Session`  | New      | The unified entry point                                  |
+| `Rho.run/2`    | New      | One-shot convenience                                     |
+| `mix rho.run`  | Yes      | Uses `Rho.run/2` instead of `Runner.run` directly        |
+| `mix rho.chat` | Yes      | Passes `agent:` key for Session API                      |
+| `Rho.CLI.Repl` | Yes      | Stores handle, uses `Session.send_async`                 |
+| `SessionCore`  | Yes      | Uses `Session.start` instead of `Primary.ensure_started` |
+| `Worker`       | No       | Untouched — Session wraps it                           |
+| `Primary`      | No       | Untouched — Session wraps it                           |
+| `Runner`       | No       | Untouched — Worker calls it the same way               |
+| `TurnStrategy` | No       | Untouched                                                |
+| `Tape`         | No       | Untouched                                                |
+| `Signal Bus`   | No       | Untouched                                                |
+
+The entire change is additive: a new module that calls existing functions in the right
+order, and three callers rewired to use it. No internal behavior changed.
+
+## Verification
+
+The proof that everything still works the same way, through the new single door:
+
+```elixir
+# Start a session, interact, inspect state, clean up.
+{:ok, h} = Rho.Session.start(agent: :default)
+
+# The session is real — there's a Worker GenServer behind it
+info = Rho.Session.info(h)
+IO.inspect(info.agent_name, label: "agent")
+IO.inspect(info.status, label: "status")
+IO.inspect(info.session_id, label: "session")
+
+# Send a message through the full stack (Worker → Runner → Strategy → LLM → Tools → Tape)
+{:ok, text} = Rho.Session.send(h, "Say 'unified' and nothing else.")
+IO.puts("Response: #{text}")
+
+# Clean up
+Rho.Session.stop(h)
+```
+
+```elixir
+# And the one-liner:
+{:ok, text} = Rho.run("What is 1 + 1? Just the number.")
+IO.puts(text)
+```

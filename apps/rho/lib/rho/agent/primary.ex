@@ -170,6 +170,9 @@ defmodule Rho.Agent.Primary do
       |> then(fn wo ->
         if opts[:tape_ref], do: Keyword.put(wo, :tape_ref, opts[:tape_ref]), else: wo
       end)
+      |> then(fn wo ->
+        if opts[:run_spec], do: Keyword.put(wo, :run_spec, opts[:run_spec]), else: wo
+      end)
 
     case Rho.Agent.Supervisor.start_worker(worker_opts) do
       {:ok, pid} -> {:ok, pid}
