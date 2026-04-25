@@ -1,0 +1,320 @@
+# Phase 3: Frameworks LLM Extraction via BAML + Zoi
+
+```elixir
+Mix.install([
+  {:baml_elixir, "~> 1.0.0-pre.27"},
+  {:zoi, "~> 0.17"},
+  {:jason, "~> 1.4"},
+  {:livebook_env, "~> 1.0"}
+])
+
+LivebookEnv.import_dotenv("/Users/catethos/workspace/rho/.env")
+```
+
+## What Changed
+
+Phase 3 replaces three LLM call patterns in `rho_frameworks` with
+`RhoBaml.Function` modules. Each module is a self-contained definition:
+a Zoi schema (struct + typespec + BAML class) and a prompt template.
+
+| Old                                                     | New                                    | Lines removed |
+| ------------------------------------------------------- | -------------------------------------- | ------------- |
+| `ReqLLM.generate_object` + JSON schema in `roles.ex`    | `RhoFrameworks.LLM.RankRoles`          | ~65           |
+| `ReqLLM.generate_object` + ReqLLM schema in `lenses.ex` | `RhoFrameworks.LLM.ScoreLens`          | ~50           |
+| `LiteWorker` + `StructuredOutput.parse` in `library.ex` | `RhoFrameworks.LLM.SemanticDuplicates` | ~75           |
+
+Two `Rho.Config.agent_config()` calls deleted (roles.ex, lenses.ex).
+
+## SchemaCompiler (inlined for standalone notebook)
+
+```elixir
+defmodule RhoBaml.SchemaCompiler do
+  @moduledoc false
+
+  def to_baml_class(schema, class_name) do
+    {classes, _type_name} = compile_class(schema, class_name, [])
+    classes |> Enum.reverse() |> Enum.join("\n")
+  end
+
+  defp compile_class(%Zoi.Types.Struct{fields: fields}, class_name, acc)
+       when is_list(fields),
+       do: do_compile_class(fields, class_name, acc)
+
+  defp compile_class(%Zoi.Types.Map{fields: fields}, class_name, acc)
+       when is_list(fields),
+       do: do_compile_class(fields, class_name, acc)
+
+  defp do_compile_class(fields, class_name, acc) do
+    {lines, acc} =
+      Enum.reduce(fields, {[], acc}, fn {key, type}, {lines, acc} ->
+        nested_name = "#{class_name}#{camelize(key)}"
+        {baml_type, acc} = resolve_type(unwrap(type), nested_name, acc)
+        optional_mark = if optional?(type), do: "?", else: ""
+        desc_mark =
+          case description(type) do
+            nil -> ""
+            desc -> " @description(#{inspect(desc)})"
+          end
+        line = "  #{key} #{baml_type}#{optional_mark}#{desc_mark}"
+        {[line | lines], acc}
+      end)
+
+    class_def = "class #{class_name} {\n#{lines |> Enum.reverse() |> Enum.join("\n")}\n}\n"
+    {[class_def | acc], class_name}
+  end
+
+  defp resolve_type(%Zoi.Types.String{}, _, acc), do: {"string", acc}
+  defp resolve_type(%Zoi.Types.Integer{}, _, acc), do: {"int", acc}
+  defp resolve_type(%Zoi.Types.Float{}, _, acc), do: {"float", acc}
+  defp resolve_type(%Zoi.Types.Boolean{}, _, acc), do: {"bool", acc}
+  defp resolve_type(%Zoi.Types.Array{inner: inner}, n, acc) do
+    {t, acc} = resolve_type(inner, n, acc)
+    {"#{t}[]", acc}
+  end
+  defp resolve_type(%Zoi.Types.Map{fields: f} = m, n, acc) when is_list(f) do
+    {acc, t} = compile_class(m, n, acc)
+    {t, acc}
+  end
+
+  defp unwrap(%Zoi.Types.Default{inner: inner}), do: inner
+  defp unwrap(type), do: type
+  defp optional?(%Zoi.Types.Default{meta: %{required: false}}), do: true
+  defp optional?(%Zoi.Types.Default{inner: inner}), do: optional?(inner)
+  defp optional?(%{meta: %{required: false}}), do: true
+  defp optional?(_), do: false
+  defp description(%Zoi.Types.Default{meta: %{description: d}}) when is_binary(d), do: d
+  defp description(%Zoi.Types.Default{inner: inner}), do: description(inner)
+  defp description(%{meta: %{description: d}}) when is_binary(d), do: d
+  defp description(_), do: nil
+  defp camelize(a) when is_atom(a), do: a |> Atom.to_string() |> camelize()
+  defp camelize(s), do: s |> String.split("_") |> Enum.map(&String.capitalize/1) |> Enum.join()
+end
+
+:ok
+```
+
+## Module 1: RankRoles
+
+Replaces `rank_similar_via_llm` in `roles.ex`. The simplest case: a flat
+schema with one array field.
+
+```elixir
+rank_schema = Zoi.struct(RankRolesOutput, %{
+  indices:
+    Zoi.array(Zoi.integer(),
+      description: "1-based indices of the most similar roles from the list, ordered by relevance"
+    )
+})
+
+baml = RhoBaml.SchemaCompiler.to_baml_class(rank_schema, "RankRolesOutput")
+IO.puts("--- Generated BAML class ---")
+IO.puts(baml)
+```
+
+### Live call
+
+```elixir
+baml_root = Path.join(System.tmp_dir!(), "phase3_#{System.unique_integer([:positive])}")
+baml_dir = Path.join(baml_root, "baml_src")
+File.mkdir_p!(Path.join(baml_dir, "clients"))
+File.mkdir_p!(Path.join(baml_dir, "functions"))
+
+File.write!(Path.join(baml_dir, "clients/openrouter.baml"), """
+client OpenRouter {
+  provider "openai-generic"
+  options {
+    base_url "https://openrouter.ai/api/v1"
+    model "deepseek/deepseek-chat-v3-0324"
+    api_key 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
+  }
+}
+""")
+
+# Write the RankRoles function (what __before_compile__ generates)
+File.write!(Path.join(baml_dir, "functions/rank_roles.baml"), """
+#{baml}
+function RankRoles(query: string, role_list: string, limit: int) -> RankRolesOutput {
+  client OpenRouter
+  prompt #"
+    {{ _.role("system") }}
+    You are a role matching assistant. Given a query and a numbered list of
+    existing role profiles, return the numbers of the most similar roles
+    ordered by relevance. Return at most {{limit}} numbers.
+    Only return numbers that appear in the list. If nothing is similar,
+    return an empty array.
+
+    {{ _.role("user") }}
+    Query: {{query}}
+
+    Existing roles:
+    {{role_list}}
+
+    {{ ctx.output_format }}
+  "#
+}
+""")
+
+role_list = """
+1. Backend Engineer (family: Engineering, seniority: Senior)
+2. Data Analyst (family: Analytics, seniority: Mid)
+3. Full Stack Developer (family: Engineering, seniority: Mid)
+4. Product Designer (family: Design, seniority: Senior)
+5. ML Engineer (family: Engineering, seniority: Senior)
+"""
+
+case BamlElixir.Client.call(
+  "RankRoles",
+  %{query: "senior backend developer who builds APIs", role_list: role_list, limit: 3},
+  %{path: baml_dir, parse: false}
+) do
+  {:ok, result} ->
+    IO.puts("Indices: #{inspect(result[:indices])}")
+
+  {:error, reason} ->
+    IO.puts("ERROR: #{inspect(reason)}")
+end
+```
+
+## Module 2: ScoreLens
+
+Replaces `call_llm_for_scores` in `lenses.ex`. Has nested types
+(VariableScore, WorkActivity) and an optional field (`work_activities`
+is only populated for role profile targets).
+
+The prompt is dynamic — the caller builds system/user prompts from
+the lens definition and target data, then passes them as parameters.
+
+```elixir
+lens_schema = Zoi.struct(ScoreLensOutput, %{
+  variable_scores:
+    Zoi.array(
+      Zoi.map(%{
+        key: Zoi.string(description: "Variable key matching the lens definition"),
+        score: Zoi.float(description: "Score from 0 to 100"),
+        rationale: Zoi.string(description: "Brief evidence-based rationale")
+      }),
+      description: "One entry per variable key"
+    ),
+  work_activities:
+    Zoi.array(
+      Zoi.map(%{
+        activity: Zoi.string(description: "Description of the work activity"),
+        tag: Zoi.string(description: "One of: automatable, augmentable, human_essential, data_dependent"),
+        confidence: Zoi.float(description: "Confidence in tag 0.0-1.0")
+      }),
+      description: "Inferred work activities with AI-readiness tags"
+    )
+    |> Zoi.optional()
+})
+
+baml = RhoBaml.SchemaCompiler.to_baml_class(lens_schema, "ScoreLensOutput")
+IO.puts("--- Generated BAML classes (note nested types) ---")
+IO.puts(baml)
+```
+
+The compiler emits three classes: `ScoreLensOutputVariableScores`,
+`ScoreLensOutputWorkActivities`, and `ScoreLensOutput`. The parent
+references the nested classes by name. `work_activities` is marked
+`?` (optional) in BAML.
+
+## Module 3: SemanticDuplicates
+
+Replaces the LiteWorker-based `find_semantic_duplicates_via_llm` in
+`library.ex`. The old approach spun up a full agent (LiteWorker + Finish
+tool + StructuredOutput.parse) for what is fundamentally a single
+structured LLM call. BAML makes this a direct call.
+
+```elixir
+dedup_schema = Zoi.struct(SemanticDuplicatesOutput, %{
+  pairs:
+    Zoi.array(
+      Zoi.map(%{
+        id_a: Zoi.integer(description: "ID of first skill"),
+        id_b: Zoi.integer(description: "ID of second skill")
+      }),
+      description: "Pairs of semantically duplicate skills"
+    )
+})
+
+baml = RhoBaml.SchemaCompiler.to_baml_class(dedup_schema, "SemanticDuplicatesOutput")
+IO.puts("--- Generated BAML classes ---")
+IO.puts(baml)
+```
+
+### Live call
+
+```elixir
+File.write!(Path.join(baml_dir, "functions/semantic_duplicates.baml"), """
+#{baml}
+function SemanticDuplicates(skill_list: string) -> SemanticDuplicatesOutput {
+  client OpenRouter
+  prompt #"
+    {{ _.role("system") }}
+    You are a competency framework expert that identifies semantically
+    duplicate skills.
+
+    {{ _.role("user") }}
+    Below is a list of skills from a single competency library.
+    Identify pairs that are semantically the same competency despite
+    different names.
+
+    Only flag pairs where you are confident they describe the same
+    underlying skill. Do NOT flag pairs that are related but distinct.
+
+    Skills:
+    {{skill_list}}
+
+    If no semantic duplicates are found, return an empty pairs array.
+
+    {{ ctx.output_format }}
+  "#
+}
+""")
+
+skill_list = """
+- [1] Python Programming (Engineering) — Writing code in Python
+- [2] Python Development (Engineering) — Developing software using Python
+- [3] Data Analysis (Analytics) — Analyzing datasets for insights
+- [4] Statistical Analysis (Analytics) — Applying statistical methods
+- [5] Project Management (Management) — Managing project timelines
+"""
+
+case BamlElixir.Client.call(
+  "SemanticDuplicates",
+  %{skill_list: skill_list},
+  %{path: baml_dir, parse: false}
+) do
+  {:ok, result} ->
+    pairs = result[:pairs] || []
+    IO.puts("Found #{length(pairs)} duplicate pairs:")
+    for pair <- pairs do
+      IO.puts("  #{pair[:id_a]} <-> #{pair[:id_b]}")
+    end
+
+  {:error, reason} ->
+    IO.puts("ERROR: #{inspect(reason)}")
+end
+```
+
+## Model Flexibility
+
+All three modules default to a specific BAML client (RankRoles and
+SemanticDuplicates use "OpenRouter" for cheap DeepSeek calls; ScoreLens
+uses "Anthropic" for quality scoring). Callers can override at call time:
+
+```elixir
+# In production code:
+# RhoFrameworks.LLM.RankRoles.call(%{...}, llm_client: "Anthropic")
+# RhoFrameworks.LLM.ScoreLens.call(%{...}, llm_client: "OpenRouter")
+
+:ok
+```
+
+## Cleanup
+
+```elixir
+File.rm_rf!(baml_root)
+IO.puts("Cleaned up #{baml_root}")
+```
+
+<!-- livebook:{"offset":10495,"stamp":{"token":"XCP.LMZNJgEC8pyIf1YiCM8BkyRi6I4LHluG5XlvmmbyTQqkZtb3kLD3dPdU92DrP2h8ftoNBe4-8W1xqVayTpRTjBEGqlLeXrOWhpAbQuXyRnnC6uAr26dkabQdC03W","version":2}} -->

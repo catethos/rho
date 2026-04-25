@@ -8,7 +8,7 @@ defmodule RhoFrameworks.Library.Operations do
   """
 
   alias RhoFrameworks.Library.{Editor, Proficiency, Skeletons}
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
 
   @doc """
   Parse skill JSON, save skeletons to DataTable, and spawn proficiency writers.
@@ -18,13 +18,13 @@ defmodule RhoFrameworks.Library.Operations do
   """
   @spec save_and_generate(
           %{skills_json: String.t(), levels: pos_integer(), library_name: String.t()},
-          Runtime.t()
+          Scope.t()
         ) ::
           {:ok, %{rows_added: non_neg_integer(), table_name: String.t(), workers: [map()]}}
           | {:error, term()}
   def save_and_generate(
         %{skills_json: skills_json, levels: num_levels, library_name: library_name},
-        %Runtime{} = rt
+        %Scope{} = rt
       ) do
     table_name = Editor.table_name(library_name)
 

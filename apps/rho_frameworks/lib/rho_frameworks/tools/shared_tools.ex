@@ -12,7 +12,7 @@ defmodule RhoFrameworks.Tools.SharedTools do
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.Library.Editor
   alias RhoFrameworks.MapAccess
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
 
   tool :add_proficiency_levels,
        "Update existing skeleton skills in the data table with proficiency levels. " <>
@@ -43,7 +43,7 @@ defmodule RhoFrameworks.Tools.SharedTools do
       if skill_levels == [] do
         {:error, "No valid data. Ensure levels_json is a valid JSON array."}
       else
-        rt = Runtime.from_rho_context(ctx)
+        rt = Scope.from_context(ctx)
         params = %{table_name: table, skill_levels: skill_levels}
 
         case Editor.apply_proficiency_levels(params, rt) do

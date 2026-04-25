@@ -246,44 +246,36 @@ defmodule RhoFrameworks.LensesTest do
       lens: lens,
       role_profile: rp
     } do
-      mock_object = %{
-        "work_activities" => [
+      mock_result = %RhoFrameworks.LLM.ScoreLens{
+        variable_scores: [
+          %{key: "at", score: 65.0, rationale: "High automation potential"},
+          %{key: "td", score: 55.0, rationale: "Moderate tool displacement"},
+          %{key: "dr", score: 70.0, rationale: "Data-heavy role"},
+          %{key: "os", score: 60.0, rationale: "Somewhat standardized outputs"},
+          %{key: "tla", score: 50.0, rationale: "Moderate learning agility"},
+          %{key: "atp", score: 45.0, rationale: "Some AI tool usage"},
+          %{key: "cfb", score: 40.0, rationale: "Limited cross-functional work"},
+          %{key: "csr", score: 35.0, rationale: "More routine than creative"}
+        ],
+        work_activities: [
           %{
-            "activity" => "Write SQL queries for reports",
-            "tag" => "automatable",
-            "confidence" => 0.85
+            activity: "Write SQL queries for reports",
+            tag: "automatable",
+            confidence: 0.85
           },
           %{
-            "activity" => "Interpret business requirements",
-            "tag" => "human_essential",
-            "confidence" => 0.9
+            activity: "Interpret business requirements",
+            tag: "human_essential",
+            confidence: 0.9
           }
-        ],
-        "variable_scores" => [
-          %{"key" => "at", "score" => 65.0, "rationale" => "High automation potential"},
-          %{"key" => "td", "score" => 55.0, "rationale" => "Moderate tool displacement"},
-          %{"key" => "dr", "score" => 70.0, "rationale" => "Data-heavy role"},
-          %{"key" => "os", "score" => 60.0, "rationale" => "Somewhat standardized outputs"},
-          %{"key" => "tla", "score" => 50.0, "rationale" => "Moderate learning agility"},
-          %{"key" => "atp", "score" => 45.0, "rationale" => "Some AI tool usage"},
-          %{"key" => "cfb", "score" => 40.0, "rationale" => "Limited cross-functional work"},
-          %{"key" => "csr", "score" => 35.0, "rationale" => "More routine than creative"}
         ]
       }
 
-      mock_response = %ReqLLM.Response{
-        id: "mock-id",
-        model: "mock",
-        context: [],
-        object: mock_object
-      }
-
-      Mimic.expect(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
-        {:ok, mock_response}
+      Mimic.expect(RhoFrameworks.LLM.ScoreLens, :call, fn _args, _opts ->
+        {:ok, mock_result}
       end)
 
-      {:ok, score} =
-        Lenses.score_via_llm(lens.id, %{role_profile_id: rp.id}, model: "anthropic:mock")
+      {:ok, score} = Lenses.score_via_llm(lens.id, %{role_profile_id: rp.id})
 
       # Verify score was persisted
       assert score.classification != nil
@@ -303,12 +295,12 @@ defmodule RhoFrameworks.LensesTest do
     end
 
     test "returns error when LLM call fails", %{lens: lens, role_profile: rp} do
-      Mimic.expect(ReqLLM, :generate_object, fn _model, _messages, _schema, _opts ->
+      Mimic.expect(RhoFrameworks.LLM.ScoreLens, :call, fn _args, _opts ->
         {:error, %RuntimeError{message: "LLM unavailable"}}
       end)
 
       assert {:error, %RuntimeError{}} =
-               Lenses.score_via_llm(lens.id, %{role_profile_id: rp.id}, model: "anthropic:mock")
+               Lenses.score_via_llm(lens.id, %{role_profile_id: rp.id})
     end
   end
 

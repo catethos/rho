@@ -425,63 +425,16 @@ defmodule RhoFrameworks.Roles do
         "#{idx}. #{c.name} (family: #{c.role_family || "N/A"}, seniority: #{c.seniority_label || "N/A"})"
       end)
 
-    schema = %{
-      type: "object",
-      properties: %{
-        indices: %{
-          type: "array",
-          items: %{type: "integer"},
-          description:
-            "1-based indices of the most similar roles from the list, ordered by relevance"
-        }
-      },
-      required: ["indices"]
-    }
-
-    messages = [
-      ReqLLM.Context.system("""
-      You are a role matching assistant. Given a query and a numbered list of existing role profiles,
-      return the numbers of the most similar roles ordered by relevance.
-      Consider semantic similarity — e.g. "Software Engineer" matches "Backend Developer",
-      "Full Stack Engineer", etc. Return at most #{limit} numbers.
-      Only return numbers that appear in the list. If nothing is similar, return an empty array.
-      """),
-      ReqLLM.Context.user("""
-      Query: #{query}
-
-      Existing roles:
-      #{role_list}
-      """)
-    ]
-
-    config = Rho.Config.agent_config()
-    model = config.model
-    gen_opts = build_llm_gen_opts(config[:provider])
-
     idx_to_id = Map.new(indexed, fn {c, idx} -> {idx, c.id} end)
 
-    model
-    |> ReqLLM.generate_object(messages, schema, gen_opts ++ [max_tokens: 1024])
-    |> parse_ranked_indices(idx_to_id)
-  end
-
-  defp parse_ranked_indices({:ok, response}, idx_to_id) do
-    case ReqLLM.Response.object(response) do
-      %{"indices" => idxs} when is_list(idxs) ->
-        ids = idxs |> Enum.map(&idx_to_id[&1]) |> Enum.reject(&is_nil/1)
+    case RhoFrameworks.LLM.RankRoles.call(%{query: query, role_list: role_list, limit: limit}) do
+      {:ok, %{indices: indices}} ->
+        ids = indices |> Enum.map(&idx_to_id[&1]) |> Enum.reject(&is_nil/1)
         {:ok, ids}
 
-      _ ->
-        {:error, :unexpected_response}
+      {:error, reason} ->
+        {:error, reason}
     end
-  end
-
-  defp parse_ranked_indices({:error, reason}, _idx_to_id), do: {:error, reason}
-
-  defp build_llm_gen_opts(nil), do: []
-
-  defp build_llm_gen_opts(provider) do
-    [provider_options: [openrouter_provider: provider]]
   end
 
   defp find_similar_roles_fallback(org_id, query, limit) do

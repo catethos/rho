@@ -1,0 +1,362 @@
+# Phase 0: RhoBaml — Zoi Schemas as BAML Source of Truth
+
+```elixir
+Mix.install([
+  {:baml_elixir, "~> 1.0.0-pre.27"},
+  {:zoi, "~> 0.17"},
+  {:jason, "~> 1.4"}
+])
+```
+
+## The Problem
+
+Rho has three places in `rho_frameworks` that make structured LLM calls via
+`ReqLLM.generate_object`: `rank_roles`, `score_lens`, and `semantic_duplicates`.
+Each maintains a JSON schema for the LLM and a separate Elixir struct for the
+result — two definitions that must stay in sync.
+
+Meanwhile, `TypedStructured` uses a custom Elixir parser (`StructuredOutput`,
+537 lines) and type coercer (`SchemaCoerce`, 374 lines) that BAML's Rust engine
+can replace entirely.
+
+The core insight of `rho_baml` is that a **single Zoi schema** can produce
+everything needed: an Elixir struct, a typespec, validation, and a BAML class
+definition. No parallel definitions to maintain.
+
+## Zoi Schema: One Definition, Four Outputs
+
+A Zoi schema is data — no macros, just composable functions. From one definition
+we get:
+
+1. **Struct fields** via `Zoi.Struct.struct_fields/1`
+2. **Enforce keys** via `Zoi.Struct.enforce_keys/1`
+3. **Typespec** via `Zoi.type_spec/1`
+4. **BAML class** via `RhoBaml.SchemaCompiler.to_baml_class/2`
+
+```elixir
+# Define a schema exactly as it would appear in a Function module
+schema = Zoi.struct(RankRolesOutput, %{
+  indices: Zoi.array(Zoi.integer(), description: "1-based indices of most similar roles"),
+  reasoning: Zoi.string(description: "Brief explanation of ranking rationale")
+})
+
+IO.puts("--- Struct fields ---")
+IO.inspect(Zoi.Struct.struct_fields(schema))
+
+IO.puts("\n--- Enforce keys ---")
+IO.inspect(Zoi.Struct.enforce_keys(schema))
+```
+
+These same fields would define the struct in an actual module:
+
+```elixir
+# What the module definition looks like (not executed here since we can't
+# unquote at runtime, but this is the pattern):
+#
+#   @schema Zoi.struct(__MODULE__, %{
+#     indices: Zoi.array(Zoi.integer(), description: "1-based indices"),
+#     reasoning: Zoi.string(description: "Brief explanation")
+#   })
+#
+#   @enforce_keys Zoi.Struct.enforce_keys(@schema)
+#   defstruct Zoi.Struct.struct_fields(@schema)
+#   @type t :: unquote(Zoi.type_spec(@schema))
+
+:ok
+```
+
+## SchemaCompiler: Zoi to BAML
+
+`RhoBaml.SchemaCompiler` walks the Zoi type tree and produces BAML class
+definitions. It handles primitives, arrays, optionals, descriptions, and
+nested maps (emitted as separate BAML classes).
+
+Since `rho_baml` is an umbrella app and we're in a standalone Livebook, we
+inline the compiler here. The actual module lives at
+`apps/rho_baml/lib/rho_baml/schema_compiler.ex`.
+
+```elixir
+defmodule RhoBaml.SchemaCompiler do
+  @moduledoc false
+
+  def to_baml_class(schema, class_name) do
+    {classes, _type_name} = compile_class(schema, class_name, [])
+    classes |> Enum.reverse() |> Enum.join("\n")
+  end
+
+  defp compile_class(%Zoi.Types.Struct{fields: fields}, class_name, acc)
+       when is_list(fields) do
+    do_compile_class(fields, class_name, acc)
+  end
+
+  defp compile_class(%Zoi.Types.Map{fields: fields}, class_name, acc)
+       when is_list(fields) do
+    do_compile_class(fields, class_name, acc)
+  end
+
+  defp do_compile_class(fields, class_name, acc) do
+    {lines, acc} =
+      Enum.reduce(fields, {[], acc}, fn {key, type}, {lines, acc} ->
+        nested_name = "#{class_name}#{camelize(key)}"
+        {baml_type, acc} = resolve_type(unwrap(type), nested_name, acc)
+
+        optional_mark = if optional?(type), do: "?", else: ""
+
+        desc_mark =
+          case description(type) do
+            nil -> ""
+            desc -> " @description(#{inspect(desc)})"
+          end
+
+        line = "  #{key} #{baml_type}#{optional_mark}#{desc_mark}"
+        {[line | lines], acc}
+      end)
+
+    class_def = "class #{class_name} {\n#{lines |> Enum.reverse() |> Enum.join("\n")}\n}\n"
+    {[class_def | acc], class_name}
+  end
+
+  defp resolve_type(%Zoi.Types.String{}, _, acc), do: {"string", acc}
+  defp resolve_type(%Zoi.Types.Integer{}, _, acc), do: {"int", acc}
+  defp resolve_type(%Zoi.Types.Float{}, _, acc), do: {"float", acc}
+  defp resolve_type(%Zoi.Types.Boolean{}, _, acc), do: {"bool", acc}
+
+  defp resolve_type(%Zoi.Types.Array{inner: inner}, nested_name, acc) do
+    {inner_type, acc} = resolve_type(inner, nested_name, acc)
+    {"#{inner_type}[]", acc}
+  end
+
+  defp resolve_type(%Zoi.Types.Map{fields: fields} = map, nested_name, acc)
+       when is_list(fields) do
+    {acc, type_name} = compile_class(map, nested_name, acc)
+    {type_name, acc}
+  end
+
+  defp resolve_type(%Zoi.Types.Struct{fields: fields} = struct, nested_name, acc)
+       when is_list(fields) do
+    {acc, type_name} = compile_class(struct, nested_name, acc)
+    {type_name, acc}
+  end
+
+  defp unwrap(%Zoi.Types.Default{inner: inner}), do: inner
+  defp unwrap(type), do: type
+
+  defp optional?(%Zoi.Types.Default{meta: %{required: false}}), do: true
+  defp optional?(%Zoi.Types.Default{inner: inner}), do: optional?(inner)
+  defp optional?(%{meta: %{required: false}}), do: true
+  defp optional?(_), do: false
+
+  defp description(%Zoi.Types.Default{meta: %{description: desc}}) when is_binary(desc), do: desc
+  defp description(%Zoi.Types.Default{inner: inner}), do: description(inner)
+  defp description(%{meta: %{description: desc}}) when is_binary(desc), do: desc
+  defp description(_), do: nil
+
+  defp camelize(atom) when is_atom(atom), do: atom |> Atom.to_string() |> camelize()
+  defp camelize(str), do: str |> String.split("_") |> Enum.map(&String.capitalize/1) |> Enum.join()
+end
+
+:ok
+```
+
+### Simple schema (RankRoles)
+
+The `rank_roles` use case: given a query and numbered list, return indices
+of the most relevant items.
+
+```elixir
+rank_schema = Zoi.struct(RankRolesOutput, %{
+  indices: Zoi.array(Zoi.integer(), description: "1-based indices of most similar roles"),
+  reasoning: Zoi.string(description: "Brief explanation of ranking rationale")
+})
+
+baml = RhoBaml.SchemaCompiler.to_baml_class(rank_schema, "RankRolesOutput")
+IO.puts(baml)
+```
+
+### Nested schema (LensScoreResult)
+
+The `score_lens` use case has nested types: each variable score is a sub-object.
+The compiler emits nested classes separately and references them by name.
+
+```elixir
+lens_schema = Zoi.struct(LensScoreResultOutput, %{
+  variable_scores: Zoi.array(
+    Zoi.map(%{
+      key: Zoi.string(description: "Variable key matching the lens definition"),
+      score: Zoi.float(description: "Score from 0 to 100"),
+      rationale: Zoi.string(description: "Brief evidence-based rationale")
+    }),
+    description: "Score for each variable in the lens"
+  ),
+  work_activities: Zoi.array(
+    Zoi.map(%{
+      activity: Zoi.string(description: "Description of the work activity"),
+      tag: Zoi.string(description: "One of: automatable, augmentable, human_essential, data_dependent"),
+      confidence: Zoi.float(description: "Confidence 0.0-1.0")
+    }),
+    description: "Inferred work activities with AI impact tags"
+  )
+})
+
+baml = RhoBaml.SchemaCompiler.to_baml_class(lens_schema, "LensScoreResultOutput")
+IO.puts(baml)
+```
+
+### Optional fields
+
+Optional fields produce `type?` in BAML. This is used for fields like
+`thinking` that the LLM may or may not populate.
+
+```elixir
+action_schema = Zoi.struct(ActionOutput, %{
+  tool: Zoi.string(description: "Action name"),
+  message: Zoi.string() |> Zoi.optional(),
+  thinking: Zoi.string(description: "Optional reasoning") |> Zoi.optional()
+})
+
+baml = RhoBaml.SchemaCompiler.to_baml_class(action_schema, "ActionOutput")
+IO.puts(baml)
+```
+
+## Round-Trip: Schema to Live Model Call
+
+Now the payoff. We generate a complete BAML function from a Zoi schema and
+call a live model. This is what `RhoBaml.Function` does at compile time
+(schema compilation + file writing) and runtime (BamlElixir.Client.call).
+
+```elixir
+# Set up a temp directory with the BAML files
+baml_root = Path.join(System.tmp_dir!(), "phase0_#{System.unique_integer([:positive])}")
+baml_dir = Path.join(baml_root, "baml_src")
+File.mkdir_p!(Path.join(baml_dir, "clients"))
+File.mkdir_p!(Path.join(baml_dir, "functions"))
+
+# Interpolate the API key directly — BAML's `env.VAR` reads from the OS
+# process environment at NIF level, which may not see vars injected by
+# LivebookEnv/System.put_env depending on timing.
+openrouter_key = System.get_env("OPENROUTER_API_KEY") || raise "OPENROUTER_API_KEY not set"
+
+File.write!(Path.join(baml_dir, "clients/openrouter.baml"), """
+client OpenRouter {
+  provider "openai-generic"
+  options {
+    base_url "https://openrouter.ai/api/v1"
+    model "deepseek/deepseek-chat-v3-0324"
+    api_key "#{openrouter_key}"
+  }
+}
+""")
+
+IO.puts("BAML dir: #{baml_dir}")
+:ok
+```
+
+### Generate and write the function BAML file
+
+This mirrors what `RhoBaml.Function.__before_compile__` does: take the Zoi
+schema and prompt, produce a `.baml` file containing the class definition
+and function.
+
+```elixir
+# The schema (same as above)
+schema = Zoi.struct(RankRolesOutput, %{
+  indices: Zoi.array(Zoi.integer(), description: "1-based indices of most similar roles"),
+  reasoning: Zoi.string(description: "Brief explanation of ranking rationale")
+})
+
+# Compile Zoi → BAML class
+class_baml = RhoBaml.SchemaCompiler.to_baml_class(schema, "RankRolesOutput")
+
+# The prompt (would be @prompt in a real module)
+prompt = """
+You are a role matching assistant. Given a query and a numbered list of
+existing role profiles, return the indices of the most similar roles
+ordered by relevance.
+
+Return at most {{limit}} indices.
+Only return numbers that appear in the list.
+If nothing is similar, return an empty array.
+
+Query: {{query}}
+
+Existing roles:
+{{role_list}}
+
+{{ ctx.output_format }}
+"""
+
+# Build BAML function params string
+params_str = "query: string, role_list: string, limit: int"
+
+# Write the complete function file
+function_baml = """
+#{class_baml}
+function RankRoles(#{params_str}) -> RankRolesOutput {
+  client OpenRouter
+  prompt #"
+#{prompt |> String.trim() |> String.split("\n") |> Enum.map_join("\n", &"    #{&1}")}
+  "#
+}
+"""
+
+File.write!(Path.join(baml_dir, "functions/rank_roles.baml"), function_baml)
+IO.puts("--- Generated BAML file ---")
+IO.puts(function_baml)
+```
+
+### Call the model
+
+```elixir
+role_list = """
+1. Backend Engineer (family: Engineering, seniority: Senior)
+2. Data Analyst (family: Analytics, seniority: Mid)
+3. Full Stack Developer (family: Engineering, seniority: Mid)
+4. Product Designer (family: Design, seniority: Senior)
+5. ML Engineer (family: Engineering, seniority: Senior)
+6. Frontend Developer (family: Engineering, seniority: Junior)
+"""
+
+case BamlElixir.Client.call(
+  "RankRoles",
+  %{query: "senior backend developer who builds APIs", role_list: role_list, limit: 3},
+  %{path: baml_dir, parse: false}
+) do
+  {:ok, result} ->
+    IO.puts("Indices: #{inspect(result[:indices])}")
+    IO.puts("Reasoning: #{result[:reasoning]}")
+    IO.puts("\nFull result:")
+    IO.inspect(result)
+
+  {:error, reason} ->
+    IO.puts("ERROR: #{inspect(reason)}")
+end
+```
+
+### Before vs After comparison
+
+The old pattern (`ReqLLM.generate_object` in `roles.ex`):
+
+```
+1. Define JSON schema as a map              ← manual, error-prone
+2. Build messages list                       ← ReqLLM.Context.system/user
+3. Call ReqLLM.generate_object(model, ...)   ← requires JSON schema model support
+4. Pattern match on ReqLLM.Response.object() ← manual destructuring
+5. Maintain a separate Elixir struct         ← parallel definition
+```
+
+The new pattern (`RhoBaml.Function`):
+
+```
+1. Define @schema with Zoi                  ← single source of truth
+   → struct, typespec, BAML class all derived
+2. Define @prompt with Jinja templates       ← BAML handles formatting
+3. call/2 returns {:ok, %__MODULE__{}}       ← typed struct, validated
+   → works with ANY model (not just JSON schema models)
+```
+
+## Cleanup
+
+```elixir
+File.rm_rf!(baml_root)
+IO.puts("Cleaned up #{baml_root}")
+```

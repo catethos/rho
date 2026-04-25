@@ -101,7 +101,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       save = tool(LibraryTools, "save_library")
 
       assert %Rho.ToolResponse{effects: effects} =
-               load.(%{library_id: lib.id}, ctx)
+               load.(%{library_name: lib.name}, ctx)
 
       table_name = LibraryTools.library_table_name(lib.name)
 
@@ -242,7 +242,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       load_lib = tool(LibraryTools, "load_library")
 
       %Rho.ToolResponse{effects: lib_effects} =
-        load_lib.(%{library_id: lib.id}, ctx)
+        load_lib.(%{library_name: lib.name}, ctx)
 
       %Rho.Effect.Table{rows: lib_rows, table_name: ^lib_table} =
         Enum.find(lib_effects, &match?(%Rho.Effect.Table{}, &1))

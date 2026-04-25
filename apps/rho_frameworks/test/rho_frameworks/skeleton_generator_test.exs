@@ -3,7 +3,7 @@ defmodule RhoFrameworks.SkeletonGeneratorTest do
 
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.SkeletonGenerator
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
   alias RhoFrameworks.Repo
 
   setup do
@@ -18,22 +18,20 @@ defmodule RhoFrameworks.SkeletonGeneratorTest do
     session_id = "sess-skelgen-#{System.unique_integer([:positive])}"
     on_exit(fn -> DataTable.stop(session_id) end)
 
-    rt =
-      Runtime.new_flow(
-        organization_id: org_id,
-        session_id: session_id,
-        execution_id: "flow-skelgen-#{System.unique_integer([:positive])}"
-      )
+    scope = %Scope{
+      organization_id: org_id,
+      session_id: session_id
+    }
 
-    %{org_id: org_id, session_id: session_id, rt: rt}
+    %{org_id: org_id, session_id: session_id, scope: scope}
   end
 
   describe "generate/2" do
-    test "spawns a LiteWorker and returns agent_id", %{rt: rt} do
+    test "spawns an agent job and returns agent_id", %{scope: scope} do
       assert {:ok, %{agent_id: agent_id}} =
                SkeletonGenerator.generate(
                  %{name: "Engineering Framework", description: "Software engineering skills"},
-                 rt
+                 scope
                )
 
       assert is_binary(agent_id)
@@ -41,8 +39,8 @@ defmodule RhoFrameworks.SkeletonGeneratorTest do
     end
 
     test "resolve_tools/1 includes manage_library, save_skeletons, finish" do
-      ctx = %Rho.Context{agent_name: :spreadsheet}
-      tools = SkeletonGenerator.resolve_tools(ctx)
+      scope = %Scope{organization_id: "org-1", session_id: "sess-1"}
+      tools = SkeletonGenerator.resolve_tools(scope)
 
       tool_names = Enum.map(tools, fn t -> t.tool.name end)
       assert "manage_library" in tool_names

@@ -48,6 +48,50 @@ defmodule Rho.Agent.LiteTracker do
     end
   end
 
+  @doc """
+  Await a tracked task's result. Blocks until the task completes or times out.
+
+  Returns `{:ok, text}` or `{:error, reason}`.
+  """
+  @spec await(String.t(), pos_integer()) :: {:ok, term()} | {:error, term()}
+  def await(agent_id, timeout \\ 300_000) do
+    case lookup(agent_id) do
+      nil ->
+        {:error, "unknown lite agent: #{agent_id}"}
+
+      {:done, result, _pid} ->
+        delete(agent_id)
+        result
+
+      {:running, _result, pid} ->
+        await_running(agent_id, pid, timeout)
+    end
+  end
+
+  defp await_running(agent_id, pid, timeout) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, :normal} ->
+        case lookup(agent_id) do
+          {:done, result, _} ->
+            delete(agent_id)
+            result
+
+          _ ->
+            {:error, "lite agent completed but no result found"}
+        end
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        delete(agent_id)
+        {:error, "lite agent crashed: #{inspect(reason)}"}
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        {:error, "lite agent timed out after #{div(timeout, 1000)}s"}
+    end
+  end
+
   @doc "Remove a lite worker entry."
   def delete(agent_id) do
     ensure_table()

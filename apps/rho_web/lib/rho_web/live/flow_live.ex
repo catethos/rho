@@ -12,7 +12,7 @@ defmodule RhoWeb.FlowLive do
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Flows.Registry, as: FlowRegistry
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
   alias RhoWeb.FlowComponents
 
   import FlowComponents
@@ -55,7 +55,7 @@ defmodule RhoWeb.FlowLive do
     |> assign(:dt_schema, nil)
     |> assign(:form, %{})
     |> assign(:session_id, nil)
-    |> assign(:runtime, nil)
+    |> assign(:scope, nil)
     |> assign(:page_title, flow_mod.label())
     |> assign(:bus_subs, [])
     |> assign(:generate_agent_id, nil)
@@ -68,18 +68,15 @@ defmodule RhoWeb.FlowLive do
   defp boot_flow(socket, flow_mod) do
     org = socket.assigns.current_organization
     session_id = "flow_#{System.unique_integer([:positive])}"
-    execution_id = "flow_exec_#{System.unique_integer([:positive])}"
 
     DataTable.ensure_started(session_id)
     DataTable.ensure_table(session_id, "flow:state", DataTableSchemas.flow_state_schema())
 
-    rt =
-      Runtime.new_flow(
-        organization_id: org.id,
-        session_id: session_id,
-        execution_id: execution_id,
-        user_id: socket.assigns.current_user.id
-      )
+    scope = %Scope{
+      organization_id: org.id,
+      session_id: session_id,
+      user_id: socket.assigns.current_user.id
+    }
 
     {:ok, sub1} = Rho.Comms.subscribe("rho.task.*")
     {:ok, sub2} = Rho.Comms.subscribe("rho.session.#{session_id}.events.*")
@@ -87,7 +84,7 @@ defmodule RhoWeb.FlowLive do
     socket
     |> assign_static(flow_mod)
     |> assign(:session_id, session_id)
-    |> assign(:runtime, rt)
+    |> assign(:scope, scope)
     |> assign(:bus_subs, [sub1, sub2])
   end
 
@@ -256,7 +253,7 @@ defmodule RhoWeb.FlowLive do
   @impl true
   def handle_info({:signal, %Jido.Signal{type: type, data: data}}, socket) do
     cond do
-      # Streaming text from LiteWorker
+      # Streaming text from agent job
       String.ends_with?(type, ".events.text_delta") or
           String.ends_with?(type, ".events.llm_text") ->
         {:noreply, handle_text_delta(socket, data)}
@@ -413,9 +410,9 @@ defmodule RhoWeb.FlowLive do
     step = current_step_def(socket.assigns)
     {mod, fun, extra} = step.run
     params = build_step_params(step, socket.assigns)
-    rt = socket.assigns.runtime
+    scope = socket.assigns.scope
 
-    case apply(mod, fun, [params, rt | extra]) do
+    case apply(mod, fun, [params, scope | extra]) do
       # Async worker (e.g. SkeletonGenerator) — track via Comms signals
       {:ok, %{agent_id: agent_id}} ->
         socket
@@ -444,9 +441,9 @@ defmodule RhoWeb.FlowLive do
     step = current_step_def(socket.assigns)
     {mod, fun, extra} = step.run
     params = build_step_params(step, socket.assigns)
-    rt = socket.assigns.runtime
+    scope = socket.assigns.scope
 
-    case apply(mod, fun, [params, rt | extra]) do
+    case apply(mod, fun, [params, scope | extra]) do
       {:ok, %{workers: workers}} ->
         worker_assigns =
           Enum.map(workers, fn w ->
@@ -501,7 +498,7 @@ defmodule RhoWeb.FlowLive do
 
         library =
           gen[:library] ||
-            find_library_by_name(assigns.runtime.organization_id, intake[:name] || "")
+            find_library_by_name(assigns.scope.organization_id, intake[:name] || "")
 
         library_id = if is_struct(library), do: library.id, else: library && library[:id]
         %{library_id: library_id, table_name: table_name}
@@ -596,19 +593,6 @@ defmodule RhoWeb.FlowLive do
         Logger.debug("[FlowLive] generate completed via agent_id match: #{agent_id}")
         complete_generate_step(socket)
 
-      # Fallback: generate step is running but agent_id didn't match.
-      # The LiteWorker's agent_id is derived from the parent_id which
-      # includes our execution_id, so a prefix check catches routing
-      # mismatches (e.g. if the stored id was truncated or rewritten).
-      generate_id != nil and is_binary(agent_id) and
-          String.contains?(agent_id, socket.assigns.runtime.execution_id) ->
-        Logger.warning(
-          "[FlowLive] generate completed via execution_id fallback: " <>
-            "expected=#{generate_id} got=#{agent_id}"
-        )
-
-        complete_generate_step(socket)
-
       # Fan-out workers
       socket.assigns.workers != [] ->
         mark_worker_completed(socket, agent_id)
@@ -645,7 +629,7 @@ defmodule RhoWeb.FlowLive do
     lib_name = intake[:name] || ""
     table_name = RhoFrameworks.Library.Editor.table_name(lib_name)
 
-    org_id = socket.assigns.runtime.organization_id
+    org_id = socket.assigns.scope.organization_id
     library = find_library_by_name(org_id, lib_name)
 
     result = %{table_name: table_name, library: library}
@@ -669,11 +653,11 @@ defmodule RhoWeb.FlowLive do
     step = current_step_def(socket.assigns)
     {mod, fun, extra} = step.config[:load]
     params = build_select_params(socket.assigns)
-    rt = socket.assigns.runtime
+    scope = socket.assigns.scope
 
     socket = assign(socket, :step_status, :loading)
 
-    case apply(mod, fun, [params, rt | extra]) do
+    case apply(mod, fun, [params, scope | extra]) do
       {:ok, items} ->
         socket
         |> assign(:select_items, items)

@@ -30,6 +30,7 @@ defmodule RhoFrameworks.MixProject do
     [
       {:rho, in_umbrella: true},
       {:rho_stdlib, in_umbrella: true},
+      {:rho_baml, in_umbrella: true},
       {:ecto_sqlite3, "~> 0.17"},
       {:phoenix_ecto, "~> 4.6"},
       {:bcrypt_elixir, "~> 3.0"},

@@ -41,62 +41,29 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
       []
     else
       catalog = Keyword.get(mount_opts, :catalog, @default_catalog)
-
-      component_docs =
-        catalog.components()
-        |> Enum.map_join("\n", fn {name, mod} ->
-          schema = mod.component_schema()
-          props_doc = format_schema_props(schema)
-          "- **#{name}**: #{mod.__component_meta__().description}#{props_doc}"
-        end)
+      names = catalog.components() |> Map.keys() |> Enum.join(", ")
 
       [
         %PromptSection{
           key: :live_render,
           heading: "present_ui tool",
           body: """
-          Use `present_ui` to render structured UI in the browser. Prefer it over plain text for tables, metrics, lists, summaries, and checklists.
+          Use `present_ui` for structured UI (tables, metrics, cards, lists). Don't repeat UI content in text after rendering.
 
-          IMPORTANT: After calling `present_ui`, do NOT repeat or summarize the UI content in text. The user can already see the rendered UI. Just confirm briefly or move on.
+          Components: #{names}
 
-          Components: #{component_docs}
-
-          Spec: JSON with "root" (element ID) and "elements" (map of ID → {type, props, children}).\
+          Spec format: `{"root": "<id>", "elements": {"<id>": {"type": "<component>", "props": {...}, "children": [...]}}}`\
           """,
           kind: :instructions,
           priority: :normal,
           examples: [
-            ~s({"root":"r","elements":{"r":{"type":"stack","props":{},"children":["c"]},) <>
-              ~s("c":{"type":"metric","props":{"label":"Files","value":"42"},"children":[]}}})
+            ~s({"root":"r","elements":{"r":{"type":"stack","props":{},"children":["t"]},) <>
+              ~s("t":{"type":"table","props":{"columns":[{"key":"name","label":"Name"}],"data":[{"name":"Alice"}]},"children":[]}}})
           ]
         }
       ]
     end
   end
-
-  defp format_schema_props(schema) when is_list(schema) do
-    props =
-      Enum.map_join(schema, ", ", fn {key, spec} ->
-        type_str = format_type(spec[:type])
-        req = if spec[:required], do: " (required)", else: ""
-        "#{key}: #{type_str}#{req}"
-      end)
-
-    "\n    Props: #{props}"
-  end
-
-  defp format_schema_props(_), do: ""
-
-  defp format_type({:list, :map}), do: "list of objects"
-  defp format_type({:list, {:keyword_list, _}}), do: "list of objects"
-  defp format_type({:list, inner}), do: "list of #{format_type(inner)}"
-  defp format_type({:in, values}), do: "one of #{inspect(values)}"
-  defp format_type(:string), do: "string"
-  defp format_type(:integer), do: "integer"
-  defp format_type(:boolean), do: "boolean"
-  defp format_type(:map), do: "object"
-  defp format_type(nil), do: "any"
-  defp format_type(other), do: inspect(other)
 
   # --- Tool definition ---
 

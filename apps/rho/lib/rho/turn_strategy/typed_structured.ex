@@ -1,10 +1,11 @@
 defmodule Rho.TurnStrategy.TypedStructured do
   @moduledoc """
-  Typed structured-output strategy using `Rho.ActionSchema`.
+  Typed structured-output strategy using BAML for parsing.
 
-  Describes tools in the prompt and asks the LLM to produce a flat JSON
-  response with `"tool"` as discriminant. Parsing is handled by
-  `ActionSchema.parse_and_dispatch/3` — a tagged union dispatcher with
+  Generates a dynamic `.baml` schema from tool_defs via
+  `RhoBaml.SchemaWriter`, then calls `BamlElixir.Client.sync_stream`
+  to get a parsed map. Dispatch is handled by
+  `ActionSchema.dispatch_parsed/3` — a tagged union dispatcher with
   schema-guided coercion.
 
   Returns intent tuples — the Runner handles tool execution via
@@ -21,35 +22,42 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
   alias Rho.ActionSchema
   alias Rho.LLM.Admission
-  alias Rho.PromptSection
-  alias Rho.StructuredOutput
   alias Rho.TurnStrategy.Shared
 
   # --- Prompt sections ---
 
+  # No prompt_sections needed — BAML's {{ ctx.output_format }} handles
+  # format injection, and SchemaWriter includes tool descriptions in
+  # the Action class @description. Returning [] avoids duplicating the
+  # format spec in both the system prompt and the BAML template.
   @impl Rho.TurnStrategy
-  def prompt_sections(tool_defs, _context) do
-    visible = Enum.reject(tool_defs, & &1[:deferred])
-    [build_prompt_section(visible)]
-  end
+  def prompt_sections(_tool_defs, _context), do: []
 
-  # --- Run: call LLM and classify response as intent ---
+  # --- Run: call LLM via BAML and classify response as intent ---
 
   @impl Rho.TurnStrategy
   def run(projection, runtime) do
     %{context: messages} = projection
-    model = runtime.model
     emit = runtime.emit
-    stream_opts = Keyword.drop(runtime.gen_opts, [:tools])
+    step = Map.get(projection, :step)
 
     schema = ActionSchema.build(runtime.tool_defs)
+    baml_path = RhoBaml.baml_path(:rho)
 
-    case stream_with_retry(model, messages, stream_opts, emit, 1) do
-      {:ok, text, usage} ->
-        step = Map.get(projection, :step)
-        emit.(%{type: :llm_usage, step: step, usage: usage, model: model})
+    # Write dynamic action schema + client config to disk
+    write_opts = [model: runtime.model]
+    RhoBaml.SchemaWriter.write!(baml_path, runtime.tool_defs, write_opts)
 
-        classify_action(text, schema, runtime)
+    # Serialize conversation messages for BAML prompt
+    messages_text = serialize_messages(messages)
+
+    collector = BamlElixir.Collector.new("turn_#{step || 0}")
+
+    case call_with_retry(baml_path, messages_text, emit, collector, 1) do
+      {:ok, parsed} ->
+        usage = extract_usage(collector)
+        emit.(%{type: :llm_usage, step: step, usage: usage, model: runtime.model})
+        classify_action(parsed, schema, runtime)
 
       {:error, reason} ->
         emit.(%{type: :error, reason: reason})
@@ -57,10 +65,10 @@ defmodule Rho.TurnStrategy.TypedStructured do
     end
   end
 
-  defp classify_action(text, schema, runtime) do
+  defp classify_action(parsed, schema, runtime) do
     emit = runtime.emit
 
-    case ActionSchema.parse_and_dispatch(text, schema, runtime.tool_map) do
+    case ActionSchema.dispatch_parsed(parsed, schema, runtime.tool_map) do
       {:respond, message, opts} ->
         maybe_emit_thinking(opts, emit)
         {:respond, message}
@@ -77,13 +85,13 @@ defmodule Rho.TurnStrategy.TypedStructured do
       {:unknown, name, _args} ->
         available = Map.keys(runtime.tool_map) |> Enum.join(", ")
         reason = "unknown tool '#{name}'. Available: respond, think, #{available}"
-        {:parse_error, reason, text}
+        {:parse_error, reason, Jason.encode!(parsed)}
 
       {:parse_error, _reason} ->
-        # Treat unparseable text as a plain respond — avoids costly
-        # correction-prompt retries. The LLM was trying to talk to
-        # the user, just not in JSON format.
-        {:respond, String.trim(text)}
+        # Treat unparseable response as a plain respond — avoids costly
+        # correction-prompt retries.
+        message = parsed[:message] || parsed["message"] || inspect(parsed)
+        {:respond, String.trim(to_string(message))}
     end
   end
 
@@ -122,13 +130,11 @@ defmodule Rho.TurnStrategy.TypedStructured do
     }
   end
 
-  # --- Streaming ---
+  # --- BAML streaming ---
 
-  defp stream_with_retry(model, context, stream_opts, emit, attempt) do
-    stream_opts = Keyword.put_new(stream_opts, :receive_timeout, 120_000)
-
-    case Admission.with_slot(fn -> do_stream(model, context, stream_opts, emit) end) do
-      {:ok, _accumulated, _usage} = ok ->
+  defp call_with_retry(baml_path, messages_text, emit, collector, attempt) do
+    case Admission.with_slot(fn -> do_baml_call(baml_path, messages_text, emit, collector) end) do
+      {:ok, _parsed} = ok ->
         ok
 
       {:error, :acquire_timeout} = err ->
@@ -136,133 +142,117 @@ defmodule Rho.TurnStrategy.TypedStructured do
         err
 
       {:error, reason} ->
-        maybe_retry(reason, model, context, stream_opts, emit, attempt)
+        maybe_retry_baml(reason, baml_path, messages_text, emit, collector, attempt)
     end
   end
 
-  defp do_stream(model, context, stream_opts, emit) do
-    Logger.info("[typed_structured] starting stream model=#{model}")
+  defp do_baml_call(baml_path, messages_text, emit, collector) do
+    Logger.info("[typed_structured] starting BAML stream")
     t0 = System.monotonic_time(:millisecond)
 
-    with {:ok, stream_response} <- ReqLLM.stream_text(model, context, stream_opts),
-         _ =
-           Logger.info(
-             "[typed_structured] stream opened in #{System.monotonic_time(:millisecond) - t0}ms"
-           ),
-         {:ok, accumulated} <- consume_stream(stream_response, emit),
-         _ =
-           Logger.info(
-             "[typed_structured] stream consumed in #{System.monotonic_time(:millisecond) - t0}ms (#{byte_size(accumulated)} bytes)"
-           ),
-         {:ok, usage} <- get_stream_metadata(stream_response) do
-      Logger.info(
-        "[typed_structured] stream complete in #{System.monotonic_time(:millisecond) - t0}ms"
-      )
+    callback = fn partial ->
+      cleaned = clean_baml_result(partial)
+      text = Jason.encode!(cleaned)
+      emit.(%{type: :structured_partial, parsed: cleaned, text: text})
+    end
 
-      {:ok, accumulated, usage}
-    else
-      error ->
-        Logger.warning(
-          "[typed_structured] stream failed in #{System.monotonic_time(:millisecond) - t0}ms: #{inspect(error)}"
+    call_opts = %{path: baml_path, parse: false, collectors: [collector]}
+
+    case BamlElixir.Client.sync_stream(
+           "AgentTurn",
+           %{messages: messages_text},
+           callback,
+           call_opts
+         ) do
+      {:ok, result} ->
+        Logger.info(
+          "[typed_structured] BAML stream complete in #{System.monotonic_time(:millisecond) - t0}ms"
         )
 
-        error
+        {:ok, clean_baml_result(result)}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[typed_structured] BAML stream failed in #{System.monotonic_time(:millisecond) - t0}ms: #{inspect(reason)}"
+        )
+
+        {:error, reason}
     end
   end
 
-  defp consume_stream(stream_response, emit) do
-    iodata =
-      stream_response
-      |> ReqLLM.StreamResponse.tokens()
-      |> Enum.reduce([], fn token, acc ->
-        emit.(%{type: :text_delta, text: token})
-
-        acc = [acc | token]
-        text = IO.iodata_to_binary(acc)
-        emit_partial(text, emit)
-
-        acc
-      end)
-
-    {:ok, IO.iodata_to_binary(iodata)}
-  rescue
-    exception ->
-      Logger.warning(
-        "[typed_structured] stream consumption raised: #{Exception.message(exception)}"
-      )
-
-      {:error, exception}
-  end
-
-  defp emit_partial(text, emit) do
-    case StructuredOutput.parse_partial(text) do
-      {:ok, parsed} when is_map(parsed) ->
-        emit.(%{type: :structured_partial, parsed: parsed})
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp maybe_retry(reason, model, context, stream_opts, emit, attempt) do
+  defp maybe_retry_baml(reason, baml_path, messages_text, emit, collector, attempt) do
     if Shared.should_retry?(reason, attempt) do
       Logger.warning(
-        "[typed_structured] stream failed (attempt #{attempt}): #{inspect(reason)}, retrying..."
+        "[typed_structured] BAML call failed (attempt #{attempt}): #{inspect(reason)}, retrying..."
       )
 
       Shared.retry_backoff(attempt)
-      stream_with_retry(model, context, stream_opts, emit, attempt + 1)
+      call_with_retry(baml_path, messages_text, emit, collector, attempt + 1)
     else
       Logger.error(
-        "[typed_structured] stream FAILED after #{attempt} attempts: #{inspect(reason)} model=#{model}"
+        "[typed_structured] BAML call FAILED after #{attempt} attempts: #{inspect(reason)}"
       )
 
       {:error, reason}
     end
   end
 
-  # --- Prompt section ---
+  # --- Message serialization ---
 
-  defp build_prompt_section(tool_defs) do
-    schema = ActionSchema.build(tool_defs)
-    schema_text = ActionSchema.render_prompt(schema)
+  defp serialize_messages(messages) do
+    Enum.map_join(messages, "\n\n", &serialize_message/1)
+  end
 
-    %PromptSection{
-      key: :output_format,
-      heading: "OUTPUT FORMAT",
-      body: """
-      Always respond with a single JSON object. First character must be `{`.
+  defp serialize_message(%{role: role, content: content}) when is_list(content) do
+    text =
+      content
+      |> Enum.filter(fn part -> part.type == :text end)
+      |> Enum.map_join("\n", fn part -> part.text end)
 
-      #{String.trim(schema_text)}
+    role_label = role |> to_string() |> String.capitalize()
+    "#{role_label}: #{text}"
+  end
 
-      Example: {"tool": "respond", "message": "Hello!"}\
-      """,
-      kind: :instructions,
-      priority: :low
-    }
+  defp serialize_message(%{role: role, content: content}) when is_binary(content) do
+    role_label = role |> to_string() |> String.capitalize()
+    "#{role_label}: #{content}"
+  end
+
+  # --- BAML result cleanup ---
+
+  defp clean_baml_result(result) when is_map(result) do
+    result
+    |> Map.drop([:__baml_class__])
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new()
+    |> normalize_keys()
+  end
+
+  defp clean_baml_result(other), do: other
+
+  # BAML returns atom keys — ActionSchema.dispatch expects string keys
+  defp normalize_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
+
+  # --- Usage extraction ---
+
+  defp extract_usage(collector) do
+    case BamlElixir.Collector.usage(collector) do
+      %{} = usage -> usage
+      {input, output} -> %{input_tokens: input, output_tokens: output}
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
   end
 
   defp maybe_emit_thinking(opts, emit) do
     if thinking = opts[:thinking] do
       emit.(%{type: :llm_text, text: thinking})
     end
-  end
-
-  # --- Stream metadata ---
-
-  defp get_stream_metadata(%ReqLLM.StreamResponse{metadata_handle: handle}) do
-    metadata = ReqLLM.StreamResponse.MetadataHandle.await(handle, :timer.seconds(30))
-
-    case metadata do
-      %{error: reason} -> {:error, reason}
-      _ -> {:ok, metadata[:usage] || %{}}
-    end
-  rescue
-    _ -> {:ok, %{}}
-  end
-
-  defp get_stream_metadata(stream_response) do
-    usage = ReqLLM.StreamResponse.usage(stream_response) || %{}
-    {:ok, usage}
   end
 end

@@ -15,7 +15,7 @@ defmodule Rho.ActionSchema do
       {"tool": "think", "thought": "I need to reconsider..."}
   """
 
-  alias Rho.{SchemaCoerce, StructuredOutput}
+  alias Rho.SchemaCoerce
 
   @type variant :: %{
           name: String.t(),
@@ -109,7 +109,7 @@ defmodule Rho.ActionSchema do
           | {:unknown, String.t(), map()}
           | {:parse_error, term()}
   def parse_and_dispatch(text, schema, tool_map) do
-    case StructuredOutput.parse(text) do
+    case Rho.StructuredOutput.parse(text) do
       {:ok, parsed} when is_map(parsed) ->
         dispatch(parsed, schema, tool_map)
 
@@ -119,6 +119,22 @@ defmodule Rho.ActionSchema do
       {:error, reason} ->
         {:parse_error, reason}
     end
+  end
+
+  @doc """
+  Dispatch a pre-parsed map to the matching variant.
+
+  Same as `parse_and_dispatch/3` but skips the `StructuredOutput.parse` step.
+  Used when BAML has already parsed the LLM response into a map.
+  """
+  @spec dispatch_parsed(map(), t(), %{String.t() => map()}) ::
+          {:respond, String.t(), keyword()}
+          | {:think, String.t()}
+          | {:tool, String.t(), map(), map(), keyword()}
+          | {:unknown, String.t(), map()}
+          | {:parse_error, term()}
+  def dispatch_parsed(parsed, schema, tool_map) when is_map(parsed) do
+    dispatch(parsed, schema, tool_map)
   end
 
   # --- Prompt rendering ---

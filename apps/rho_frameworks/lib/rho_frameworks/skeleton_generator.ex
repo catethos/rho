@@ -1,18 +1,19 @@
 defmodule RhoFrameworks.SkeletonGenerator do
   @moduledoc """
-  LLM-backed skill skeleton generation via LiteWorker.
+  LLM-backed skill skeleton generation via AgentJobs.
 
-  Spawns a LiteWorker using the `:spreadsheet` agent config (Structured
+  Spawns an async agent job using the `:spreadsheet` agent config (Structured
   turn strategy) so the LLM output streams to the UI via Comms events.
   The worker calls `create_library` then `save_skeletons` to persist
   results into a DataTable.
   """
 
+  alias RhoFrameworks.AgentJobs
   alias RhoFrameworks.MapAccess
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
 
   @doc """
-  Spawn a LiteWorker to generate skill skeletons for a new framework.
+  Spawn an agent job to generate skill skeletons for a new framework.
 
   Accepts enriched params from the wizard flow:
   - `name`, `description` (required)
@@ -24,29 +25,32 @@ defmodule RhoFrameworks.SkeletonGenerator do
   Returns `{:ok, %{agent_id: String.t()}}` immediately. The worker runs
   asynchronously; listen for `rho.task.completed` + data_table events.
   """
-  @spec generate(map(), Runtime.t()) :: {:ok, %{agent_id: String.t()}} | {:error, term()}
-  def generate(params, %Runtime{} = rt) do
+  @spec generate(map(), Scope.t()) :: {:ok, %{agent_id: String.t()}} | {:error, term()}
+  def generate(params, %Scope{} = scope) do
     name = params[:name] || ""
     description = params[:description] || ""
 
     config = Rho.Config.agent_config(:spreadsheet)
-    parent_id = Runtime.lite_parent_id(rt)
-    lite_ctx = build_lite_context(rt)
-    tools = resolve_tools(lite_ctx)
+    tools = resolve_tools(scope)
     skill_count = skill_count_range(params)
     task_prompt = build_task_prompt(name, description, skill_count, params)
 
     {:ok, agent_id} =
-      Rho.Agent.LiteWorker.start(
+      AgentJobs.start(
         task: task_prompt,
-        parent_agent_id: parent_id,
+        parent_agent_id: scope.session_id,
         tools: tools,
-        role: :spreadsheet,
+        model: config.model,
+        system_prompt: config.system_prompt,
         max_steps: config[:max_steps] || 10,
-        context: %{lite_ctx | subagent: true}
+        turn_strategy: Map.get(config, :turn_strategy),
+        provider: config[:provider],
+        agent_name: :spreadsheet,
+        session_id: scope.session_id,
+        organization_id: scope.organization_id
       )
 
-    publish_started(rt, agent_id)
+    publish_started(scope, agent_id)
 
     {:ok, %{agent_id: agent_id}}
   end
@@ -106,9 +110,11 @@ defmodule RhoFrameworks.SkeletonGenerator do
   end
 
   @doc """
-  Returns tool_defs available to the skeleton generator LiteWorker.
+  Returns tool_defs available to the skeleton generator worker.
   """
-  def resolve_tools(ctx) do
+  def resolve_tools(%Scope{} = _scope) do
+    # Build a minimal context for tool resolution — tools don't depend on context fields
+    ctx = %Rho.Context{agent_name: :spreadsheet}
     library_tools = RhoFrameworks.Tools.LibraryTools.__tools__(ctx)
 
     # Only include manage_library (for create action)
@@ -154,11 +160,9 @@ defmodule RhoFrameworks.SkeletonGenerator do
 
     table_name = Editor.table_name(library_name)
     rows = Skeletons.to_rows(skills)
+    scope = Scope.from_context(ctx)
 
-    case Editor.append_rows(
-           %{table_name: table_name, rows: rows},
-           Runtime.from_rho_context(ctx)
-         ) do
+    case Editor.append_rows(%{table_name: table_name, rows: rows}, scope) do
       {:ok, %{count: count}} ->
         {:ok, "Saved #{count} skill skeleton(s) to table '#{table_name}'."}
 
@@ -179,28 +183,19 @@ defmodule RhoFrameworks.SkeletonGenerator do
     end
   end
 
-  defp build_lite_context(%Runtime{} = rt) do
-    %Rho.Context{
-      agent_name: :spreadsheet,
-      agent_id: rt.execution_id,
-      session_id: rt.session_id,
-      organization_id: rt.organization_id
-    }
-  end
+  defp publish_started(%Scope{session_id: nil}, _agent_id), do: :ok
 
-  defp publish_started(%Runtime{session_id: nil}, _agent_id), do: :ok
-
-  defp publish_started(%Runtime{} = rt, agent_id) do
+  defp publish_started(%Scope{} = scope, agent_id) do
     Rho.Comms.publish(
       "rho.task.requested",
       %{
-        session_id: rt.session_id,
-        agent_id: rt.execution_id,
+        session_id: scope.session_id,
+        agent_id: scope.session_id,
         worker_agent_id: agent_id,
         role: :skeleton_generator,
         task: "Generating skill framework"
       },
-      source: "/session/#{rt.session_id}/agent/#{agent_id}"
+      source: "/session/#{scope.session_id}/agent/#{agent_id}"
     )
   end
 end

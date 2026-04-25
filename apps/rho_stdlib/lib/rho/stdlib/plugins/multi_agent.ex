@@ -18,7 +18,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   @behaviour Rho.Plugin
 
-  alias Rho.Agent.{LiteTracker, LiteWorker, Registry, Supervisor, Worker}
+  alias Rho.Agent.{LiteTracker, Primary, Registry, Supervisor, Worker}
   alias Rho.Comms
 
   @max_depth 3
@@ -615,7 +615,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         await_full_worker(agent_id, timeout_ms, timeout_secs)
 
       _lite_entry ->
-        case LiteWorker.await(agent_id, timeout_ms) do
+        case LiteTracker.await(agent_id, timeout_ms) do
           {:ok, text} -> {:ok, text}
           {:error, reason} -> {:error, "lite agent #{agent_id} failed: #{reason}"}
         end
@@ -678,36 +678,129 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
       tools = Rho.PluginRegistry.collect_tools(ctx)
       tools = tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
 
-      case LiteWorker.start(
-             task: task_prompt,
-             parent_agent_id: parent_agent_id,
-             tools: tools,
-             role: agent_name,
-             max_steps: max_steps,
-             context: %Rho.Context{ctx | subagent: true}
-           ) do
-        {:ok, agent_id} ->
-          Comms.publish(
-            "rho.task.requested",
-            %{
-              session_id: session_id,
-              agent_id: agent_id,
-              parent_agent_id: parent_agent_id,
-              role: role_str,
-              task: task_prompt,
-              lite: true
-            },
-            source: "/session/#{session_id}/agent/#{parent_agent_id}"
-          )
+      agent_id = Primary.new_agent_id(parent_agent_id)
+      parent_worker_pid = Worker.whereis(parent_agent_id)
 
-          {:ok,
-           "Lite agent #{agent_id} spawned (role: #{role_str}). " <>
-             "Use await_task(agent_id: \"#{agent_id}\") or await_all to get the result."}
-      end
+      emit = build_lite_emit(session_id, agent_id, parent_worker_pid)
+
+      base_prompt = Map.get(role_config, :system_prompt, "You are a helpful assistant.")
+
+      spec =
+        Rho.RunSpec.build(
+          model: Map.get(role_config, :model, "openrouter:anthropic/claude-haiku-4.5"),
+          system_prompt: lite_worker_prompt(base_prompt),
+          tools: tools,
+          emit: emit,
+          tape_name: nil,
+          max_steps: max_steps,
+          agent_name: agent_name,
+          agent_id: agent_id,
+          session_id: session_id,
+          organization_id: ctx.organization_id,
+          turn_strategy: Map.get(role_config, :turn_strategy, Rho.TurnStrategy.Direct),
+          provider: role_config[:provider],
+          subagent: true,
+          lite: true
+        )
+
+      messages = [ReqLLM.Context.user(task_prompt)]
+
+      task =
+        Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+          result = Rho.Runner.run(messages, spec)
+          LiteTracker.complete(agent_id, result)
+          publish_lite_completion(session_id, agent_id, result)
+          result
+        end)
+
+      LiteTracker.register(agent_id, task.ref, task.pid)
+
+      Comms.publish(
+        "rho.task.requested",
+        %{
+          session_id: session_id,
+          agent_id: agent_id,
+          parent_agent_id: parent_agent_id,
+          role: role_str,
+          task: task_prompt,
+          lite: true
+        },
+        source: "/session/#{session_id}/agent/#{parent_agent_id}"
+      )
+
+      {:ok,
+       "Lite agent #{agent_id} spawned (role: #{role_str}). " <>
+         "Use await_task(agent_id: \"#{agent_id}\") or await_all to get the result."}
     else
       {:error, "task parameter is required"}
     end
   end
+
+  defp lite_worker_prompt(base) do
+    """
+    #{base}
+
+    You are a focused worker agent. Complete the given task efficiently.
+    Call the appropriate tool with your result when done.
+    Do not ask clarifying questions — make reasonable assumptions.
+    """
+  end
+
+  defp build_lite_emit(session_id, agent_id, parent_pid) do
+    fn event ->
+      if is_pid(parent_pid) and Process.alive?(parent_pid) do
+        send(parent_pid, {:meta_update, :last_activity_at, System.monotonic_time(:millisecond)})
+      end
+
+      publish_lite_event(session_id, agent_id, event)
+      :ok
+    end
+  end
+
+  @lite_signal_types ~w(
+    text_delta llm_text tool_start tool_result step_start llm_usage
+    error structured_partial before_llm
+  )a
+
+  defp publish_lite_event(nil, _agent_id, _event), do: :ok
+
+  defp publish_lite_event(session_id, agent_id, event) when is_binary(session_id) do
+    case event do
+      %{type: type} when type in @lite_signal_types ->
+        payload =
+          event
+          |> Map.put(:agent_id, agent_id)
+          |> Map.put(:session_id, session_id)
+          |> Map.put(:lite, true)
+
+        Comms.publish(
+          "rho.session.#{session_id}.events.#{type}",
+          payload,
+          source: "/session/#{session_id}/agent/#{agent_id}"
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp publish_lite_completion(nil, _agent_id, _result), do: :ok
+
+  defp publish_lite_completion(session_id, agent_id, result) when is_binary(session_id) do
+    {status, text} =
+      case result do
+        {:ok, t} -> {:ok, t}
+        {:error, r} -> {:error, inspect(r)}
+      end
+
+    Comms.publish(
+      "rho.task.completed",
+      %{session_id: session_id, agent_id: agent_id, status: status, result: text},
+      source: "/session/#{session_id}/agent/#{agent_id}"
+    )
+  end
+
+  defp publish_lite_completion(_, _, _), do: :ok
 
   # --- Await all implementation ---
 
@@ -758,7 +851,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         await_full_worker_single(agent_id, timeout_ms)
 
       _lite_entry ->
-        LiteWorker.await(agent_id, timeout_ms)
+        LiteTracker.await(agent_id, timeout_ms)
     end
   end
 

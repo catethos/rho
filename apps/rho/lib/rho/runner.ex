@@ -80,7 +80,8 @@ defmodule Rho.Runner do
       :depth,
       :tape,
       :context,
-      :lifecycle
+      :lifecycle,
+      lite: false
     ]
 
     @type t :: %__MODULE__{
@@ -138,11 +139,14 @@ defmodule Rho.Runner do
     runtime = build_runtime_from_spec(messages, spec)
     max_steps = spec.max_steps || 50
 
-    Recorder.record_input_messages(runtime, messages)
-
-    context = build_initial_context(runtime, messages)
-
-    do_loop(context, runtime, step: 1, max_steps: max_steps)
+    if runtime.lite do
+      context = build_lite_context(runtime, messages)
+      do_lite_loop(context, runtime, step: 1, max_steps: max_steps)
+    else
+      Recorder.record_input_messages(runtime, messages)
+      context = build_initial_context(runtime, messages)
+      do_loop(context, runtime, step: 1, max_steps: max_steps)
+    end
   end
 
   @doc """
@@ -205,7 +209,8 @@ defmodule Rho.Runner do
       depth: spec.depth || 0,
       tape: tape,
       context: context,
-      lifecycle: nil
+      lifecycle: nil,
+      lite: spec.lite || false
     }
   end
 
@@ -445,6 +450,154 @@ defmodule Rho.Runner do
         runtime.emit.(%{type: :error, reason: reason})
         {:error, reason}
     end
+  end
+
+  # ===================================================================
+  # Lite loop — no tape, no transformers, no compaction
+  # ===================================================================
+  #
+  # Minimal agent loop for single-shot worker tasks. The turn strategy
+  # handles the LLM call; tools are executed directly (no ToolExecutor
+  # pipeline, no transformer stages).
+
+  defp build_lite_context(runtime, messages) do
+    system_msg =
+      ReqLLM.Context.system([
+        ReqLLM.Message.ContentPart.text(runtime.system_prompt, %{
+          cache_control: %{type: "ephemeral"}
+        })
+      ])
+
+    [system_msg | messages]
+  end
+
+  defp do_lite_loop(_context, _runtime, step: step, max_steps: max)
+       when step > max do
+    {:error, "max steps exceeded (#{max})"}
+  end
+
+  defp do_lite_loop(context, runtime, step: step, max_steps: max) do
+    runtime.emit.(%{type: :step_start, step: step, max_steps: max})
+
+    projection = %{context: context, tools: runtime.req_tools, step: step}
+    result = runtime.turn_strategy.run(projection, runtime)
+
+    handle_lite_result(result, context, runtime, step, max)
+  end
+
+  # -- {:respond, text} in lite mode --
+
+  defp handle_lite_result({:respond, text}, _context, _runtime, _step, _max) do
+    {:ok, text || ""}
+  end
+
+  # -- {:call_tools, ...} in lite mode — direct execution --
+
+  defp handle_lite_result({:call_tools, tool_calls, response_text}, context, runtime, step, max) do
+    {results, final} =
+      execute_tools_lite(tool_calls, runtime.tool_map, runtime.context, runtime.emit)
+
+    called_names = MapSet.new(tool_calls, & &1.name)
+    terminal = MapSet.intersection(called_names, @terminal_tools)
+
+    cond do
+      MapSet.size(terminal) > 0 ->
+        {:ok, extract_finish_text(tool_calls) || response_text || ""}
+
+      final != nil ->
+        {:ok, final}
+
+      true ->
+        entries = runtime.turn_strategy.build_tool_step(tool_calls, results, response_text)
+        next_context = context ++ [entries.assistant_msg | entries.tool_results]
+        do_lite_loop(next_context, runtime, step: step + 1, max_steps: max)
+    end
+  end
+
+  # -- {:think, ...} in lite mode --
+
+  defp handle_lite_result({:think, _thought}, context, runtime, step, max) do
+    do_lite_loop(context, runtime, step: step + 1, max_steps: max)
+  end
+
+  # -- {:parse_error, ...} in lite mode --
+
+  defp handle_lite_result({:parse_error, reason, _raw}, context, runtime, step, max) do
+    correction = ReqLLM.Context.user("Parse error: #{reason}. Please try again.")
+    do_lite_loop(context ++ [correction], runtime, step: step + 1, max_steps: max)
+  end
+
+  # -- {:error, ...} in lite mode --
+
+  defp handle_lite_result({:error, reason}, _context, runtime, _step, _max) do
+    runtime.emit.(%{type: :error, reason: reason})
+    {:error, "LLM call failed: #{inspect(reason)}"}
+  end
+
+  # -- Direct tool execution (no transformer pipeline) --
+
+  defp execute_tools_lite(tool_calls, tool_map, context, emit) do
+    results =
+      tool_calls
+      |> Enum.map(fn tc ->
+        Task.async(fn -> execute_tool_lite(tc, tool_map, context, emit) end)
+      end)
+      |> Task.await_many(:timer.minutes(5))
+
+    {Enum.map(results, & &1.result_map), Enum.find_value(results, & &1.final)}
+  end
+
+  defp execute_tool_lite(tc, tool_map, context, emit) do
+    name = tc.name
+    args = tc.args
+    call_id = tc.call_id
+    tool_def = Map.get(tool_map, name)
+
+    emit.(%{type: :tool_start, name: name, args: args, call_id: call_id})
+    t0 = System.monotonic_time(:millisecond)
+
+    result =
+      if tool_def do
+        case Rho.ToolArgs.prepare(args, tool_def.tool.parameter_schema) do
+          {:ok, prepared_args, _repairs} ->
+            try do
+              tool_def.execute.(prepared_args, context)
+            rescue
+              e -> {:error, Exception.message(e)}
+            end
+
+          {:error, reason} ->
+            {:error, "Arg preparation failed: #{inspect(reason)}"}
+        end
+      else
+        {:error, "unknown tool: #{name}"}
+      end
+
+    latency_ms = System.monotonic_time(:millisecond) - t0
+
+    {output_str, status, final, effects} =
+      case result do
+        {:final, output} -> {to_string(output), :ok, to_string(output), []}
+        %Rho.ToolResponse{text: text, effects: fx} -> {text || "", :ok, nil, fx || []}
+        {:ok, output} -> {to_string(output), :ok, nil, []}
+        {:error, reason} -> {"Error: #{reason}", :error, nil, []}
+      end
+
+    event = %{
+      type: :tool_result,
+      name: name,
+      status: status,
+      output: output_str,
+      call_id: call_id,
+      latency_ms: latency_ms
+    }
+
+    emit.(if effects != [], do: Map.put(event, :effects, effects), else: event)
+
+    %{
+      result_map: %{name: name, args: args, call_id: call_id, result: output_str, status: status},
+      final: final
+    }
   end
 
   # -- Compaction --

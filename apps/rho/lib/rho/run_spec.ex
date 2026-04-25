@@ -67,7 +67,11 @@ defmodule Rho.RunSpec do
     :avatar,
 
     # Sandbox
-    :sandbox_enabled
+    :sandbox_enabled,
+
+    # Lite mode — skip tape, transformers, compaction, ToolExecutor.
+    # Tools are executed directly. Designed for single-shot worker tasks.
+    :lite
   ]
 
   @type t :: %__MODULE__{
@@ -96,7 +100,8 @@ defmodule Rho.RunSpec do
           description: String.t() | nil,
           skills: [term()],
           avatar: String.t() | nil,
-          sandbox_enabled: boolean()
+          sandbox_enabled: boolean(),
+          lite: boolean()
         }
 
   @defaults %{
@@ -116,7 +121,8 @@ defmodule Rho.RunSpec do
     description: nil,
     skills: [],
     avatar: nil,
-    sandbox_enabled: false
+    sandbox_enabled: false,
+    lite: false
   }
 
   @doc """

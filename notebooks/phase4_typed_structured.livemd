@@ -1,0 +1,345 @@
+# Phase 4: TypedStructured via BAML
+
+```elixir
+Mix.install([
+  {:baml_elixir, "~> 1.0.0-pre.27"},
+  {:jason, "~> 1.4"},
+  {:livebook_env, "~> 1.0"}
+])
+
+LivebookEnv.import_dotenv("/Users/catethos/workspace/rho/.env")
+```
+
+## What Changed
+
+Phase 4 replaces TypedStructured's custom parser pipeline with BAML.
+The old pipeline had three stages — prompt injection, streaming parse,
+and type coercion — implemented across 911 lines of custom Elixir:
+
+| Old                          | Lines | New                          |
+| ---------------------------- | ----- | ---------------------------- |
+| `StructuredOutput.parse`     | 537   | BAML Rust parser (via NIF)   |
+| `SchemaCoerce.coerce_fields` | 374   | BAML Rust type coercion      |
+| `ActionSchema.render_prompt` | ~25   | BAML `{{ ctx.output_format }}`|
+
+The key design decision: tool_defs arrive at runtime from NimbleOptions
+(not Zoi), so we can't use compile-time `RhoBaml.Function`. Instead,
+`RhoBaml.SchemaWriter` generates `.baml` files dynamically before each
+LLM call. BAML re-reads files on every call, so the schema can change
+between turns — exactly what TypedStructured needs when tools are
+added or removed mid-session.
+
+## SchemaWriter: tool_defs to BAML
+
+The core of Phase 4 is `RhoBaml.SchemaWriter`. It takes NimbleOptions
+parameter schemas and produces a BAML Action class — a flat tagged union
+where `tool` is the discriminant and all tool params are optional fields
+(only one tool's params are populated per response).
+
+```elixir
+defmodule SchemaWriter do
+  @moduledoc false
+
+  def to_baml(tool_defs, opts \\ []) do
+    client = Keyword.get(opts, :client, "OpenRouter")
+    visible_defs = Enum.reject(tool_defs, fn td -> td[:deferred] end)
+
+    builtin_names = ["respond", "think"]
+
+    builtin_fields = [
+      {"message", "string", "Response message to the user"},
+      {"thought", "string", "Internal reasoning step"}
+    ]
+
+    tool_fields = collect_fields(visible_defs)
+    all_fields = builtin_fields ++ tool_fields
+
+    unique_fields =
+      all_fields
+      |> Enum.uniq_by(fn {name, _type, _desc} -> name end)
+
+    tool_names = builtin_names ++ Enum.map(visible_defs, & &1.tool.name)
+
+    fields_baml =
+      Enum.map_join(unique_fields, "\n", fn {name, type, desc} ->
+        desc_attr = if desc, do: " @description(#{inspect(desc)})", else: ""
+        "  #{name} #{type}?#{desc_attr}"
+      end)
+
+    tool_desc = Enum.join(tool_names, ", ")
+
+    """
+    class Action {
+      tool string @description("Action name: one of #{tool_desc}")
+    #{fields_baml}
+      thinking string? @description("Optional reasoning before acting")
+    }
+
+    function AgentTurn(messages: string) -> Action {
+      client #{client}
+      prompt #"
+        {{ messages }}
+
+        {{ ctx.output_format }}
+      "#
+    }
+    """
+  end
+
+  defp collect_fields(tool_defs) do
+    Enum.flat_map(tool_defs, fn td ->
+      schema = td.tool.parameter_schema || []
+
+      Enum.map(schema, fn {name, opts} ->
+        type = Keyword.get(opts, :type, :string) |> to_baml_type()
+        desc = Keyword.get(opts, :doc)
+        {Atom.to_string(name), type, desc}
+      end)
+    end)
+  end
+
+  defp to_baml_type(:string), do: "string"
+  defp to_baml_type(:integer), do: "int"
+  defp to_baml_type(:pos_integer), do: "int"
+  defp to_baml_type(:float), do: "float"
+  defp to_baml_type(:number), do: "float"
+  defp to_baml_type(:boolean), do: "bool"
+  defp to_baml_type(:map), do: "string"
+  defp to_baml_type({:list, inner}), do: "#{to_baml_type(inner)}[]"
+  defp to_baml_type({:in, _variants}), do: "string"
+  defp to_baml_type({:map, _k, _v}), do: "string"
+  defp to_baml_type(_), do: "string"
+end
+
+:ok
+```
+
+## Generate BAML from tool_defs
+
+This shows what `SchemaWriter` produces for a realistic agent
+configuration (respond, think, bash, fs_read, web_fetch).
+
+```elixir
+tool_defs = [
+  %{
+    tool: %{
+      name: "bash",
+      description: "Execute a shell command and return its output",
+      parameter_schema: [
+        cmd: [type: :string, required: true, doc: "The shell command to execute"]
+      ]
+    }
+  },
+  %{
+    tool: %{
+      name: "fs_read",
+      description: "Read a text file with optional line slicing",
+      parameter_schema: [
+        path: [type: :string, required: true, doc: "File path"],
+        offset: [type: :integer, doc: "Line offset (0-based)"],
+        limit: [type: :integer, doc: "Max lines to return"]
+      ]
+    }
+  },
+  %{
+    tool: %{
+      name: "web_fetch",
+      description: "Fetch a URL and return its content",
+      parameter_schema: [
+        url: [type: :string, required: true, doc: "URL to fetch"],
+        format: [type: {:in, ["text", "html", "json"]}, doc: "Response format"]
+      ]
+    }
+  }
+]
+
+baml = SchemaWriter.to_baml(tool_defs)
+IO.puts(baml)
+```
+
+## Setup: write BAML files to temp directory
+
+```elixir
+baml_root = Path.join(System.tmp_dir!(), "phase4_#{System.unique_integer([:positive])}")
+baml_dir = Path.join(baml_root, "baml_src")
+File.mkdir_p!(Path.join(baml_dir, "clients"))
+dynamic_dir = Path.join(baml_dir, "dynamic")
+File.mkdir_p!(dynamic_dir)
+
+File.write!(Path.join(baml_dir, "clients/openrouter.baml"), """
+client OpenRouter {
+  provider "openai-generic"
+  options {
+    base_url "https://openrouter.ai/api/v1"
+    model "deepseek/deepseek-chat-v3-0324"
+    api_key env.OPENROUTER_API_KEY
+  }
+}
+""")
+
+# Write the generated action schema
+File.write!(Path.join(dynamic_dir, "action.baml"), baml)
+
+IO.puts("BAML dir: #{baml_dir}")
+:ok
+```
+
+## Experiment 1: BAML parses tool calls correctly
+
+The core question: does BAML's Rust parser handle the same cases
+that StructuredOutput + SchemaCoerce handled? We test with the
+same prompts used in the BAML spike's Experiment 2.
+
+```elixir
+test_cases = [
+  {"What files are in /tmp?", "bash"},
+  {"Hello, how are you?", "respond"},
+  {"Read the file at /etc/hosts", "fs_read"},
+  {"I need to think about this", "think"}
+]
+
+system_prompt = """
+You are a helpful assistant. Respond with a single JSON action object.
+Available actions:
+- respond(message: string)
+- think(thought: string)
+- bash(cmd: string)
+- fs_read(path: string, offset?: int, limit?: int)
+- web_fetch(url: string, format?: string)
+
+Pick the single best action for the user's request.
+"""
+
+results =
+  for {user_msg, expected_tool} <- test_cases do
+    IO.puts("\n--- #{user_msg} (expect: #{expected_tool}) ---")
+
+    messages = "System: #{system_prompt}\n\nUser: #{user_msg}"
+
+    case BamlElixir.Client.call(
+           "AgentTurn",
+           %{messages: messages},
+           %{path: baml_dir, parse: false}
+         ) do
+      {:ok, result} ->
+        tool = result[:tool]
+        match = tool == expected_tool
+        IO.puts("  tool=#{tool} #{if match, do: "PASS", else: "FAIL (expected #{expected_tool})"}")
+        IO.inspect(result, label: "  result")
+        match
+
+      {:error, reason} ->
+        IO.puts("  ERROR: #{String.slice(to_string(reason), 0..200)}")
+        false
+    end
+  end
+
+IO.puts("\n#{Enum.count(results, & &1)}/#{length(results)} passed")
+```
+
+## Experiment 2: Streaming partials
+
+TypedStructured emits `structured_partial` events during streaming
+for real-time UI feedback. BAML's `sync_stream` delivers progressive
+partial results — the `tool` field typically arrives in the first few
+tokens, enabling early UI routing.
+
+```elixir
+messages = """
+System: #{system_prompt}
+
+User: Write me a haiku about Elixir programming, then explain each line.
+"""
+
+callback = fn partial ->
+  cleaned =
+    partial
+    |> Map.drop([:__baml_class__])
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new()
+
+  keys = Map.keys(cleaned)
+  tool = cleaned[:tool]
+  IO.puts("  partial: tool=#{inspect(tool)} fields=#{inspect(keys)}")
+end
+
+case BamlElixir.Client.sync_stream(
+       "AgentTurn",
+       %{messages: messages},
+       callback,
+       %{path: baml_dir, parse: false}
+     ) do
+  {:ok, result} ->
+    cleaned =
+      result
+      |> Map.drop([:__baml_class__])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Map.new()
+
+    IO.inspect(cleaned, label: "\nFINAL")
+
+  {:error, reason} ->
+    IO.puts("ERROR: #{inspect(reason)}")
+end
+```
+
+## Experiment 3: Schema regeneration between turns
+
+TypedStructured's tool set can change mid-session (skills teach new
+tools on demand). We verify that rewriting `action.baml` between
+calls produces correct behavior for the updated schema.
+
+```elixir
+# Turn 1: basic tools
+IO.puts("=== Turn 1: basic tools ===")
+
+basic_defs = [
+  %{tool: %{name: "bash", parameter_schema: [cmd: [type: :string, required: true]], description: "Run shell command"}}
+]
+
+File.write!(Path.join(dynamic_dir, "action.baml"), SchemaWriter.to_baml(basic_defs))
+
+case BamlElixir.Client.call(
+       "AgentTurn",
+       %{messages: "System: You are helpful.\n\nUser: List files in /tmp"},
+       %{path: baml_dir, parse: false}
+     ) do
+  {:ok, r} -> IO.inspect(r, label: "turn 1")
+  {:error, e} -> IO.puts("ERROR: #{e}")
+end
+
+# Turn 2: add new tool
+IO.puts("\n=== Turn 2: added web_fetch ===")
+
+expanded_defs = basic_defs ++ [
+  %{tool: %{name: "web_fetch", parameter_schema: [url: [type: :string, required: true]], description: "Fetch URL"}}
+]
+
+File.write!(Path.join(dynamic_dir, "action.baml"), SchemaWriter.to_baml(expanded_defs))
+
+case BamlElixir.Client.call(
+       "AgentTurn",
+       %{messages: "System: You are helpful.\n\nUser: Fetch the content of https://example.com"},
+       %{path: baml_dir, parse: false}
+     ) do
+  {:ok, r} -> IO.inspect(r, label: "turn 2")
+  {:error, e} -> IO.puts("ERROR: #{e}")
+end
+```
+
+## What Becomes Dead Code
+
+After Phase 4, these modules are no longer called by TypedStructured:
+
+| Module                              | Lines | Status     |
+| ----------------------------------- | ----- | ---------- |
+| `Rho.StructuredOutput`              | 537   | Dead code  |
+| `Rho.SchemaCoerce`                  | 374   | Still used by `ActionSchema.dispatch` for field coercion |
+| `ActionSchema.render_prompt/1`      | ~25   | Still used for prompt_sections (BAML handles format in its own prompt) |
+| `ActionSchema.parse_and_dispatch/3` | ~15   | Retained as fallback; new `dispatch_parsed/3` is primary path |
+
+`StructuredOutput` can be deleted in a future cleanup pass.
+`SchemaCoerce` is still used by `ActionSchema.dispatch` for coercing
+tool args after BAML parsing — BAML handles the JSON parsing and basic
+type mapping, but `SchemaCoerce` handles edge cases like `{:in, variants}`
+matching and object unwrapping that BAML doesn't cover.

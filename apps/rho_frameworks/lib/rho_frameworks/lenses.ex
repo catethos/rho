@@ -221,40 +221,22 @@ defmodule RhoFrameworks.Lenses do
     * `:agent_id` - agent for signal publishing
   """
   def score_via_llm(lens_id, target, opts \\ []) do
-    config = Rho.Config.agent_config()
-    model = Keyword.get(opts, :model, config.model)
-    gen_opts = Keyword.get(opts, :gen_opts, build_gen_opts(config[:provider]))
+    llm_client = Keyword.get(opts, :llm_client)
     lens = get_lens!(lens_id)
 
-    with {:ok, llm_result} <- call_llm_for_scores(lens, target, model, gen_opts),
-         :ok <- persist_activity_tags(lens, target, llm_result),
-         variable_scores <- extract_variable_scores(lens, llm_result) do
-      score(lens.id, target, variable_scores, opts)
-    end
-  end
-
-  defp build_gen_opts(nil), do: []
-
-  defp build_gen_opts(provider) do
-    [provider_options: [openrouter_provider: provider]]
-  end
-
-  defp call_llm_for_scores(lens, target, model, gen_opts) do
     system_prompt = build_scoring_system_prompt(lens)
     user_prompt = build_scoring_user_prompt(lens, target)
 
-    schema = build_llm_response_schema(lens)
+    llm_opts = if llm_client, do: [llm_client: llm_client], else: []
 
-    messages = [
-      ReqLLM.Context.system(system_prompt),
-      ReqLLM.Context.user(user_prompt)
-    ]
-
-    llm_opts = Keyword.merge(gen_opts, max_tokens: 4096)
-
-    case ReqLLM.generate_object(model, messages, schema, llm_opts) do
-      {:ok, response} -> {:ok, ReqLLM.Response.object(response)}
-      {:error, reason} -> {:error, reason}
+    with {:ok, result} <-
+           RhoFrameworks.LLM.ScoreLens.call(
+             %{system_prompt: system_prompt, user_prompt: user_prompt},
+             llm_opts
+           ),
+         :ok <- persist_activity_tags(lens, target, result),
+         variable_scores <- extract_variable_scores(result) do
+      score(lens.id, target, variable_scores, opts)
     end
   end
 
@@ -327,65 +309,14 @@ defmodule RhoFrameworks.Lenses do
     """
   end
 
-  defp build_llm_response_schema(lens) do
-    score_entry_schema =
-      {:map,
-       [
-         key: [type: :string, required: true, doc: "Variable key"],
-         score: [type: :float, required: true, doc: "Score 0-100"],
-         rationale: [type: :string, required: true, doc: "Brief justification"]
-       ]}
-
-    base = [
-      variable_scores: [
-        type: {:list, score_entry_schema},
-        required: true,
-        doc: "One entry per variable key: " <> variable_keys_doc(lens)
-      ]
-    ]
-
-    if lens.score_target == "role_profile" do
-      activity_schema =
-        {:map,
-         [
-           activity: [type: :string, required: true, doc: "Description of the work activity"],
-           tag: [
-             type: :string,
-             required: true,
-             doc: "One of: automatable, augmentable, human_essential, data_dependent"
-           ],
-           confidence: [type: :float, required: true, doc: "Confidence in tag 0.0-1.0"]
-         ]}
-
-      [
-        {:work_activities,
-         [
-           type: {:list, activity_schema},
-           required: true,
-           doc: "Inferred work activities with AI-readiness tags"
-         ]}
-        | base
-      ]
-    else
-      base
-    end
-  end
-
-  defp variable_keys_doc(lens) do
-    lens.axes
-    |> Enum.sort_by(& &1.sort_order)
-    |> Enum.flat_map(fn axis -> Enum.map(axis.variables, & &1.key) end)
-    |> Enum.join(", ")
-  end
-
-  defp persist_activity_tags(lens, %{role_profile_id: rp_id}, %{"work_activities" => activities})
+  defp persist_activity_tags(lens, %{role_profile_id: rp_id}, %{work_activities: activities})
        when is_list(activities) do
     Enum.each(activities, fn activity ->
       %WorkActivityTag{}
       |> WorkActivityTag.changeset(%{
-        tag: activity["tag"],
-        confidence: activity["confidence"],
-        activity_description: activity["activity"],
+        tag: activity[:tag],
+        confidence: activity[:confidence],
+        activity_description: activity[:activity],
         role_profile_id: rp_id,
         lens_id: lens.id
       })
@@ -397,8 +328,8 @@ defmodule RhoFrameworks.Lenses do
 
   defp persist_activity_tags(_lens, _target, _llm_result), do: :ok
 
-  defp extract_variable_scores(_lens, %{"variable_scores" => vs}) when is_list(vs) do
-    Map.new(vs, fn %{"key" => key, "score" => score} -> {key, score / 1} end)
+  defp extract_variable_scores(%{variable_scores: vs}) when is_list(vs) do
+    Map.new(vs, fn %{key: key, score: score} -> {key, score / 1} end)
   end
 
   # --- ARIA Seed ---

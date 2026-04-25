@@ -10,7 +10,7 @@ defmodule RhoFrameworks.Library.DataPathIntegrationTest do
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Library, as: LibraryCtx
   alias RhoFrameworks.Library.{Editor, Proficiency}
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
   alias RhoFrameworks.Repo
 
   setup do
@@ -26,12 +26,10 @@ defmodule RhoFrameworks.Library.DataPathIntegrationTest do
     DataTable.ensure_started(session_id)
     on_exit(fn -> DataTable.stop(session_id) end)
 
-    rt =
-      Runtime.new_flow(
-        organization_id: org_id,
-        session_id: session_id,
-        execution_id: "flow-integ-1"
-      )
+    rt = %Scope{
+      organization_id: org_id,
+      session_id: session_id
+    }
 
     tbl = "library:IntegTest"
     :ok = DataTable.ensure_table(session_id, tbl, DataTableSchemas.library_schema())

@@ -99,7 +99,7 @@ Deps: `rho`, `rho_stdlib`, `rho_cli`, `rho_frameworks` (in_umbrella), `phoenix`,
 
 ### `apps/rho_frameworks/` — Skill Assessment Domain
 
-Deps: `rho`, `rho_stdlib`, `rho_cli` (in_umbrella), `ecto_sqlite3`, `phoenix_ecto`, `bcrypt_elixir`.
+Deps: `rho`, `rho_stdlib` (in_umbrella), `ecto_sqlite3`, `phoenix_ecto`, `bcrypt_elixir`.
 
 - `RhoFrameworks.Repo` — Ecto SQLite repo
 - `RhoFrameworks.Accounts` / `.Accounts.User` / `.Accounts.UserToken`

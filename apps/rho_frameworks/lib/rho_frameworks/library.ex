@@ -1413,63 +1413,22 @@ defmodule RhoFrameworks.Library do
         "- [#{s.id}] #{s.name} (#{s.category})#{desc}"
       end)
 
-    task_prompt = """
-    Below is a list of skills from a single competency library.
-    Identify pairs that are semantically the same competency despite different names.
-
-    Only flag pairs where you are confident they describe the same underlying skill.
-    Do NOT flag pairs that are related but distinct (e.g., "Data Analysis" and "Statistical Analysis"
-    are different if one focuses on exploratory work and the other on hypothesis testing).
-
-    Skills:
-    #{skill_list}
-
-    Call the finish tool with a JSON array of objects with keys "id_a" and "id_b" (the skill IDs from the brackets).
-    If no semantic duplicates are found, return an empty array: []
-    """
-
-    tools = [Rho.Stdlib.Tools.Finish.tool_def()]
-
-    {:ok, agent_id} =
-      Rho.Agent.LiteWorker.start(
-        task: task_prompt,
-        parent_agent_id: "dedup-#{Ecto.UUID.generate()}",
-        role: :spreadsheet,
-        system_prompt:
-          "You are a competency framework expert that identifies semantically duplicate skills. " <>
-            "Always call the finish tool with your result.",
-        tools: tools,
-        max_steps: 1
-      )
-
-    case Rho.Agent.LiteWorker.await(agent_id, 60_000) do
-      {:ok, text} ->
-        parse_semantic_pairs(text, skill_index)
+    case RhoFrameworks.LLM.SemanticDuplicates.call(%{skill_list: skill_list}) do
+      {:ok, %{pairs: pairs}} ->
+        pairs
+        |> Enum.filter(fn p ->
+          Map.has_key?(skill_index, p[:id_a]) && Map.has_key?(skill_index, p[:id_b])
+        end)
+        |> Enum.map(&build_semantic_pair(&1, skill_index))
 
       {:error, _reason} ->
         []
     end
   end
 
-  defp parse_semantic_pairs(text, skill_index) do
-    case Rho.StructuredOutput.parse(text) do
-      {:ok, pairs} when is_list(pairs) ->
-        pairs
-        |> Enum.filter(fn p ->
-          id_a = p["id_a"]
-          id_b = p["id_b"]
-          id_a && id_b && Map.has_key?(skill_index, id_a) && Map.has_key?(skill_index, id_b)
-        end)
-        |> Enum.map(&build_semantic_pair(&1, skill_index))
-
-      _ ->
-        []
-    end
-  end
-
   defp build_semantic_pair(p, skill_index) do
-    a = skill_index[p["id_a"]]
-    b = skill_index[p["id_b"]]
+    a = skill_index[p[:id_a]]
+    b = skill_index[p[:id_b]]
     {sa, sb} = if a.id < b.id, do: {a, b}, else: {b, a}
 
     %{

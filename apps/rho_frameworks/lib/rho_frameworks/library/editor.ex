@@ -2,7 +2,7 @@ defmodule RhoFrameworks.Library.Editor do
   @moduledoc """
   Session/table-backed library editing primitives.
 
-  Every function takes `(params, Runtime.t())` and returns
+  Every function takes `(params, Scope.t())` and returns
   `{:ok, result}` or `{:error, reason}` — no `ToolResponse`, no `Effect`
   structs. Agent tools and FlowLive both call these directly.
   """
@@ -11,7 +11,7 @@ defmodule RhoFrameworks.Library.Editor do
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Library, as: LibraryCtx
   alias RhoFrameworks.MapAccess
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
 
   # -------------------------------------------------------------------
   # Table naming
@@ -46,9 +46,9 @@ defmodule RhoFrameworks.Library.Editor do
 
   Returns `{:ok, %{library: library, table: table_spec}}` on success.
   """
-  @spec create(%{name: String.t(), description: String.t()}, Runtime.t()) ::
+  @spec create(%{name: String.t(), description: String.t()}, Scope.t()) ::
           {:ok, %{library: struct(), table: map()}} | {:error, term()}
-  def create(%{name: name} = params, %Runtime{} = rt) do
+  def create(%{name: name} = params, %Scope{} = rt) do
     description = Map.get(params, :description, "")
 
     case LibraryCtx.create_library(rt.organization_id, %{name: name, description: description}) do
@@ -73,9 +73,9 @@ defmodule RhoFrameworks.Library.Editor do
   # -------------------------------------------------------------------
 
   @doc "Read all rows from the named library DataTable."
-  @spec read_rows(%{table_name: String.t()}, Runtime.t()) ::
+  @spec read_rows(%{table_name: String.t()}, Scope.t()) ::
           {:ok, [map()]} | {:error, term()}
-  def read_rows(%{table_name: tbl}, %Runtime{} = rt) do
+  def read_rows(%{table_name: tbl}, %Scope{} = rt) do
     case DataTable.get_rows(rt.session_id, table: tbl) do
       {:error, :not_running} ->
         {:error, {:not_running, tbl}}
@@ -95,7 +95,7 @@ defmodule RhoFrameworks.Library.Editor do
   If `library_id` is nil, uses or creates the org's default library.
   Handles published libraries by auto-creating a draft.
   """
-  @spec save_table(%{library_id: String.t() | nil, table_name: String.t()}, Runtime.t()) ::
+  @spec save_table(%{library_id: String.t() | nil, table_name: String.t()}, Scope.t()) ::
           {:ok,
            %{
              library: struct(),
@@ -103,7 +103,7 @@ defmodule RhoFrameworks.Library.Editor do
              draft_library_id: String.t() | nil
            }}
           | {:error, term()}
-  def save_table(%{table_name: tbl} = params, %Runtime{} = rt) do
+  def save_table(%{table_name: tbl} = params, %Scope{} = rt) do
     with {:ok, lib} <- resolve_target_library(params, rt),
          {:ok, rows} <- read_rows_for_save(tbl, rt) do
       case LibraryCtx.save_to_library(rt.organization_id, lib.id, rows) do
@@ -129,9 +129,9 @@ defmodule RhoFrameworks.Library.Editor do
   # -------------------------------------------------------------------
 
   @doc "Append rows to an existing library DataTable."
-  @spec append_rows(%{table_name: String.t(), rows: [map()]}, Runtime.t()) ::
+  @spec append_rows(%{table_name: String.t(), rows: [map()]}, Scope.t()) ::
           {:ok, %{count: non_neg_integer()}} | {:error, term()}
-  def append_rows(%{table_name: tbl, rows: rows}, %Runtime{} = rt) do
+  def append_rows(%{table_name: tbl, rows: rows}, %Scope{} = rt) do
     case DataTable.add_rows(rt.session_id, rows, table: tbl) do
       {:ok, inserted} ->
         {:ok, %{count: length(inserted)}}
@@ -152,9 +152,9 @@ defmodule RhoFrameworks.Library.Editor do
   # -------------------------------------------------------------------
 
   @doc "Replace all rows in a library DataTable."
-  @spec replace_rows(%{table_name: String.t(), rows: [map()]}, Runtime.t()) ::
+  @spec replace_rows(%{table_name: String.t(), rows: [map()]}, Scope.t()) ::
           {:ok, %{count: non_neg_integer()}} | {:error, term()}
-  def replace_rows(%{table_name: tbl, rows: rows}, %Runtime{} = rt) do
+  def replace_rows(%{table_name: tbl, rows: rows}, %Scope{} = rt) do
     case DataTable.replace_all(rt.session_id, rows, table: tbl) do
       {:ok, _replaced} ->
         {:ok, %{count: length(rows)}}
@@ -182,9 +182,9 @@ defmodule RhoFrameworks.Library.Editor do
   """
   @spec apply_proficiency_levels(
           %{table_name: String.t(), skill_levels: [map()]},
-          Runtime.t()
+          Scope.t()
         ) :: {:ok, %{updated_count: non_neg_integer(), skipped: [String.t()]}} | {:error, term()}
-  def apply_proficiency_levels(%{table_name: tbl, skill_levels: skill_levels}, %Runtime{} = rt) do
+  def apply_proficiency_levels(%{table_name: tbl, skill_levels: skill_levels}, %Scope{} = rt) do
     with {:ok, rows} <- read_rows(%{table_name: tbl}, rt) do
       rows_by_name =
         Map.new(rows, fn row ->
@@ -249,18 +249,18 @@ defmodule RhoFrameworks.Library.Editor do
     end
   end
 
-  defp resolve_target_library(%{library_id: nil}, %Runtime{} = rt) do
+  defp resolve_target_library(%{library_id: nil}, %Scope{} = rt) do
     {:ok, LibraryCtx.get_or_create_default_library(rt.organization_id)}
   end
 
-  defp resolve_target_library(%{library_id: id}, %Runtime{} = rt) when is_binary(id) do
+  defp resolve_target_library(%{library_id: id}, %Scope{} = rt) when is_binary(id) do
     case LibraryCtx.get_library(rt.organization_id, id) do
       nil -> {:error, :not_found}
       lib -> {:ok, lib}
     end
   end
 
-  defp resolve_target_library(%{}, %Runtime{} = rt) do
+  defp resolve_target_library(%{}, %Scope{} = rt) do
     {:ok, LibraryCtx.get_or_create_default_library(rt.organization_id)}
   end
 

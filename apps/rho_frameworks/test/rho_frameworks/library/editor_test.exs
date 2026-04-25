@@ -4,7 +4,7 @@ defmodule RhoFrameworks.Library.EditorTest do
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.Library, as: LibraryCtx
   alias RhoFrameworks.Library.Editor
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
   alias RhoFrameworks.Repo
 
   setup do
@@ -19,21 +19,12 @@ defmodule RhoFrameworks.Library.EditorTest do
     session_id = "sess-editor-#{System.unique_integer([:positive])}"
     on_exit(fn -> DataTable.stop(session_id) end)
 
-    agent_rt = %Runtime{
-      mode: :agent,
+    scope = %Scope{
       organization_id: org_id,
-      session_id: session_id,
-      parent_agent_id: "agent-test"
+      session_id: session_id
     }
 
-    flow_rt =
-      Runtime.new_flow(
-        organization_id: org_id,
-        session_id: session_id,
-        execution_id: "flow-test-1"
-      )
-
-    %{org_id: org_id, session_id: session_id, agent_rt: agent_rt, flow_rt: flow_rt}
+    %{org_id: org_id, session_id: session_id, agent_rt: scope, flow_rt: scope}
   end
 
   # -------------------------------------------------------------------
@@ -187,11 +178,9 @@ defmodule RhoFrameworks.Library.EditorTest do
       tbl = Editor.table_name(lib.name)
 
       # Use a fresh session where no DataTable server has been started
-      fresh_rt = %Runtime{
-        mode: :agent,
+      fresh_rt = %Scope{
         organization_id: org_id,
-        session_id: "sess-no-server-#{System.unique_integer([:positive])}",
-        parent_agent_id: "agent-test"
+        session_id: "sess-no-server-#{System.unique_integer([:positive])}"
       }
 
       assert {:error, {:not_running, ^tbl}} =
@@ -235,11 +224,9 @@ defmodule RhoFrameworks.Library.EditorTest do
     end
 
     test "returns error when table server not running", %{org_id: org_id} do
-      fresh_rt = %Runtime{
-        mode: :agent,
+      fresh_rt = %Scope{
         organization_id: org_id,
-        session_id: "sess-no-server-append-#{System.unique_integer([:positive])}",
-        parent_agent_id: "agent-test"
+        session_id: "sess-no-server-append-#{System.unique_integer([:positive])}"
       }
 
       assert {:error, {:not_running, "library:Ghost"}} =
@@ -373,11 +360,9 @@ defmodule RhoFrameworks.Library.EditorTest do
     end
 
     test "returns error when table server not running", %{org_id: org_id} do
-      fresh_rt = %Runtime{
-        mode: :agent,
+      fresh_rt = %Scope{
         organization_id: org_id,
-        session_id: "sess-no-server-prof-#{System.unique_integer([:positive])}",
-        parent_agent_id: "agent-test"
+        session_id: "sess-no-server-prof-#{System.unique_integer([:positive])}"
       }
 
       assert {:error, {:not_running, "library:Ghost"}} =

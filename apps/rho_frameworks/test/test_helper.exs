@@ -1,4 +1,5 @@
 Mimic.copy(ReqLLM)
+Mimic.copy(RhoFrameworks.LLM.ScoreLens)
 
 ExUnit.start()
 

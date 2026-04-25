@@ -10,7 +10,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   alias RhoFrameworks.Roles
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.MapAccess
-  alias RhoFrameworks.Runtime
+  alias RhoFrameworks.Scope
   alias Rho.Stdlib.DataTable
 
   # ── manage_library ─────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   defp do_create_library(args, ctx) do
-    rt = Runtime.from_rho_context(ctx)
+    rt = Scope.from_context(ctx)
     params = %{name: args[:name], description: args[:description] || ""}
 
     case Editor.create(params, rt) do
@@ -237,7 +237,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   defp do_save_to_library(args, ctx) do
-    rt = Runtime.from_rho_context(ctx)
+    rt = Scope.from_context(ctx)
 
     lib =
       case args[:library_id] do
@@ -301,7 +301,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     if is_nil(args[:library_name]) and is_nil(args[:skills_json]) do
       {:error, "library_name is required for generate. Provide the framework name."}
     else
-      rt = Runtime.from_rho_context(ctx)
+      rt = Scope.from_context(ctx)
 
       params = %{
         skills_json: args[:skills_json] || "[]",

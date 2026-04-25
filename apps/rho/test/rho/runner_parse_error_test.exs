@@ -5,29 +5,13 @@ defmodule Rho.RunnerParseErrorTest do
   setup :verify_on_exit!
 
   # -- Helpers --
-  # TypedStructured uses stream_text → tokens/usage (not process_stream)
 
-  defp stub_stream_text(text) do
-    stub(ReqLLM, :stream_text, fn _model, _ctx, _opts ->
-      {:ok, {:fake_stream, text}}
+  defp stub_baml_response(result_map) when is_map(result_map) do
+    stub(RhoBaml.SchemaWriter, :write!, fn _dir, _tool_defs, _opts -> :ok end)
+
+    stub(BamlElixir.Client, :sync_stream, fn _fn_name, _args, _callback, _opts ->
+      {:ok, result_map}
     end)
-
-    stub(ReqLLM.StreamResponse, :tokens, fn {:fake_stream, t} -> [t] end)
-    stub(ReqLLM.StreamResponse, :usage, fn {:fake_stream, _} -> %{} end)
-  end
-
-  defp expect_stream_text_sequence(texts) do
-    counter = :counters.new(1, [:atomics])
-
-    expect(ReqLLM, :stream_text, length(texts), fn _model, _ctx, _opts ->
-      i = :counters.get(counter, 1)
-      :counters.add(counter, 1, 1)
-      text = Enum.at(texts, i)
-      {:ok, {:fake_stream, text}}
-    end)
-
-    stub(ReqLLM.StreamResponse, :tokens, fn {:fake_stream, t} -> [t] end)
-    stub(ReqLLM.StreamResponse, :usage, fn {:fake_stream, _} -> %{} end)
   end
 
   defp collect_events(fun) do
@@ -51,8 +35,11 @@ defmodule Rho.RunnerParseErrorTest do
   # -- Tests --
 
   describe "plain text fallback via TypedStructured" do
-    test "Runner treats plain text as respond (no retry)" do
-      stub_stream_text("This is not JSON at all")
+    test "Runner treats missing tool tag as respond (no retry)" do
+      # BAML always returns a parsed map, so "plain text" isn't possible.
+      # The equivalent is a map without a "tool" key — dispatch_parsed
+      # returns :parse_error, which TypedStructured treats as respond.
+      stub_baml_response(%{message: "This is not JSON at all"})
 
       {result, events} =
         collect_events(fn on_event ->

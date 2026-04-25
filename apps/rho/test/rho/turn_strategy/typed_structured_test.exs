@@ -78,14 +78,12 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
     }
   end
 
-  defp stub_stream_text(text) do
-    stub(ReqLLM, :stream_text, fn _model, _ctx, _opts ->
-      {:ok, :fake_stream}
+  defp stub_baml_response(result_map) when is_map(result_map) do
+    stub(RhoBaml.SchemaWriter, :write!, fn _dir, _tool_defs, _opts -> :ok end)
+
+    stub(BamlElixir.Client, :sync_stream, fn _fn_name, _args, _callback, _opts ->
+      {:ok, result_map}
     end)
-
-    stub(ReqLLM.StreamResponse, :tokens, fn :fake_stream -> [text] end)
-
-    stub(ReqLLM.StreamResponse, :usage, fn :fake_stream -> %{} end)
   end
 
   defp collect_events(events_table) do
@@ -98,7 +96,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
 
   describe "run/2 — respond" do
     test "returns {:respond, text} for respond action" do
-      stub_stream_text(~s({"tool": "respond", "message": "Hello!"}))
+      stub_baml_response(%{tool: "respond", message: "Hello!"})
 
       runtime = build_runtime()
 
@@ -108,7 +106,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
 
   describe "run/2 — think" do
     test "returns {:think, thought} for think action" do
-      stub_stream_text(~s({"tool": "think", "thought": "Let me reconsider..."}))
+      stub_baml_response(%{tool: "think", thought: "Let me reconsider..."})
 
       runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
@@ -119,7 +117,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
 
   describe "run/2 — tool call" do
     test "returns {:call_tools, tool_calls, nil} for tool action" do
-      stub_stream_text(~s({"tool": "bash", "cmd": "ls -la"}))
+      stub_baml_response(%{tool: "bash", cmd: "ls -la"})
 
       runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
@@ -134,7 +132,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       events = :ets.new(:events, [:ordered_set, :public])
       counter = :counters.new(1, [:atomics])
 
-      stub_stream_text(~s({"tool": "bash", "cmd": "ls", "thinking": "Check directory"}))
+      stub_baml_response(%{tool: "bash", cmd: "ls", thinking: "Check directory"})
 
       runtime = build_runtime(events: events, counter: counter)
       assert {:call_tools, _, nil} = TypedStructured.run(projection(), runtime)
@@ -146,7 +144,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
 
   describe "run/2 — unknown tool" do
     test "returns {:parse_error, reason, raw_text} for unknown tool" do
-      stub_stream_text(~s({"tool": "nonexistent", "foo": "bar"}))
+      stub_baml_response(%{tool: "nonexistent", foo: "bar"})
 
       runtime = build_runtime()
       result = TypedStructured.run(projection(), runtime)
@@ -157,17 +155,10 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
   end
 
   describe "run/2 — parse error fallback to respond" do
-    test "treats plain text as respond" do
-      stub_stream_text("This is plain text, not JSON")
-
-      runtime = build_runtime()
-
-      assert {:respond, "This is plain text, not JSON"} =
-               TypedStructured.run(projection(), runtime)
-    end
-
-    test "treats JSON without tool tag as respond" do
-      stub_stream_text(~s({"cmd": "ls"}))
+    test "treats response without tool tag as respond" do
+      # BAML returns a map without "tool" key — dispatch_parsed returns :parse_error,
+      # which TypedStructured treats as a respond fallback
+      stub_baml_response(%{message: "I'm just chatting"})
 
       runtime = build_runtime()
       assert {:respond, _text} = TypedStructured.run(projection(), runtime)
@@ -183,7 +174,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
           fn _args, _ctx -> {:final, "All done"} end
         )
 
-      stub_stream_text(~s({"tool": "finish", "result": "done"}))
+      stub_baml_response(%{tool: "finish", result: "done"})
 
       runtime = build_runtime(tool_defs: [final_tool])
       result = TypedStructured.run(projection(), runtime)
@@ -202,7 +193,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
           fn _args, _ctx -> {:error, "something broke"} end
         )
 
-      stub_stream_text(~s({"tool": "failing", "input": "test"}))
+      stub_baml_response(%{tool: "failing", input: "test"})
 
       runtime = build_runtime(tool_defs: [error_tool])
       result = TypedStructured.run(projection(), runtime)
@@ -213,25 +204,18 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
   end
 
   describe "prompt_sections/2" do
-    test "includes ActionSchema output" do
+    test "returns empty list (BAML handles format injection)" do
       sections = TypedStructured.prompt_sections(tool_defs(), %{})
-      assert length(sections) == 1
-
-      [section] = sections
-      assert section.key == :output_format
-      assert section.body =~ "ActionName"
-      assert section.body =~ "respond"
-      assert section.body =~ "think"
-      assert section.body =~ "bash"
-      assert section.body =~ "fs_read"
-      assert section.body =~ "tool: ActionName"
+      assert sections == []
     end
   end
 
-  describe "run/2 — stream error" do
-    test "returns {:error, reason} on stream failure" do
-      stub(ReqLLM, :stream_text, fn _model, _ctx, _opts ->
-        {:error, :connection_refused}
+  describe "run/2 — BAML error" do
+    test "returns {:error, reason} on BAML failure" do
+      stub(RhoBaml.SchemaWriter, :write!, fn _dir, _tool_defs, _opts -> :ok end)
+
+      stub(BamlElixir.Client, :sync_stream, fn _fn_name, _args, _callback, _opts ->
+        {:error, "connection refused"}
       end)
 
       events = :ets.new(:events, [:ordered_set, :public])

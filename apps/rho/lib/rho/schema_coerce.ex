@@ -250,6 +250,14 @@ defmodule Rho.SchemaCoerce do
   # --- Map coercion (untyped :map) ---
 
   defp coerce_map(value) when is_map(value), do: {:ok, value, []}
+
+  defp coerce_map(value) when is_binary(value) do
+    case Jason.decode(value) do
+      {:ok, map} when is_map(map) -> {:ok, map, [repair(:string, :map, "(json)")]}
+      _ -> {:error, {:cannot_coerce, :string, :map}}
+    end
+  end
+
   defp coerce_map(_value), do: {:error, {:cannot_coerce, :unknown, :map}}
 
   # --- {:in, variants} coercion (enum-like) ---
