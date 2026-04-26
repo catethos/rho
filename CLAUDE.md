@@ -269,3 +269,12 @@ mix test --app rho_stdlib                     # stdlib only
 | `:doc_ingest` | `Rho.Stdlib.Plugins.DocIngest` |
 | `:tape` / `:journal` | `Rho.Stdlib.Plugins.Tape` |
 | `:control` | `Rho.Stdlib.Plugins.Control` |
+
+## Future Directions
+
+`docs/post-refactor-possibilities.md` — what the Plugin/Transformer + BAML
+refactor unlocked: cross-cutting policy transformers (rate limiter, cost
+ceiling, audit logger, PII redactor), per-agent model A/B, parallel
+domain apps, publishable kernel, new TurnStrategy types, replay UI,
+non-MultiAgent inter-agent protocols. Reference when planning new
+capabilities.

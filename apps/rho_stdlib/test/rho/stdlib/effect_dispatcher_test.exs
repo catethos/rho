@@ -1,7 +1,7 @@
-defmodule RhoWeb.Session.EffectDispatcherTest do
+defmodule Rho.Stdlib.EffectDispatcherTest do
   use ExUnit.Case, async: true
 
-  alias RhoWeb.Session.EffectDispatcher
+  alias Rho.Stdlib.EffectDispatcher
 
   @ctx %{session_id: "test-session", agent_id: "test-agent"}
 
@@ -13,7 +13,7 @@ defmodule RhoWeb.Session.EffectDispatcherTest do
         append?: false
       }
 
-      # Should not raise — publishes to signal bus (no subscribers in test)
+      # Should not raise — publishes to event bus (no subscribers in test)
       assert :ok = EffectDispatcher.dispatch(effect, @ctx)
     end
 

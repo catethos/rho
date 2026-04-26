@@ -28,7 +28,7 @@
 
 The data table architecture plan in `docs/data-table-architecture-plan.md` was implemented through Phases 1–3 + 5. The per-session GenServer (`Rho.Stdlib.DataTable.Server`) now owns all row state canonically, and `Rho.Stdlib.Plugins.DataTable` tools call into it synchronously. The write-then-read race is gone and the stdlib boundary is clean.
 
-**What was deliberately deferred:** the LiveView was NOT rewritten as a pure renderer. Instead, `Rho.Stdlib.Plugins.DataTable` and `RhoWeb.Session.EffectDispatcher` publish a **legacy UI compatibility shim** — after every write to the server they also emit the old-format `data_table_rows_delta`, `data_table_replace_all`, etc. signals that the existing `RhoWeb.Projections.DataTableProjection` consumes. This keeps the UI working but maintains two parallel state paths.
+**What was deliberately deferred:** the LiveView was NOT rewritten as a pure renderer. Instead, `Rho.Stdlib.Plugins.DataTable` and `Rho.Stdlib.EffectDispatcher` publish a **legacy UI compatibility shim** — after every write to the server they also emit the old-format `data_table_rows_delta`, `data_table_replace_all`, etc. signals that the existing `RhoWeb.Projections.DataTableProjection` consumes. This keeps the UI working but maintains two parallel state paths.
 
 Your job is to remove that shim by making the LiveView a pure renderer that subscribes to coarse invalidation events and re-fetches snapshots from the server.
 

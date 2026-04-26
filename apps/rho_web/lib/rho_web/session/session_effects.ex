@@ -9,7 +9,7 @@ defmodule RhoWeb.Session.SessionEffects do
 
   import Phoenix.LiveView, only: [push_event: 3]
 
-  alias RhoWeb.Session.EffectDispatcher
+  alias Rho.Stdlib.EffectDispatcher
 
   @doc """
   Applies a list of effect descriptors to the socket.
