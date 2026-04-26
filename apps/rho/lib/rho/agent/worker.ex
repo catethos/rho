@@ -741,66 +741,19 @@ defmodule Rho.Agent.Worker do
     end
   end
 
-  defp process_signal(%{type: "rho.task.requested", data: data}, state) do
-    task = data[:task] || data["task"]
-    task_id = data[:task_id] || data["task_id"]
+  defp process_signal(signal, state) do
+    ctx = build_context(state, agent_depth(state))
 
-    if task do
-      start_turn(
-        task,
-        [
-          task_id: task_id,
-          delegated: true,
-          max_steps: data[:max_steps] || data["max_steps"] || 30
-        ],
+    case Rho.PluginRegistry.dispatch_signal(signal, ctx) do
+      {:start_turn, content, opts} ->
+        state = ensure_persistent_tools(state)
+        opts = Keyword.put_new(opts, :tools, state.persistent_tools)
+        start_turn(content, opts, state)
+
+      :ignore ->
         state
-      )
-    else
-      state
     end
   end
-
-  defp process_signal(%{type: "rho.message.sent", data: data}, state) do
-    message = data[:message] || data["message"]
-    from = data[:from] || data["from"]
-
-    if message do
-      content = format_incoming_message(message, from)
-      state = ensure_persistent_tools(state)
-      start_turn(content, [tools: state.persistent_tools], state)
-    else
-      state
-    end
-  end
-
-  defp process_signal(_signal, state), do: state
-
-  defp format_incoming_message(message, "external") do
-    """
-    [External message]
-    #{message}
-    """
-  end
-
-  defp format_incoming_message(message, from) when is_binary(from) do
-    {from_role, from_id} =
-      case AgentRegistry.get(from) do
-        %{role: role} -> {role, from}
-        _ -> {:unknown, from}
-      end
-
-    """
-    [Inter-agent message from #{from_role} (#{from_id})]
-    #{message}
-
-    ---
-    This message is from another agent, not a human user. \
-    To reply, use send_message with target: "#{from_id}". \
-    Do not use end_turn to reply — that only works for human conversations.\
-    """
-  end
-
-  defp format_incoming_message(message, _from), do: message
 
   defp ensure_persistent_tools(state) do
     if state.persistent_tools == nil do

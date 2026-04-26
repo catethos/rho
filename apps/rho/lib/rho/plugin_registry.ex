@@ -116,6 +116,22 @@ defmodule Rho.PluginRegistry do
     end)
   end
 
+  @doc """
+  Dispatch an inbound signal to active plugins. Returns the first
+  non-`:ignore` result, or `:ignore` if no plugin matches.
+
+  See `Rho.Plugin` for return-shape semantics.
+  """
+  def dispatch_signal(signal, context) do
+    Enum.reduce_while(active_plugins(context), :ignore, fn
+      %PluginInstance{module: mod, opts: opts}, _acc ->
+        case safe_call(mod, :handle_signal, [signal, opts, context], :ignore) do
+          :ignore -> {:cont, :ignore}
+          result -> {:halt, result}
+        end
+    end)
+  end
+
   @doc "Render binding metadata as prompt sections."
   def render_binding_metadata(bindings) do
     Enum.map(bindings, fn b ->

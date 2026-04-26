@@ -79,6 +79,66 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   # No prompt_sections — available agent roles are inlined into
   # delegate_task/delegate_task_lite param @desc via the BAML schema.
 
+  # --- Signal handling ---
+
+  @impl Rho.Plugin
+  def handle_signal(%{type: "rho.task.requested", data: data}, _opts, _ctx) do
+    task = data[:task] || data["task"]
+    task_id = data[:task_id] || data["task_id"]
+    max_steps = data[:max_steps] || data["max_steps"] || @default_max_steps
+
+    if task do
+      {:start_turn, task,
+       [
+         task_id: task_id,
+         delegated: true,
+         max_steps: max_steps
+       ]}
+    else
+      :ignore
+    end
+  end
+
+  def handle_signal(%{type: "rho.message.sent", data: data}, _opts, _ctx) do
+    message = data[:message] || data["message"]
+    from = data[:from] || data["from"]
+
+    if message do
+      {:start_turn, format_incoming_message(message, from), []}
+    else
+      :ignore
+    end
+  end
+
+  def handle_signal(_signal, _opts, _ctx), do: :ignore
+
+  defp format_incoming_message(message, "external") do
+    """
+    [External message]
+    #{message}
+    """
+  end
+
+  defp format_incoming_message(message, from) when is_binary(from) do
+    {from_role, from_id} =
+      case Registry.get(from) do
+        %{role: role} -> {role, from}
+        _ -> {:unknown, from}
+      end
+
+    """
+    [Inter-agent message from #{from_role} (#{from_id})]
+    #{message}
+
+    ---
+    This message is from another agent, not a human user. \
+    To reply, use send_message with target: "#{from_id}". \
+    Do not use end_turn to reply — that only works for human conversations.\
+    """
+  end
+
+  defp format_incoming_message(message, _from), do: message
+
   defp build_role_hint(mount_opts, self_name) do
     visible = Keyword.get(mount_opts, :visible_agents)
 

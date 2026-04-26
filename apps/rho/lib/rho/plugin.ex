@@ -44,5 +44,22 @@ defmodule Rho.Plugin do
   """
   @callback bindings(plugin_opts(), context()) :: [binding()]
 
-  @optional_callbacks tools: 2, prompt_sections: 2, bindings: 2
+  @doc """
+  Handle an inbound signal delivered to an agent's mailbox.
+
+  Plugins implementing this callback own their own signal-type vocabulary;
+  the kernel does not pattern-match on signal shapes. `Rho.PluginRegistry`
+  iterates active plugins (priority-ordered) and returns the first
+  non-`:ignore` result.
+
+  Return shapes:
+    * `{:start_turn, content, opts}` — start a new agent turn with the
+      given user content and `Rho.Agent.Worker.start_turn/3` opts.
+    * `:ignore` — this plugin does not handle the signal; dispatch
+      continues to the next plugin (or settles on `:ignore`).
+  """
+  @callback handle_signal(signal :: map(), plugin_opts(), context()) ::
+              {:start_turn, content :: String.t(), opts :: keyword()} | :ignore
+
+  @optional_callbacks tools: 2, prompt_sections: 2, bindings: 2, handle_signal: 3
 end
