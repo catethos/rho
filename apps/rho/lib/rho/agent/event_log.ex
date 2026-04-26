@@ -1,6 +1,6 @@
 defmodule Rho.Agent.EventLog do
   @moduledoc """
-  Persistent event log for a session. Subscribes to the signal bus and writes
+  Persistent event log for a session. Subscribes to `Rho.Events` and writes
   filtered events to a JSONL file on disk.
 
   File path: `{workspace}/_rho/sessions/{session_id}/events.jsonl`
@@ -10,13 +10,13 @@ defmodule Rho.Agent.EventLog do
 
   require Logger
 
-  alias Rho.Comms
+  alias Rho.Events.Event
 
-  @filtered_types ~w(text_delta structured_partial)
+  @filtered_kinds ~w(text_delta structured_partial)a
   @max_tool_result_bytes 4096
   @max_tool_args_bytes 2048
 
-  defstruct [:session_id, :file, :path, :workspace, seq: 0, bus_subscriptions: []]
+  defstruct [:session_id, :file, :path, :workspace, seq: 0]
 
   # --- Public API ---
 
@@ -71,29 +71,15 @@ defmodule Rho.Agent.EventLog do
     # Open file for append (binary mode for IO.binwrite)
     {:ok, file} = File.open(file_path, [:append, :binary])
 
-    # Subscribe to session events and agent/task events
-    patterns = [
-      "rho.session.#{session_id}.events.*",
-      "rho.agent.*",
-      "rho.task.*",
-      "rho.turn.*"
-    ]
-
-    bus_subs =
-      for pattern <- patterns do
-        case Comms.subscribe(pattern) do
-          {:ok, sub_id} -> sub_id
-          {:error, _} -> nil
-        end
-      end
-      |> Enum.reject(&is_nil/1)
+    # Subscribe to session events and global lifecycle events
+    Rho.Events.subscribe(session_id)
+    Rho.Events.subscribe_lifecycle()
 
     state = %__MODULE__{
       session_id: session_id,
       file: file,
       path: file_path,
-      workspace: workspace,
-      bus_subscriptions: bus_subs
+      workspace: workspace
     }
 
     Logger.debug("EventLog started for session #{session_id} at #{file_path}")
@@ -132,23 +118,21 @@ defmodule Rho.Agent.EventLog do
   end
 
   @impl true
-  def handle_info({:signal, %Jido.Signal{type: type, data: data} = signal}, state) do
+  def handle_info(%Event{kind: kind, data: data} = event, state) do
     # Filter out high-frequency reconstructable events
-    event_type = type |> String.split(".") |> List.last()
-
-    # Drop events that belong to a different session
+    # Drop events that belong to a different session (lifecycle topic is global)
     event_session = data[:session_id] || data["session_id"]
     foreign? = is_binary(event_session) and event_session != state.session_id
 
-    if event_type in @filtered_types or foreign? do
+    if kind in @filtered_kinds or foreign? do
       {:noreply, state}
     else
       try do
-        state = write_event(state, type, data, signal)
+        state = write_event(state, event)
         {:noreply, state}
       rescue
         error ->
-          Logger.warning("[EventLog] Failed to write event #{type}: #{inspect(error)}")
+          Logger.warning("[EventLog] Failed to write event #{kind}: #{inspect(error)}")
           {:noreply, state}
       end
     end
@@ -158,10 +142,8 @@ defmodule Rho.Agent.EventLog do
 
   @impl true
   def terminate(_reason, state) do
-    # Unsubscribe from bus
-    for sub_id <- state.bus_subscriptions do
-      Comms.unsubscribe(sub_id)
-    end
+    # Unsubscribe from events
+    Rho.Events.unsubscribe(state.session_id)
 
     # Close file
     if state.file, do: File.close(state.file)
@@ -171,23 +153,19 @@ defmodule Rho.Agent.EventLog do
 
   # --- Private ---
 
-  defp write_event(state, type, data, signal) do
+  defp write_event(state, %Event{kind: kind, data: data, agent_id: agent_id, timestamp: ts}) do
     seq = state.seq + 1
 
-    extensions = signal.extensions || %{}
-
-    # correlation_id is stored in extensions, not a top-level field
-    turn_id = extensions["correlation_id"]
+    turn_id = data[:turn_id] || data["turn_id"]
 
     event = %{
       seq: seq,
       ts: DateTime.utc_now() |> DateTime.to_iso8601(),
-      type: type,
-      agent_id: data[:agent_id] || data["agent_id"],
+      type: Atom.to_string(kind),
+      agent_id: agent_id || data[:agent_id] || data["agent_id"],
       session_id: state.session_id,
       turn_id: turn_id,
-      event_id: signal.id,
-      emitted_at: extensions["emitted_at"],
+      emitted_at: ts,
       data: truncate_data(data)
     }
 

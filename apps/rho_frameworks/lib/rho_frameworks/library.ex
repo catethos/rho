@@ -371,16 +371,19 @@ defmodule RhoFrameworks.Library do
   def resolve_library(org_id, library_name, version \\ nil)
 
   def resolve_library(org_id, library_name, nil) do
-    from(l in Library,
-      where: l.organization_id == ^org_id and l.name == ^library_name,
-      order_by: [
-        desc: is_nil(l.version),
-        desc: l.is_default,
-        desc: l.published_at
-      ],
-      limit: 1
-    )
-    |> Repo.one()
+    by_name =
+      from(l in Library,
+        where: l.organization_id == ^org_id and l.name == ^library_name,
+        order_by: [
+          desc: is_nil(l.version),
+          desc: l.is_default,
+          desc: l.published_at
+        ],
+        limit: 1
+      )
+      |> Repo.one()
+
+    by_name || get_library(org_id, library_name)
   end
 
   def resolve_library(org_id, library_name, version) do

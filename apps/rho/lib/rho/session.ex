@@ -6,10 +6,6 @@ defmodule Rho.Session do
   Wraps `Rho.Agent.Primary` (lifecycle) and `Rho.Agent.Worker` (turns).
   """
 
-  # RunSpec.FromConfig lives in the rho_cli umbrella app —
-  # discovered at runtime via Code.ensure_loaded?/1.
-  @compile {:no_warn_undefined, Rho.RunSpec.FromConfig}
-
   alias Rho.Agent.{Primary, Worker}
   alias Rho.Session.Handle
 
@@ -113,15 +109,8 @@ defmodule Rho.Session do
     "ses_#{System.unique_integer([:positive])}"
   end
 
-  # Build a RunSpec for the session. Tries RunSpec.FromConfig (rho_cli)
-  # first, falls back to nil (Worker will use legacy Rho.Config path).
   defp build_run_spec(agent_name, opts) do
-    if Code.ensure_loaded?(Rho.RunSpec.FromConfig) and
-         function_exported?(Rho.RunSpec.FromConfig, :build, 2) do
-      Rho.RunSpec.FromConfig.build(agent_name, opts)
-    else
-      nil
-    end
+    Rho.RunSpec.FromConfig.build(agent_name, opts)
   end
 
   defp maybe_put(kwl, _key, nil), do: kwl

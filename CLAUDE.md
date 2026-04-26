@@ -9,9 +9,9 @@ Rho is an Elixir-based AI agent framework structured as an **umbrella** with fiv
 ```
 rho/
 ├── apps/
-│   ├── rho/              # Core agent runtime kernel (ZERO Phoenix/Ecto deps)
+│   ├── rho/              # Core agent runtime kernel (ZERO Phoenix/Ecto deps), mix tasks, .rho.exs loader
 │   ├── rho_stdlib/        # Built-in tools & plugins
-│   ├── rho_cli/           # Mix tasks, .rho.exs loader, CLI REPL
+│   ├── rho_baml/          # BAML-driven structured-output helpers
 │   ├── rho_web/           # Phoenix endpoint, LiveViews
 │   └── rho_frameworks/    # Ecto/SQLite skill-assessment domain
 ├── config/
@@ -23,18 +23,19 @@ rho/
 ## Three-Plane Architecture
 
 - **Execution plane** — `Rho.Runner`, `Rho.TurnStrategy`, tapes, plugins, transformers. Core LLM reasoning loop. Lives in `apps/rho/`.
-- **Coordination plane** — Signal bus (`Rho.Comms`), agent registry, multi-agent plugin. Lives in `apps/rho/` (bus) and `apps/rho_stdlib/` (multi-agent plugin).
-- **Edge plane** — CLI (`apps/rho_cli/`) and web (`apps/rho_web/`) adapters.
+- **Coordination plane** — Event bus (`Rho.Events`), agent registry, multi-agent plugin. Lives in `apps/rho/` (bus) and `apps/rho_stdlib/` (multi-agent plugin).
+- **Edge plane** — web (`apps/rho_web/`) and mix tasks (`apps/rho/lib/mix/tasks/`) adapters.
 
 ## App Boundaries
 
 ### `apps/rho/` — Core Runtime Kernel
 
-No Phoenix, Ecto, or external tool deps. Deps: `req_llm`, `jido_signal`, `jason`, `nimble_options`.
+No Phoenix or Ecto deps. Deps: `req_llm`, `jido_signal`, `jason`, `nimble_options`, `dotenvy`.
 
 Key modules:
-- `Rho.Session` — programmatic session API (single entry point for CLI, web, tests)
-- `Rho.RunSpec` / `Rho.RunSpec.FromConfig` — explicit agent configuration struct
+- `Rho.Session` — programmatic session API (single entry point for mix tasks, web, tests)
+- `Rho.AgentConfig` — `.rho.exs` loader; normalizes legacy keys and exposes per-agent config queries
+- `Rho.RunSpec` / `Rho.RunSpec.FromConfig` — explicit agent configuration struct (built from `AgentConfig`)
 - `Rho.Runner` — outer agent loop (step budget, compaction, tape recording)
 - `Rho.Runner.Runtime` — immutable run config struct (inlined in runner.ex)
 - `Rho.Runner.TapeConfig` — tape configuration struct (inlined in runner.ex)
@@ -50,8 +51,9 @@ Key modules:
 - `Rho.PromptSection` — structured prompt section struct
 - `Rho.Tape.*` — append-only event history
 - `Rho.Agent.*` — Worker, Registry, Primary, Supervisor, EventLog
-- `Rho.Comms` / `Rho.Comms.SignalBus` — signal bus
+- `Rho.Events` / `Rho.Events.Event` — PubSub-based event bus (session + lifecycle topics)
 - `Rho.Config` — core config (tape_module, agent_config, etc.)
+- `Mix.Tasks.Rho.{Run,Trace,Smoke,Verify}` — mix tasks (run an agent, trace a tape, smoke-test, verify config)
 
 ### `apps/rho_stdlib/` — Built-in Tools & Plugins
 
@@ -62,7 +64,7 @@ Module namespaces:
 - `Rho.Stdlib.Tools.*` — Bash, FsRead/FsWrite/FsEdit (in fs.ex), WebFetch, Python, Sandbox, PathUtils, Finish, EndTurn, Anchor/SearchHistory/RecallContext/ClearMemory (in tape_tools.ex)
 - `Rho.Stdlib.Plugins.*` — MultiAgent, StepBudget, LiveRender, PyAgent, Spreadsheet, DocIngest, Tape, Control, DataTable
 - `Rho.Stdlib.DataTable` — client API for the per-session data table server (synchronous row ops, named tables). Callers pass `table: "name"` in opts; default is `"main"`. Entry points: `ensure_started/1`, `ensure_table/4`, `add_rows/3`, `get_rows/2`, `update_cells/3`, `replace_all/3`, `delete_rows/3`, `delete_by_filter/3`, `get_table_snapshot/2`, `list_tables/1`, `summarize_table/2`.
-- `Rho.Stdlib.DataTable.Server` — per-session `GenServer` that owns table state and publishes coarse invalidation events via `Rho.Comms` (`rho.session.<sid>.events.data_table`). Uses `restart: :temporary` — a crashed server stays down with `{:error, :not_running}` returned to callers rather than silently restarting empty.
+- `Rho.Stdlib.DataTable.Server` — per-session `GenServer` that owns table state and publishes coarse invalidation events via `Rho.Events`. Uses `restart: :temporary` — a crashed server stays down with `{:error, :not_running}` returned to callers rather than silently restarting empty.
 - `Rho.Stdlib.DataTable.Schema` / `Rho.Stdlib.DataTable.Schema.Column` / `Rho.Stdlib.DataTable.Table` — pure data structs
 - `Rho.Stdlib.DataTable.SessionJanitor` — listens for `rho.agent.stopped` and stops the matching server
 - `Rho.Stdlib.Skill` / `Rho.Stdlib.Skill.Plugin` / `Rho.Stdlib.Skill.Loader`
@@ -80,19 +82,32 @@ A single session can have multiple named data tables side-by-side. `"main"` is c
 
 Agent-facing plugin tools (`get_table`, `add_rows`, `update_cells`, …) take an optional `table:` param that defaults to `"main"`. Agents that load a named table must pass `table:` on subsequent ops — there is no auto-tracking of "active" table server-side. The `:spreadsheet` agent's system prompt documents the per-path convention (`table: "library"` after `load_library`, `table: "role_profile"` after `load_role_profile` / `clone_role_skills` / `start_role_profile_draft`).
 
-### `apps/rho_cli/` — CLI Infrastructure
+### `apps/rho_baml/` — BAML Structured-Output Library
 
-Deps: `rho`, `rho_stdlib` (in_umbrella), `dotenvy`.
+Pure library — no application, no `priv/`, no supervision tree. Provides BAML-backed structured LLM calls for both static (compile-time) and dynamic (runtime) schemas.
 
-- `Rho.CLI.Config` — full `.rho.exs` loader, normalizes legacy keys
-- `Rho.CLI.Repl` — GenServer REPL adapter
-- `Rho.CLI.CommandParser` — command parsing
-- `Rho.CLI.Application` — boots Dotenvy, registers plugins, inits Python
-- `Mix.Tasks.Rho.{Chat,Run,Trace}` — mix tasks
+Deps: `baml_elixir ~> 1.0.0-pre.27`, `zoi ~> 0.17`. No `in_umbrella` deps.
+
+Key modules:
+- `RhoBaml` — top-level helpers; `baml_path/1` resolves an OTP app's `priv/baml_src` via `:code.priv_dir/1`
+- `RhoBaml.SchemaCompiler` — Zoi schema → BAML class string conversion. Handles primitives (`string`, `int`, `float`, `bool`), `array`, optional fields (`type?`), `@description("...")`, and nested struct/map types (emitted as separate classes). Also builds full `function ... -> Class` bodies via `build_function_baml/6`.
+- `RhoBaml.Function` — `use` hook for static LLM function modules. A `__before_compile__` macro reads `@schema` (Zoi) and `@prompt`, writes `<consumer_app>/priv/baml_src/functions/<name>.baml` at compile time, and defines `call/2` + `stream/3` that delegate to `BamlElixir.Client.call/3` / `.sync_stream/4`. Supports `:llm_client` and `:collectors` overrides per call. Used by `RhoFrameworks.LLM.{RankRoles, ScoreLens, SemanticDuplicates}`.
+- `RhoBaml.SchemaWriter` — runtime tool_defs → `.baml` file generation for `Rho.TurnStrategy.TypedStructured`. Emits a flat `Action` class (discriminant `tool` field + flattened-and-optional tool params + `thinking`) and an `AgentTurn` function. `write!/3` accepts a `:model` option in `"provider:model_id"` format and generates a matching dynamic `client.baml` from a built-in provider map (openrouter, anthropic, openai, fireworks_ai, groq, google).
+
+#### App ownership of BAML schemas
+
+`rho_baml` owns no `.baml` files itself. Each consumer app keeps its own BAML tree:
+
+- `apps/rho_frameworks/priv/baml_src/clients/` — hand-written client configs (OpenRouter, Anthropic)
+- `apps/rho_frameworks/priv/baml_src/functions/` — generated by `RhoBaml.Function` at compile time
+- `apps/rho/priv/baml_src/clients/` — own copy of client configs (duplicated, ~5 lines each)
+- `apps/rho/priv/baml_src/dynamic/` — `action.baml` + `client.baml` written at runtime by `SchemaWriter` per TypedStructured turn
+
+Adding a new static LLM function = add a module to a consumer app, not to `rho_baml`.
 
 ### `apps/rho_web/` — Phoenix Web Application
 
-Deps: `rho`, `rho_stdlib`, `rho_cli`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_live_view`, `bandit`.
+Deps: `rho`, `rho_stdlib`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_live_view`, `bandit`.
 
 - `RhoWeb.*` — endpoint, router, LiveViews, components
 - `RhoWeb.Application` — starts PubSub, Endpoint
@@ -179,14 +194,14 @@ The final system prompt = agent `system_prompt` + all plugin `prompt_sections` +
 - `Rho.Agent.Registry` — ETS-backed discovery
 - `Rho.Agent.Primary` — session namespace helper
 - `Rho.Agent.Supervisor` — DynamicSupervisor for all agents
-- `Rho.Comms` / `Rho.Comms.SignalBus` — signal bus (sole event delivery path)
+- `Rho.Events` / `Rho.Events.Event` — PubSub-based event bus
 
 ## Config System
 
 - `.rho.exs` — per-agent config. Keys: `model`, `system_prompt`, `max_steps`, `max_tokens`, `provider`, `description`, `skills`, `prompt_format`, `avatar`
   - `plugins:` — list of plugin entries (atom shorthand, `{atom, opts}` tuple, or raw module)
   - `turn_strategy:` — strategy atom or module
-- `Rho.CLI.Config` — full config loader, normalizes legacy keys
+- `Rho.AgentConfig` — full `.rho.exs` loader, normalizes legacy keys (see apps/rho/ key modules)
 - `Rho.Config` — core-only config (`tape_module/0`)
 - `Rho.Stdlib` — plugin module map and `resolve_plugin/1`
 
@@ -205,21 +220,19 @@ Rho.Supervisor (one_for_one)
 ├── Task.Supervisor (Rho.TaskSupervisor)
 ├── Rho.PluginRegistry
 ├── Rho.TransformerRegistry
-├── Rho.Comms.SignalBus
+├── {Phoenix.PubSub, name: Rho.PubSub}
+├── Rho.LLM.Admission
 ├── [Tape children]
 ├── Rho.Agent.Supervisor
 ├── Registry (Rho.EventLogRegistry)
 └── DynamicSupervisor (EventLog.Supervisor)
 
-# apps/rho_stdlib (Rho.Stdlib.Application)
+# apps/rho_stdlib (Rho.Stdlib.Application) — also registers built-in plugins/transformers and inits Python
 ├── Registry (Rho.PythonRegistry)
 ├── DynamicSupervisor (Python.Supervisor)
 ├── Registry (Rho.Stdlib.DataTable.Registry)
 ├── DynamicSupervisor (Rho.Stdlib.DataTable.Supervisor)
 └── Rho.Stdlib.DataTable.SessionJanitor
-
-# apps/rho_cli (Rho.CLI.Application)
-└── Rho.CLI.Repl
 
 # apps/rho_web (RhoWeb.Application)
 ├── Phoenix.PubSub

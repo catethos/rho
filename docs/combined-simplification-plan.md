@@ -181,25 +181,45 @@ are duplicated per consumer app (they're ~5 lines each).
 
 ## What Becomes Dead Code
 
-| Module | Lines | Replaced by |
-|--------|-------|------------|
-| `Rho.StructuredOutput` | 537 | BAML Rust parser |
-| `Rho.SchemaCoerce` | 374 | BAML Rust type coercion |
-| `Rho.ActionSchema.render_prompt/1` | ~25 | BAML `{{ctx.output_format}}` |
+**Original plan estimate (pre-audit):** ~911 LOC across `StructuredOutput`,
+`SchemaCoerce`, and `ActionSchema.render_prompt/1`.
 
-`ActionSchema.build/1` and `ActionSchema.dispatch/3` remain — they handle
-the discriminant matching and intent classification that BAML doesn't do.
-But `parse_and_dispatch/3` changes from:
+**Post-audit reality (2026-04-26):** ~40 LOC. Most of the "replaced by BAML"
+claim is wrong — BAML only handles parsing inside the agent loop, not on the
+LV display side or for Direct-strategy tool args.
 
-```
-StructuredOutput.parse(text) → dispatch(parsed, schema, tool_map)
-```
+### Actual dead code (safe to delete)
 
-to:
+| Symbol | Lines | Production callers |
+|--------|-------|--------------------|
+| `Rho.ActionSchema.parse_and_dispatch/3` | ~15 | None — `TypedStructured` uses `dispatch_parsed/3` (typed_structured.ex:71). Only tests reference it. |
+| `Rho.ActionSchema.render_prompt/1` | ~25 | None — BAML emits `{{ctx.output_format}}` instead. Only tests reference it. |
 
-```
-BAML returns parsed map → dispatch(parsed, schema, tool_map)
-```
+Removing `parse_and_dispatch/3` also drops the only `apps/rho/` call site of
+`Rho.StructuredOutput.parse`.
+
+### Live code that the plan mislabeled as dead
+
+| Module | Lines | Why it's still live |
+|--------|-------|--------------------|
+| `Rho.StructuredOutput` | 537 | LV display side parses streaming/replay text from tape (4 sites: `stream_envelope.ex`, `chat_components.ex`, `chat_overlay_component.ex`, `projections/session_state.ex`). BAML produces parsed maps inside the agent loop, but the LV consumers re-read raw text from tape and need their own partial-JSON parser. |
+| `Rho.SchemaCoerce` | 374 | Primary coercer for **all** tool args via `Rho.ToolArgs.cast/2` → `SchemaCoerce.coerce_fields/3` (tool_args.ex:102). Also called by `ActionSchema.dispatch/3` (action_schema.ex:243), which both `parse_and_dispatch` and `dispatch_parsed` route through. The phase4 notebook already corrected this inline. |
+
+`ActionSchema.build/1` and `ActionSchema.dispatch/3` remain unchanged. BAML
+still feeds `dispatch_parsed/3` with a parsed map; `dispatch/3` continues to
+do discriminant matching, field coercion (via `SchemaCoerce`), and intent
+classification.
+
+### Legacy Worker path — removed (2026-04-26)
+
+`Rho.Agent.Worker.build_turn_opts_legacy/3` and `run_turn_legacy/6` are gone.
+Rather than migrate every `Supervisor.start_worker` caller, `Worker.init`
+now synthesizes a `%Rho.RunSpec{}` via `build_default_run_spec/2` whenever
+`:run_spec` isn't supplied — folding any legacy spawn-time opts
+(`:tools`, `:system_prompt`, `:model`, `:max_steps`) into the spec. With
+`state.run_spec` always non-nil, `start_turn/3` no longer branches on it
+and the legacy path is deleted. Existing callers (`AppLive`,
+`SessionLive`, `MultiAgent`) keep working unchanged.
 
 ---
 
@@ -207,17 +227,17 @@ BAML returns parsed map → dispatch(parsed, schema, tool_map)
 
 **Progress key:** `[ ]` not started · `[~]` in progress · `[x]` done
 
-### [~] Phase 0: `rho_baml` app (1d)
+### [x] Phase 0: `rho_baml` app (1d)
 
 Create the shared BAML infrastructure (compile-time path only).
 
-1. Create `apps/rho_baml/` umbrella app
+1. [x] Create `apps/rho_baml/` umbrella app
    - Deps: `baml_elixir ~> 1.0.0-pre.27`, `zoi`
-2. Create `RhoBaml.SchemaCompiler` — Zoi schema → BAML class string
-3. Create `RhoBaml.Function` — `use` hook that reads `@schema` + `@prompt`,
+2. [x] Create `RhoBaml.SchemaCompiler` — Zoi schema → BAML class string
+3. [x] Create `RhoBaml.Function` — `use` hook that reads `@schema` + `@prompt`,
    generates `.baml` files at compile time, defines `call/2` and `stream/3`
-4. Write shared client configs in `priv/baml_src/clients/`
-5. Verify with Livebook
+4. [x] Write shared client configs in `priv/baml_src/clients/`
+5. [x] Verify with Livebook
 
 **Notebook:** `notebooks/phase0_rho_baml.livemd` — demonstrate Zoi schema
 definition, SchemaCompiler output, and a round-trip `RhoBaml.Function.call/2`
@@ -251,19 +271,20 @@ Wire LiveEvents as a second delivery path alongside Comms.
 collect events from both Comms and LiveEvents in parallel, diff the two
 streams to verify identical state transitions.
 
-### [~] Phase 3: Frameworks LLM extraction via BAML + Zoi (1d)
+### [x] Phase 3: Frameworks LLM extraction via BAML + Zoi (1d)
 
 Replace `ReqLLM.generate_object` calls with Zoi-defined BAML functions.
 
-1. Add `rho_baml` dependency to `rho_frameworks`
-2. Create `RhoFrameworks.LLM.RankRoles` — Zoi schema + `use RhoBaml.Function`
+1. [x] Add `rho_baml` dependency to `rho_frameworks`
+2. [x] Create `RhoFrameworks.LLM.RankRoles` — Zoi schema + `use RhoBaml.Function`
    - Replaces `rank_similar_via_llm` in `roles.ex`
-3. Create `RhoFrameworks.LLM.ScoreLens` — same pattern
+3. [x] Create `RhoFrameworks.LLM.ScoreLens` — same pattern
    - Replaces `score_via_llm` in `lenses.ex`
-4. Create `RhoFrameworks.LLM.SemanticDuplicates` — same pattern
+4. [x] Create `RhoFrameworks.LLM.SemanticDuplicates` — same pattern
    - Replaces LiteWorker-based dedup in `library.ex`
-5. Delete all `Rho.Config.agent_config()` calls from frameworks
-6. Per-call model flexibility via `llm_client` option
+5. [x] Delete all `Rho.Config.agent_config()` calls from frameworks
+   (remaining call in `demos/hiring/simulation.ex` is deferred — see below)
+6. [x] Per-call model flexibility via `llm_client` option
 
 **Notebook:** `notebooks/phase3_frameworks_llm.livemd` — call each new
 `RhoBaml.Function` module (RankRoles, ScoreLens, SemanticDuplicates) with
@@ -292,23 +313,23 @@ real tool_defs, show the generated `.baml` file from SchemaWriter, run a
 TypedStructured turn with BAML parsing, and compare output with the old
 StructuredOutput + SchemaCoerce pipeline. Demonstrate streaming partials.
 
-### [ ] Phase 5: Scope + AgentJobs + LiteWorker removal (2d)
+### [x] Phase 5: Scope + AgentJobs + LiteWorker removal (2d)
 
 Replace Runtime and LiteWorker with `RunSpec` + `Runner.run`.
 
-1. Create `RhoFrameworks.Scope` — 3 fields: `organization_id`, `session_id`, `user_id`
-2. Add `Scope.from_context/1` bridge
-3. Replace `Runtime.t()` → `Scope.t()` throughout frameworks
-4. Create `RhoFrameworks.AgentJobs` — thin wrapper: `Task.async` + `Runner.run`
+1. [x] Create `RhoFrameworks.Scope` — 3 fields: `organization_id`, `session_id`, `user_id`
+2. [x] Add `Scope.from_context/1` bridge
+3. [x] Replace `Runtime.t()` → `Scope.t()` throughout frameworks
+4. [x] Create `RhoFrameworks.AgentJobs` — thin wrapper: `Task.async` + `Runner.run`
    with minimal `RunSpec` (`tape_name: nil`) + composed emit (heartbeat to parent)
-5. Move `proficiency_writer` config from `.rho.exs` to `proficiency.ex` as an
+5. [x] Move `proficiency_writer` config from `.rho.exs` to `proficiency.ex` as an
    inline `RunSpec.build(...)` call — it's an internal worker, not a user-facing agent
-6. Rewrite skeleton generator + proficiency fan-out to use `AgentJobs`
-7. Wire emit callbacks → `LiveEvents.broadcast`
-8. Migrate `Rho.Stdlib.Plugins.MultiAgent` from `LiteWorker` to `Runner.run` + Task
-9. Delete `build_lite_context`, `resolve_tools` helpers
-10. Delete `RhoFrameworks.Runtime`
-11. Delete `Rho.Agent.LiteWorker` (565 lines)
+6. [x] Rewrite skeleton generator + proficiency fan-out to use `AgentJobs`
+7. [x] Wire emit callbacks → `LiveEvents.broadcast`
+8. [x] Migrate `Rho.Stdlib.Plugins.MultiAgent` from `LiteWorker` to `Runner.run` + Task
+9. [x] Delete `build_lite_context`, `resolve_tools` helpers
+10. [x] Delete `RhoFrameworks.Runtime`
+11. [x] Delete `Rho.Agent.LiteWorker` (565 lines)
 
 **Notebook:** `notebooks/phase5_agent_jobs.livemd` — show AgentJobs spawning
 a batch of parallel workers via `Runner.run` + Task, with heartbeat emit
@@ -375,89 +396,171 @@ The simulation doesn't pass `:run_spec`, so Worker falls into the legacy
 `build_turn_opts_legacy` code path (worker.ex:763). This works today but
 should be migrated to RunSpec when the legacy path is eventually removed.
 
-### [ ] Phase 7: Cut over — collapse subscriptions (0.5d)
+### [x] Phase 7: Cut over — SessionLive consumer migration (0.5d)
 
-Remove the old event path.
+Remove the old event path from SessionLive/SessionCore.
 
-1. Stop Worker.emit from dual-publishing to Comms (session-scoped events)
-2. Remove 3 Comms subscriptions from SessionCore
-3. Keep only LiveEvents subscription
-4. Remove `signal_for_session?` filtering
-5. Remove old string-based dispatch clauses from SessionState
+1. [x] Stop Worker.emit from dual-publishing to Comms — completed in Phase 10
+2. [x] Remove 3 Comms subscriptions from SessionCore
+3. [x] Keep only LiveEvents subscription
+4. [x] Remove `signal_for_session?` filtering (completed in Phase 8)
+5. [x] Remove old string-based dispatch clauses from SessionState
+   — replaced with `handle_info(%LiveEvent{})` + `live_event_to_signal` bridge
 
-**Notebook:** `notebooks/phase7_cutover.livemd` — run a full agent session
-end-to-end on LiveEvents only. Show the single subscription, atom-based
-dispatch, and absence of Comms wildcard topics. Before/after subscription
-count comparison.
+**Notebook:** `notebooks/phase7_cutover.livemd`
 
-### [ ] Phase 8: FlowLive cleanup (0.5d)
+### [x] Phase 8: Full LiveView cutover — AppLive, FlowLive, ChatOverlay (0.5d)
 
-1. FlowLive subscribes via LiveEvents
-2. Track `run_id` instead of `generate_agent_id`
-3. Remove substring agent_id matching
-4. Replace Runtime assign → Scope
-5. Use `RhoFrameworks.LLM` for select step loading
+Migrated ALL remaining LiveView Comms consumers to LiveEvents.
 
-**Notebook:** `notebooks/phase8_flow_live.livemd` — demonstrate FlowLive
-receiving events via LiveEvents, `run_id` tracking replacing agent_id
-substring matching.
+1. [x] FlowLive subscribes via LiveEvents, atom-kind dispatch
+2. [x] AppLive signal handler → `%LiveEvent{}` + `live_event_to_signal` bridge
+3. [x] ChatOverlayComponent accepts `%LiveEvent{}` via send_update (Option A)
+4. [x] Removed `signal_for_session?/2` from SessionCore — zero callers
+5. [x] Removed all `bus_subs` assigns across rho_web
+6. [x] Zero `Comms.subscribe` / `handle_info({:signal` in apps/rho_web/
 
-### [ ] Phase 9: Plugin cleanup (0.25d)
+**Assessed and skipped (originally deferred from Phase 8):**
+- Track `run_id` instead of `generate_agent_id` — AgentJobs returns `agent_id`,
+  no `run_id` concept exists. Current agent_id matching is correct.
+- Use `RhoFrameworks.LLM` for select step loading — `load_similar_roles` already
+  calls `RhoFrameworks.LLM.RankRoles` (migrated in Phase 3). No remaining call sites.
 
-1. Remove `IdentityPlugin` global registration from `Application.start`
-2. Register explicitly per-agent in configs or RunSpec.plugins
+**Notebook:** `notebooks/phase8_full_cutover.livemd`
 
-**Notebook:** `notebooks/phase9_plugin_cleanup.livemd` — show IdentityPlugin
-registered per-agent via RunSpec.plugins instead of global Application.start.
-Verify no global side effects on boot.
+### [x] Phase 9: Plugin cleanup (0.25d)
+
+1. [x] Removed `IdentityPlugin` global registration from `RhoFrameworks.Application.start`
+   — No agent config or RunSpec explicitly references it. Module retained for
+   future per-agent use via RunSpec.plugins.
+2. N/A — no agent needs explicit per-agent registration currently.
 
 ### Deferred: Hiring simulation
 
-`RhoFrameworks.Demos.Hiring.Simulation` is a multi-agent communication demo
-(3 `Comms.publish` calls, `Rho.Agent.*`, `Rho.Config.agent_config`, `Rho.PluginRegistry`).
-Kept as-is during this simplification — it will need updating once agent
-communication features are ready to showcase. May break if Comms API changes
-in Phase 7; pin to pre-refactor API or update opportunistically.
+`RhoFrameworks.Demos.Hiring.Simulation` is a multi-agent communication demo.
+Events already migrated to `Rho.Events` (subscribe, broadcast, Event struct matching).
+Still uses `Rho.Config.agent_config` (`simulation.ex:87`) and the legacy Worker path
+(no RunSpec). Migrate to RunSpec when the legacy Worker path is removed.
+
+### [x] Phase 10: Non-LV consumer migration + dual-publish removal (0.5d)
+
+Moved event infrastructure from `rho_web` to `rho` core as `Rho.Events`
+(Phoenix.PubSub-based, no Phoenix dependency). Migrated all four non-LV
+consumers from Comms to `Rho.Events`, removed dual-publishing, and
+eliminated the `event_broadcaster` indirection pattern.
+
+1. [x] Created `Rho.Events` module + `Rho.Events.Event` struct in `apps/rho/`
+2. [x] Moved `{Phoenix.PubSub, name: Rho.PubSub}` from `RhoWeb.Application` to `Rho.Application`
+3. [x] Added global lifecycle topic (`"rho:lifecycle"`) for agent start/stop events
+4. [x] Migrated all publishers to direct `Rho.Events.broadcast` calls:
+   - Worker (emit, lifecycle, task_completed, crash-path events)
+   - MultiAgent (task_requested x3, task_completed, agent_spawned, message_sent, broadcast, lite events)
+   - AgentJobs (task_completed, event publishing)
+   - EffectDispatcher (workspace_open, data_table view_change)
+   - LensTools (lens_dashboard_init)
+   - Lenses (lens_score_update)
+   - SkeletonGenerator (task_requested)
+   - Proficiency (task_requested)
+   - DataTable.Server (table_changed, table_created, table_removed)
+5. [x] Migrated all non-LV consumers:
+   - EventLog → `Rho.Events.subscribe` + `subscribe_lifecycle`
+   - REPL → `Rho.Events.subscribe`
+   - Worker.ask → `Rho.Events.subscribe` + Event struct matching
+   - SessionJanitor → `Rho.Events.subscribe_lifecycle`
+6. [x] Made `RhoWeb.LiveEvents` a thin delegator to `Rho.Events`
+7. [x] Updated all LiveView struct aliases: `Rho.Events.Event, as: LiveEvent`
+8. [x] Removed `event_broadcaster` config and deleted `RhoWeb.LiveEventsBroadcaster`
+
+**Verified clean (2026-04-26 audit):**
+- LiveRender — no Comms references; uses its own custom streaming protocol (never used Comms)
+- Recorder — no Comms references; writes directly to tape module
+- Hiring demos — already migrated to `Rho.Events` (subscribe, broadcast, Event struct matching)
+
+### [x] Phase 11: live_event_to_signal bridge removal (0.25d)
+
+Migrated SignalRouter, SessionState, and all workspace projections from
+string-based type dispatch to atom-kind dispatch. Deleted the
+`live_event_to_signal/1` bridge functions from SessionLive and AppLive.
+
+1. [x] SessionState dispatches on `%{kind: atom, data: map}` instead of `%{type: string, data: map}`
+2. [x] Projection behaviour `handles?/1` accepts atoms instead of strings
+3. [x] ChatroomProjection + LensDashboardProjection use atom-kind dispatch
+4. [x] SignalRouter accepts atom-kind signals, enriches by `kind == :message_sent`
+5. [x] SessionLive/AppLive pass `%{kind: event.kind, data: data, emitted_at: event.timestamp}` directly
+6. [x] Replay paths convert stored string type back to atom via `String.to_existing_atom/1`
+7. [x] Deleted `live_event_to_signal/1` and `@session_event_kinds` from both LiveViews
+8. [x] All tests updated — 69 tests pass, zero failures
 
 ---
 
 ## Dependency Graph
 
 ```
-Phase 0 (rho_baml)     ← foundation for Phases 3 + 4
-Phase 1 (LiveEvents)   ← foundation for Phases 2, 5, 6, 7
-Phase 2 (dual-path)    ← depends on Phase 1
-Phase 3 (BAML LLM)     ← depends on Phase 0
-Phase 4 (BAML TypedStructured) ← depends on Phase 3 (follows conventions Phase 3 establishes)
-Phase 5 (Scope/AgentJobs)      ← depends on Phase 1
-Phase 6 (domain events)        ← depends on Phase 5
-Phase 7 (cut over)             ← depends on Phases 2 + 6
-Phase 8 (FlowLive)             ← depends on Phases 5 + 7
-Phase 9 (plugins)              ← independent cleanup
+Phase 0 (rho_baml)     ✓ done
+Phase 1 (LiveEvents)   ✓ done
+Phase 2 (dual-path)    ✓ done
+Phase 3 (BAML LLM)     ✓ done
+Phase 4 (BAML TypedStructured) ✓ done
+Phase 5 (Scope/AgentJobs)      ✓ done
+Phase 6 (domain events)        ✓ done
+Phase 7 (SessionLive cutover)  ✓ done
+Phase 8 (full LV cutover)      ✓ done (deferred items assessed — no changes needed)
+Phase 9 (plugins)              ✓ done
+Phase 10 (non-LV + dual-pub)  ✓ done
+Phase 11 (bridge removal)     ✓ done
+Phase 12 (post-audit cleanup) ✓ done
+Phase 13 (hiring sim → RunSpec) ✓ done
 ```
 
-Phases 0+1 can run in parallel. Phase 3 depends on 0; Phase 4 depends on 3
-(sequential — Phase 4's SchemaWriter should follow conventions Phase 3 proves out).
-Phases 3+4 are independent of Phases 1+2 (different concerns).
+**Completed (2026-04-26):**
+
+1. **Phase 12 — Post-audit cleanup**
+   - Deleted `Rho.ActionSchema.parse_and_dispatch/3` + the orphaned
+     `render_prompt/1` and helpers (`render_fields/1`, `render_type/1`)
+   - Pruned matching describe blocks; converted "deferred tools" tests to
+     call `dispatch_parsed/3` directly with parsed maps
+   - `Rho.StructuredOutput` no longer referenced from `apps/rho/lib/`
+     outside its own module; LV display callers in `apps/rho_web/` remain
+
+2. **Phase 13 — Hiring simulation → RunSpec migration**
+   - `RhoFrameworks.Demos.Hiring.Simulation` now builds a `%Rho.RunSpec{}`
+     per evaluator (model/system_prompt/max_steps/plugins/tools/tape_module)
+     and passes `:run_spec` to `Supervisor.start_worker`
+   - Per-turn overrides removed from `Worker.submit/2`; tools live on the
+     spec, dropping the `evaluator_tools` map entirely
+   - `Rho.Config.agent_config/1` is still read once at spawn time to source
+     the role's `.rho.exs` settings into the spec
+
+**Phase 13 follow-up — legacy Worker path removed (2026-04-26):**
+
+`Worker.build_turn_opts_legacy/3` and `run_turn_legacy/6` are deleted.
+`Worker.init` now synthesizes a `%Rho.RunSpec{}` from `Rho.Config.agent_config/1`
+plus any legacy spawn-time opts when `:run_spec` isn't passed, so
+`state.run_spec` is always non-nil and `start_turn/3` is single-path.
+LV and `MultiAgent` callers were left unchanged — they get a synthesized
+RunSpec without code changes. `Rho.Runner.run/3` (legacy 3-arity) stays
+for direct test usage of Runner.
+
+`StructuredOutput` (537 LOC) and `SchemaCoerce` (374 LOC) **stay**. Both are
+live code — see "What Becomes Dead Code" section above for the audit.
 
 ---
 
-## Estimated Impact
+## Actual Impact (updated 2026-04-26)
 
-| Metric | Before | After |
-|--------|--------|-------|
-| Core deps from frameworks | 7 | 5 (RunSpec/Runner, DataTable, Tool, Effect types, PluginInstance) |
-| `Rho.Config.agent_config()` calls | 5 | 0 |
-| Manual `Rho.Context` construction | 3 sites | 0 |
-| `Rho.Comms.publish` from frameworks | 8 calls (6 files) | 0 |
-| Global side effects in Application.start | 1 | 0 |
-| Comms subscriptions per SessionLive | 3 wildcards | 1 scoped |
-| Structured output parser | Custom Elixir (911 lines: StructuredOutput 537 + SchemaCoerce 374) | BAML Rust NIF |
-| Schema source of truth | `.baml` files + separate structs | Zoi schemas (single definition) |
-| Model flexibility for structured calls | JSON schema models only | Any model |
-| Signal dispatch | String suffix parsing | Atom pattern matching |
-
-**Total effort: ~9.25d** (Phase 5 expanded for LiteWorker removal + MultiAgent migration; SchemaWriter moved from Phase 0 to Phase 4)
+| Metric | Before | After | Status |
+|--------|--------|-------|--------|
+| Core deps from frameworks | 7 | 5 (RunSpec/Runner, DataTable, Tool, Effect types, PluginInstance) | ✓ done |
+| `Rho.Config.agent_config()` calls in frameworks | 5 | 1 (hiring simulation, deferred) | ✓ done |
+| Manual `Rho.Context` construction | 3 sites | 0 | ✓ done |
+| `Rho.Comms.publish` from frameworks | 8 calls (6 files) | 0 (migrated to Rho.Events) | ✓ done |
+| Global side effects in Application.start | 1 | 0 | ✓ done |
+| Comms subscriptions in rho_web | 3 wildcards per LV | 0 | ✓ done |
+| Structured output parser (TypedStructured agent loop) | Custom Elixir | BAML Rust NIF | ✓ done |
+| `StructuredOutput` / `SchemaCoerce` LOC | 911 (planned for deletion) | 911 (still live — see audit) | ✗ retained |
+| Schema source of truth | `.baml` files + separate structs | Zoi schemas (single definition) | ✓ done |
+| Model flexibility for structured calls | JSON schema models only | Any model | ✓ done |
+| Signal dispatch in LiveViews | String suffix parsing | Atom pattern matching (+ bridge) | ✓ done |
 
 ---
 

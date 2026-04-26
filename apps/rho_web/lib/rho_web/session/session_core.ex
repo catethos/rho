@@ -82,7 +82,7 @@ defmodule RhoWeb.Session.SessionCore do
   def subscribe_and_hydrate(socket, session_id, opts \\ []) do
     {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, opts)
 
-    RhoWeb.LiveEvents.subscribe(session_id)
+    Rho.Events.subscribe(session_id)
 
     agents =
       Rho.Agent.Registry.list_all(session_id)
@@ -129,7 +129,7 @@ defmodule RhoWeb.Session.SessionCore do
   @doc "Unsubscribe from session events."
   def unsubscribe(socket) do
     if sid = socket.assigns[:session_id] do
-      RhoWeb.LiveEvents.unsubscribe(sid)
+      Rho.Events.unsubscribe(sid)
     end
 
     socket

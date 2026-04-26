@@ -3,8 +3,6 @@ defmodule RhoFrameworks.Demos.Hiring.Tools do
   Hiring-specific tools for evaluator agents.
   """
 
-  alias Rho.Comms
-
   def submit_scores_tool(session_id, agent_id, role) do
     %{
       tool:
@@ -29,16 +27,13 @@ defmodule RhoFrameworks.Demos.Hiring.Tools do
 
         case Jason.decode(raw_scores) do
           {:ok, scores} when is_list(scores) ->
-            Comms.publish(
-              "rho.hiring.scores.submitted",
-              %{
-                session_id: session_id,
-                agent_id: agent_id,
+            Rho.Events.broadcast(
+              session_id,
+              Rho.Events.event(:hiring_scores_submitted, session_id, agent_id, %{
                 role: role,
                 round: round,
                 scores: scores
-              },
-              source: "/session/#{session_id}/agent/#{agent_id}"
+              })
             )
 
             {:ok, "Scores submitted for round #{round}: #{length(scores)} candidates scored."}

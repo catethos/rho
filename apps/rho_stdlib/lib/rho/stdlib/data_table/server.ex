@@ -4,7 +4,7 @@ defmodule Rho.Stdlib.DataTable.Server do
 
   Tools and the LiveView call into this server synchronously via
   `GenServer.call`. After each mutation the server publishes a coarse
-  invalidation event to `Rho.Comms`; subscribers respond by re-fetching
+  invalidation event via `Rho.Events`; subscribers respond by re-fetching
   snapshots.
 
   The server uses `restart: :temporary` — if it crashes it stays down
@@ -14,7 +14,6 @@ defmodule Rho.Stdlib.DataTable.Server do
 
   use GenServer, restart: :temporary
 
-  alias Rho.Comms
   alias Rho.Stdlib.DataTable.Schema
   alias Rho.Stdlib.DataTable.Table
 
@@ -38,7 +37,7 @@ defmodule Rho.Stdlib.DataTable.Server do
     end
   end
 
-  @doc "Topic used for coarse invalidation events via `Rho.Comms`."
+  @doc "Legacy topic string. DataTable events now flow via `Rho.Events`."
   def topic(session_id) when is_binary(session_id) do
     "rho.session.#{session_id}.events.data_table"
   end
@@ -284,7 +283,10 @@ defmodule Rho.Stdlib.DataTable.Server do
   end
 
   defp publish(session_id, payload) do
-    Comms.publish(topic(session_id), payload, source: "/session/#{session_id}/data_table")
+    Rho.Events.broadcast(
+      session_id,
+      Rho.Events.event(:data_table, session_id, nil, payload)
+    )
   end
 
   defp schemas_compatible?(%Schema{} = a, %Schema{} = b) do

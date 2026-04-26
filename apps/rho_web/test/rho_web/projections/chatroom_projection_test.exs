@@ -3,23 +3,23 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
 
   alias RhoWeb.Projections.ChatroomProjection
 
-  defp signal(suffix, data) do
-    %{type: "rho.session.test.events.#{suffix}", data: data}
+  defp signal(kind, data) do
+    %{kind: kind, data: data}
   end
 
   describe "handles?/1" do
-    test "matches chatroom signal suffixes" do
-      assert ChatroomProjection.handles?("rho.session.abc.events.message_sent")
-      assert ChatroomProjection.handles?("rho.session.abc.events.broadcast")
-      assert ChatroomProjection.handles?("rho.session.abc.events.text_delta")
-      assert ChatroomProjection.handles?("rho.session.abc.events.llm_text")
-      assert ChatroomProjection.handles?("rho.session.abc.events.turn_finished")
+    test "matches chatroom event kinds" do
+      assert ChatroomProjection.handles?(:message_sent)
+      assert ChatroomProjection.handles?(:broadcast)
+      assert ChatroomProjection.handles?(:text_delta)
+      assert ChatroomProjection.handles?(:llm_text)
+      assert ChatroomProjection.handles?(:turn_finished)
     end
 
-    test "rejects non-chatroom signals" do
-      refute ChatroomProjection.handles?("rho.session.abc.events.tool_start")
-      refute ChatroomProjection.handles?("rho.session.abc.events.spreadsheet_rows_delta")
-      refute ChatroomProjection.handles?("rho.session.abc.events.llm_usage")
+    test "rejects non-chatroom event kinds" do
+      refute ChatroomProjection.handles?(:tool_start)
+      refute ChatroomProjection.handles?(:spreadsheet_rows_delta)
+      refute ChatroomProjection.handles?(:llm_usage)
     end
   end
 
@@ -36,7 +36,7 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       state =
         ChatroomProjection.reduce(
           state,
-          signal("message_sent", %{
+          signal(:message_sent, %{
             from: "agent_1",
             to: "agent_2",
             message: "Hello there",
@@ -59,8 +59,8 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
 
       state =
         state
-        |> ChatroomProjection.reduce(signal("message_sent", %{from: "a1", message: "first"}))
-        |> ChatroomProjection.reduce(signal("message_sent", %{from: "a2", message: "second"}))
+        |> ChatroomProjection.reduce(signal(:message_sent, %{from: "a1", message: "first"}))
+        |> ChatroomProjection.reduce(signal(:message_sent, %{from: "a2", message: "second"}))
 
       assert length(state.messages) == 2
       assert Enum.at(state.messages, 0).content == "first"
@@ -75,7 +75,7 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       state =
         ChatroomProjection.reduce(
           state,
-          signal("broadcast", %{
+          signal(:broadcast, %{
             from: "coordinator",
             message: "All agents: new task",
             event_id: "evt_b1"
@@ -97,8 +97,8 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       # Stream some deltas
       state =
         state
-        |> ChatroomProjection.reduce(signal("text_delta", %{agent_id: "agent_1", text: "Hello "}))
-        |> ChatroomProjection.reduce(signal("text_delta", %{agent_id: "agent_1", text: "world"}))
+        |> ChatroomProjection.reduce(signal(:text_delta, %{agent_id: "agent_1", text: "Hello "}))
+        |> ChatroomProjection.reduce(signal(:text_delta, %{agent_id: "agent_1", text: "world"}))
 
       # Should be buffering, no messages yet
       assert state.messages == []
@@ -108,7 +108,7 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       state =
         ChatroomProjection.reduce(
           state,
-          signal("turn_finished", %{agent_id: "agent_1", event_id: "evt_t1"})
+          signal(:turn_finished, %{agent_id: "agent_1", event_id: "evt_t1"})
         )
 
       assert length(state.messages) == 1
@@ -124,8 +124,8 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
 
       state =
         state
-        |> ChatroomProjection.reduce(signal("llm_text", %{agent_id: "agent_1", text: "response"}))
-        |> ChatroomProjection.reduce(signal("turn_finished", %{agent_id: "agent_1"}))
+        |> ChatroomProjection.reduce(signal(:llm_text, %{agent_id: "agent_1", text: "response"}))
+        |> ChatroomProjection.reduce(signal(:turn_finished, %{agent_id: "agent_1"}))
 
       assert length(state.messages) == 1
       assert hd(state.messages).content == "response"
@@ -137,7 +137,7 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       state =
         ChatroomProjection.reduce(
           state,
-          signal("turn_finished", %{
+          signal(:turn_finished, %{
             agent_id: "agent_1",
             result: {:ok, "Final answer"},
             event_id: "evt_r1"
@@ -154,7 +154,7 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       state =
         ChatroomProjection.reduce(
           state,
-          signal("turn_finished", %{agent_id: "agent_1"})
+          signal(:turn_finished, %{agent_id: "agent_1"})
         )
 
       assert state.messages == []
@@ -165,8 +165,8 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
 
       state =
         state
-        |> ChatroomProjection.reduce(signal("text_delta", %{agent_id: "a1", text: "from a1"}))
-        |> ChatroomProjection.reduce(signal("text_delta", %{agent_id: "a2", text: "from a2"}))
+        |> ChatroomProjection.reduce(signal(:text_delta, %{agent_id: "a1", text: "from a1"}))
+        |> ChatroomProjection.reduce(signal(:text_delta, %{agent_id: "a2", text: "from a2"}))
 
       assert state.streaming["a1"] == "from a1"
       assert state.streaming["a2"] == "from a2"
@@ -175,7 +175,7 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
       state =
         ChatroomProjection.reduce(
           state,
-          signal("turn_finished", %{agent_id: "a1"})
+          signal(:turn_finished, %{agent_id: "a1"})
         )
 
       assert length(state.messages) == 1
@@ -208,11 +208,11 @@ defmodule RhoWeb.Projections.ChatroomProjectionTest do
   describe "replay determinism" do
     test "replaying a signal sequence produces identical state" do
       signals = [
-        signal("message_sent", %{from: "user", message: "hi", event_id: "e1"}),
-        signal("text_delta", %{agent_id: "a1", text: "hello "}),
-        signal("text_delta", %{agent_id: "a1", text: "there"}),
-        signal("turn_finished", %{agent_id: "a1", event_id: "e2"}),
-        signal("broadcast", %{from: "system", message: "update", event_id: "e3"})
+        signal(:message_sent, %{from: "user", message: "hi", event_id: "e1"}),
+        signal(:text_delta, %{agent_id: "a1", text: "hello "}),
+        signal(:text_delta, %{agent_id: "a1", text: "there"}),
+        signal(:turn_finished, %{agent_id: "a1", event_id: "e2"}),
+        signal(:broadcast, %{from: "system", message: "update", event_id: "e3"})
       ]
 
       run = fn ->

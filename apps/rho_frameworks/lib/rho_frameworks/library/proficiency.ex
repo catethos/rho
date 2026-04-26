@@ -221,22 +221,9 @@ defmodule RhoFrameworks.Library.Proficiency do
       task: "Proficiency levels: #{category} (#{count} skills)"
     }
 
-    Rho.Comms.publish(
-      "rho.task.requested",
-      data,
-      source: "/session/#{scope.session_id}/agent/#{agent_id}"
+    Rho.Events.broadcast(
+      scope.session_id,
+      Rho.Events.event(:task_requested, scope.session_id, agent_id, data)
     )
-
-    maybe_broadcast_event(:task_requested, scope.session_id, agent_id, data)
   end
-
-  defp maybe_broadcast_event(kind, session_id, agent_id, data)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
-    end
-  end
-
-  defp maybe_broadcast_event(_, _, _, _), do: :ok
 end

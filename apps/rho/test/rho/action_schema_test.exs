@@ -86,138 +86,7 @@ defmodule Rho.ActionSchemaTest do
     end
   end
 
-  # --- parse_and_dispatch/3 ---
-
-  describe "parse_and_dispatch/3 — new flat format" do
-    test "dispatches respond variant" do
-      text = ~s({"tool": "respond", "message": "Hello!"})
-
-      assert {:respond, "Hello!", _opts} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "dispatches think variant" do
-      text = ~s({"tool": "think", "thought": "Let me reconsider..."})
-
-      assert {:think, "Let me reconsider..."} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "dispatches tool variant with coerced args" do
-      text = ~s({"tool": "bash", "cmd": "ls -la"})
-
-      assert {:tool, "bash", args, _td, opts} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-
-      assert args[:cmd] == "ls -la"
-      assert opts[:thinking] == nil
-    end
-
-    test "dispatches tool with thinking side-channel" do
-      text = ~s({"tool": "bash", "cmd": "ls", "thinking": "Check directory"})
-
-      assert {:tool, "bash", args, _td, opts} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-
-      assert args[:cmd] == "ls"
-      assert opts[:thinking] == "Check directory"
-    end
-
-    test "coerces integer args from string" do
-      text = ~s({"tool": "fs_read", "path": "/tmp/f", "offset": "10"})
-
-      assert {:tool, "fs_read", args, _td, opts} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-
-      assert args[:path] == "/tmp/f"
-      assert args[:offset] == 10
-      assert opts[:repairs] != []
-    end
-
-    test "returns unknown for unregistered tool" do
-      text = ~s({"tool": "nonexistent", "foo": "bar"})
-
-      assert {:unknown, "nonexistent", _args} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "returns parse_error for missing tool tag" do
-      text = ~s({"cmd": "ls"})
-
-      assert {:parse_error, :missing_tool_tag} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "returns parse_error for non-string tool tag" do
-      text = ~s({"tool": 42})
-
-      assert {:parse_error, :tool_tag_not_string} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "returns parse_error for invalid JSON" do
-      text = "this is not json at all"
-      assert {:parse_error, _reason} = ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "returns parse_error for non-object JSON" do
-      text = ~s(["an", "array"])
-
-      assert {:parse_error, :not_an_object} =
-               ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-  end
-
-  describe "parse_and_dispatch/3 — edge cases" do
-    test "tool in schema but not in tool_map returns unknown" do
-      # Build schema with bash, but empty tool_map
-      s = schema()
-
-      assert {:unknown, "bash", _} =
-               ActionSchema.parse_and_dispatch(~s({"tool": "bash", "cmd": "ls"}), s, %{})
-    end
-
-    test "respond with coercion (message as number)" do
-      text = ~s({"tool": "respond", "message": 42})
-      assert {:respond, "42", _opts} = ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-
-    test "handles JSON wrapped in markdown fences" do
-      text = "```json\n{\"tool\": \"respond\", \"message\": \"hi\"}\n```"
-      assert {:respond, "hi", _opts} = ActionSchema.parse_and_dispatch(text, schema(), tool_map())
-    end
-  end
-
-  # --- render_prompt/1 ---
-
-  describe "render_prompt/1" do
-    test "renders all variants" do
-      output = ActionSchema.render_prompt(schema())
-      assert output =~ "ActionName ="
-      assert output =~ "respond(message: string"
-      assert output =~ "think(thought: string"
-      assert output =~ "bash(cmd: string @desc(Command to run))"
-      assert output =~ "fs_read(path: string, offset?: integer)"
-      assert output =~ "thinking?: string"
-    end
-
-    test "builtins appear before tool variants" do
-      output = ActionSchema.render_prompt(schema())
-      respond_pos = :binary.match(output, "respond") |> elem(0)
-      think_pos = :binary.match(output, "think(") |> elem(0)
-      bash_pos = :binary.match(output, "bash") |> elem(0)
-      assert respond_pos < bash_pos
-      assert think_pos < bash_pos
-    end
-
-    test "renders empty tool set (builtins only)" do
-      s = ActionSchema.build([])
-      output = ActionSchema.render_prompt(s)
-      assert output =~ "respond"
-      assert output =~ "think"
-      refute output =~ "bash"
-    end
-  end
+  # --- dispatch_parsed/3 ---
 
   describe "deferred tools" do
     test "tool not in schema but in tool_map dispatches successfully" do
@@ -233,20 +102,25 @@ defmodule Rho.ActionSchemaTest do
       full_map = tool_map()
       assert Map.has_key?(full_map, "bash")
 
-      text = ~s({"tool": "bash", "cmd": "ls -la"})
-
       assert {:tool, "bash", args, _td, _opts} =
-               ActionSchema.parse_and_dispatch(text, schema, full_map)
+               ActionSchema.dispatch_parsed(
+                 %{"tool" => "bash", "cmd" => "ls -la"},
+                 schema,
+                 full_map
+               )
 
       assert args[:cmd] == "ls -la"
     end
 
     test "tool not in schema and not in tool_map returns unknown" do
       schema = ActionSchema.build([])
-      text = ~s({"tool": "nonexistent", "foo": "bar"})
 
       assert {:unknown, "nonexistent", _args} =
-               ActionSchema.parse_and_dispatch(text, schema, %{})
+               ActionSchema.dispatch_parsed(
+                 %{"tool" => "nonexistent", "foo" => "bar"},
+                 schema,
+                 %{}
+               )
     end
   end
 end

@@ -1,8 +1,8 @@
 defmodule Rho.Stdlib.DataTable.SessionJanitor do
   @moduledoc """
-  Listens for `rho.agent.stopped` signals on `Rho.Comms` and shuts down
-  the matching `Rho.Stdlib.DataTable.Server` when the primary agent for
-  a session terminates.
+  Listens for `:agent_stopped` events on `Rho.Events` lifecycle topic and
+  shuts down the matching `Rho.Stdlib.DataTable.Server` when the primary
+  agent for a session terminates.
 
   This avoids a new cross-app teardown protocol: data tables follow the
   lifetime of the primary agent they are tied to.
@@ -12,7 +12,7 @@ defmodule Rho.Stdlib.DataTable.SessionJanitor do
 
   require Logger
 
-  alias Rho.Comms
+  alias Rho.Events.Event
   alias Rho.Stdlib.DataTable
 
   def start_link(opts \\ []) do
@@ -21,21 +21,12 @@ defmodule Rho.Stdlib.DataTable.SessionJanitor do
 
   @impl true
   def init(_opts) do
-    case Comms.subscribe("rho.agent.stopped") do
-      {:ok, sub_id} ->
-        {:ok, %{sub_id: sub_id}}
-
-      {:error, reason} ->
-        Logger.warning(
-          "[DataTable.SessionJanitor] failed to subscribe to rho.agent.stopped: #{inspect(reason)}"
-        )
-
-        {:ok, %{sub_id: nil}}
-    end
+    Rho.Events.subscribe_lifecycle()
+    {:ok, %{}}
   end
 
   @impl true
-  def handle_info({:signal, %{data: data}}, state) do
+  def handle_info(%Event{kind: :agent_stopped, data: data}, state) do
     with true <- primary_agent?(data),
          session_id when is_binary(session_id) <- session_id_of(data) do
       DataTable.stop(session_id)
@@ -44,6 +35,7 @@ defmodule Rho.Stdlib.DataTable.SessionJanitor do
     {:noreply, state}
   end
 
+  def handle_info(%Event{}, state), do: {:noreply, state}
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp primary_agent?(%{primary?: true}), do: true

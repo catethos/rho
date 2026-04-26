@@ -6,8 +6,8 @@ defmodule Rho.Stdlib.Plugins.DataTable do
   GenServer. Tools in this plugin are thin wrappers around the
   `Rho.Stdlib.DataTable` client API. They do not publish any legacy UI
   signals: the server publishes its own coarse invalidation events
-  via `Rho.Comms` on `rho.session.<sid>.events.data_table`, which the
-  LiveView consumes by refetching snapshots.
+  via `Rho.Events` as `:data_table` events, which the LiveView
+  consumes by refetching snapshots.
   """
 
   @behaviour Rho.Plugin

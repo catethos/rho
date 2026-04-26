@@ -14,7 +14,7 @@ defmodule RhoWeb.FlowLive do
   alias RhoFrameworks.Flows.Registry, as: FlowRegistry
   alias RhoFrameworks.Scope
   alias RhoWeb.FlowComponents
-  alias RhoWeb.LiveEvents.Event, as: LiveEvent
+  alias Rho.Events.Event, as: LiveEvent
 
   import FlowComponents
 
@@ -78,7 +78,7 @@ defmodule RhoWeb.FlowLive do
       user_id: socket.assigns.current_user.id
     }
 
-    RhoWeb.LiveEvents.subscribe(session_id)
+    Rho.Events.subscribe(session_id)
 
     socket
     |> assign_static(flow_mod)
@@ -282,7 +282,7 @@ defmodule RhoWeb.FlowLive do
   @impl true
   def terminate(_reason, socket) do
     if sid = socket.assigns[:session_id] do
-      RhoWeb.LiveEvents.unsubscribe(sid)
+      Rho.Events.unsubscribe(sid)
     end
 
     :ok
@@ -402,7 +402,7 @@ defmodule RhoWeb.FlowLive do
     scope = socket.assigns.scope
 
     case apply(mod, fun, [params, scope | extra]) do
-      # Async worker (e.g. SkeletonGenerator) — track via Comms signals
+      # Async worker (e.g. SkeletonGenerator) — track via Rho.Events
       {:ok, %{agent_id: agent_id}} ->
         socket
         |> assign(:step_status, :running)

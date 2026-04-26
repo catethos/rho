@@ -15,17 +15,10 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
 
   @behaviour RhoWeb.Projection
 
-  @handled_suffixes ~w(
-    lens_score_update
-    lens_dashboard_init
-    lens_switch
-  )
+  @handled_kinds MapSet.new(~w(lens_score_update lens_dashboard_init lens_switch)a)
 
   @impl true
-  def handles?(type) when is_binary(type) do
-    suffix = type |> String.split(".") |> List.last()
-    suffix in @handled_suffixes
-  end
+  def handles?(kind), do: kind in @handled_kinds
 
   @impl true
   def init do
@@ -39,13 +32,11 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
   end
 
   @impl true
-  def reduce(state, %{type: type, data: data}) do
-    suffix = type |> String.split(".") |> List.last()
-
-    case suffix do
-      "lens_score_update" -> reduce_score_update(state, data)
-      "lens_dashboard_init" -> reduce_dashboard_init(state, data)
-      "lens_switch" -> reduce_lens_switch(state, data)
+  def reduce(state, %{kind: kind, data: data}) do
+    case kind do
+      :lens_score_update -> reduce_score_update(state, data)
+      :lens_dashboard_init -> reduce_dashboard_init(state, data)
+      :lens_switch -> reduce_lens_switch(state, data)
       _ -> state
     end
   end

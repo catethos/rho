@@ -87,13 +87,14 @@ defmodule Rho.ActionSchema do
     }
   end
 
-  # --- Parse and dispatch ---
+  # --- Dispatch ---
 
   @doc """
-  Parse raw LLM text and dispatch to the matching variant.
+  Dispatch a pre-parsed map to the matching variant.
 
-  Pipeline: StructuredOutput.parse → extract "tool" tag →
-  find variant → coerce fields → extract thinking side-channel.
+  BAML has already parsed the LLM response into a map; this routes the
+  `"tool"` discriminant to a variant, coerces fields, and extracts the
+  `"thinking"` side-channel.
 
   Returns one of:
     - `{:respond, message, thinking: thinking}`
@@ -101,31 +102,6 @@ defmodule Rho.ActionSchema do
     - `{:tool, name, args, tool_def, thinking: thinking, repairs: repairs}`
     - `{:unknown, name, raw_args}`
     - `{:parse_error, reason}`
-  """
-  @spec parse_and_dispatch(String.t(), t(), %{String.t() => map()}) ::
-          {:respond, String.t(), keyword()}
-          | {:think, String.t()}
-          | {:tool, String.t(), map(), map(), keyword()}
-          | {:unknown, String.t(), map()}
-          | {:parse_error, term()}
-  def parse_and_dispatch(text, schema, tool_map) do
-    case Rho.StructuredOutput.parse(text) do
-      {:ok, parsed} when is_map(parsed) ->
-        dispatch(parsed, schema, tool_map)
-
-      {:ok, _non_map} ->
-        {:parse_error, :not_an_object}
-
-      {:error, reason} ->
-        {:parse_error, reason}
-    end
-  end
-
-  @doc """
-  Dispatch a pre-parsed map to the matching variant.
-
-  Same as `parse_and_dispatch/3` but skips the `StructuredOutput.parse` step.
-  Used when BAML has already parsed the LLM response into a map.
   """
   @spec dispatch_parsed(map(), t(), %{String.t() => map()}) ::
           {:respond, String.t(), keyword()}
@@ -135,38 +111,6 @@ defmodule Rho.ActionSchema do
           | {:parse_error, term()}
   def dispatch_parsed(parsed, schema, tool_map) when is_map(parsed) do
     dispatch(parsed, schema, tool_map)
-  end
-
-  # --- Prompt rendering ---
-
-  @doc """
-  Render BAML-style schema text for prompt injection.
-  """
-  @spec render_prompt(t()) :: String.t()
-  def render_prompt(%__MODULE__{variants: variants}) do
-    sorted =
-      variants
-      |> Map.values()
-      |> Enum.sort_by(fn v -> {!v.builtin, v.name} end)
-
-    variant_lines =
-      Enum.map_join(sorted, "\n", fn variant ->
-        params = render_fields(variant.fields)
-        desc = Map.get(variant, :description)
-        line = "  | #{variant.name}(#{params})"
-        if desc, do: "#{line}  // #{desc}", else: line
-      end)
-
-    """
-    Action = {
-      tool: ActionName,  // discriminant
-      ...params,         // fields for the chosen action
-      thinking?: string  // optional reasoning (any action)
-    }
-
-    ActionName =
-    #{variant_lines}
-    """
   end
 
   # --- Internals ---
@@ -248,21 +192,4 @@ defmodule Rho.ActionSchema do
         err
     end
   end
-
-  defp render_fields([]), do: ""
-
-  defp render_fields(fields) do
-    Enum.map_join(fields, ", ", fn {name, opts} ->
-      type = Keyword.get(opts, :type, :string) |> render_type()
-      optional = if Keyword.get(opts, :required, false), do: "", else: "?"
-      desc = Keyword.get(opts, :doc)
-      base = "#{name}#{optional}: #{type}"
-      if desc, do: "#{base} @desc(#{desc})", else: base
-    end)
-  end
-
-  defp render_type({:list, inner}), do: "#{render_type(inner)}[]"
-  defp render_type({:map, k, v}), do: "map<#{render_type(k)}, #{render_type(v)}>"
-  defp render_type(atom) when is_atom(atom), do: Atom.to_string(atom)
-  defp render_type(_), do: "any"
 end

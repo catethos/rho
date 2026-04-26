@@ -10,7 +10,7 @@ defmodule Rho.RunSpec do
       # Full control — no .rho.exs needed:
       spec = Rho.RunSpec.build(model: "mock:test", plugins: [:bash], max_steps: 5)
 
-      # From .rho.exs (via rho_cli):
+      # From .rho.exs:
       spec = Rho.RunSpec.FromConfig.build(:coder)
 
   ## Fields

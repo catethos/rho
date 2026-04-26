@@ -705,22 +705,10 @@ defmodule RhoFrameworks.Lenses do
       score_data = score_detail(lens_score.id)
       data = %{lens_id: lens.id, score: score_data}
 
-      topic = "rho.session.#{session_id}.events.lens_score_update"
-      source = if agent_id, do: "/session/#{session_id}/agent/#{agent_id}", else: "/system"
-
-      Rho.Comms.publish(topic, data, source: source)
-
-      maybe_broadcast_event(:lens_score_update, session_id, agent_id, data)
+      Rho.Events.broadcast(
+        session_id,
+        Rho.Events.event(:lens_score_update, session_id, agent_id, data)
+      )
     end
   end
-
-  defp maybe_broadcast_event(kind, session_id, agent_id, data)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
-    end
-  end
-
-  defp maybe_broadcast_event(_, _, _, _), do: :ok
 end

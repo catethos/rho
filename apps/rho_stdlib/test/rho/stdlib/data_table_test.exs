@@ -223,22 +223,28 @@ defmodule Rho.Stdlib.DataTableTest do
   describe "notifications" do
     test "publishes table_changed on mutation", %{session_id: sid} do
       DataTable.ensure_started(sid)
-      topic = DataTable.topic(sid)
-      {:ok, _sub} = Rho.Comms.subscribe(topic)
+      Rho.Events.subscribe(sid)
 
       DataTable.add_rows(sid, [%{"x" => 1}])
 
-      assert_receive {:signal, %{data: %{event: :table_changed, table_name: "main"}}}, 500
+      assert_receive %Rho.Events.Event{
+                       kind: :data_table,
+                       data: %{event: :table_changed, table_name: "main"}
+                     },
+                     500
     end
 
     test "publishes table_created on ensure_table", %{session_id: sid} do
       DataTable.ensure_started(sid)
-      topic = DataTable.topic(sid)
-      {:ok, _sub} = Rho.Comms.subscribe(topic)
+      Rho.Events.subscribe(sid)
 
       DataTable.ensure_table(sid, "library", library_schema())
 
-      assert_receive {:signal, %{data: %{event: :table_created, table_name: "library"}}}, 500
+      assert_receive %Rho.Events.Event{
+                       kind: :data_table,
+                       data: %{event: :table_created, table_name: "library"}
+                     },
+                     500
     end
   end
 

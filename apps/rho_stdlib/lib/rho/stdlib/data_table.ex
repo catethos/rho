@@ -25,8 +25,8 @@ defmodule Rho.Stdlib.DataTable do
     * `EffectDispatcher` before writing an effect
 
   After every mutation the server publishes a coarse invalidation event on
-  the session topic `"rho.session.<id>.events.data_table"` via
-  `Rho.Comms`. Subscribers re-fetch snapshots.
+  the session topic via `Rho.Events` as `:data_table` events.
+  Subscribers re-fetch snapshots.
   """
 
   alias Rho.Stdlib.DataTable.Schema

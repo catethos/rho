@@ -7,7 +7,7 @@ defmodule RhoFrameworks.AgentJobs do
   compaction, direct tool execution.
 
   Results are tracked via `LiteTracker` and completion events are
-  published to `Rho.Comms`.
+  published via `Rho.Events`.
   """
 
   require Logger
@@ -124,13 +124,10 @@ defmodule RhoFrameworks.AgentJobs do
 
     data = %{session_id: session_id, agent_id: agent_id, status: status, result: text}
 
-    Rho.Comms.publish(
-      "rho.task.completed",
-      data,
-      source: "/session/#{session_id}/agent/#{agent_id}"
+    Rho.Events.broadcast(
+      session_id,
+      Rho.Events.event(:task_completed, session_id, agent_id, data)
     )
-
-    maybe_broadcast_event(:task_completed, session_id, agent_id, data)
   end
 
   defp publish_completion(_, _, _), do: :ok
@@ -143,51 +140,13 @@ defmodule RhoFrameworks.AgentJobs do
   defp publish_event(nil, _agent_id, _event), do: :ok
 
   defp publish_event(session_id, agent_id, event) when is_binary(session_id) do
-    case event_to_signal_type(event) do
-      nil ->
+    case event do
+      %{type: type} when type in @signal_event_types ->
+        tagged = Map.put(event, :lite, true)
+        Rho.Events.broadcast(session_id, Rho.Events.normalize(tagged, session_id, agent_id))
+
+      _ ->
         :ok
-
-      signal_type ->
-        payload =
-          event
-          |> Map.put(:agent_id, agent_id)
-          |> Map.put(:session_id, session_id)
-          |> Map.put(:lite, true)
-
-        Rho.Comms.publish(
-          "rho.session.#{session_id}.events.#{signal_type}",
-          payload,
-          source: "/session/#{session_id}/agent/#{agent_id}"
-        )
-
-        maybe_broadcast_emit(payload, session_id, agent_id)
     end
   end
-
-  defp event_to_signal_type(%{type: type}) when type in @signal_event_types,
-    do: Atom.to_string(type)
-
-  defp event_to_signal_type(_), do: nil
-
-  # --- LiveEvents broadcaster helpers ---
-
-  defp maybe_broadcast_event(kind, session_id, agent_id, data)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
-    end
-  end
-
-  defp maybe_broadcast_event(_, _, _, _), do: :ok
-
-  defp maybe_broadcast_emit(event, session_id, agent_id)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_emit(event, session_id, agent_id)
-    end
-  end
-
-  defp maybe_broadcast_emit(_, _, _), do: :ok
 end

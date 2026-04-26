@@ -1,48 +1,59 @@
-defmodule RhoWeb.LiveEventsTest do
+defmodule Rho.EventsTest do
   use ExUnit.Case, async: true
 
-  alias RhoWeb.LiveEvents
-  alias RhoWeb.LiveEvents.Event
+  alias Rho.Events
+  alias Rho.Events.Event
 
   @session_id "test-session-#{:erlang.unique_integer([:positive])}"
   @agent_id "test-agent-1"
 
   describe "subscribe/1 + broadcast/2" do
     test "delivers events to subscribers" do
-      LiveEvents.subscribe(@session_id)
+      Events.subscribe(@session_id)
 
-      event = LiveEvents.event(:text_delta, @session_id, @agent_id, %{text: "hello"})
-      :ok = LiveEvents.broadcast(@session_id, event)
+      event = Events.event(:text_delta, @session_id, @agent_id, %{text: "hello"})
+      :ok = Events.broadcast(@session_id, event)
 
       assert_receive %Event{kind: :text_delta, data: %{text: "hello"}}
     end
 
     test "does not deliver events to other sessions" do
-      LiveEvents.subscribe(@session_id)
+      Events.subscribe(@session_id)
 
       other = "other-session-#{:erlang.unique_integer([:positive])}"
-      event = LiveEvents.event(:text_delta, other, @agent_id, %{text: "nope"})
-      :ok = LiveEvents.broadcast(other, event)
+      event = Events.event(:text_delta, other, @agent_id, %{text: "nope"})
+      :ok = Events.broadcast(other, event)
 
       refute_receive %Event{}, 50
     end
 
     test "unsubscribe stops delivery" do
       sid = "unsub-test-#{:erlang.unique_integer([:positive])}"
-      LiveEvents.subscribe(sid)
-      LiveEvents.unsubscribe(sid)
+      Events.subscribe(sid)
+      Events.unsubscribe(sid)
 
-      event = LiveEvents.event(:text_delta, sid, @agent_id, %{text: "gone"})
-      :ok = LiveEvents.broadcast(sid, event)
+      event = Events.event(:text_delta, sid, @agent_id, %{text: "gone"})
+      :ok = Events.broadcast(sid, event)
 
       refute_receive %Event{}, 50
+    end
+  end
+
+  describe "subscribe_lifecycle/0 + broadcast_lifecycle/1" do
+    test "delivers lifecycle events globally" do
+      Events.subscribe_lifecycle()
+
+      event = Events.event(:agent_stopped, @session_id, @agent_id, %{})
+      :ok = Events.broadcast_lifecycle(event)
+
+      assert_receive %Event{kind: :agent_stopped, session_id: @session_id}
     end
   end
 
   describe "normalize/3" do
     test "converts Runner emit map to Event struct" do
       emit = %{type: :tool_start, name: "bash", args: %{cmd: "ls"}, call_id: "c1", turn_id: "1"}
-      event = LiveEvents.normalize(emit, @session_id, @agent_id)
+      event = Events.normalize(emit, @session_id, @agent_id)
 
       assert %Event{
                kind: :tool_start,
@@ -64,7 +75,7 @@ defmodule RhoWeb.LiveEventsTest do
 
     test "converts text_delta emit" do
       emit = %{type: :text_delta, text: "hello world", turn_id: "2"}
-      event = LiveEvents.normalize(emit, @session_id, @agent_id)
+      event = Events.normalize(emit, @session_id, @agent_id)
 
       assert event.kind == :text_delta
       assert event.data.text == "hello world"
@@ -72,7 +83,7 @@ defmodule RhoWeb.LiveEventsTest do
 
     test "converts turn_finished emit" do
       emit = %{type: :turn_finished, result: {:ok, "done"}, turn_id: "3"}
-      event = LiveEvents.normalize(emit, @session_id, @agent_id)
+      event = Events.normalize(emit, @session_id, @agent_id)
 
       assert event.kind == :turn_finished
       assert event.data.result == {:ok, "done"}
@@ -82,7 +93,7 @@ defmodule RhoWeb.LiveEventsTest do
   describe "event/4" do
     test "builds lifecycle event" do
       event =
-        LiveEvents.event(:agent_started, @session_id, @agent_id, %{
+        Events.event(:agent_started, @session_id, @agent_id, %{
           role: :primary,
           depth: 0,
           capabilities: [:bash]
@@ -94,14 +105,14 @@ defmodule RhoWeb.LiveEventsTest do
     end
 
     test "builds event with nil agent_id" do
-      event = LiveEvents.event(:data_table, @session_id, nil, %{event: :view_change})
+      event = Events.event(:data_table, @session_id, nil, %{event: :view_change})
 
       assert event.kind == :data_table
       assert event.agent_id == nil
     end
 
     test "defaults data to empty map" do
-      event = LiveEvents.event(:agent_stopped, @session_id, @agent_id)
+      event = Events.event(:agent_stopped, @session_id, @agent_id)
 
       assert event.data == %{}
     end
@@ -109,7 +120,7 @@ defmodule RhoWeb.LiveEventsTest do
 
   describe "topic/1" do
     test "returns scoped topic string" do
-      assert LiveEvents.topic("abc-123") == "rho_lv:session:abc-123"
+      assert Events.topic("abc-123") == "rho:session:abc-123"
     end
   end
 end

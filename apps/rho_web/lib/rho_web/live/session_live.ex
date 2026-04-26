@@ -16,7 +16,7 @@ defmodule RhoWeb.SessionLive do
   alias RhoWeb.Session.Snapshot
   alias RhoWeb.Session.Threads
   alias RhoWeb.SessionLive.DataTableHelpers
-  alias RhoWeb.LiveEvents.Event, as: LiveEvent
+  alias Rho.Events.Event, as: LiveEvent
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   @impl true
@@ -222,7 +222,7 @@ defmodule RhoWeb.SessionLive do
 
     agent_id = Rho.Agent.Primary.new_agent_id(parent_id)
 
-    known_roles = Rho.CLI.Config.agent_names()
+    known_roles = Rho.AgentConfig.agent_names()
 
     role_atom =
       Enum.find(known_roles, :worker, fn name ->
@@ -842,24 +842,23 @@ defmodule RhoWeb.SessionLive do
     sid = socket.assigns.session_id
 
     if sid do
-      {type, data} = live_event_to_signal(event)
-
       cond do
         event.kind == :data_table ->
-          {:noreply, apply_data_table_event(socket, data)}
+          {:noreply, apply_data_table_event(socket, event.data)}
 
         event.kind == :workspace_open ->
-          {:noreply, apply_open_workspace_event(socket, data)}
+          {:noreply, apply_open_workspace_event(socket, event.data)}
 
         true ->
           # Inject correlation_id for SignalRouter shell auto-open logic.
-          # The old Comms path carried it in signal.extensions; LiveEvent
-          # data has turn_id instead (same value — set by Worker.build_emit).
-          data = Map.put_new(data, :correlation_id, data[:turn_id])
+          # LiveEvent data has turn_id (same value — set by Worker.build_emit).
+          data = Map.put_new(event.data, :correlation_id, event.data[:turn_id])
+
+          signal = %{kind: event.kind, data: data, emitted_at: event.timestamp}
 
           socket =
             try do
-              SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
+              SignalRouter.route(socket, signal, WorkspaceRegistry.all())
             rescue
               e ->
                 Logger.error(
@@ -1145,7 +1144,12 @@ defmodule RhoWeb.SessionLive do
       end)
 
     Enum.reduce(signals_since, socket, fn evt, sock ->
-      signal = %{type: evt["type"], data: deserialize_event_data(evt["data"] || %{})}
+      signal = %{
+        kind: String.to_existing_atom(evt["type"]),
+        data: deserialize_event_data(evt["data"] || %{}),
+        emitted_at: evt["emitted_at"]
+      }
+
       SignalRouter.route(sock, signal, WorkspaceRegistry.all())
     end)
   end
@@ -1162,44 +1166,6 @@ defmodule RhoWeb.SessionLive do
   end
 
   defp safe_to_existing_atom(other), do: other
-
-  # --- LiveEvent → signal conversion (Phase 2 bridge) ---
-
-  # Session-scoped event kinds that map to "rho.session.<sid>.events.<kind>"
-  @session_event_kinds ~w(
-    text_delta llm_text tool_start tool_result step_start llm_usage
-    turn_started turn_finished turn_cancelled compact error
-    subagent_progress subagent_tool subagent_error before_llm
-    structured_partial ui_spec_delta ui_spec message_sent
-  )a
-
-  defp live_event_to_signal(%LiveEvent{kind: kind, session_id: sid, data: data}) do
-    type =
-      cond do
-        kind in @session_event_kinds ->
-          "rho.session.#{sid}.events.#{kind}"
-
-        kind == :agent_started ->
-          "rho.agent.started"
-
-        kind == :agent_stopped ->
-          "rho.agent.stopped"
-
-        kind in [:task_requested, :task_completed, :task_progress] ->
-          "rho.task.#{kind |> Atom.to_string() |> String.replace_prefix("task_", "")}"
-
-        kind == :data_table ->
-          "rho.session.#{sid}.events.data_table"
-
-        kind == :workspace_open ->
-          "rho.session.#{sid}.events.workspace_open"
-
-        true ->
-          "rho.session.#{sid}.events.#{kind}"
-      end
-
-    {type, data}
-  end
 
   # --- DataTable helpers (delegated to DataTableHelpers) ---
 

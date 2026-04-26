@@ -1,6 +1,6 @@
-defmodule RhoWeb.LiveEvents.Event do
+defmodule Rho.Events.Event do
   @moduledoc """
-  Canonical event struct for the LiveEvents transport.
+  Canonical event struct for the PubSub event transport.
 
   Replaces dotted-string signal topics with atom-based `kind` fields.
   All session-scoped events flow through this struct.

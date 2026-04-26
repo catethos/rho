@@ -21,9 +21,7 @@ defmodule RhoWeb.Session.EffectDispatcher do
   effects.
   """
 
-  alias Rho.Comms
   alias Rho.Stdlib.DataTable
-  alias RhoWeb.LiveEvents
 
   @type dispatch_context :: %{
           session_id: String.t(),
@@ -74,20 +72,9 @@ defmodule RhoWeb.Session.EffectDispatcher do
     session_id = ctx.session_id
     agent_id = ctx.agent_id
 
-    Comms.publish(
-      "rho.session.#{session_id}.events.workspace_open",
-      %{
-        session_id: session_id,
-        agent_id: agent_id,
-        key: effect.key,
-        surface: effect.surface
-      },
-      source: "/session/#{session_id}/agent/#{agent_id}"
-    )
-
-    LiveEvents.broadcast(
+    Rho.Events.broadcast(
       session_id,
-      LiveEvents.event(:workspace_open, session_id, agent_id, %{
+      Rho.Events.event(:workspace_open, session_id, agent_id, %{
         key: effect.key,
         surface: effect.surface
       })
@@ -117,21 +104,9 @@ defmodule RhoWeb.Session.EffectDispatcher do
   end
 
   defp publish_view_change(session_id, agent_id, payload) do
-    topic = "rho.session.#{session_id}.events.data_table"
-
-    Comms.publish(
-      topic,
-      Map.merge(payload, %{
-        event: :view_change,
-        session_id: session_id,
-        agent_id: agent_id
-      }),
-      source: "/session/#{session_id}/agent/#{agent_id}"
-    )
-
-    LiveEvents.broadcast(
+    Rho.Events.broadcast(
       session_id,
-      LiveEvents.event(:data_table, session_id, agent_id, Map.put(payload, :event, :view_change))
+      Rho.Events.event(:data_table, session_id, agent_id, Map.put(payload, :event, :view_change))
     )
   end
 end

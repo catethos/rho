@@ -14,8 +14,6 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
 
   @behaviour Rho.Plugin
 
-  alias Rho.Comms
-
   @default_catalog LiveRender.StandardCatalog
   @default_max_bytes 50_000
 
@@ -125,8 +123,6 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     session_id = context[:session_id]
     agent_id = context[:agent_id]
     message_id = "ui_#{System.unique_integer([:positive])}"
-    source = "/session/#{session_id}/agent/#{agent_id}"
-    topic = "rho.session.#{session_id}.events"
     elements = spec["elements"] || %{}
     root_id = spec["root"]
 
@@ -135,16 +131,13 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     publish_delta = fn acc ->
       trimmed = trim_children_for_partial(acc)
 
-      Comms.publish(
-        "#{topic}.ui_spec_delta",
-        %{
-          session_id: session_id,
-          agent_id: agent_id,
+      Rho.Events.broadcast(
+        session_id,
+        Rho.Events.event(:ui_spec_delta, session_id, agent_id, %{
           message_id: message_id,
           title: title,
           spec: %{"root" => root_id, "elements" => trimmed}
-        },
-        source: source
+        })
       )
     end
 
@@ -153,16 +146,13 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
         stream_element(acc, el_id, elements, publish_delta)
       end)
 
-    Comms.publish(
-      "#{topic}.ui_spec",
-      %{
-        session_id: session_id,
-        agent_id: agent_id,
+    Rho.Events.broadcast(
+      session_id,
+      Rho.Events.event(:ui_spec, session_id, agent_id, %{
         message_id: message_id,
         title: title,
         spec: spec
-      },
-      source: source
+      })
     )
   end
 

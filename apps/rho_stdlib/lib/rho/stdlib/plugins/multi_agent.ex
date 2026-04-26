@@ -19,7 +19,6 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   @behaviour Rho.Plugin
 
   alias Rho.Agent.{LiteTracker, Primary, Registry, Supervisor, Worker}
-  alias Rho.Comms
 
   @max_depth 3
   @max_agents_per_session 10
@@ -514,14 +513,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           max_steps: @default_max_steps
         }
 
-        Comms.publish(
-          "rho.task.requested",
-          task_data,
-          source: "/session/#{session_id}/agent/#{parent_agent_id}",
-          subject: "/session/#{session_id}/agent/#{target.agent_id}"
+        Rho.Events.broadcast(
+          session_id,
+          Rho.Events.event(:task_requested, session_id, target.agent_id, task_data)
         )
-
-        maybe_broadcast_event(:task_requested, session_id, target.agent_id, task_data)
 
         {:routed,
          {:ok,
@@ -589,14 +584,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         max_steps: params.max_steps
       }
 
-      Comms.publish(
-        "rho.task.requested",
-        task_data,
-        source: "/session/#{params.session_id}/agent/#{params.parent_agent_id}",
-        subject: "/session/#{params.session_id}/agent/#{prepared.agent_id}"
+      Rho.Events.broadcast(
+        params.session_id,
+        Rho.Events.event(:task_requested, params.session_id, prepared.agent_id, task_data)
       )
-
-      maybe_broadcast_event(:task_requested, params.session_id, prepared.agent_id, task_data)
 
       {:ok,
        "Delegated #{task_id} to #{prepared.agent_id} (role: #{params.role}). Use await_task(agent_id: \"#{prepared.agent_id}\") to get the result."}
@@ -732,13 +723,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         lite: true
       }
 
-      Comms.publish(
-        "rho.task.requested",
-        task_data,
-        source: "/session/#{session_id}/agent/#{parent_agent_id}"
+      Rho.Events.broadcast(
+        session_id,
+        Rho.Events.event(:task_requested, session_id, agent_id, task_data)
       )
-
-      maybe_broadcast_event(:task_requested, session_id, agent_id, task_data)
 
       {:ok,
        "Lite agent #{agent_id} spawned (role: #{role_str}). " <>
@@ -779,19 +767,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   defp publish_lite_event(session_id, agent_id, event) when is_binary(session_id) do
     case event do
       %{type: type} when type in @lite_signal_types ->
-        payload =
-          event
-          |> Map.put(:agent_id, agent_id)
-          |> Map.put(:session_id, session_id)
-          |> Map.put(:lite, true)
-
-        Comms.publish(
-          "rho.session.#{session_id}.events.#{type}",
-          payload,
-          source: "/session/#{session_id}/agent/#{agent_id}"
-        )
-
-        maybe_broadcast_emit(payload, session_id, agent_id)
+        tagged = Map.put(event, :lite, true)
+        Rho.Events.broadcast(session_id, Rho.Events.normalize(tagged, session_id, agent_id))
 
       _ ->
         :ok
@@ -809,13 +786,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
     data = %{session_id: session_id, agent_id: agent_id, status: status, result: text}
 
-    Comms.publish(
-      "rho.task.completed",
-      data,
-      source: "/session/#{session_id}/agent/#{agent_id}"
+    Rho.Events.broadcast(
+      session_id,
+      Rho.Events.event(:task_completed, session_id, agent_id, data)
     )
-
-    maybe_broadcast_event(:task_completed, session_id, agent_id, data)
   end
 
   defp publish_lite_completion(_, _, _), do: :ok
@@ -965,13 +939,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         role: role_str
       }
 
-      Comms.publish(
-        "rho.agent.spawned",
-        spawn_data,
-        source: "/session/#{session_id}/agent/#{parent_agent_id}"
+      Rho.Events.broadcast(
+        session_id,
+        Rho.Events.event(:agent_spawned, session_id, prepared.agent_id, spawn_data)
       )
-
-      maybe_broadcast_event(:agent_spawned, session_id, prepared.agent_id, spawn_data)
 
       {:ok,
        "Spawned #{prepared.agent_id} (role: #{role_str}). Agent is idle and ready for messages. Use send_message(target: \"#{prepared.agent_id}\", message: \"...\") to start a conversation."}
@@ -1064,13 +1035,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           message: message
         }
 
-        Comms.publish(
-          "rho.session.#{session_id}.events.message_sent",
-          msg_data,
-          source: "/session/#{session_id}/agent/#{self_agent_id}"
+        Rho.Events.broadcast(
+          session_id,
+          Rho.Events.event(:message_sent, session_id, self_agent_id, msg_data)
         )
-
-        maybe_broadcast_event(:message_sent, session_id, self_agent_id, msg_data)
 
         {:ok, "Message sent to #{target}"}
       else
@@ -1103,13 +1071,10 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         target_count: length(targets)
       }
 
-      Comms.publish(
-        "rho.session.#{session_id}.events.broadcast",
-        bcast_data,
-        source: "/session/#{session_id}/agent/#{self_agent_id}"
+      Rho.Events.broadcast(
+        session_id,
+        Rho.Events.event(:broadcast, session_id, self_agent_id, bcast_data)
       )
-
-      maybe_broadcast_event(:broadcast, session_id, self_agent_id, bcast_data)
 
       {:ok, "Broadcast sent to #{length(targets)} agents"}
     else
@@ -1340,26 +1305,4 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     #{task}
     """
   end
-
-  # --- LiveEvents broadcaster helpers ---
-
-  defp maybe_broadcast_event(kind, session_id, agent_id, data)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
-    end
-  end
-
-  defp maybe_broadcast_event(_, _, _, _), do: :ok
-
-  defp maybe_broadcast_emit(event, session_id, agent_id)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_emit(event, session_id, agent_id)
-    end
-  end
-
-  defp maybe_broadcast_emit(_, _, _), do: :ok
 end

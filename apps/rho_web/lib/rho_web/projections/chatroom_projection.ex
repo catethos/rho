@@ -22,19 +22,10 @@ defmodule RhoWeb.Projections.ChatroomProjection do
 
   @behaviour RhoWeb.Projection
 
-  @handled_suffixes ~w(
-    message_sent
-    broadcast
-    text_delta
-    llm_text
-    turn_finished
-  )
+  @handled_kinds MapSet.new(~w(message_sent broadcast text_delta llm_text turn_finished)a)
 
   @impl true
-  def handles?(type) when is_binary(type) do
-    suffix = type |> String.split(".") |> List.last()
-    suffix in @handled_suffixes
-  end
+  def handles?(kind), do: kind in @handled_kinds
 
   @impl true
   def init do
@@ -42,15 +33,13 @@ defmodule RhoWeb.Projections.ChatroomProjection do
   end
 
   @impl true
-  def reduce(state, %{type: type, data: data}) do
-    suffix = type |> String.split(".") |> List.last()
-
-    case suffix do
-      "message_sent" -> reduce_message_sent(state, data)
-      "broadcast" -> reduce_broadcast(state, data)
-      "text_delta" -> reduce_text_delta(state, data)
-      "llm_text" -> reduce_text_delta(state, data)
-      "turn_finished" -> reduce_turn_finished(state, data)
+  def reduce(state, %{kind: kind, data: data}) do
+    case kind do
+      :message_sent -> reduce_message_sent(state, data)
+      :broadcast -> reduce_broadcast(state, data)
+      :text_delta -> reduce_text_delta(state, data)
+      :llm_text -> reduce_text_delta(state, data)
+      :turn_finished -> reduce_turn_finished(state, data)
       _ -> state
     end
   end

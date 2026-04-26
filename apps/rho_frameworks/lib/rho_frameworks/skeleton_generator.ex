@@ -3,7 +3,7 @@ defmodule RhoFrameworks.SkeletonGenerator do
   LLM-backed skill skeleton generation via AgentJobs.
 
   Spawns an async agent job using the `:spreadsheet` agent config (Structured
-  turn strategy) so the LLM output streams to the UI via Comms events.
+  turn strategy) so the LLM output streams to the UI via Rho.Events.
   The worker calls `create_library` then `save_skeletons` to persist
   results into a DataTable.
   """
@@ -30,7 +30,6 @@ defmodule RhoFrameworks.SkeletonGenerator do
     name = params[:name] || ""
     description = params[:description] || ""
 
-    config = Rho.Config.agent_config(:spreadsheet)
     tools = resolve_tools(scope)
     skill_count = skill_count_range(params)
     task_prompt = build_task_prompt(name, description, skill_count, params)
@@ -40,11 +39,11 @@ defmodule RhoFrameworks.SkeletonGenerator do
         task: task_prompt,
         parent_agent_id: scope.session_id,
         tools: tools,
-        model: config.model,
-        system_prompt: config.system_prompt,
-        max_steps: config[:max_steps] || 10,
-        turn_strategy: Map.get(config, :turn_strategy),
-        provider: config[:provider],
+        model: "openrouter:anthropic/claude-haiku-4.5",
+        system_prompt: "Skill framework editor. Follow tool instructions exactly.",
+        max_steps: 10,
+        turn_strategy: :typed_structured,
+        provider: %{},
         agent_name: :spreadsheet,
         session_id: scope.session_id,
         organization_id: scope.organization_id
@@ -194,22 +193,9 @@ defmodule RhoFrameworks.SkeletonGenerator do
       task: "Generating skill framework"
     }
 
-    Rho.Comms.publish(
-      "rho.task.requested",
-      data,
-      source: "/session/#{scope.session_id}/agent/#{agent_id}"
+    Rho.Events.broadcast(
+      scope.session_id,
+      Rho.Events.event(:task_requested, scope.session_id, agent_id, data)
     )
-
-    maybe_broadcast_event(:task_requested, scope.session_id, agent_id, data)
   end
-
-  defp maybe_broadcast_event(kind, session_id, agent_id, data)
-       when is_binary(session_id) do
-    case Application.get_env(:rho, :event_broadcaster) do
-      nil -> :ok
-      mod -> mod.broadcast_event(kind, session_id, agent_id, data)
-    end
-  end
-
-  defp maybe_broadcast_event(_, _, _, _), do: :ok
 end

@@ -24,7 +24,6 @@ defmodule Rho.Agent.Worker do
   @turn_inactivity_limit 60_000
 
   alias Rho.Agent.Registry, as: AgentRegistry
-  alias Rho.Comms
 
   defstruct [
     :agent_id,
@@ -54,8 +53,7 @@ defmodule Rho.Agent.Worker do
     organization_id: nil,
     subagent: false,
     last_result: nil,
-    current_task_id: nil,
-    event_broadcaster: nil
+    current_task_id: nil
   ]
 
   # --- Public API ---
@@ -111,11 +109,11 @@ defmodule Rho.Agent.Worker do
   """
   def ask(pid, content, opts \\ []) when is_pid(pid) do
     session_id = info(pid).session_id
-    {:ok, sub_id} = Comms.subscribe("rho.session.#{session_id}.events.turn_finished")
+    Rho.Events.subscribe(session_id)
     {:ok, turn_id} = submit(pid, content, opts)
     await_mode = Keyword.get(opts, :await, :turn)
     result = await_reply(turn_id, await_mode)
-    Comms.unsubscribe(sub_id)
+    Rho.Events.unsubscribe(session_id)
     result
   end
 
@@ -133,11 +131,11 @@ defmodule Rho.Agent.Worker do
     remaining = max(remaining, 0)
 
     receive do
-      {:signal, %Jido.Signal{data: %{type: :turn_finished, turn_id: ^turn_id} = data}} ->
+      %Rho.Events.Event{kind: :turn_finished, data: %{turn_id: ^turn_id} = data} ->
         unwrap_result(Map.get(data, :result))
 
-      {:signal, %Jido.Signal{}} ->
-        # Any signal is proof of life — reset the inactivity timer
+      %Rho.Events.Event{} ->
+        # Any event is proof of life — reset the inactivity timer
         await_reply_turn(turn_id, System.monotonic_time(:millisecond))
     after
       remaining ->
@@ -154,7 +152,7 @@ defmodule Rho.Agent.Worker do
       end
 
     receive do
-      {:signal, %Jido.Signal{data: %{type: :turn_finished} = data}} ->
+      %Rho.Events.Event{kind: :turn_finished, data: data} ->
         case Map.get(data, :result) do
           {:final, value} -> {:ok, value}
           {:ok, _text} = ok -> await_reply_finish(ok)
@@ -162,7 +160,7 @@ defmodule Rho.Agent.Worker do
           other -> await_reply_finish(other)
         end
 
-      {:signal, %Jido.Signal{}} ->
+      %Rho.Events.Event{} ->
         await_reply_finish(last_result)
     after
       timeout -> last_result || {:error, "ask timed out: no activity for #{div(timeout, 1000)}s"}
@@ -195,16 +193,12 @@ defmodule Rho.Agent.Worker do
 
     depth = Rho.Agent.Primary.depth_of(agent_id)
 
-    # Accept an explicit RunSpec, or fall back to Rho.Config for legacy callers
-    run_spec = opts[:run_spec]
+    # Accept an explicit RunSpec, or synthesize one from agent_config + opts.
+    # state.run_spec is always non-nil from this point on.
+    run_spec = opts[:run_spec] || build_default_run_spec(opts, agent_name)
 
-    memory_mod =
-      if run_spec,
-        do: run_spec.tape_module || Rho.Tape.Projection.JSONL,
-        else: Rho.Config.tape_module()
-
-    sandbox_enabled =
-      if run_spec, do: run_spec.sandbox_enabled, else: Rho.Config.sandbox_enabled?()
+    memory_mod = run_spec.tape_module || Rho.Tape.Projection.JSONL
+    sandbox_enabled = run_spec.sandbox_enabled
 
     {memory_ref, effective_workspace, sandbox} =
       if opts[:tape_ref] do
@@ -218,37 +212,24 @@ defmodule Rho.Agent.Worker do
         {ref, eff_ws, sb}
       end
 
-    # Derive capabilities: from RunSpec plugins or legacy config
-    {description, skills, config_capabilities} =
-      if run_spec do
-        caps = derive_capabilities(run_spec.plugins)
-        {run_spec.description, run_spec.skills || [], caps}
-      else
-        config = Rho.Config.agent_config(agent_name)
-        caps = Rho.Config.capabilities_from_plugins(config.plugins)
-        {config.description, config.skills, caps}
-      end
-
+    config_capabilities = derive_capabilities(run_spec.plugins)
     capabilities = (config_capabilities ++ capabilities) |> Enum.uniq()
+    description = run_spec.description
+    skills = run_spec.skills || []
 
     # Finalize the RunSpec with runtime-resolved fields
-    run_spec =
-      if run_spec do
-        %{
-          run_spec
-          | agent_id: agent_id,
-            session_id: session_id,
-            workspace: effective_workspace,
-            depth: depth,
-            tape_name: memory_ref,
-            tape_module: memory_mod,
-            agent_name: agent_name,
-            user_id: Keyword.get(opts, :user_id) || run_spec.user_id,
-            organization_id: Keyword.get(opts, :organization_id) || run_spec.organization_id
-        }
-      else
-        nil
-      end
+    run_spec = %{
+      run_spec
+      | agent_id: agent_id,
+        session_id: session_id,
+        workspace: effective_workspace,
+        depth: depth,
+        tape_name: memory_ref,
+        tape_module: memory_mod,
+        agent_name: agent_name,
+        user_id: Keyword.get(opts, :user_id) || run_spec.user_id,
+        organization_id: Keyword.get(opts, :organization_id) || run_spec.organization_id
+    }
 
     state = %__MODULE__{
       agent_id: agent_id,
@@ -264,8 +245,7 @@ defmodule Rho.Agent.Worker do
       capabilities: capabilities,
       user_id: Keyword.get(opts, :user_id),
       organization_id: Keyword.get(opts, :organization_id),
-      subagent: Keyword.get(opts, :subagent, false),
-      event_broadcaster: Application.get_env(:rho, :event_broadcaster)
+      subagent: Keyword.get(opts, :subagent, false)
     }
 
     # Register in agent registry
@@ -282,23 +262,16 @@ defmodule Rho.Agent.Worker do
     })
 
     # Publish agent started event
-    Comms.publish(
-      "rho.agent.started",
-      %{
-        agent_id: agent_id,
-        session_id: session_id,
+    started_event =
+      Rho.Events.event(:agent_started, session_id, agent_id, %{
         role: role,
-        capabilities: capabilities
-      },
-      source: "/session/#{session_id}/agent/#{agent_id}"
-    )
+        capabilities: capabilities,
+        depth: depth,
+        model: run_spec.model
+      })
 
-    maybe_broadcast_event(state, :agent_started, %{
-      role: role,
-      capabilities: capabilities,
-      depth: depth,
-      model: if(run_spec, do: run_spec.model)
-    })
+    Rho.Events.broadcast(session_id, started_event)
+    Rho.Events.broadcast_lifecycle(started_event)
 
     Logger.debug("Agent worker started: #{agent_id} (session: #{session_id}, role: #{role})")
 
@@ -457,22 +430,9 @@ defmodule Rho.Agent.Worker do
     {:noreply, %{state | mailbox: :queue.in(signal, state.mailbox)}}
   end
 
-  # --- Incoming bus signals ---
-
-  @impl true
-  def handle_info({:signal, %Jido.Signal{type: type, data: data}}, %{status: :idle} = state) do
-    signal = %{type: type, data: data}
-    state = process_signal(signal, state)
-    {:noreply, state}
-  end
-
-  def handle_info({:signal, %Jido.Signal{type: type, data: data}}, state) do
-    signal = %{type: type, data: data}
-    {:noreply, %{state | mailbox: :queue.in(signal, state.mailbox)}}
-  end
-
   # --- Task result handling ---
 
+  @impl true
   def handle_info({ref, {:final, value}}, %{task_ref: ref} = state) do
     # Final result (from `finish` tool) — reply to waiters and publish completion
     Process.demonitor(ref, [:flush])
@@ -539,37 +499,24 @@ defmodule Rho.Agent.Worker do
 
   # Task died
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task_ref: ref} = state) do
-    if state.status == :cancelling do
-      publish_event(state, "rho.turn.cancelled", %{turn_id: state.current_turn_id})
+    sid = state.session_id
+    aid = state.agent_id
 
-      Comms.publish(
-        "rho.session.#{state.session_id}.events.turn_cancelled",
-        %{
-          type: :turn_cancelled,
-          turn_id: state.current_turn_id,
-          agent_id: state.agent_id,
-          session_id: state.session_id
-        },
-        source: "/session/#{state.session_id}/agent/#{state.agent_id}",
-        correlation_id: state.current_turn_id
+    if state.status == :cancelling do
+      Rho.Events.broadcast(
+        sid,
+        Rho.Events.event(:turn_cancelled, sid, aid, %{turn_id: state.current_turn_id})
       )
     else
       # Emit turn_finished so the UI knows the turn ended (even on crash)
       error_result = {:error, "agent task failed: #{inspect(reason)}"}
 
-      event = %{
-        type: :turn_finished,
-        turn_id: state.current_turn_id,
-        result: error_result,
-        agent_id: state.agent_id,
-        session_id: state.session_id
-      }
-
-      Comms.publish(
-        "rho.session.#{state.session_id}.events.turn_finished",
-        event,
-        source: "/session/#{state.session_id}/agent/#{state.agent_id}",
-        correlation_id: state.current_turn_id
+      Rho.Events.broadcast(
+        sid,
+        Rho.Events.event(:turn_finished, sid, aid, %{
+          turn_id: state.current_turn_id,
+          result: error_result
+        })
       )
     end
 
@@ -643,16 +590,9 @@ defmodule Rho.Agent.Worker do
     AgentRegistry.update(state.agent_id, %{status: :stopped, pid: nil})
 
     # Publish stopped event
-    Comms.publish(
-      "rho.agent.stopped",
-      %{
-        agent_id: state.agent_id,
-        session_id: state.session_id
-      },
-      source: "/session/#{state.session_id}/agent/#{state.agent_id}"
-    )
-
-    maybe_broadcast_event(state, :agent_stopped, %{})
+    stopped_event = Rho.Events.event(:agent_stopped, state.session_id, state.agent_id, %{})
+    Rho.Events.broadcast(state.session_id, stopped_event)
+    Rho.Events.broadcast_lifecycle(stopped_event)
 
     # Stop any live descendants (grandchildren etc.) so they don't orphan
     # when a parent worker exits mid-flight. Best-effort: Registry entries
@@ -679,21 +619,12 @@ defmodule Rho.Agent.Worker do
     emit = build_emit(state, turn_id)
     task_id = opts[:task_id]
     messages = [ReqLLM.Context.user(content)]
+    turn_spec = build_turn_spec(opts, state, emit)
 
     task =
-      if state.run_spec do
-        turn_spec = build_turn_spec(opts, state, emit)
-
-        Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
-          run_turn_spec(emit, state, turn_id, messages, turn_spec)
-        end)
-      else
-        {model, agent_opts, _task_id} = build_turn_opts_legacy(opts, state, emit)
-
-        Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
-          run_turn_legacy(emit, state, turn_id, model, messages, agent_opts)
-        end)
-      end
+      Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+        run_turn_spec(emit, state, turn_id, messages, turn_spec)
+      end)
 
     AgentRegistry.update_status(state.agent_id, :busy)
     maybe_publish_task_accepted(state, task_id)
@@ -738,7 +669,11 @@ defmodule Rho.Agent.Worker do
 
   defp run_turn_spec(emit, state, turn_id, messages, spec) do
     emit.(%{type: :turn_started})
-    publish_event(state, "rho.turn.started", %{turn_id: turn_id})
+
+    Rho.Events.broadcast(
+      state.session_id,
+      Rho.Events.event(:turn_started, state.session_id, state.agent_id, %{turn_id: turn_id})
+    )
 
     result =
       try do
@@ -754,79 +689,49 @@ defmodule Rho.Agent.Worker do
       end
 
     emit.(%{type: :turn_finished, result: result})
-    publish_event(state, "rho.turn.finished", %{turn_id: turn_id, result: inspect(result)})
+
+    Rho.Events.broadcast(
+      state.session_id,
+      Rho.Events.event(:turn_finished, state.session_id, state.agent_id, %{
+        turn_id: turn_id,
+        result: inspect(result)
+      })
+    )
+
     result
   end
 
-  # -- Legacy opts path (no RunSpec) --
+  # Build a default RunSpec for callers that didn't pass `:run_spec`.
+  # Reads `.rho.exs` config for the role and folds in legacy spawn-time
+  # opts (`:tools`, `:system_prompt`, `:model`, `:max_steps`).
+  defp build_default_run_spec(opts, agent_name) do
+    config = Rho.Config.agent_config(agent_name)
 
-  defp build_turn_opts_legacy(opts, state, emit) do
-    config = Rho.Config.agent_config(state.agent_name)
-    model = opts[:model] || config.model
-    task_id = opts[:task_id]
-
-    tools =
-      opts[:tools] || state.persistent_tools ||
-        resolve_all_tools(state, depth: agent_depth(state), emit: emit)
-
-    agent_opts =
-      [
-        system_prompt: opts[:system_prompt] || config.system_prompt,
-        tools: tools,
-        agent_name: state.agent_name,
-        max_steps: opts[:max_steps] || config.max_steps,
-        tape_name: state.tape_ref,
-        tape_module: state.tape_module,
-        emit: emit,
-        workspace: state.workspace,
-        turn_strategy: config.turn_strategy,
-        depth: agent_depth(state),
-        prompt_format: config[:prompt_format] || :markdown,
-        session_id: state.session_id,
-        agent_id: state.agent_id,
-        user_id: state.user_id,
-        organization_id: state.organization_id
-      ]
-      |> maybe_put(:provider, config.provider)
-      |> maybe_put(:task_id, task_id)
-      |> then(fn ao ->
-        is_delegated = opts[:delegated] || false
-        subagent_flag = state.subagent or (is_delegated and agent_depth(state) > 0)
-        if subagent_flag, do: Keyword.put(ao, :subagent, true), else: ao
-      end)
-
-    {model, agent_opts, task_id}
-  end
-
-  defp run_turn_legacy(emit, state, turn_id, model, messages, agent_opts) do
-    emit.(%{type: :turn_started})
-    publish_event(state, "rho.turn.started", %{turn_id: turn_id})
-
-    result =
-      try do
-        Rho.Runner.run(model, messages, agent_opts)
-      rescue
-        error ->
-          Logger.error("AgentLoop crashed: #{Exception.format(:error, error, __STACKTRACE__)}")
-          {:error, Exception.message(error)}
-      catch
-        kind, reason ->
-          Logger.error("AgentLoop crashed: #{Exception.format(kind, reason, __STACKTRACE__)}")
-          {:error, "#{kind}: #{inspect(reason)}"}
-      end
-
-    emit.(%{type: :turn_finished, result: result})
-    publish_event(state, "rho.turn.finished", %{turn_id: turn_id, result: inspect(result)})
-    result
+    Rho.RunSpec.build(
+      model: opts[:model] || config.model,
+      system_prompt: opts[:system_prompt] || config.system_prompt,
+      max_steps: opts[:max_steps] || config.max_steps,
+      max_tokens: config.max_tokens,
+      plugins: config.plugins,
+      transformers: [],
+      turn_strategy: config.turn_strategy,
+      prompt_format: config[:prompt_format] || :markdown,
+      provider: config.provider,
+      description: config.description,
+      skills: config.skills || [],
+      avatar: config.avatar,
+      tools: opts[:tools],
+      agent_name: agent_name,
+      sandbox_enabled: Rho.Config.sandbox_enabled?()
+    )
   end
 
   defp maybe_publish_task_accepted(_state, nil), do: :ok
 
   defp maybe_publish_task_accepted(state, task_id) do
-    Comms.publish(
-      "rho.task.accepted",
-      %{task_id: task_id, agent_id: state.agent_id, session_id: state.session_id},
-      source: "/session/#{state.session_id}/agent/#{state.agent_id}"
+    Rho.Events.broadcast(
+      state.session_id,
+      Rho.Events.event(:task_accepted, state.session_id, state.agent_id, %{task_id: task_id})
     )
   end
 
@@ -929,14 +834,12 @@ defmodule Rho.Agent.Worker do
     session_id = state.session_id
     agent_id = state.agent_id
     worker_pid = self()
-    broadcaster = state.event_broadcaster
 
     fn event ->
       tagged = Map.put(event, :turn_id, turn_id)
       send_meta_updates(worker_pid, event)
       send(worker_pid, {:meta_update, :last_activity_at, System.monotonic_time(:millisecond)})
-      publish_emit_signal(tagged, session_id, agent_id, turn_id, event)
-      if broadcaster, do: broadcaster.broadcast_emit(tagged, session_id, agent_id)
+      Rho.Events.broadcast(session_id, Rho.Events.normalize(tagged, session_id, agent_id))
       :ok
     end
   end
@@ -966,59 +869,6 @@ defmodule Rho.Agent.Worker do
     end
   end
 
-  defp publish_emit_signal(tagged, session_id, agent_id, turn_id, event) do
-    case event_to_signal_type(event) do
-      nil ->
-        :ok
-
-      signal_type ->
-        payload = Map.merge(tagged, %{agent_id: agent_id, session_id: session_id})
-        t_pub = System.monotonic_time(:millisecond)
-
-        Comms.publish(
-          "rho.session.#{session_id}.events.#{signal_type}",
-          payload,
-          source: "/session/#{session_id}/agent/#{agent_id}",
-          correlation_id: turn_id
-        )
-
-        pub_ms = System.monotonic_time(:millisecond) - t_pub
-
-        if pub_ms > 2_000 do
-          Logger.warning("[worker.emit] Comms.publish took #{pub_ms}ms for #{signal_type}")
-        end
-    end
-  end
-
-  @signal_event_types ~w(
-    text_delta llm_text tool_start tool_result step_start llm_usage
-    turn_started turn_finished turn_cancelled compact error
-    subagent_progress subagent_tool subagent_error before_llm
-    structured_partial
-  )a
-
-  defp event_to_signal_type(%{type: type}) when type in @signal_event_types,
-    do: Atom.to_string(type)
-
-  defp event_to_signal_type(_), do: nil
-
-  defp publish_event(state, type, payload) do
-    Comms.publish(
-      type,
-      Map.merge(payload, %{
-        agent_id: state.agent_id,
-        session_id: state.session_id
-      }),
-      source: "/session/#{state.session_id}/agent/#{state.agent_id}"
-    )
-  end
-
-  defp maybe_broadcast_event(%{event_broadcaster: nil}, _kind, _data), do: :ok
-
-  defp maybe_broadcast_event(state, kind, data) do
-    state.event_broadcaster.broadcast_event(kind, state.session_id, state.agent_id, data)
-  end
-
   defp maybe_publish_task_completed(state, result) do
     if agent_depth(state) > 0 do
       result_text =
@@ -1036,13 +886,10 @@ defmodule Rho.Agent.Worker do
         }
         |> maybe_put_field(:task_id, state.current_task_id)
 
-      Comms.publish(
-        "rho.task.completed",
-        data,
-        source: "/session/#{state.session_id}/agent/#{state.agent_id}"
+      Rho.Events.broadcast(
+        state.session_id,
+        Rho.Events.event(:task_completed, state.session_id, state.agent_id, data)
       )
-
-      maybe_broadcast_event(state, :task_completed, data)
     end
   end
 
@@ -1096,9 +943,6 @@ defmodule Rho.Agent.Worker do
       {workspace, nil}
     end
   end
-
-  defp maybe_put(kwlist, _key, nil), do: kwlist
-  defp maybe_put(kwlist, key, value), do: Keyword.put(kwlist, key, value)
 
   defp maybe_put_field(map, _key, nil), do: map
   defp maybe_put_field(map, key, value), do: Map.put(map, key, value)

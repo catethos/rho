@@ -1,10 +1,10 @@
 defmodule RhoWeb.Projections.SessionState do
   @moduledoc """
-  Pure reducer that transforms signal bus events into session state updates.
+  Pure reducer that transforms events into session state updates.
 
-  Unlike `SessionProjection` (which mutates socket assigns and triggers side
-  effects), this module operates on plain maps and returns `{state, effects}`
-  tuples. Effects are descriptors — the caller decides how to apply them.
+  Signals use atom-kind dispatch (e.g. `%{kind: :text_delta, data: %{...}}`).
+  Returns `{state, effects}` tuples. Effects are descriptors — the caller
+  decides how to apply them.
 
   ## Effect types
 
@@ -42,8 +42,8 @@ defmodule RhoWeb.Projections.SessionState do
   @doc """
   Reduces a signal into session state, returning `{new_state, effects}`.
 
-  The signal must have `:type` and `:data` keys. Optionally, `:meta` with
-  `:emitted_at` (used for signal timestamps instead of System.monotonic_time).
+  The signal must have `:kind` (atom) and `:data` keys. Optionally,
+  `:emitted_at` (used for signal timestamps).
   """
   def reduce(state, signal) do
     {state, effects} = do_reduce(state, signal)
@@ -52,12 +52,19 @@ defmodule RhoWeb.Projections.SessionState do
 
   # --- Dispatchers ---
 
-  defp do_reduce(state, %{type: "rho.session." <> _ = type, data: data} = signal) do
-    suffix = type |> String.split(".") |> List.last()
-    dispatch_session_event(suffix, state, type, data, signal)
+  # Session event kinds — dispatched directly by atom
+  @session_event_kinds ~w(
+    text_delta llm_text tool_start tool_result step_start llm_usage
+    turn_started turn_finished turn_cancelled compact error
+    subagent_progress subagent_tool subagent_error before_llm
+    structured_partial ui_spec_delta ui_spec message_sent
+  )a
+
+  defp do_reduce(state, %{kind: kind, data: data} = signal) when kind in @session_event_kinds do
+    dispatch_session_event(kind, state, data, signal)
   end
 
-  defp do_reduce(state, %{type: "rho.agent.started", data: data} = signal) do
+  defp do_reduce(state, %{kind: :agent_started, data: data} = signal) do
     agent = %{
       agent_id: data.agent_id,
       session_id: data.session_id,
@@ -87,10 +94,10 @@ defmodule RhoWeb.Projections.SessionState do
       |> Map.put(:agent_tab_order, agent_tab_order)
       |> Map.put(:agent_messages, agent_messages)
 
-    add_signal(state, [], "rho.agent.started", data, signal)
+    add_signal(state, [], :agent_started, data, signal)
   end
 
-  defp do_reduce(state, %{type: "rho.agent.stopped", data: data} = signal) do
+  defp do_reduce(state, %{kind: :agent_stopped, data: data} = signal) do
     agent = Map.get(state.agents, data.agent_id)
 
     state =
@@ -120,10 +127,10 @@ defmodule RhoWeb.Projections.SessionState do
         Map.put(state, :agents, agents)
       end
 
-    add_signal(state, [], "rho.agent.stopped", data, signal)
+    add_signal(state, [], :agent_stopped, data, signal)
   end
 
-  defp do_reduce(state, %{type: "rho.task.requested" = type, data: data} = signal) do
+  defp do_reduce(state, %{kind: :task_requested, data: data} = signal) do
     {id, state} = next_id(state)
 
     # worker_agent_id tracks the lite worker; agent_id is the parent (for chat feed placement)
@@ -140,10 +147,10 @@ defmodule RhoWeb.Projections.SessionState do
     }
 
     state = append_message(state, msg)
-    add_signal(state, [], type, data, signal)
+    add_signal(state, [], :task_requested, data, signal)
   end
 
-  defp do_reduce(state, %{type: "rho.task.progress", data: data}) do
+  defp do_reduce(state, %{kind: :task_progress, data: data}) do
     agent_id = data[:agent_id]
 
     pred = fn msg ->
@@ -166,7 +173,7 @@ defmodule RhoWeb.Projections.SessionState do
     {state, []}
   end
 
-  defp do_reduce(state, %{type: "rho.task.completed" = type, data: data} = signal) do
+  defp do_reduce(state, %{kind: :task_completed, data: data} = signal) do
     agent_id = data[:agent_id]
     status = if data[:status] == :error, do: :error, else: :ok
 
@@ -186,58 +193,58 @@ defmodule RhoWeb.Projections.SessionState do
     }
 
     state = append_message(state, msg)
-    add_signal(state, [], type, data, signal)
+    add_signal(state, [], :task_completed, data, signal)
   end
 
-  defp do_reduce(state, %{type: type, data: data} = signal) do
-    add_signal(state, [], type, data, signal)
+  defp do_reduce(state, %{kind: kind, data: data} = signal) do
+    add_signal(state, [], kind, data, signal)
   end
 
   defp do_reduce(state, _signal), do: {state, []}
 
   # --- Session event dispatch ---
 
-  defp dispatch_session_event("text_delta", state, _t, data, _s),
+  defp dispatch_session_event(:text_delta, state, data, _s),
     do: reduce_text_delta(state, data)
 
-  defp dispatch_session_event("llm_text", state, _t, data, _s),
+  defp dispatch_session_event(:llm_text, state, data, _s),
     do: reduce_text_delta(state, data)
 
-  defp dispatch_session_event("tool_start", state, _t, data, _s),
+  defp dispatch_session_event(:tool_start, state, data, _s),
     do: reduce_tool_start(state, data)
 
-  defp dispatch_session_event("tool_result", state, _t, data, _s),
+  defp dispatch_session_event(:tool_result, state, data, _s),
     do: reduce_tool_result(state, data)
 
-  defp dispatch_session_event("turn_started", state, _t, data, _s),
+  defp dispatch_session_event(:turn_started, state, data, _s),
     do: reduce_turn_started(state, data)
 
-  defp dispatch_session_event("turn_finished", state, _t, data, _s),
+  defp dispatch_session_event(:turn_finished, state, data, _s),
     do: reduce_turn_finished(state, data)
 
-  defp dispatch_session_event("llm_usage", state, _t, data, _s),
+  defp dispatch_session_event(:llm_usage, state, data, _s),
     do: reduce_usage(state, data)
 
-  defp dispatch_session_event("step_start", state, _t, data, _s),
+  defp dispatch_session_event(:step_start, state, data, _s),
     do: reduce_step_start(state, data)
 
-  defp dispatch_session_event("before_llm", state, _t, data, signal),
+  defp dispatch_session_event(:before_llm, state, data, signal),
     do: reduce_before_llm(state, data, signal)
 
-  defp dispatch_session_event("ui_spec_delta", state, _t, data, _s),
+  defp dispatch_session_event(:ui_spec_delta, state, data, _s),
     do: reduce_ui_spec_delta(state, data)
 
-  defp dispatch_session_event("ui_spec", state, _t, data, _s),
+  defp dispatch_session_event(:ui_spec, state, data, _s),
     do: reduce_ui_spec(state, data)
 
-  defp dispatch_session_event("message_sent", state, _t, data, _s),
+  defp dispatch_session_event(:message_sent, state, data, _s),
     do: reduce_message_sent(state, data)
 
-  defp dispatch_session_event("error", state, _t, data, _s),
+  defp dispatch_session_event(:error, state, data, _s),
     do: reduce_error(state, data)
 
-  defp dispatch_session_event(_suffix, state, type, data, signal),
-    do: add_signal(state, [], type, data, signal)
+  defp dispatch_session_event(kind, state, data, signal),
+    do: add_signal(state, [], kind, data, signal)
 
   # --- Individual reducers ---
 
@@ -478,7 +485,7 @@ defmodule RhoWeb.Projections.SessionState do
           append_message(state, msg)
       end
 
-    add_signal(state, [], "ui_spec", data, signal)
+    add_signal(state, [], :ui_spec, data, signal)
   end
 
   defp reduce_message_sent(state, data) do
@@ -504,7 +511,7 @@ defmodule RhoWeb.Projections.SessionState do
 
     state = append_message(state, msg)
     # No signal wrapper needed — use a minimal add_signal
-    add_signal(state, [], "message_sent", data, nil)
+    add_signal(state, [], :message_sent, data, nil)
   end
 
   defp reduce_turn_started(state, data, signal \\ nil) do
@@ -513,7 +520,7 @@ defmodule RhoWeb.Projections.SessionState do
 
     state = Map.put(state, :agents, agents)
 
-    add_signal(state, [], "turn.started", data, signal)
+    add_signal(state, [], :turn_started, data, signal)
   end
 
   defp reduce_turn_finished(state, data) do
@@ -567,7 +574,7 @@ defmodule RhoWeb.Projections.SessionState do
       |> Map.put(:agents, agents)
 
     stream_end = {:push_event, "stream-end", %{agent_id: agent_id}}
-    {state, signal_effects} = add_signal(state, [], "turn.finished", data, nil)
+    {state, signal_effects} = add_signal(state, [], :turn_finished, data, nil)
 
     {state, flush_effects ++ msg_effects ++ [stream_end | signal_effects]}
   end
@@ -596,7 +603,7 @@ defmodule RhoWeb.Projections.SessionState do
   defp reduce_before_llm(state, data, signal) do
     agent_id = data[:agent_id] || primary_agent_id(state)
     projection = data[:projection] || %{}
-    timestamp = get_in(signal || %{}, [:meta, :emitted_at]) || 0
+    timestamp = (signal || %{})[:emitted_at] || 0
 
     debug_projections =
       Map.put(state[:debug_projections] || %{}, agent_id, %{
@@ -713,13 +720,13 @@ defmodule RhoWeb.Projections.SessionState do
     end
   end
 
-  defp add_signal(state, existing_effects, type, data, signal) do
+  defp add_signal(state, existing_effects, kind, data, signal) do
     {id, state} = next_id(state)
-    timestamp = get_in(signal || %{}, [:meta, :emitted_at]) || 0
+    timestamp = (signal || %{})[:emitted_at] || 0
 
     sig = %{
       id: id,
-      type: type,
+      type: Atom.to_string(kind),
       agent_id: data[:agent_id],
       timestamp: timestamp,
       correlation_id: data[:correlation_id]

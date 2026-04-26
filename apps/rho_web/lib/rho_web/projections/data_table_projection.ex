@@ -33,9 +33,9 @@ defmodule RhoWeb.Projections.DataTableProjection do
     }
   end
 
-  @doc "This stub does not react to any signals — state is updated via `ws_state_update`."
+  @doc "This stub does not react to any events — state is updated via `ws_state_update`."
   @impl true
-  def handles?(_type), do: false
+  def handles?(_kind), do: false
 
   @impl true
   def reduce(state, _signal), do: state

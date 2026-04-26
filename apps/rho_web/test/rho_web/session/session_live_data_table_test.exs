@@ -3,12 +3,12 @@ defmodule RhoWeb.SessionLiveDataTableTest do
   End-to-end tests for the DataTable snapshot-cache flow in SessionLive.
 
   These exercise the full path: the per-session DataTable server
-  publishes a `:table_changed` invalidation event via `Rho.Comms`, the
+  publishes a `:table_changed` invalidation event via `Rho.Events`, the
   LV's `handle_info` routes it through `apply_data_table_event/2`, and
   the workspace state in `ws_states` is updated with a fresh snapshot.
 
-  We drive this through Jido.Signal delivery directly since spinning
-  up a full authenticated connected LiveView is heavy.
+  We drive this through `Rho.Events.Event` delivery directly since
+  spinning up a full authenticated connected LiveView is heavy.
   """
   use ExUnit.Case, async: false
 
@@ -43,7 +43,6 @@ defmodule RhoWeb.SessionLiveDataTableTest do
       signals: [],
       agent_messages: %{},
       ui_streams: %{},
-
       total_input_tokens: 0,
       total_output_tokens: 0,
       total_cost: 0.0,
@@ -68,16 +67,9 @@ defmodule RhoWeb.SessionLiveDataTableTest do
     struct!(Phoenix.LiveView.Socket, assigns: assigns)
   end
 
-  # Build a Jido.Signal matching what Rho.Comms publishes on the
-  # data_table topic.
-  defp dt_signal(session_id, payload) do
-    %Jido.Signal{
-      id: Ecto.UUID.generate(),
-      type: "rho.session.#{session_id}.events.data_table",
-      source: "/session/#{session_id}/data_table",
-      specversion: "1.0.2",
-      data: payload
-    }
+  # Build a Rho.Events.Event matching what DataTable.Server publishes.
+  defp dt_event(session_id, payload) do
+    Rho.Events.event(:data_table, session_id, nil, payload)
   end
 
   describe "snapshot refetch on table_changed" do
@@ -89,12 +81,11 @@ defmodule RhoWeb.SessionLiveDataTableTest do
 
       {:noreply, socket} =
         RhoWeb.SessionLive.handle_info(
-          {:signal,
-           dt_signal(sid, %{
-             event: :table_changed,
-             table_name: "main",
-             version: 99
-           })},
+          dt_event(sid, %{
+            event: :table_changed,
+            table_name: "main",
+            version: 99
+          }),
           socket
         )
 
@@ -122,12 +113,11 @@ defmodule RhoWeb.SessionLiveDataTableTest do
 
       {:noreply, socket} =
         RhoWeb.SessionLive.handle_info(
-          {:signal,
-           dt_signal(sid, %{
-             event: :table_changed,
-             table_name: "main",
-             version: 50
-           })},
+          dt_event(sid, %{
+            event: :table_changed,
+            table_name: "main",
+            version: 50
+          }),
           socket
         )
 
@@ -141,12 +131,11 @@ defmodule RhoWeb.SessionLiveDataTableTest do
 
       {:noreply, socket} =
         RhoWeb.SessionLive.handle_info(
-          {:signal,
-           dt_signal(sid, %{
-             event: :table_changed,
-             table_name: "main",
-             version: 1
-           })},
+          dt_event(sid, %{
+            event: :table_changed,
+            table_name: "main",
+            version: 1
+          }),
           socket
         )
 
@@ -162,13 +151,12 @@ defmodule RhoWeb.SessionLiveDataTableTest do
 
       {:noreply, socket} =
         RhoWeb.SessionLive.handle_info(
-          {:signal,
-           dt_signal(sid, %{
-             event: :view_change,
-             view_key: :skill_library,
-             mode_label: "Skill Library — Demo",
-             table_name: "main"
-           })},
+          dt_event(sid, %{
+            event: :view_change,
+            view_key: :skill_library,
+            mode_label: "Skill Library — Demo",
+            table_name: "main"
+          }),
           socket
         )
 

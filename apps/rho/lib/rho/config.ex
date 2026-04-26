@@ -2,14 +2,14 @@ defmodule Rho.Config do
   @moduledoc """
   Core configuration accessors for the Rho runtime.
 
-  Functions in this module discover CLI modules at runtime via
-  `Code.ensure_loaded?/1` — no application env callbacks needed.
-  The full config file loader (.rho.exs) lives in `Rho.CLI.Config`.
+  The `.rho.exs` loader lives in `Rho.AgentConfig`. The remaining
+  shims here discover `Rho.CLI.CommandParser` (about to be deleted)
+  and `Rho.Stdlib` (sibling umbrella app) at runtime.
   """
 
   # These modules live in sibling umbrella apps and are discovered
   # at runtime via Code.ensure_loaded?/1.
-  @compile {:no_warn_undefined, [Rho.CLI.Config, Rho.CLI.CommandParser, Rho.Stdlib]}
+  @compile {:no_warn_undefined, [Rho.CLI.CommandParser, Rho.Stdlib]}
 
   @doc """
   Returns the configured tape projection module.
@@ -24,28 +24,13 @@ defmodule Rho.Config do
 
   @doc """
   Returns the agent config for the given agent name.
-
-  Discovers `Rho.CLI.Config` at runtime. Falls back to a minimal
-  default config when the CLI app is not loaded.
   """
-  def agent_config(name \\ :default) do
-    if cli_config_available?() do
-      Rho.CLI.Config.agent(name)
-    else
-      default_agent_config()
-    end
-  end
+  defdelegate agent_config(name \\ :default), to: Rho.AgentConfig, as: :agent
 
   @doc """
   Returns whether sandbox mode is enabled.
   """
-  def sandbox_enabled? do
-    if cli_config_available?() do
-      Rho.CLI.Config.sandbox_enabled?()
-    else
-      false
-    end
-  end
+  defdelegate sandbox_enabled?, to: Rho.AgentConfig
 
   @doc """
   Parses a direct command string into `{tool_name, args}`.
@@ -74,33 +59,5 @@ defmodule Rho.Config do
   @doc """
   Returns the list of configured agent names.
   """
-  def agent_names do
-    if cli_config_available?() do
-      Rho.CLI.Config.agent_names()
-    else
-      [:default]
-    end
-  end
-
-  defp cli_config_available? do
-    Code.ensure_loaded?(Rho.CLI.Config) and
-      function_exported?(Rho.CLI.Config, :agent, 1)
-  end
-
-  defp default_agent_config do
-    %{
-      model: "openrouter:anthropic/claude-sonnet",
-      system_prompt: "You are a helpful assistant.",
-      plugins: [],
-      max_steps: 50,
-      max_tokens: 4096,
-      provider: nil,
-      turn_strategy: Rho.TurnStrategy.Direct,
-      turn_strategy_opts: [],
-      description: nil,
-      skills: [],
-      prompt_format: :markdown,
-      avatar: nil
-    }
-  end
+  defdelegate agent_names, to: Rho.AgentConfig
 end

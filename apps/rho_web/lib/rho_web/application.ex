@@ -6,7 +6,6 @@ defmodule RhoWeb.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {Phoenix.PubSub, name: Rho.PubSub},
       {RhoWeb.RateLimiter, [clean_period: :timer.minutes(10)]},
       RhoWeb.Endpoint
     ]

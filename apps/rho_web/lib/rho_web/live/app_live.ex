@@ -19,7 +19,7 @@ defmodule RhoWeb.AppLive do
   import RhoWeb.ChatComponents
   import RhoWeb.SignalComponents
 
-  alias RhoWeb.LiveEvents.Event, as: LiveEvent
+  alias Rho.Events.Event, as: LiveEvent
   alias RhoWeb.Session.SessionCore
   alias RhoWeb.Session.Shell
   alias RhoWeb.Session.SignalRouter
@@ -330,7 +330,7 @@ defmodule RhoWeb.AppLive do
 
   defp cleanup_libraries_page(socket) do
     if overlay_sid = socket.assigns[:overlay_session_id] do
-      RhoWeb.LiveEvents.unsubscribe(overlay_sid)
+      Rho.Events.unsubscribe(overlay_sid)
     end
 
     socket
@@ -1931,7 +1931,7 @@ defmodule RhoWeb.AppLive do
   # ── Chat overlay signals (Libraries page) ──────────────────────────
 
   def handle_info({:chat_overlay_started, session_id}, socket) do
-    RhoWeb.LiveEvents.subscribe(session_id)
+    Rho.Events.subscribe(session_id)
     Rho.Stdlib.DataTable.ensure_started(session_id)
 
     {:noreply,
@@ -1956,21 +1956,21 @@ defmodule RhoWeb.AppLive do
 
     # Always update session state regardless of active page
     if sid do
-      {type, data} = live_event_to_signal(event)
-
       cond do
         event.kind == :data_table ->
-          {:noreply, apply_data_table_event(socket, data)}
+          {:noreply, apply_data_table_event(socket, event.data)}
 
         event.kind == :workspace_open ->
-          {:noreply, apply_open_workspace_event(socket, data)}
+          {:noreply, apply_open_workspace_event(socket, event.data)}
 
         true ->
-          data = Map.put_new(data, :correlation_id, data[:turn_id])
+          data = Map.put_new(event.data, :correlation_id, event.data[:turn_id])
+
+          signal = %{kind: event.kind, data: data, emitted_at: event.timestamp}
 
           socket =
             try do
-              SignalRouter.route(socket, %{type: type, data: data}, WorkspaceRegistry.all())
+              SignalRouter.route(socket, signal, WorkspaceRegistry.all())
             rescue
               e ->
                 Logger.error(
@@ -2005,7 +2005,7 @@ defmodule RhoWeb.AppLive do
   def terminate(_reason, socket) do
     # Clean up overlay subscriptions
     if overlay_sid = socket.assigns[:overlay_session_id] do
-      RhoWeb.LiveEvents.unsubscribe(overlay_sid)
+      Rho.Events.unsubscribe(overlay_sid)
     end
 
     if sid = socket.assigns[:session_id] do
@@ -2014,43 +2014,6 @@ defmodule RhoWeb.AppLive do
     end
 
     :ok
-  end
-
-  # ── LiveEvent → signal conversion (bridge for SignalRouter) ───────
-
-  @session_event_kinds ~w(
-    text_delta llm_text tool_start tool_result step_start llm_usage
-    turn_started turn_finished turn_cancelled compact error
-    subagent_progress subagent_tool subagent_error before_llm
-    structured_partial ui_spec_delta ui_spec message_sent
-  )a
-
-  defp live_event_to_signal(%LiveEvent{kind: kind, session_id: sid, data: data}) do
-    type =
-      cond do
-        kind in @session_event_kinds ->
-          "rho.session.#{sid}.events.#{kind}"
-
-        kind == :agent_started ->
-          "rho.agent.started"
-
-        kind == :agent_stopped ->
-          "rho.agent.stopped"
-
-        kind in [:task_requested, :task_completed, :task_progress] ->
-          "rho.task.#{kind |> Atom.to_string() |> String.replace_prefix("task_", "")}"
-
-        kind == :data_table ->
-          "rho.session.#{sid}.events.data_table"
-
-        kind == :workspace_open ->
-          "rho.session.#{sid}.events.workspace_open"
-
-        true ->
-          "rho.session.#{sid}.events.#{kind}"
-      end
-
-    {type, data}
   end
 
   # ══════════════════════════════════════════════════════════════════
@@ -2397,7 +2360,7 @@ defmodule RhoWeb.AppLive do
   attr(:session_id, :string, default: nil)
 
   defp new_agent_dialog(assigns) do
-    roles = Rho.CLI.Config.agent_names()
+    roles = Rho.AgentConfig.agent_names()
 
     parent_options =
       if assigns.session_id do
@@ -2626,7 +2589,12 @@ defmodule RhoWeb.AppLive do
       end)
 
     Enum.reduce(signals_since, socket, fn evt, sock ->
-      signal = %{type: evt["type"], data: deserialize_event_data(evt["data"] || %{})}
+      signal = %{
+        kind: String.to_existing_atom(evt["type"]),
+        data: deserialize_event_data(evt["data"] || %{}),
+        emitted_at: evt["emitted_at"]
+      }
+
       SignalRouter.route(sock, signal, WorkspaceRegistry.all())
     end)
   end
@@ -3088,7 +3056,7 @@ defmodule RhoWeb.AppLive do
 
   defp close_overlay(socket) do
     if overlay_sid = socket.assigns[:overlay_session_id] do
-      RhoWeb.LiveEvents.unsubscribe(overlay_sid)
+      Rho.Events.unsubscribe(overlay_sid)
     end
 
     org = socket.assigns.current_organization

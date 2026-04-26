@@ -8,12 +8,12 @@ defmodule RhoWeb.Projections.SessionStateTest do
     SessionState.init(sid)
   end
 
-  defp signal(type, data, meta \\ %{}) do
-    %{type: type, data: data, meta: meta}
+  defp signal(kind, data, opts \\ %{}) do
+    %{kind: kind, data: data, emitted_at: opts[:emitted_at]}
   end
 
-  defp reduce(state, type, data, meta \\ %{}) do
-    SessionState.reduce(state, signal(type, data, meta))
+  defp reduce(state, kind, data, opts \\ %{}) do
+    SessionState.reduce(state, signal(kind, data, opts))
   end
 
   describe "init/1" do
@@ -32,8 +32,8 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
       data = %{agent_id: "agent-1", text: "hello"}
 
-      {s1, e1} = reduce(s, "rho.session.x.text_delta", data)
-      {s2, e2} = reduce(s, "rho.session.x.text_delta", data)
+      {s1, e1} = reduce(s, :text_delta, data)
+      {s2, e2} = reduce(s, :text_delta, data)
 
       assert s1 == s2
       assert e1 == e2
@@ -43,8 +43,8 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
       data = %{agent_id: "a1", session_id: "test-session", role: :analyst}
 
-      {s1, _} = reduce(s, "rho.agent.started", data)
-      {s2, _} = reduce(s, "rho.agent.started", data)
+      {s1, _} = reduce(s, :agent_started, data)
+      {s2, _} = reduce(s, :agent_started, data)
 
       assert s1 == s2
     end
@@ -54,8 +54,8 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = Map.put(s, :agents, %{"a1" => %{agent_id: "a1", status: :busy, step: 1, max_steps: 5}})
       data = %{agent_id: "a1", result: {:ok, "done"}}
 
-      {s1, e1} = reduce(s, "rho.session.x.turn_finished", data)
-      {s2, e2} = reduce(s, "rho.session.x.turn_finished", data)
+      {s1, e1} = reduce(s, :turn_finished, data)
+      {s2, e2} = reduce(s, :turn_finished, data)
 
       assert s1 == s2
       assert e1 == e2
@@ -63,11 +63,11 @@ defmodule RhoWeb.Projections.SessionStateTest do
 
     test "full replay produces identical state" do
       signals = [
-        signal("rho.agent.started", %{agent_id: "a1", session_id: "s", role: :coder}),
-        signal("rho.session.s.turn_started", %{agent_id: "a1"}),
-        signal("rho.session.s.text_delta", %{agent_id: "a1", text: "Hello "}),
-        signal("rho.session.s.text_delta", %{agent_id: "a1", text: "world"}),
-        signal("rho.session.s.turn_finished", %{agent_id: "a1", result: {:ok, "Hello world"}})
+        signal(:agent_started, %{agent_id: "a1", session_id: "s", role: :coder}),
+        signal(:turn_started, %{agent_id: "a1"}),
+        signal(:text_delta, %{agent_id: "a1", text: "Hello "}),
+        signal(:text_delta, %{agent_id: "a1", text: "world"}),
+        signal(:turn_finished, %{agent_id: "a1", result: {:ok, "Hello world"}})
       ]
 
       replay = fn ->
@@ -84,27 +84,27 @@ defmodule RhoWeb.Projections.SessionStateTest do
   describe "text_delta" do
     test "buffers chunks in inflight" do
       s = state()
-      {s, _} = reduce(s, "rho.session.x.text_delta", %{agent_id: "a1", text: "hi"})
+      {s, _} = reduce(s, :text_delta, %{agent_id: "a1", text: "hi"})
 
       assert %{"a1" => %{chunks: ["hi"]}} = s.inflight
     end
 
     test "accumulates multiple chunks" do
       s = state()
-      {s, _} = reduce(s, "rho.session.x.text_delta", %{agent_id: "a1", text: "a"})
-      {s, _} = reduce(s, "rho.session.x.text_delta", %{agent_id: "a1", text: "b"})
+      {s, _} = reduce(s, :text_delta, %{agent_id: "a1", text: "a"})
+      {s, _} = reduce(s, :text_delta, %{agent_id: "a1", text: "b"})
 
       assert %{"a1" => %{chunks: ["a", "b"]}} = s.inflight
     end
 
     test "emits push_event effect" do
-      {_, effects} = reduce(state(), "rho.session.x.text_delta", %{agent_id: "a1", text: "x"})
+      {_, effects} = reduce(state(), :text_delta, %{agent_id: "a1", text: "x"})
 
       assert {:push_event, "text-chunk", %{agent_id: "a1", text: "x"}} in effects
     end
 
     test "llm_text routes to same handler" do
-      {s, _} = reduce(state(), "rho.session.x.llm_text", %{agent_id: "a1", text: "y"})
+      {s, _} = reduce(state(), :llm_text, %{agent_id: "a1", text: "y"})
       assert %{"a1" => %{chunks: ["y"]}} = s.inflight
     end
   end
@@ -112,7 +112,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
   describe "tool_start" do
     test "appends tool_call message" do
       {s, _} =
-        reduce(state(), "rho.session.x.tool_start", %{
+        reduce(state(), :tool_start, %{
           agent_id: "a1",
           name: "bash",
           args: %{cmd: "ls"},
@@ -126,7 +126,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
     test "skips internal tools" do
       for name <- ["end_turn", "finish", "present_ui"] do
         {s, effects} =
-          reduce(state(), "rho.session.x.tool_start", %{agent_id: "a1", name: name})
+          reduce(state(), :tool_start, %{agent_id: "a1", name: name})
 
         assert s.agent_messages == %{}
         assert effects == []
@@ -135,10 +135,10 @@ defmodule RhoWeb.Projections.SessionStateTest do
 
     test "flushes inflight chunks as thinking before tool" do
       s = state()
-      {s, _} = reduce(s, "rho.session.x.text_delta", %{agent_id: "a1", text: "thinking..."})
+      {s, _} = reduce(s, :text_delta, %{agent_id: "a1", text: "thinking..."})
 
       {s, effects} =
-        reduce(s, "rho.session.x.tool_start", %{agent_id: "a1", name: "bash", call_id: "c1"})
+        reduce(s, :tool_start, %{agent_id: "a1", name: "bash", call_id: "c1"})
 
       msgs = Map.get(s.agent_messages, "a1", [])
       assert [%{type: :thinking, content: "thinking..."}, %{type: :tool_call}] = msgs
@@ -151,14 +151,14 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.session.x.tool_start", %{
+        reduce(s, :tool_start, %{
           agent_id: "a1",
           name: "bash",
           call_id: "c1"
         })
 
       {s, _} =
-        reduce(s, "rho.session.x.tool_result", %{
+        reduce(s, :tool_result, %{
           agent_id: "a1",
           name: "bash",
           call_id: "c1",
@@ -174,7 +174,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state() |> Map.put(:total_input_tokens, 500) |> Map.put(:total_cost, 1.5)
 
       {s, _} =
-        reduce(s, "rho.session.x.tool_result", %{
+        reduce(s, :tool_result, %{
           agent_id: "a1",
           name: "clear_memory",
           status: :ok
@@ -190,9 +190,9 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.agent.started", %{agent_id: "a1", session_id: "s", role: :coder})
+        reduce(s, :agent_started, %{agent_id: "a1", session_id: "s", role: :coder})
 
-      {s, _} = reduce(s, "rho.session.x.turn_started", %{agent_id: "a1"})
+      {s, _} = reduce(s, :turn_started, %{agent_id: "a1"})
 
       assert s.agents["a1"].status == :busy
     end
@@ -203,12 +203,12 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.agent.started", %{agent_id: "a1", session_id: "s", role: :coder})
+        reduce(s, :agent_started, %{agent_id: "a1", session_id: "s", role: :coder})
 
-      {s, _} = reduce(s, "rho.session.x.turn_started", %{agent_id: "a1"})
+      {s, _} = reduce(s, :turn_started, %{agent_id: "a1"})
 
       {s, effects} =
-        reduce(s, "rho.session.x.turn_finished", %{agent_id: "a1", result: {:ok, "done"}})
+        reduce(s, :turn_finished, %{agent_id: "a1", result: {:ok, "done"}})
 
       assert s.agents["a1"].status == :idle
       msgs = Map.get(s.agent_messages, "a1", [])
@@ -220,10 +220,10 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.agent.started", %{agent_id: "a1", session_id: "s", role: :coder})
+        reduce(s, :agent_started, %{agent_id: "a1", session_id: "s", role: :coder})
 
       {s, _} =
-        reduce(s, "rho.session.x.turn_finished", %{agent_id: "a1", result: {:error, "boom"}})
+        reduce(s, :turn_finished, %{agent_id: "a1", result: {:error, "boom"}})
 
       msgs = Map.get(s.agent_messages, "a1", [])
       assert [%{type: :error, content: "boom"}] = msgs
@@ -233,7 +233,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
   describe "agent_started" do
     test "adds agent to state" do
       {s, _} =
-        reduce(state(), "rho.agent.started", %{
+        reduce(state(), :agent_started, %{
           agent_id: "a1",
           session_id: "s",
           role: :analyst,
@@ -249,8 +249,8 @@ defmodule RhoWeb.Projections.SessionStateTest do
     test "does not duplicate tab order" do
       s = state()
       data = %{agent_id: "a1", session_id: "s", role: :coder}
-      {s, _} = reduce(s, "rho.agent.started", data)
-      {s, _} = reduce(s, "rho.agent.started", data)
+      {s, _} = reduce(s, :agent_started, data)
+      {s, _} = reduce(s, :agent_started, data)
 
       assert s.agent_tab_order == ["a1"]
     end
@@ -261,9 +261,9 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.agent.started", %{agent_id: "a1", session_id: "s", role: :sub, depth: 1})
+        reduce(s, :agent_started, %{agent_id: "a1", session_id: "s", role: :sub, depth: 1})
 
-      {s, _} = reduce(s, "rho.agent.stopped", %{agent_id: "a1"})
+      {s, _} = reduce(s, :agent_stopped, %{agent_id: "a1"})
 
       refute Map.has_key?(s.agents, "a1")
       refute "a1" in s.agent_tab_order
@@ -273,14 +273,14 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.agent.started", %{
+        reduce(s, :agent_started, %{
           agent_id: "a1",
           session_id: "s",
           role: :main,
           depth: 0
         })
 
-      {s, _} = reduce(s, "rho.agent.stopped", %{agent_id: "a1"})
+      {s, _} = reduce(s, :agent_stopped, %{agent_id: "a1"})
 
       assert s.agents["a1"].status == :stopped
       assert "a1" in s.agent_tab_order
@@ -292,12 +292,12 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.session.x.llm_usage", %{
+        reduce(s, :llm_usage, %{
           usage: %{input_tokens: 100, output_tokens: 50, total_cost: 0.01}
         })
 
       {s, _} =
-        reduce(s, "rho.session.x.llm_usage", %{
+        reduce(s, :llm_usage, %{
           usage: %{input_tokens: 200, output_tokens: 100, total_cost: 0.02}
         })
 
@@ -313,7 +313,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
   describe "message_sent" do
     test "uses pre-resolved labels" do
       {s, _} =
-        reduce(state(), "rho.session.x.message_sent", %{
+        reduce(state(), :message_sent, %{
           from: "a1",
           to: "a2",
           message: "hello",
@@ -327,7 +327,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
 
     test "falls back to raw values without enrichment" do
       {s, _} =
-        reduce(state(), "rho.session.x.message_sent", %{
+        reduce(state(), :message_sent, %{
           from: "a1",
           to: "a2",
           message: "hi"
@@ -341,7 +341,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
   describe "ui_spec_delta" do
     test "first delta creates message and emits send_after" do
       {s, effects} =
-        reduce(state(), "rho.session.x.ui_spec_delta", %{
+        reduce(state(), :ui_spec_delta, %{
           agent_id: "a1",
           spec: %{type: "chart"},
           title: "My Chart",
@@ -357,14 +357,14 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.session.x.ui_spec_delta", %{
+        reduce(s, :ui_spec_delta, %{
           agent_id: "a1",
           spec: %{v: 1},
           message_id: "m1"
         })
 
       {s, effects} =
-        reduce(s, "rho.session.x.ui_spec_delta", %{
+        reduce(s, :ui_spec_delta, %{
           agent_id: "a1",
           spec: %{v: 2},
           message_id: "m1"
@@ -381,9 +381,9 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.task.requested", %{agent_id: "a1", role: :analyst, task: "analyze"})
+        reduce(s, :task_requested, %{agent_id: "a1", role: :analyst, task: "analyze"})
 
-      {s, _} = reduce(s, "rho.task.completed", %{agent_id: "a1", result: "done"})
+      {s, _} = reduce(s, :task_completed, %{agent_id: "a1", result: "done"})
 
       msgs = Map.get(s.agent_messages, "a1", [])
       assert [%{type: :delegation, status: :pending}, %{type: :delegation, status: :ok}] = msgs
@@ -395,10 +395,10 @@ defmodule RhoWeb.Projections.SessionStateTest do
       s = state()
 
       {s, _} =
-        reduce(s, "rho.agent.started", %{agent_id: "a1", session_id: "s", role: :coder})
+        reduce(s, :agent_started, %{agent_id: "a1", session_id: "s", role: :coder})
 
       {s, _} =
-        reduce(s, "rho.session.x.step_start", %{agent_id: "a1", step: 3, max_steps: 10})
+        reduce(s, :step_start, %{agent_id: "a1", step: 3, max_steps: 10})
 
       assert s.agents["a1"].step == 3
       assert s.agents["a1"].max_steps == 10
@@ -412,7 +412,7 @@ defmodule RhoWeb.Projections.SessionStateTest do
       {s, _} =
         reduce(
           state(),
-          "rho.session.x.before_llm",
+          :before_llm,
           %{agent_id: "a1", projection: %{context: [], tools: [], step: 1}},
           meta
         )
@@ -426,19 +426,19 @@ defmodule RhoWeb.Projections.SessionStateTest do
       {s, effects} =
         reduce(
           state(),
-          "rho.custom.event",
+          :custom_event,
           %{agent_id: "a1"},
           %{emitted_at: 999}
         )
 
-      assert [%{type: "rho.custom.event", agent_id: "a1", timestamp: 999}] = s.signals
+      assert [%{type: "custom_event", agent_id: "a1", timestamp: 999}] = s.signals
       assert Enum.any?(effects, &match?({:push_event, "signal", _}, &1))
     end
 
     test "signals are capped at 500" do
       s = state() |> Map.put(:signals, Enum.map(1..500, &%{id: &1}))
 
-      {s, _} = reduce(s, "rho.event.new", %{agent_id: "a1"})
+      {s, _} = reduce(s, :some_event, %{agent_id: "a1"})
 
       assert length(s.signals) == 500
     end
@@ -447,10 +447,10 @@ defmodule RhoWeb.Projections.SessionStateTest do
   describe "ID generation" do
     test "next_id increments monotonically" do
       s = state()
-      {s, _} = reduce(s, "rho.session.x.turn_started", %{agent_id: "a1"})
+      {s, _} = reduce(s, :turn_started, %{agent_id: "a1"})
       id_after_first = s.next_id
 
-      {s, _} = reduce(s, "rho.session.x.turn_started", %{agent_id: "a1"})
+      {s, _} = reduce(s, :turn_started, %{agent_id: "a1"})
       assert s.next_id > id_after_first
     end
   end

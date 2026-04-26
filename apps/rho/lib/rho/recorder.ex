@@ -130,33 +130,12 @@ defmodule Rho.Recorder do
     {:cont, %{kind: new_kind, data: new_data}} =
       Rho.PluginRegistry.apply_stage(:tape_write, entry, ctx)
 
-    result = mem.append(tape, new_kind, new_data)
-    publish_entry_appended(ctx, tape, new_kind, new_data)
-    result
+    mem.append(tape, new_kind, new_data)
   end
 
   defp append_with_tape_write(_runtime, mem, tape, kind, data) do
     mem.append(tape, kind, data)
   end
-
-  defp publish_entry_appended(%{session_id: sid, agent_id: aid}, tape, kind, data)
-       when is_binary(sid) do
-    Rho.Comms.publish(
-      "rho.session.#{sid}.tape.entry_appended",
-      %{
-        tape_name: tape,
-        kind: kind,
-        data: data,
-        agent_id: aid,
-        session_id: sid
-      },
-      source: "/session/#{sid}/agent/#{aid || "unknown"}"
-    )
-
-    :ok
-  end
-
-  defp publish_entry_appended(_ctx, _tape, _kind, _data), do: :ok
 
   # -- Text extraction --
 

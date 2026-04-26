@@ -11,13 +11,13 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
 
   alias RhoFrameworks.Demos.Hiring.{Candidates, Tools}
   alias Rho.Agent.{Worker, Supervisor}
-  alias Rho.Comms
+  alias Rho.Events.Event
+  alias Rho.RunSpec
 
   defstruct [
     :session_id,
     round: 0,
     evaluators: %{},
-    evaluator_tools: %{},
     scores: %{},
     status: :not_started,
     max_rounds: 2
@@ -42,7 +42,7 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
 
   @impl true
   def init(session_id) do
-    {:ok, _sub} = Comms.subscribe("rho.hiring.scores.submitted")
+    Rho.Events.subscribe(session_id)
     {:ok, %__MODULE__{session_id: session_id}}
   end
 
@@ -53,12 +53,9 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
 
   @impl true
   def handle_call(:begin, _from, %{status: :not_started} = state) do
-    Comms.publish(
-      "rho.hiring.simulation.started",
-      %{
-        session_id: state.session_id
-      },
-      source: "/session/#{state.session_id}"
+    Rho.Events.broadcast(
+      state.session_id,
+      Rho.Events.event(:hiring_simulation_started, state.session_id)
     )
 
     state = spawn_evaluators(state)
@@ -69,17 +66,14 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
   def handle_call(:begin, _from, state), do: {:reply, {:error, :already_started}, state}
 
   @impl true
-  def handle_info({:signal, %Jido.Signal{type: "rho.hiring.scores.submitted", data: data}}, state) do
-    if data.session_id == state.session_id do
-      # Use the coordinator's current round, not the LLM's claimed round
-      state = record_scores(state, data.role, state.round, data.scores)
-      state = maybe_advance_round(state)
-      {:noreply, state}
-    else
-      {:noreply, state}
-    end
+  def handle_info(%Event{kind: :hiring_scores_submitted, data: data}, state) do
+    # Use the coordinator's current round, not the LLM's claimed round
+    state = record_scores(state, data.role, state.round, data.scores)
+    state = maybe_advance_round(state)
+    {:noreply, state}
   end
 
+  def handle_info(%Event{}, state), do: {:noreply, state}
   def handle_info(_msg, state), do: {:noreply, state}
 
   # --- Private ---
@@ -91,11 +85,12 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
       Map.new(roles, fn role ->
         agent_id = Rho.Agent.Primary.new_agent_id(Rho.Agent.Primary.agent_id(state.session_id))
         config = Rho.Config.agent_config(role)
+        workspace = File.cwd!()
 
-        # Build tools: multi-agent tools + submit_scores
+        # Build tools: multi-agent tools + submit_scores + finish
         tool_context = %{
           tape_name: agent_id,
-          workspace: File.cwd!(),
+          workspace: workspace,
           agent_name: role,
           agent_id: agent_id,
           session_id: state.session_id,
@@ -115,68 +110,67 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
         finish_tool = Rho.Stdlib.Tools.Finish.tool_def()
         all_tools = mount_tools ++ [score_tool, finish_tool]
 
-        # Bootstrap memory
+        # Bootstrap memory (one tape per evaluator, named by agent_id)
         memory_mod = Rho.Config.tape_module()
-        tape = agent_id
-        memory_mod.bootstrap(tape)
+        memory_mod.bootstrap(agent_id)
+
+        spec =
+          RunSpec.build(
+            model: config.model,
+            system_prompt: config.system_prompt,
+            max_steps: config.max_steps,
+            max_tokens: config.max_tokens,
+            plugins: config.plugins,
+            turn_strategy: config.turn_strategy,
+            prompt_format: config.prompt_format || :markdown,
+            provider: config.provider,
+            description: config.description,
+            skills: config.skills || [],
+            avatar: config.avatar,
+            tools: all_tools,
+            tape_module: memory_mod,
+            agent_name: role,
+            workspace: workspace,
+            session_id: state.session_id
+          )
 
         {:ok, _pid} =
           Supervisor.start_worker(
             agent_id: agent_id,
             session_id: state.session_id,
-            workspace: File.cwd!(),
+            workspace: workspace,
             agent_name: role,
             role: role,
-            tape_ref: tape,
-            max_steps: config.max_steps,
-            system_prompt: config.system_prompt,
-            tools: all_tools,
-            model: config.model
+            tape_ref: agent_id,
+            run_spec: spec
           )
 
         Logger.info("[Hiring] Spawned #{role} as #{agent_id}")
-        {role, %{agent_id: agent_id, tools: all_tools, config: config}}
+        {role, agent_id}
       end)
 
-    evaluator_map = Map.new(evaluators, fn {role, info} -> {role, info.agent_id} end)
-
-    tools_map =
-      Map.new(evaluators, fn {role, info} -> {role, %{tools: info.tools, config: info.config}} end)
-
-    %{state | evaluators: evaluator_map, evaluator_tools: tools_map}
+    %{state | evaluators: evaluators}
   end
 
   defp start_round(state, round_num) do
     prompt = round_prompt(round_num, state)
 
-    Comms.publish(
-      "rho.hiring.round.started",
-      %{
-        session_id: state.session_id,
-        round: round_num
-      },
-      source: "/session/#{state.session_id}"
+    Rho.Events.broadcast(
+      state.session_id,
+      Rho.Events.event(:hiring_round_started, state.session_id, nil, %{round: round_num})
     )
 
     Logger.info("[Hiring] Starting round #{round_num}")
 
-    # Submit prompt to each evaluator with their custom tools
-    # Stagger starts by 1s to avoid Finch connection pool exhaustion
+    # Submit prompt to each evaluator. Tools/system_prompt/model live in the
+    # RunSpec set at start_worker time; no per-turn overrides needed.
+    # Stagger starts by 1s to avoid Finch connection pool exhaustion.
     state.evaluators
     |> Enum.with_index()
-    |> Enum.each(fn {{role, agent_id}, idx} ->
+    |> Enum.each(fn {{_role, agent_id}, idx} ->
       if idx > 0, do: Process.sleep(1_000)
       pid = Worker.whereis(agent_id)
-
-      if pid do
-        role_info = Map.get(state.evaluator_tools, role, %{})
-
-        Worker.submit(pid, prompt,
-          tools: role_info[:tools],
-          system_prompt: role_info[:config] && role_info.config.system_prompt,
-          model: role_info[:config] && role_info.config.model
-        )
-      end
+      if pid, do: Worker.submit(pid, prompt)
     end)
 
     %{state | round: round_num}
@@ -226,13 +220,11 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
       if state.round >= state.max_rounds do
         final = compute_final_shortlist(state)
 
-        Comms.publish(
-          "rho.hiring.simulation.completed",
-          %{
-            session_id: state.session_id,
+        Rho.Events.broadcast(
+          state.session_id,
+          Rho.Events.event(:hiring_simulation_completed, state.session_id, nil, %{
             shortlist: final
-          },
-          source: "/session/#{state.session_id}"
+          })
         )
 
         Logger.info("[Hiring] Simulation complete. Shortlist: #{inspect(final)}")

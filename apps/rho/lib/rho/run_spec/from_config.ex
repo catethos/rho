@@ -1,6 +1,6 @@
 defmodule Rho.RunSpec.FromConfig do
   @moduledoc """
-  Builds a `%Rho.RunSpec{}` from `.rho.exs` via `Rho.CLI.Config`.
+  Builds a `%Rho.RunSpec{}` from `.rho.exs` via `Rho.AgentConfig`.
 
   This is the **only** place that touches `.rho.exs` or application env
   for agent configuration. Everything downstream receives an explicit
@@ -12,12 +12,12 @@ defmodule Rho.RunSpec.FromConfig do
       spec = Rho.RunSpec.FromConfig.build(:default, workspace: "/tmp/project")
   """
 
-  alias Rho.CLI.Config, as: CLIConfig
+  alias Rho.AgentConfig
 
   @doc """
   Build a RunSpec for the given agent name.
 
-  Reads `.rho.exs` via `CLI.Config.agent/1`, resolves plugin shorthand
+  Reads `.rho.exs` via `AgentConfig.agent/1`, resolves plugin shorthand
   atoms via `Rho.Stdlib.resolve_plugin/1`, and returns a `%Rho.RunSpec{}`.
 
   ## Options
@@ -37,7 +37,7 @@ defmodule Rho.RunSpec.FromConfig do
   """
   @spec build(atom(), keyword()) :: Rho.RunSpec.t()
   def build(agent_name \\ :default, opts \\ []) do
-    config = CLIConfig.agent(agent_name)
+    config = AgentConfig.agent(agent_name)
 
     Rho.RunSpec.build(
       model: opts[:model] || config.model,
@@ -59,7 +59,7 @@ defmodule Rho.RunSpec.FromConfig do
       user_id: opts[:user_id],
       organization_id: opts[:organization_id],
       emit: opts[:emit],
-      sandbox_enabled: opts[:sandbox_enabled] || CLIConfig.sandbox_enabled?()
+      sandbox_enabled: opts[:sandbox_enabled] || AgentConfig.sandbox_enabled?()
     )
   end
 end

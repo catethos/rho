@@ -4,7 +4,24 @@ defmodule Rho.Application do
   use Application
 
   @impl true
+  def prep_stop(_state) do
+    for pid <- Rho.Agent.Supervisor.active_agents() do
+      try do
+        GenServer.stop(pid, :shutdown, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  @impl true
   def start(_type, _args) do
+    [".env", System.get_env("DOTENV_FILE")]
+    |> Enum.reject(&is_nil/1)
+    |> Dotenvy.source()
+
     Rho.Telemetry.attach()
 
     tape_module = Rho.Config.tape_module()
@@ -27,11 +44,11 @@ defmodule Rho.Application do
 
     children =
       [
+        {Phoenix.PubSub, name: Rho.PubSub},
         {Registry, keys: :unique, name: Rho.AgentRegistry},
         {Task.Supervisor, name: Rho.TaskSupervisor},
         Rho.PluginRegistry,
         Rho.TransformerRegistry,
-        Rho.Comms.SignalBus,
         # Caps total concurrent LLM streams below the Finch pool size so
         # pool exhaustion becomes the exceptional path, not the norm.
         {Rho.LLM.Admission, capacity: admission_capacity()}

@@ -12,7 +12,7 @@ defmodule RhoWeb.ChatOverlayComponent do
 
   import RhoWeb.ChatComponents, only: [message_row: 1, envelope_preview: 1]
 
-  alias RhoWeb.LiveEvents.Event, as: LiveEvent
+  alias Rho.Events.Event, as: LiveEvent
 
   @impl true
   def mount(socket) do

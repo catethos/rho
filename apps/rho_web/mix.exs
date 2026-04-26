@@ -31,7 +31,6 @@ defmodule RhoWeb.MixProject do
     [
       {:rho, in_umbrella: true},
       {:rho_stdlib, in_umbrella: true},
-      {:rho_cli, in_umbrella: true},
       {:rho_frameworks, in_umbrella: true},
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},

@@ -7,8 +7,8 @@ defmodule RhoWeb.Projection do
   testable and replayable outside of a LiveView process.
   """
 
-  @doc "Returns true if this projection handles the given signal type."
-  @callback handles?(signal_type :: String.t()) :: boolean()
+  @doc "Returns true if this projection handles the given event kind."
+  @callback handles?(kind :: atom()) :: boolean()
 
   @doc "Returns the initial state map for this projection."
   @callback init() :: map()

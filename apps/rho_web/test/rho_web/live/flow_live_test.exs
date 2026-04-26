@@ -50,7 +50,7 @@ defmodule RhoWeb.FlowLiveTest do
       assert socket.assigns.completed_steps == []
       assert socket.assigns.step_status == :idle
       assert is_binary(socket.assigns.session_id)
-      assert socket.assigns.runtime.mode == :flow
+      assert socket.assigns.scope.session_id == socket.assigns.session_id
 
       # Clean up
       DataTable.stop(socket.assigns.session_id)
@@ -67,7 +67,7 @@ defmodule RhoWeb.FlowLiveTest do
 
       assert socket.assigns.flow_module == RhoFrameworks.Flows.CreateFramework
       assert socket.assigns.session_id == nil
-      assert socket.assigns.runtime == nil
+      assert socket.assigns.scope == nil
     end
 
     test "redirects on unknown flow_id", %{org: org, user: user} do

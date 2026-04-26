@@ -38,6 +38,8 @@ defmodule RhoWeb.Session.SignalRouter do
   @doc """
   Route a signal through all applicable projections.
 
+  Signal must have `:kind` (atom) and `:data` keys. Optionally `:emitted_at`.
+
   Pipeline: enrich → session state → workspace states → shell → effects.
 
   Pure reduction (session state, workspace projections, shell chrome) is
@@ -61,7 +63,7 @@ defmodule RhoWeb.Session.SignalRouter do
     :telemetry.execute(
       [:rho, :signal, :route],
       %{duration_us: dt},
-      %{signal_type: signal.type}
+      %{signal_type: signal.kind}
     )
 
     result
@@ -90,7 +92,7 @@ defmodule RhoWeb.Session.SignalRouter do
     Enum.reduce(workspace_modules, socket, fn mod, sock ->
       projection = mod.projection()
 
-      if projection.handles?(signal.type) do
+      if projection.handles?(signal.kind) do
         reduce_workspace(sock, mod.key(), projection, signal)
       else
         sock
@@ -216,13 +218,8 @@ defmodule RhoWeb.Session.SignalRouter do
     end)
   end
 
-  defp enrich_signal(%{type: type, data: data} = signal, socket) when is_binary(type) do
-    if String.ends_with?(type, ".message_sent") do
-      enriched_data = enrich_message_sent(data, socket)
-      %{signal | data: enriched_data}
-    else
-      signal
-    end
+  defp enrich_signal(%{kind: :message_sent, data: data} = signal, socket) do
+    %{signal | data: enrich_message_sent(data, socket)}
   end
 
   defp enrich_signal(signal, _socket), do: signal

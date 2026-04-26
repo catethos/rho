@@ -1,8 +1,11 @@
-defmodule Rho.CLI.Config do
+defmodule Rho.AgentConfig do
   @moduledoc """
-  Full config loader for the CLI. Reads `.rho.exs`, normalizes
-  legacy keys (`mounts:` -> `plugins:`, `reasoner:` -> `turn_strategy:`),
-  and provides agent config queries.
+  Loader for `.rho.exs` agent configuration.
+
+  Reads the per-project config file, normalizes legacy keys
+  (`mounts:` -> `plugins:`, `reasoner:` -> `turn_strategy:`), and
+  exposes per-agent config queries used by the runtime, web layer,
+  and mix tasks.
   """
 
   @config_file ".rho.exs"

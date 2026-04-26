@@ -60,14 +60,14 @@ defmodule RhoWeb.Session.SignalRouterTest do
   end
 
   describe "DataTable stub projection" do
-    test "handles?/1 is false for all signal types" do
-      refute DataTableProjection.handles?("rho.session.abc.events.data_table_rows_delta")
-      refute DataTableProjection.handles?("rho.session.abc.text_delta")
+    test "handles?/1 is false for all event kinds" do
+      refute DataTableProjection.handles?(:data_table_rows_delta)
+      refute DataTableProjection.handles?(:text_delta)
     end
 
     test "reduce/2 is a no-op" do
       state = DataTableProjection.init()
-      signal = %{type: "rho.session.abc.events.whatever", data: %{}}
+      signal = %{kind: :whatever, data: %{}}
       assert DataTableProjection.reduce(state, signal) == state
     end
   end

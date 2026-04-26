@@ -33,10 +33,7 @@ defmodule Rho.Agent.EventLogTest do
     end
 
     test "returns events after publishing signals", %{session_id: sid} do
-      publish_signal("rho.session.#{sid}.events.step_start", %{
-        session_id: sid,
-        agent_id: "agent_1"
-      })
+      broadcast_event(sid, :step_start, %{agent_id: "agent_1"})
 
       Process.sleep(50)
 
@@ -52,11 +49,7 @@ defmodule Rho.Agent.EventLogTest do
 
     test "pagination with after option", %{session_id: sid} do
       for i <- 1..5 do
-        publish_signal("rho.session.#{sid}.events.step_start", %{
-          session_id: sid,
-          agent_id: "agent_1",
-          step: i
-        })
+        broadcast_event(sid, :step_start, %{agent_id: "agent_1", step: i})
       end
 
       Process.sleep(50)
@@ -71,11 +64,7 @@ defmodule Rho.Agent.EventLogTest do
 
     test "limit restricts returned events", %{session_id: sid} do
       for i <- 1..5 do
-        publish_signal("rho.session.#{sid}.events.step_start", %{
-          session_id: sid,
-          agent_id: "agent_1",
-          step: i
-        })
+        broadcast_event(sid, :step_start, %{agent_id: "agent_1", step: i})
       end
 
       Process.sleep(50)
@@ -87,22 +76,14 @@ defmodule Rho.Agent.EventLogTest do
 
   describe "filtered types" do
     test "text_delta events are not persisted", %{session_id: sid} do
-      publish_signal("rho.session.#{sid}.events.text_delta", %{
-        session_id: sid,
-        agent_id: "agent_1",
-        text: "hello"
-      })
-
-      publish_signal("rho.session.#{sid}.events.step_start", %{
-        session_id: sid,
-        agent_id: "agent_1"
-      })
+      broadcast_event(sid, :text_delta, %{agent_id: "agent_1", text: "hello"})
+      broadcast_event(sid, :step_start, %{agent_id: "agent_1"})
 
       Process.sleep(50)
 
       {events, _} = EventLog.read(sid)
       types = Enum.map(events, & &1["type"])
-      refute Enum.any?(types, &String.contains?(&1, "text_delta"))
+      refute Enum.any?(types, &(&1 == "text_delta"))
     end
   end
 
@@ -122,8 +103,7 @@ defmodule Rho.Agent.EventLogTest do
     test "truncates large output fields", %{session_id: sid} do
       large_output = String.duplicate("x", 5000)
 
-      publish_signal("rho.session.#{sid}.events.tool_result", %{
-        session_id: sid,
+      broadcast_event(sid, :tool_result, %{
         agent_id: "agent_1",
         name: "bash",
         output: large_output,
@@ -142,8 +122,7 @@ defmodule Rho.Agent.EventLogTest do
 
   describe "sanitize (via written events)" do
     test "converts structs and special types to JSON-safe values", %{session_id: sid} do
-      publish_signal("rho.session.#{sid}.events.tool_start", %{
-        session_id: sid,
+      broadcast_event(sid, :tool_start, %{
         agent_id: "agent_1",
         name: "test",
         extra_pid: self()
@@ -162,14 +141,9 @@ defmodule Rho.Agent.EventLogTest do
     end
   end
 
-  describe "signal metadata enrichment" do
-    test "persisted events include event_id and emitted_at", %{session_id: sid} do
-      before_ms = System.system_time(:millisecond)
-
-      publish_signal("rho.session.#{sid}.events.step_start", %{
-        session_id: sid,
-        agent_id: "agent_1"
-      })
+  describe "event metadata" do
+    test "persisted events include emitted_at timestamp", %{session_id: sid} do
+      broadcast_event(sid, :step_start, %{agent_id: "agent_1"})
 
       Process.sleep(50)
 
@@ -177,43 +151,27 @@ defmodule Rho.Agent.EventLogTest do
       assert events != []
 
       event = hd(events)
-      # event_id is the signal's UUID
-      assert is_binary(event["event_id"])
-      assert byte_size(event["event_id"]) > 0
-
-      # emitted_at is a millisecond timestamp
+      # emitted_at is the Event struct's monotonic timestamp
       assert is_integer(event["emitted_at"])
-      assert event["emitted_at"] >= before_ms
     end
 
-    test "replay shape matches live signal shape for event_id and emitted_at", %{session_id: sid} do
-      # Subscribe to the same pattern the EventLog uses
-      {:ok, _sub_id} = Rho.Comms.subscribe("rho.session.#{sid}.events.*")
-
-      publish_signal("rho.session.#{sid}.events.tool_start", %{
-        session_id: sid,
-        agent_id: "agent_1",
-        name: "bash"
-      })
-
-      # Capture the live signal
-      assert_receive {:signal, %Jido.Signal{} = live_signal}, 1_000
+    test "persisted events include type as string", %{session_id: sid} do
+      broadcast_event(sid, :tool_start, %{agent_id: "agent_1", name: "bash"})
 
       Process.sleep(50)
 
-      # Read persisted event
       {events, _} = EventLog.read(sid)
       event = List.last(events)
-
-      # Both should carry the same event_id and emitted_at
-      assert event["event_id"] == live_signal.id
-      assert event["emitted_at"] == live_signal.extensions["emitted_at"]
+      assert event["type"] == "tool_start"
     end
   end
 
   # --- Helpers ---
 
-  defp publish_signal(type, data) do
-    Rho.Comms.publish(type, data, source: "test")
+  defp broadcast_event(session_id, kind, data) do
+    Rho.Events.broadcast(
+      session_id,
+      Rho.Events.event(kind, session_id, data[:agent_id], data)
+    )
   end
 end

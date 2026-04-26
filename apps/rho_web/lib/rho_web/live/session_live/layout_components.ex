@@ -350,7 +350,7 @@ defmodule RhoWeb.SessionLive.LayoutComponents do
   attr(:session_id, :string, default: nil)
 
   def new_agent_dialog(assigns) do
-    roles = Rho.CLI.Config.agent_names()
+    roles = Rho.AgentConfig.agent_names()
 
     # Build parent options from live agents in the session.
     # Disambiguate duplicate role names by appending a short suffix.
