@@ -255,20 +255,35 @@ defmodule Rho.ToolExecutor do
   end
 
   defp normalize_result({:error, reason}, name, call_id, latency_ms) do
-    error_str = "Error: #{reason}"
-    error_type = Shared.classify_tool_error(reason)
+    {error_type, output_text} = error_info(reason)
+    error_str = "Error: #{output_text}"
 
     {error_str,
      %{
        type: :tool_result,
        name: name,
        status: :error,
-       output: to_string(reason),
+       output: output_text,
        call_id: call_id,
        latency_ms: latency_ms,
        error_type: error_type
      }, :normal}
   end
+
+  defp error_info(reason) when is_atom(reason),
+    do: {reason, Atom.to_string(reason)}
+
+  defp error_info({type, detail}) when is_atom(type),
+    do: {type, format_error_detail(detail)}
+
+  defp error_info(reason) when is_binary(reason),
+    do: {Shared.classify_tool_error(reason), reason}
+
+  defp error_info(other),
+    do: {:runtime_error, inspect(other)}
+
+  defp format_error_detail(detail) when is_binary(detail), do: detail
+  defp format_error_detail(detail), do: inspect(detail)
 
   # -- Transformer: :tool_result_in --
 

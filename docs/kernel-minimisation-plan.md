@@ -122,7 +122,7 @@ kernel readable in one sitting.
 Phases are ordered by value/effort ratio. 1, 4, 6, 7 are cheap and
 independent. Phase 2 is the structural win; Phase 3 pairs with it.
 
-### [ ] Phase 1: Tool-driven termination (≤2h)
+### [x] Phase 1: Tool-driven termination (≤2h) — done in cf17f22
 
 **Goal:** Tools self-declare end-of-loop via `{:final, value}`.
 Drop `@terminal_tools`.
@@ -140,7 +140,7 @@ the loop terminates. Must pass before and after.
 
 **Risk:** Low. Removes redundancy.
 
-### [ ] Phase 4: Delete direct-command syntax (≤1h)
+### [x] Phase 4: Delete direct-command syntax (≤1h) — done in cf17f22
 
 **Goal:** `,tool args` syntax is dead code — `rho_cli` was the only consumer
 and is gone. **Pure deletion**, not extraction (v1 plan called for CLI
@@ -158,7 +158,7 @@ extraction, no longer needed).
 
 **Risk:** Negligible. ~70 lines, zero callers in the repo.
 
-### [ ] Phase 6: Typed tool errors (1d)
+### [~] Phase 6: Typed tool errors (1d) — built-ins migrated; deletion of `classify_tool_error/1` deferred per step 4
 
 **Goal:** Drop `classify_tool_error` string-matching from `TurnStrategy.Shared`.
 

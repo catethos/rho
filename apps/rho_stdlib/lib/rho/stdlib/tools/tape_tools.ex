@@ -44,7 +44,7 @@ defmodule Rho.Stdlib.Tools.Anchor do
          "Anchor '#{name}' created. Context window has been refreshed. STOP here and wait for the user's next message — do not continue from the previous context."}
 
       {:error, reason} ->
-        {:error, "Failed to create anchor: #{inspect(reason)}"}
+        {:error, {:anchor_failed, "Failed to create anchor: #{inspect(reason)}"}}
     end
   end
 end
@@ -76,7 +76,7 @@ defmodule Rho.Stdlib.Tools.SearchHistory do
     limit = args[:limit] || 10
 
     if String.trim(query) == "" do
-      {:error, "query is required"}
+      {:error, {:invalid_args, "query is required"}}
     else
       results = Rho.Tape.Service.search(tape_name, query, limit)
       format_search_results(results, query)
@@ -237,7 +237,8 @@ defmodule Rho.Stdlib.Tools.ClearMemory do
       {:final,
        "Memory cleared. All conversation history has been removed and a fresh session started."}
     else
-      {:error, "Please set confirm: true to clear memory. This action cannot be undone."}
+      {:error,
+       {:invalid_args, "Please set confirm: true to clear memory. This action cannot be undone."}}
     end
   end
 end

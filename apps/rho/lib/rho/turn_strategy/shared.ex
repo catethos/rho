@@ -95,8 +95,17 @@ defmodule Rho.TurnStrategy.Shared do
 
   @doc """
   Classifies a tool error reason into a category atom.
+
+  Legacy shim for tools that still return `{:error, binary}`. Prefer
+  `{:error, atom}` or `{:error, {atom, detail}}` — the tool executor
+  passes those atoms through directly without string-matching.
   """
   def classify_tool_error(reason) when is_binary(reason) do
+    Logger.warning(
+      "Tool returned legacy string error: #{inspect(reason)}. " <>
+        "Migrate to {:error, atom} or {:error, {atom, detail}} for typed errors."
+    )
+
     reason_down = String.downcase(reason)
 
     cond do

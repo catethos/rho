@@ -30,7 +30,7 @@ defmodule Rho.Stdlib.Tools.Bash do
 
     case System.cmd("sh", ["-c", cmd], opts) do
       {output, 0} -> {:ok, output || "(no output)"}
-      {output, code} -> {:error, "exit code #{code}: #{output}"}
+      {output, code} -> {:error, {:exit_status, "exit code #{code}: #{output}"}}
     end
   end
 end

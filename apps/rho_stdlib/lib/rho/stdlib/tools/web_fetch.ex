@@ -38,7 +38,7 @@ defmodule Rho.Stdlib.Tools.WebFetch do
         {:ok, truncate(inspect(body))}
 
       {:error, reason} ->
-        {:error, inspect(reason)}
+        {:error, {:fetch_failed, inspect(reason)}}
     end
   end
 

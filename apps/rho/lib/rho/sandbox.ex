@@ -112,7 +112,7 @@ defmodule Rho.Sandbox do
          ) do
       {_output, 0} -> {:ok, "No changes"}
       {output, 1} -> {:ok, format_diff(output, sandbox)}
-      {output, code} -> {:error, "diff failed (#{code}): #{output}"}
+      {output, code} -> {:error, {:diff_failed, "diff failed (#{code}): #{output}"}}
     end
   end
 
@@ -147,7 +147,7 @@ defmodule Rho.Sandbox do
            stderr_to_stdout: true
          ) do
       {_, 0} -> :ok
-      {output, code} -> {:error, "rsync failed (#{code}): #{output}"}
+      {output, code} -> {:error, {:rsync_failed, "rsync failed (#{code}): #{output}"}}
     end
   end
 

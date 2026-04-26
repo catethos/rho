@@ -109,7 +109,7 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     rescue
       e ->
         Logger.error("[PythonInterpreter] namespace init failed: #{Exception.message(e)}")
-        {state, {:error, "Python init failed: #{Exception.message(e)}"}}
+        {state, {:error, {:init_failed, "Python init failed: #{Exception.message(e)}"}}}
     end
   end
 
@@ -175,11 +175,11 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     rescue
       e in [Pythonx.Error] ->
         Logger.error("[PythonInterpreter] Pythonx.Error: #{Exception.message(e)}")
-        {{:error, Exception.message(e)}, state}
+        {{:error, {:eval_failed, Exception.message(e)}}, state}
 
       e ->
         Logger.error("[PythonInterpreter] unexpected error: #{Exception.message(e)}")
-        {{:error, "Python eval failed: #{Exception.message(e)}"}, state}
+        {{:error, {:eval_failed, "Python eval failed: #{Exception.message(e)}"}}, state}
     end
   end
 
@@ -296,7 +296,7 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
         GenServer.call(via(session_id), {:eval, code}, :timer.minutes(5))
 
       {:error, reason} ->
-        {:error, "Failed to start Python interpreter: #{inspect(reason)}"}
+        {:error, {:start_failed, "Failed to start Python interpreter: #{inspect(reason)}"}}
     end
   end
 

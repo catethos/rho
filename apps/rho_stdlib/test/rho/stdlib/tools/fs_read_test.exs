@@ -39,13 +39,13 @@ defmodule Rho.Stdlib.Tools.FsReadTest do
 
   test "returns error for missing file" do
     [tool] = FsRead.tools([], %{workspace: @workspace})
-    assert {:error, msg} = tool.execute.(%{path: "nonexistent.txt"}, %{})
+    assert {:error, {:not_found, msg}} = tool.execute.(%{path: "nonexistent.txt"}, %{})
     assert msg =~ "Cannot read"
   end
 
   test "returns error for path escape" do
     [tool] = FsRead.tools([], %{workspace: @workspace})
-    assert {:error, msg} = tool.execute.(%{path: "../../../etc/passwd"}, %{})
+    assert {:error, {:path_escape, msg}} = tool.execute.(%{path: "../../../etc/passwd"}, %{})
     assert msg =~ "Path escapes workspace"
   end
 

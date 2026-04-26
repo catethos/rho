@@ -34,7 +34,10 @@ defmodule Rho.Stdlib.Tools.FsWriteTest do
 
   test "returns error for path escape" do
     [tool] = FsWrite.tools([], %{workspace: @workspace})
-    assert {:error, msg} = tool.execute.(%{path: "../../escape.txt", content: "bad"}, %{})
+
+    assert {:error, {:path_escape, msg}} =
+             tool.execute.(%{path: "../../escape.txt", content: "bad"}, %{})
+
     assert msg =~ "Path escapes workspace"
   end
 end

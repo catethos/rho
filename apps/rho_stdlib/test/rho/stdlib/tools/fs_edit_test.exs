@@ -50,7 +50,7 @@ defmodule Rho.Stdlib.Tools.FsEditTest do
   test "returns error when text not found" do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
 
-    assert {:error, msg} =
+    assert {:error, {:text_not_found, msg}} =
              tool.execute.(%{path: "edit.txt", old: "nonexistent", new: "x"}, %{})
 
     assert msg =~ "Text not found"
@@ -59,7 +59,7 @@ defmodule Rho.Stdlib.Tools.FsEditTest do
   test "returns error for path escape" do
     [tool] = FsEdit.tools([], %{workspace: @workspace})
 
-    assert {:error, msg} =
+    assert {:error, {:path_escape, msg}} =
              tool.execute.(%{path: "../../bad.txt", old: "x", new: "y"}, %{})
 
     assert msg =~ "Path escapes workspace"

@@ -48,11 +48,20 @@ defmodule Rho.Stdlib.Tools.FsRead do
 
         {:ok, Enum.join(slice, "\n")}
 
-      {:error, reason} ->
-        {:error, "Cannot read #{path}: #{reason}"}
+      {:error, posix} ->
+        atom =
+          case posix do
+            :enoent -> :not_found
+            :eacces -> :permission_denied
+            :eperm -> :permission_denied
+            :eisdir -> :is_directory
+            _ -> :read_failed
+          end
+
+        {:error, {atom, "Cannot read #{path}: #{:file.format_error(posix)}"}}
     end
   rescue
-    e -> {:error, Exception.message(e)}
+    e -> {:error, Rho.Stdlib.Tools.PathUtils.classify_rescue(e, :read_failed)}
   end
 end
 
@@ -93,7 +102,7 @@ defmodule Rho.Stdlib.Tools.FsWrite do
     File.write!(full_path, content)
     {:ok, "Wrote #{byte_size(content)} bytes to #{full_path}"}
   rescue
-    e -> {:error, Exception.message(e)}
+    e -> {:error, Rho.Stdlib.Tools.PathUtils.classify_rescue(e, :write_failed)}
   end
 end
 
@@ -143,21 +152,21 @@ defmodule Rho.Stdlib.Tools.FsEdit do
     {before, after_lines} = Enum.split(lines, start)
     section = Enum.join(after_lines, "\n")
 
-    unless String.contains?(section, old) do
-      raise "Text not found in #{path} after line #{start}"
+    if String.contains?(section, old) do
+      new_section = String.replace(section, old, new_text, global: false)
+
+      new_content =
+        case before do
+          [] -> new_section
+          _ -> Enum.join(before, "\n") <> "\n" <> new_section
+        end
+
+      File.write!(full_path, new_content)
+      {:ok, "Edited #{full_path}"}
+    else
+      {:error, {:text_not_found, "Text not found in #{path} after line #{start}"}}
     end
-
-    new_section = String.replace(section, old, new_text, global: false)
-
-    new_content =
-      case before do
-        [] -> new_section
-        _ -> Enum.join(before, "\n") <> "\n" <> new_section
-      end
-
-    File.write!(full_path, new_content)
-    {:ok, "Edited #{full_path}"}
   rescue
-    e -> {:error, Exception.message(e)}
+    e -> {:error, Rho.Stdlib.Tools.PathUtils.classify_rescue(e, :edit_failed)}
   end
 end
