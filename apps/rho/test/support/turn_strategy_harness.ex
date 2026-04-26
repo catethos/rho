@@ -6,11 +6,9 @@ defmodule Rho.Test.TurnStrategyHarness do
   minimal runtime. Stubs `ReqLLM.stream_text/3` via Mimic to deliver the
   fixture text as a single-token stream.
 
-  NOTE: The old harness used `%Rho.Lifecycle{}` for before_tool deny/allow.
-  The new architecture dispatches tool policy through
+  Tool policy is dispatched through
   `Rho.PluginRegistry.apply_stage(:tool_args_out, ...)`. Since no
   transformers are registered in tests by default, all tools are allowed.
-  The `allow_tools` option currently has no effect — all tools execute.
 
   Returns a metrics map:
 
@@ -32,7 +30,6 @@ defmodule Rho.Test.TurnStrategyHarness do
   `tool_defs` is a list of tool_def maps (same shape as Runner).
   Options:
     * `:user_text` — user message for the projection context (default: "hi")
-    * `:allow_tools` — currently unused (see moduledoc); kept for API compat
   """
   @spec run(module(), String.t(), [map()], keyword()) :: map()
   def run(strategy_mod, fixture_text, tool_defs, opts \\ []) do

@@ -1,6 +1,6 @@
 defmodule Rho.Stdlib.Plugins.PyAgent do
   @moduledoc """
-  Mount that bridges a pydantic-ai (or any Python) agent into Rho via erlang_python.
+  Plugin that bridges a pydantic-ai (or any Python) agent into Rho via erlang_python.
 
   Communication is text-level: the Python agent receives a string message and returns
   a string response. No behaviour conformance required on the Python side — just
@@ -9,7 +9,7 @@ defmodule Rho.Stdlib.Plugins.PyAgent do
   ## Config
 
       # .rho.exs
-      mounts: [{:py_agent, module: "example_agent", name: "researcher"}]
+      plugins: [{:py_agent, module: "example_agent", name: "researcher"}]
 
   Options:
     - `:module` — Python module name (must be importable, added to sys.path)

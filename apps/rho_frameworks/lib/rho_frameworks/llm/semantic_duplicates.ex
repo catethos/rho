@@ -4,9 +4,6 @@ defmodule RhoFrameworks.LLM.SemanticDuplicates do
 
   Given a formatted list of skills (with IDs in brackets), returns pairs
   of skills that describe the same underlying competency.
-
-  Replaces the LiteWorker-based `find_semantic_duplicates_via_llm` in
-  `RhoFrameworks.Library` with a direct structured LLM call.
   """
   use RhoBaml.Function,
     client: "OpenRouter",

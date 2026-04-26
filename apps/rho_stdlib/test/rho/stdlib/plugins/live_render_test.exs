@@ -33,8 +33,8 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
       assert length(sections) == 1
       section = hd(sections)
       assert %Rho.PromptSection{key: :live_render} = section
-      assert section.body =~ "present_ui"
       assert section.heading =~ "present_ui"
+      assert section.body =~ "Components:"
       assert length(section.examples) == 1
     end
 

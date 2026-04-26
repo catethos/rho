@@ -221,36 +221,6 @@ defmodule Rho.RunnerTest do
     end
   end
 
-  # -- Lifecycle hooks through Runner (skipped: need transformer migration) --
-
-  describe "lifecycle: before_tool deny (needs transformer migration)" do
-    @describetag :skip
-    test "denied tool call returns denial message as tool result" do
-      flunk("needs migration from Mount to Transformer")
-    end
-  end
-
-  describe "lifecycle: after_tool replace (needs transformer migration)" do
-    @describetag :skip
-    test "mount can replace tool output" do
-      flunk("needs migration from Mount to Transformer")
-    end
-  end
-
-  describe "lifecycle: after_step inject (needs transformer migration)" do
-    @describetag :skip
-    test "injected messages appear in context for next LLM call" do
-      flunk("needs migration from Mount to Transformer")
-    end
-  end
-
-  describe "lifecycle: before_llm modifies projection (needs transformer migration)" do
-    @describetag :skip
-    test "before_llm hook can modify the context sent to the LLM" do
-      flunk("needs migration from Mount to Transformer")
-    end
-  end
-
   describe "subagent nudge via :post_step transformer" do
     # Test transformer scoped to :test_nudge agent_name to avoid leaking
     # into other tests. Mirrors what Rho.Stdlib.Transformers.SubagentNudge

@@ -46,11 +46,9 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
           key: :live_render,
           heading: "present_ui tool",
           body: """
-          Use `present_ui` for structured UI (tables, metrics, cards, lists). Don't repeat UI content in text after rendering.
-
           Components: #{names}
 
-          Spec format: `{"root": "<id>", "elements": {"<id>": {"type": "<component>", "props": {...}, "children": [...]}}}`\
+          Don't repeat UI content in text after rendering.\
           """,
           kind: :instructions,
           priority: :normal,
