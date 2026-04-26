@@ -18,7 +18,7 @@ defmodule Rho.Context do
     # persistent tape is configured.
     :tape_name,
     # purpose: tape backend module (e.g. `Rho.Tape.Projection.JSONL`);
-    # plugins like subagent/multi_agent use it to spin up child tapes.
+    # multi-agent plugins use it to spin up child tapes.
     :tape_module,
     # purpose: working directory for filesystem/bash tools. May be a
     # sandbox mount path when sandboxing is enabled.
@@ -27,12 +27,9 @@ defmodule Rho.Context do
     # …) used by `PluginRegistry` for `{:agent, name}` scope filtering.
     :agent_name,
     # purpose: delegation depth — 0 for primary agents, +1 per nested
-    # delegation. Plugins use it to gate tools at nested depths.
+    # delegation. Plugins and transformers gate on this (e.g.
+    # `Rho.Stdlib.Transformers.SubagentNudge` only fires at depth > 0).
     :depth,
-    # purpose: `true` for agents running in subagent mode; read by
-    # `PluginRegistry.apply_stage/3` to short-circuit transformer
-    # dispatch (subagent agents pass every stage through unchanged).
-    :subagent,
     # purpose: unique agent process identifier, stable for the life of
     # the agent.
     :agent_id,
@@ -56,7 +53,6 @@ defmodule Rho.Context do
           workspace: term(),
           agent_name: term(),
           depth: non_neg_integer(),
-          subagent: boolean(),
           agent_id: String.t() | nil,
           session_id: String.t() | nil,
           prompt_format: :markdown | :xml | nil,

@@ -14,7 +14,6 @@ defmodule RhoFrameworks.ScopeTest do
         tape_module: Rho.Tape.Null,
         tape_name: "tape-1",
         depth: 2,
-        subagent: true,
         prompt_format: :xml,
         workspace: "/tmp"
       }
@@ -33,7 +32,6 @@ defmodule RhoFrameworks.ScopeTest do
         session_id: "sess-1",
         tape_module: Rho.Tape.Null,
         depth: 3,
-        subagent: true,
         prompt_format: :xml
       }
 
@@ -42,7 +40,6 @@ defmodule RhoFrameworks.ScopeTest do
       refute Map.has_key?(scope, :tape_module)
       refute Map.has_key?(scope, :tape_name)
       refute Map.has_key?(scope, :depth)
-      refute Map.has_key?(scope, :subagent)
       refute Map.has_key?(scope, :prompt_format)
       refute Map.has_key?(scope, :agent_name)
       refute Map.has_key?(scope, :workspace)

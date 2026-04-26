@@ -51,7 +51,6 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       req_tools: Enum.map(defs, & &1.tool),
       tool_map: Map.new(defs, fn t -> {t.tool.name, t} end),
       system_prompt: "You are helpful.",
-      subagent: false,
       depth: 0,
       tape: %Rho.Runner.TapeConfig{
         name: nil,
@@ -64,8 +63,7 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
         tape_module: Rho.Tape.Projection.JSONL,
         workspace: "/tmp",
         agent_name: :test,
-        depth: 0,
-        subagent: false
+        depth: 0
       }
     }
   end

@@ -40,7 +40,7 @@ defmodule Rho.Stdlib.Tools.Anchor do
 
     case Rho.Tape.Service.handoff(tape_name, name, summary, next_steps: next_steps) do
       {:ok, _entry} ->
-        {:ok,
+        {:final,
          "Anchor '#{name}' created. Context window has been refreshed. STOP here and wait for the user's next message — do not continue from the previous context."}
 
       {:error, reason} ->
@@ -234,7 +234,7 @@ defmodule Rho.Stdlib.Tools.ClearMemory do
     if confirm do
       Rho.Tape.Service.reset(tape_name, archive)
 
-      {:ok,
+      {:final,
        "Memory cleared. All conversation history has been removed and a fresh session started."}
     else
       {:error, "Please set confirm: true to clear memory. This action cannot be undone."}

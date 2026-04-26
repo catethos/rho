@@ -4,8 +4,8 @@ defmodule RhoFrameworks.Scope do
 
   Carries only the fields that domain logic needs — organization, session,
   and user identity. No agent infrastructure (tape, depth, agent_id,
-  prompt_format, subagent). Both agent tools and FlowLive construct a
-  `Scope` and pass it to the same primitives.
+  prompt_format). Both agent tools and FlowLive construct a `Scope`
+  and pass it to the same primitives.
   """
 
   @enforce_keys [:organization_id, :session_id]

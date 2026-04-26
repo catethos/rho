@@ -11,7 +11,7 @@ defmodule Rho.Runner do
 
   Strategies return intents — Runner handles all side effects:
 
-      {:respond, text}                        → record + done (or nudge if subagent)
+      {:respond, text}                        → record; :post_step may inject and loop, else done
       {:call_tools, [tool_call], text | nil}  → ToolExecutor.run → classify → loop
       {:think, thought}                       → build_think_step → loop
       {:parse_error, reason, raw}             → inject correction → loop
@@ -32,7 +32,7 @@ defmodule Rho.Runner do
     * `:emit` / `:on_event` / `:on_text` — event callbacks
     * `:tape_name` — tape reference for persistent context
     * `:turn_strategy` — strategy module (`:reasoner` accepted as legacy alias)
-    * `:depth`, `:subagent`, `:workspace`, `:agent_name`, `:prompt_format`
+    * `:depth`, `:workspace`, `:agent_name`, `:prompt_format`
   """
 
   require Logger
@@ -62,7 +62,6 @@ defmodule Rho.Runner do
       :req_tools,
       :tool_map,
       :system_prompt,
-      :subagent,
       :depth,
       :tape,
       :context
@@ -76,7 +75,6 @@ defmodule Rho.Runner do
       :req_tools,
       :tool_map,
       :system_prompt,
-      :subagent,
       :depth,
       :tape,
       :context,
@@ -93,7 +91,6 @@ defmodule Rho.Runner do
             req_tools: [ReqLLM.Tool.t()],
             tool_map: %{String.t() => map()},
             system_prompt: String.t(),
-            subagent: boolean(),
             depth: non_neg_integer(),
             tape: Rho.Runner.TapeConfig.t(),
             context: Context.t(),
@@ -125,10 +122,6 @@ defmodule Rho.Runner do
             compact_supported: boolean()
           }
   end
-
-  # Tools whose invocation terminates the agent loop regardless of
-  # their return value.
-  @terminal_tools MapSet.new(["create_anchor", "clear_memory", "finish", "end_turn"])
 
   @doc """
   Runs the agent loop from a RunSpec.
@@ -171,7 +164,6 @@ defmodule Rho.Runner do
     tool_defs = spec.tools || []
     tape_name = spec.tape_name
     memory_mod = spec.tape_module || Rho.Tape.Projection.JSONL
-    subagent = spec.subagent || false
 
     context = %Context{
       tape_name: tape_name,
@@ -179,7 +171,6 @@ defmodule Rho.Runner do
       workspace: spec.workspace,
       agent_name: spec.agent_name,
       depth: spec.depth || 0,
-      subagent: subagent,
       agent_id: spec.agent_id,
       session_id: spec.session_id,
       prompt_format: spec.prompt_format || :markdown,
@@ -191,7 +182,7 @@ defmodule Rho.Runner do
     strategy = spec.turn_strategy || Rho.TurnStrategy.Direct
 
     base_prompt = spec.system_prompt || "You are a helpful assistant."
-    system_prompt = build_system_prompt(base_prompt, subagent, context, strategy, tool_defs)
+    system_prompt = build_system_prompt(base_prompt, context, strategy, tool_defs)
 
     raw_emit = if is_function(spec.emit), do: spec.emit, else: fn _event -> :ok end
     emit = wrap_emit_with_tape(raw_emit, tape_name, memory_mod)
@@ -205,7 +196,6 @@ defmodule Rho.Runner do
       req_tools: Enum.map(tool_defs, & &1.tool),
       tool_map: Map.new(tool_defs, fn t -> {t.tool.name, t} end),
       system_prompt: system_prompt,
-      subagent: subagent,
       depth: spec.depth || 0,
       tape: tape,
       context: context,
@@ -220,14 +210,13 @@ defmodule Rho.Runner do
     tool_defs = opts[:tools] || []
     tape_name = opts[:tape_name]
     memory_mod = opts[:tape_module] || Rho.Tape.Projection.JSONL
-    subagent = opts[:subagent] || false
 
-    context = build_context_struct(opts, tape_name, memory_mod, subagent)
+    context = build_context_struct(opts, tape_name, memory_mod)
     tape = build_tape(tape_name, memory_mod, opts)
     strategy = opts[:turn_strategy] || opts[:reasoner] || Rho.TurnStrategy.Direct
 
     base_prompt = opts[:system_prompt] || "You are a helpful assistant."
-    system_prompt = build_system_prompt(base_prompt, subagent, context, strategy, tool_defs)
+    system_prompt = build_system_prompt(base_prompt, context, strategy, tool_defs)
 
     emit = wrap_emit_with_tape(resolve_emit(opts), tape_name, memory_mod)
 
@@ -240,7 +229,6 @@ defmodule Rho.Runner do
       req_tools: Enum.map(tool_defs, & &1.tool),
       tool_map: Map.new(tool_defs, fn t -> {t.tool.name, t} end),
       system_prompt: system_prompt,
-      subagent: subagent,
       depth: opts[:depth] || 0,
       tape: tape,
       context: context,
@@ -248,14 +236,13 @@ defmodule Rho.Runner do
     }
   end
 
-  defp build_context_struct(opts, tape_name, memory_mod, subagent) do
+  defp build_context_struct(opts, tape_name, memory_mod) do
     %Context{
       tape_name: tape_name,
       tape_module: memory_mod,
       workspace: opts[:workspace],
       agent_name: opts[:agent_name],
       depth: opts[:depth] || 0,
-      subagent: subagent,
       agent_id: opts[:agent_id],
       session_id: opts[:session_id],
       prompt_format: opts[:prompt_format] || :markdown,
@@ -309,30 +296,7 @@ defmodule Rho.Runner do
                          position: :postlude
                        )
 
-  defp build_system_prompt(base, true = _subagent, ctx, _strategy, _tool_defs) do
-    alias Rho.PromptSection
-
-    plugin_sections = Rho.PluginRegistry.collect_prompt_material(ctx)
-
-    if plugin_sections == [] do
-      base
-    else
-      format = ctx[:prompt_format] || :markdown
-
-      base_section =
-        PromptSection.new(
-          key: :base_prompt,
-          body: base,
-          priority: :high,
-          kind: :instructions,
-          position: :prelude
-        )
-
-      PromptSection.render([base_section | plugin_sections] ++ [@conciseness_section], format)
-    end
-  end
-
-  defp build_system_prompt(base, _subagent, ctx, strategy, tool_defs) do
+  defp build_system_prompt(base, ctx, strategy, tool_defs) do
     alias Rho.PromptSection
 
     base_section =
@@ -497,13 +461,7 @@ defmodule Rho.Runner do
     {results, final} =
       execute_tools_lite(tool_calls, runtime.tool_map, runtime.context, runtime.emit)
 
-    called_names = MapSet.new(tool_calls, & &1.name)
-    terminal = MapSet.intersection(called_names, @terminal_tools)
-
     cond do
-      MapSet.size(terminal) > 0 ->
-        {:ok, extract_finish_text(tool_calls) || response_text || ""}
-
       final != nil ->
         {:ok, final}
 
@@ -655,30 +613,22 @@ defmodule Rho.Runner do
   # ===================================================================
 
   # -- {:respond, text} --
-  # LLM responded without calling tools.
-  # If subagent mode: inject nudge and continue looping.
+  # LLM responded without calling tools. Run :post_step — if any
+  # transformer injects messages, continue looping; otherwise terminate.
 
   defp handle_strategy_result({:respond, text}, context, runtime, step, max) do
-    if runtime.subagent do
-      nudge_msg =
-        "[System] Continue working on your task. Call `finish` with your result when done."
+    Recorder.record_assistant_text(runtime, text)
 
-      Recorder.record_assistant_text(runtime, text)
-      Recorder.record_injected_messages(runtime, [nudge_msg])
+    next_step = step + 1
 
-      updated_context =
-        case runtime.tape.name do
-          nil ->
-            context ++ [ReqLLM.Context.assistant(text || ""), ReqLLM.Context.user(nudge_msg)]
+    case run_post_step(runtime, next_step, max, :text_response) do
+      [] ->
+        {:ok, text}
 
-          _tape ->
-            Recorder.rebuild_context(runtime)
-        end
-
-      do_loop(updated_context, runtime, step: step + 1, max_steps: max)
-    else
-      Recorder.record_assistant_text(runtime, text)
-      {:ok, text}
+      msgs ->
+        Recorder.record_injected_messages(runtime, msgs)
+        updated_context = advance_text_response_context(context, text, msgs, runtime)
+        do_loop(updated_context, runtime, step: next_step, max_steps: max)
     end
   end
 
@@ -730,7 +680,7 @@ defmodule Rho.Runner do
     Recorder.record_tool_step(runtime, entries)
 
     next_step = step + 1
-    injected = run_post_step(runtime, next_step, max)
+    injected = run_post_step(runtime, next_step, max, :think_step)
     Recorder.record_injected_messages(runtime, injected)
 
     updated_context = advance_context(context, entries, injected, runtime)
@@ -778,21 +728,12 @@ defmodule Rho.Runner do
   # ===================================================================
 
   defp classify_tool_outcome(tool_calls, results, response_text, context, runtime, step, max) do
-    called_names = MapSet.new(tool_calls, & &1.name)
-    terminal = MapSet.intersection(called_names, @terminal_tools)
-
     final_output =
       Enum.find_value(results, fn r ->
         if r.disposition == :final, do: r.result
       end)
 
     cond do
-      MapSet.size(terminal) > 0 ->
-        finish_text = extract_finish_text(tool_calls)
-        text = finish_text || response_text
-        Recorder.record_assistant_text(runtime, text)
-        {:ok, text}
-
       final_output != nil ->
         Recorder.record_assistant_text(runtime, final_output)
         {:ok, final_output}
@@ -804,7 +745,7 @@ defmodule Rho.Runner do
         Recorder.record_tool_step(runtime, entries)
 
         next_step = step + 1
-        injected = run_post_step(runtime, next_step, max)
+        injected = run_post_step(runtime, next_step, max, :tool_step)
         Recorder.record_injected_messages(runtime, injected)
 
         updated_context = advance_context(context, entries, injected, runtime)
@@ -812,22 +753,32 @@ defmodule Rho.Runner do
     end
   end
 
-  defp extract_finish_text(tool_calls) do
-    Enum.find_value(tool_calls, fn tc ->
-      if tc.name == "finish", do: (tc.args || %{})["result"]
-    end)
-  end
-
   # -- :post_step stage --
 
-  defp run_post_step(%Runtime{context: ctx}, step, max) do
-    data = %{step: step, max_steps: max, entries_appended: []}
+  defp run_post_step(%Runtime{context: ctx}, step, max, step_kind) do
+    data = %{step: step, max_steps: max, entries_appended: [], step_kind: step_kind}
 
     case Rho.PluginRegistry.apply_stage(:post_step, data, ctx) do
       {:cont, nil} -> []
       {:inject, messages} -> List.wrap(messages)
       {:halt, _reason} -> []
     end
+  end
+
+  # Advance context after a text-only response that triggered an inject.
+  # Mirrors the assistant + injected-user pattern used by other branches.
+  defp advance_text_response_context(
+         _context,
+         _text,
+         _msgs,
+         %Runtime{tape: %TapeConfig{name: tape}} = runtime
+       )
+       when tape != nil do
+    Recorder.rebuild_context(runtime)
+  end
+
+  defp advance_text_response_context(context, text, msgs, _runtime) do
+    context ++ [ReqLLM.Context.assistant(text || "") | Enum.map(msgs, &ReqLLM.Context.user/1)]
   end
 
   # -- Context advancement --

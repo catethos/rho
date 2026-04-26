@@ -698,7 +698,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
           organization_id: ctx.organization_id,
           turn_strategy: Map.get(role_config, :turn_strategy, Rho.TurnStrategy.Direct),
           provider: role_config[:provider],
-          subagent: true,
+          depth: ctx.depth + 1,
           lite: true
         )
 

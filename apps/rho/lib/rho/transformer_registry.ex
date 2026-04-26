@@ -98,15 +98,8 @@ defmodule Rho.TransformerRegistry do
   """
   @spec apply_stage(Rho.Transformer.stage(), term(), map()) :: term()
   def apply_stage(stage, data, context) do
-    if is_map(context) and Map.get(context, :subagent) == true do
-      subagent_passthrough(stage, data)
-    else
-      do_apply_stage(stage, data, context)
-    end
+    do_apply_stage(stage, data, context)
   end
-
-  defp subagent_passthrough(:post_step, _data), do: {:cont, nil}
-  defp subagent_passthrough(_stage, data), do: {:cont, data}
 
   defp do_apply_stage(:tape_write, data, context) do
     Enum.reduce(active_transformers(context), {:cont, data}, fn

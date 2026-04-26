@@ -63,7 +63,7 @@ defmodule RhoFrameworks.AgentJobs do
         organization_id: opts[:organization_id],
         turn_strategy: opts[:turn_strategy] || Rho.TurnStrategy.Direct,
         provider: opts[:provider],
-        subagent: true,
+        depth: (opts[:depth] || 0) + 1,
         lite: true
       )
 

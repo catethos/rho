@@ -21,7 +21,7 @@ defmodule Rho.Stdlib.Tools.EndTurn do
           callback: fn _args -> :ok end
         ),
       execute: fn _args, _ctx ->
-        {:ok, "turn ended"}
+        {:final, "turn ended"}
       end
     }
   end

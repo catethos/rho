@@ -11,7 +11,7 @@ defmodule Rho.LLM.Admission do
   Finch's HTTP pool is the only backpressure mechanism by default. When
   saturated, it raises after a 5s checkout timeout — a hard failure
   rather than graceful queueing. With multiple active users and
-  subagent fan-out (e.g. `save_and_generate` spawning N LiteWorkers),
+  multi-agent fan-out (e.g. `save_and_generate` spawning N LiteWorkers),
   Finch exhaustion becomes common. This module queues in application
   code so pool exhaustion becomes the exceptional path, not the norm.
 

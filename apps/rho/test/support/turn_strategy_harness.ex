@@ -65,7 +65,6 @@ defmodule Rho.Test.TurnStrategyHarness do
       req_tools: Enum.map(tool_defs, & &1.tool),
       tool_map: tool_map,
       system_prompt: "",
-      subagent: false,
       depth: 0,
       tape: %TapeConfig{},
       context: %Context{
@@ -74,7 +73,6 @@ defmodule Rho.Test.TurnStrategyHarness do
         workspace: ".",
         agent_name: :default,
         depth: 0,
-        subagent: false,
         agent_id: "harness",
         session_id: "harness"
       }

@@ -1,518 +1,432 @@
-> **Partially superseded.** The execution plane cleanup is complete:
-> `Rho.Reasoner` is now `Rho.TurnStrategy`, `Rho.Lifecycle` is deleted,
-> `Rho.Mount.Context` is `Rho.Context`. Some kernel-minimisation goals
-> (removing hardcoded tool names, subagent special-casing) are done.
-> See CLAUDE.md.
+# Kernel Minimisation Plan (v2)
 
-# Kernel Minimisation Plan
-
-## Motivation
-
-Rho's three-plane architecture (execution, coordination, edge) is clean in principle, but the boundaries have eroded. The execution plane — AgentLoop, Reasoner, Worker — has accumulated coordination and edge concerns: hardcoded tool names, subagent special-casing, signal-type knowledge, CLI syntax parsing, and dual-broadcast plumbing.
-
-This makes the kernel harder to reason about, harder to test in isolation, and harder to extend. Every new multi-agent pattern or edge adapter requires touching core files.
-
-The goal is a kernel small enough to hold in your head: **loop, reason, execute, record, emit**. Everything else arrives through mounts or adapter boundaries.
-
-### Acceptance Criteria
-
-The plan is complete when:
-
-1. `grep -rn` for tool name strings (`"finish"`, `"end_turn"`, `"create_anchor"`, `"clear_memory"`) in `agent_loop.ex`, `direct.ex`, and `worker.ex` returns zero hits.
-2. `grep -rn` for signal type strings (`"rho.task.requested"`, `"rho.message.sent"`) in `worker.ex` returns zero hits.
-3. `grep -rn` for `subagent` as a boolean flag in `agent_loop.ex` and `direct.ex` returns zero hits. (Depth is used instead where needed.)
-4. `worker.ex` contains no `,` prefix pattern-matching, no `subscribers` map, and no `process_signal` clauses with hardcoded types.
-5. `direct.ex` contains no `classify_tool_error` function.
-6. Kernel file sizes: AgentLoop ≤ 260 lines, Reasoner.Direct ≤ 200 lines, Worker ≤ 530 lines (down from 340, 239, 777 respectively).
-7. All existing tests pass. New characterisation tests cover each extracted behaviour.
+**Date:** 2026-04-26 · **Branch:** `refactor`
+**Supersedes:** the v1 plan (pre-Reasoner→TurnStrategy rename, pre-`Rho.Events` migration).
 
 ---
 
-## Current State: What Doesn't Belong
+## What Changed Since v1
 
-### 1. Terminal tool names in the Reasoner
+The v1 plan referenced an architecture that no longer exists. The combined
+simplification plan (Phases 0–13) reshaped the kernel:
 
-**Where**: `Rho.Reasoner.Direct`, line 12
+| v1 plan referenced | Current name |
+|--------------------|--------------|
+| `Rho.AgentLoop` | `Rho.Runner` |
+| `Rho.Reasoner.Direct` | `Rho.TurnStrategy.Direct` |
+| `Rho.Mount` / `Rho.MountRegistry` | `Rho.Plugin` / `Rho.PluginRegistry` + `Rho.Transformer` / `Rho.TransformerRegistry` |
+| `Rho.Mount.Context` | `Rho.Context` |
+| `Rho.Lifecycle` | (deleted — transformers replace it) |
+| `Rho.Comms` (signal bus) | `Rho.Events` (Phoenix.PubSub-based) |
 
-```elixir
-@terminal_tools MapSet.new(["create_anchor", "clear_memory", "finish", "end_turn"])
-```
+### What's already done (no longer in scope)
 
-**Problem**: The reasoner — a pure execution concern — encodes knowledge of specific coordination-plane tools. Adding a new terminal tool requires editing the reasoner. The kernel and the tool set are coupled by a string list.
+- ✅ **v1 Phase 5 — Single event path.** `Worker.build_emit/2` (`worker.ex:833`)
+  publishes only to `Rho.Events.broadcast`. No `subscribers` map, no
+  `@high_freq_event_types` filtering, no dual-broadcast plumbing. Done by
+  combined-simplification Phase 10.
+- ✅ **Reasoner/AgentLoop rename.** Pluggable strategy via `Rho.TurnStrategy`
+  behaviour with `Direct` and `TypedStructured` implementations.
+- ✅ **Lifecycle hooks.** Replaced by `Rho.Transformer` with six stages
+  (`:prompt_out`, `:response_in`, `:tool_args_out`, `:tool_result_in`,
+  `:post_step`, `:tape_write`). The `:post_step` stage already returns
+  `{:cont, nil} | {:inject, [msg]} | {:halt, reason}` — exactly the shape
+  v1 Phase 2 needed.
 
-**Why it happened**: Originally the simplest way to stop the loop. But tools already support `{:final, value}` as a return convention. The two mechanisms coexist redundantly.
+### What's still ugly (in scope)
 
-### 2. Subagent special-casing (five sites)
-
-The `:subagent` boolean flag creates a parallel code path through the kernel. It appears in five distinct locations:
-
-**2a. Runtime flag** — `Rho.AgentLoop`, line 93–105
-
-```elixir
-subagent = opts[:subagent] || false
-```
-
-Stored in `mount_context` and threaded through the entire runtime. Should be replaced by depth (already available).
-
-**2b. Lifecycle bypass** — `Rho.AgentLoop`, lines 115–118
-
-```elixir
-lifecycle =
-  if subagent, do: Lifecycle.noop(), else: Lifecycle.from_mount_registry(mount_context)
-```
-
-A binary flag disables *all* mount hooks for subagents. This prevents subagents from having their own mount-driven behaviour (guardrails, budgets, logging) and forces subagent-specific logic into the kernel.
-
-**2c. System prompt bypass** — `Rho.AgentLoop`, line 173
-
-```elixir
-defp build_system_prompt(base, true = _subagent, _ctx), do: base
-```
-
-Subagents skip prompt section collection entirely. This means mounts cannot contribute prompt sections to subagents — a blunt exclusion that should be controlled by mount registration scope instead.
-
-**2d. Nudge logic in AgentLoop** — `Rho.AgentLoop`, lines 275–289
-
-```elixir
-defp handle_reasoner_result({:continue, %{type: :subagent_nudge, text: text}}, ...) do
-  nudge_msg = "[System] Continue working on your task. Call `finish` with your result when done."
-  ...
-end
-```
-
-The loop has a dedicated code path for a single orchestration policy. The nudge message text is hardcoded.
-
-**2e. Nudge return type in Reasoner** — `Rho.Reasoner.Direct`, lines 60–68
-
-```elixir
-if runtime.subagent do
-  {:continue, %{type: :subagent_nudge, text: text}}
-else
-  {:done, %{type: :response, text: text}}
-end
-```
-
-The reasoner's return type vocabulary changes based on a coordination-plane flag. The reasoner should not distinguish between subagent and primary.
-
-**Why it happened**: Early subagent implementation needed to avoid parent mount side-effects. The right fix is scoped mount registration (subagents get a different set of mounts), not a global bypass.
-
-### 3. Signal handlers hardcoded in Worker
-
-**Where**: `Rho.Agent.Worker`, lines 531–588
-
-```elixir
-defp process_signal(%{type: "rho.task.requested", data: data}, state) do ...
-defp process_signal(%{type: "rho.message.sent", data: data}, state) do ...
-```
-
-**Problem**: The worker — an execution-plane process — contains coordination-plane logic: it knows how to format inter-agent messages, how to extract task parameters from signal payloads, and the exact signal types the system uses. Adding a new signal type means editing the worker.
-
-**Why it happened**: No abstraction existed for pluggable signal handling. The worker was the process receiving signals, so the dispatch went there.
-
-### 4. Direct command execution in Worker
-
-**Where**: `Rho.Agent.Worker`, lines 217–223, 748–776
-
-```elixir
-def handle_call({:submit, "," <> command, _opts}, _from, %{status: :idle} = state) do
-  ...
-  run_direct_command(command, state, turn_id)
-  ...
-end
-```
-
-**Problem**: The `,tool_name args` syntax is a CLI UX convention. The worker pattern-matches on a comma prefix, parses the command, resolves tools, and executes — an entirely separate code path from the normal agent loop. This is edge-plane logic in the execution plane.
-
-**Why it happened**: Convenient shortcut during development. The worker had access to the tool registry, so it was the path of least resistance.
-
-### 5. Dual-path event broadcasting
-
-**Where**: `Rho.Agent.Worker`, lines 597–661
-
-```elixir
-# Direct broadcast to subscribers (for CLI/Web backward compat)
-for pid <- subscriber_pids do
-  send(pid, {:session_event, session_id, turn_id, tagged})
-end
-
-# Publish to signal bus
-if signal_type do
-  Comms.publish(...)
-end
-```
-
-**Problem**: Every event is sent twice: once via direct `send` to subscriber pids, once via the signal bus. The worker maintains a `subscribers` map, monitors subscriber processes, and has filtering logic for high-frequency events. This is transitional compatibility infrastructure that doubles the surface area of event delivery.
-
-**Why it happened**: The signal bus was added after direct broadcasting already existed. Both paths were kept to avoid breaking CLI/web adapters.
-
-### 6. Tool error classification in Reasoner
-
-**Where**: `Rho.Reasoner.Direct`, lines 226–238
-
-```elixir
-defp classify_tool_error(reason) when is_binary(reason) do
-  reason_down = String.downcase(reason)
-  cond do
-    String.contains?(reason_down, "timeout") -> :timeout
-    String.contains?(reason_down, "permission") -> :permission_denied
-    ...
-  end
-end
-```
-
-**Problem**: The reasoner guesses error categories by string-matching on error messages. This is fragile, locale-dependent, and lossy. It exists because tools return unstructured `{:error, "some string"}`.
-
-### 7. Signal topic naming scattered across codebase
-
-**Where**: `Rho.Agent.Worker` line 720, `Rho.Mounts.MultiAgent` lines 361/388, `Rho.Plugins.Subagent.Worker` line 326, `RhoWeb.Live.SessionLive` line 563, `RhoWeb.Live.ObservatoryLive` line 52
-
-```elixir
-pattern = "rho.session.#{session_id}.agent.#{agent_id}.inbox"
-```
-
-**Problem**: Signal topic strings are constructed inline in at least six files. This is not a kernel violation per se, but extracting signal handlers (Phase 3) without centralising topic naming will leave scattered string conventions that drift independently.
-
-### 8. Reasoner ↔ system prompt coupling
-
-**Where**: `Rho.AgentLoop`, lines 125–131
-
-```elixir
-system_prompt =
-  if reasoner == Rho.Reasoner.Structured do
-    system_prompt <> "\n\n" <> Rho.Reasoner.Structured.tool_prompt_section(tool_defs)
-  else
-    system_prompt
-  end
-```
-
-**Problem**: Prompt assembly — an execution-plane concern — knows about a specific reasoner implementation. Adding a new reasoner that needs prompt modifications would require editing AgentLoop.
-
-### 9. Vestigial `Rho.Builtin` mount
-
-**Where**: `lib/rho/builtin.ex` (14 lines)
-
-The module implements `@behaviour Rho.Mount` but defines no affordances and no hooks. Its only function (`resolve_session/1`) is not a mount callback. It is registered in mount integration tests but contributes nothing through the mount interface.
+| Smell | Location | Acceptance criterion |
+|-------|----------|----------------------|
+| Hardcoded terminal tool names | `runner.ex:131,501,782` | `grep '"finish"\|"end_turn"\|"create_anchor"\|"clear_memory"'` returns 0 hits in `apps/rho/lib/rho/runner.ex` and `tool_executor.ex` |
+| `subagent` boolean flag threaded through kernel | 12 sites across `run_spec.ex`, `context.ex`, `runner.ex`, `worker.ex` | `grep -rn 'subagent'` in `apps/rho/lib` returns 0 hits |
+| Signal type strings hardcoded in Worker | `worker.ex:763,782,795` | `grep '"rho.task.requested"\|"rho.message.sent"'` in `worker.ex` returns 0 hits |
+| Direct-command (`,tool args`) syntax | `worker.ex:316,748,952` | `grep '"," <> '` in `worker.ex` returns 0 hits |
+| String-matching tool error classification | `turn_strategy/shared.ex:99–120`, called from `tool_executor.ex:259` | `classify_tool_error` deleted |
+| Vestigial `Rho.Stdlib.Builtin` | `apps/rho_stdlib/lib/rho/stdlib/builtin.ex` | Module deleted (or repurposed) |
 
 ---
 
-## Target State: The Minimal Kernel
+## Why Bother
 
-After extraction, the kernel has five components with no coordination or edge knowledge:
+**Honest framing:** This is technical-debt cleanup. The kernel works. Tests
+pass. Users see no direct improvement. Defer if heads-down on features.
 
-### AgentLoop
+**Real benefits, ordered by payoff:**
 
-Recursive step loop. Responsibilities:
+1. **Subagents currently bypass all transformer hooks.** A global rate
+   limiter, budget enforcer, or observability transformer doesn't apply to
+   subagent turns because Phase 2's `subagent` flag short-circuits the
+   pipeline. This is a silent correctness gap, not just a code smell.
+   Phase 2 below fixes it.
+2. **Each new TurnStrategy must remember the `subagent` flag.** When
+   `TypedStructured` was added, the conditional re-appeared. The next
+   strategy will too unless we collapse the flag.
+3. **`MultiAgent` is half-baked into the kernel.** Worker contains the
+   *receive* side of inter-agent messaging; the plugin contains the
+   *send* side. A non-multi-agent build of Rho is impossible.
+4. **Adding a new terminal tool requires editing the kernel.**
+   `@terminal_tools` is a static list; `{:final, _}` already works for
+   any tool but coexists redundantly.
+5. **Smaller kernel = faster onboarding** and easier to publish `apps/rho`
+   as a standalone library.
 
-- Step counting and max-steps enforcement
-- Compaction trigger (delegate to memory module)
-- Lifecycle hook dispatch: `before_llm`, `after_step`
-- Reasoner dispatch: delegate reason+act to pluggable strategy
-- Tape recording via Recorder
-- Event emission via callback
-
-Does NOT know about: subagents, tool names, signal types, CLI syntax, specific reasoner implementations.
-
-### Reasoner (Direct)
-
-One reason+act iteration. Responsibilities:
-
-- Call LLM with tools and messages
-- Execute tool calls (parallel, via Task)
-- Lifecycle hook dispatch: `before_tool`, `after_tool`
-- Honour `{:final, value}` from any tool as loop termination
-- Stream retry with backoff
-
-Does NOT know about: terminal tool names, subagent nudging, error classification heuristics.
-
-### Worker
-
-Generic agent process. Responsibilities:
-
-- GenServer lifecycle: init, terminate, trap exits
-- Turn management: start turn, queue submissions, process queue
-- Registry registration/unregistration
-- Event emission to a single channel (bus)
-- Signal receipt and dispatch to pluggable handlers
-
-Does NOT know about: specific signal types, `,command` syntax, inter-agent message formatting, subscriber pid management.
-
-### Tape / Recorder
-
-Persistent conversation log. Responsibilities:
-
-- Record user messages, assistant text, tool steps, injected messages
-- Rebuild LLM context from tape history
-- Trigger compaction when threshold exceeded
-
-No changes needed — already minimal. Recorder has no coordination or edge coupling.
-
-### MountRegistry
-
-Affordance collection and hook dispatch. Responsibilities:
-
-- Collect tools, prompt sections, bindings from registered mounts
-- Dispatch lifecycle hooks in priority order
-- Dispatch signal handlers (new, Phase 3)
-- Scoped to context (agent, session, depth)
+**Non-benefits:**
+- No latency improvement.
+- No new user-facing features.
+- No bug fixes (except the silent subagent-lifecycle gap).
 
 ---
 
-## Extraction Plan
+## Target State
 
-### Phase 1: Tool-Driven Termination
+After all phases:
 
-**Goal**: Remove `@terminal_tools` from the Reasoner. Tools self-declare termination.
+```
+Rho.Runner
+  ├── step counting + max-steps + compaction
+  ├── system prompt assembly (via PluginRegistry, no strategy-specific branches)
+  ├── transformer pipeline dispatch (:prompt_out → strategy → :post_step)
+  ├── tape recording via Recorder
+  └── event emission via Rho.Events
 
-**Changes**:
+Rho.TurnStrategy.Direct
+  ├── LLM call + stream retry
+  ├── transformer dispatch :tool_args_out / :tool_result_in
+  ├── tool execution via ToolExecutor
+  └── return {:respond, text} | {:tools, calls} | {:halt, reason}
+      (no subagent branching, no error string-matching)
 
-1. Each tool that should terminate the loop (`end_turn`, `finish`, `create_anchor`, `clear_memory`) returns `{:final, value}` instead of `{:ok, value}`.
-2. Remove `@terminal_tools` MapSet and the `cond` branch that checks it in `handle_tool_calls/4`.
-3. The existing `{:final, _}` code path in the reasoner already works — it produces `{:done, %{type: :response, text: final_output}}`. This becomes the only termination mechanism.
-4. Special-case for `finish` extracting `args["result"]` moves into the `finish` tool's execute function — the tool itself returns `{:final, args["result"]}`.
+Rho.Agent.Worker
+  ├── GenServer shell (init, terminate, trap_exit)
+  ├── turn management (start, queue, process)
+  ├── signal receipt → PluginRegistry.dispatch_signal
+  └── event emission via Rho.Events
 
-**Testing**:
+Rho.PluginRegistry
+  ├── tools / prompt_sections / bindings
+  └── handle_signal (new)
 
-- Write characterisation tests *before* changes: for each terminal tool, assert that the agent loop terminates when the tool is called. These tests must pass both before and after the change.
-- Test that a tool returning `{:ok, value}` does NOT terminate the loop (regression guard against accidental termination).
-- Test that a non-terminal tool returning `{:final, value}` DOES terminate (proves the mechanism is general).
+Rho.TransformerRegistry
+  └── 6 stages — unchanged
+```
 
-**Risk**: Low. `{:final, _}` already works. This is removing a redundant mechanism.
+No tool names. No signal types. No subagent flags. No CLI syntax. A
+kernel readable in one sitting.
 
-### Phase 2: Subagent Lifecycle via Mounts
+---
 
-**Goal**: Remove all five subagent special-casing sites from the kernel. Subagents participate in lifecycle like any other agent, distinguished only by depth.
+## Phase Plan
 
-**Design decision**: The `Rho.Plugins.Subagent` mount (which already exists and has `after_tool/4`) gains an `after_step/4` hook. When the reasoner returns `{:done, %{type: :response, ...}}` at `depth > 0`, the mount's `after_step` injects the nudge message. The reasoner always returns `{:done, ...}` for text-only responses regardless of depth — it has no concept of "subagent."
+**Progress key:** `[ ]` not started · `[~]` in progress · `[x]` done
 
-This was chosen over two alternatives:
-- **Separate `SubagentNudge` mount**: Rejected — adds a new module for a single hook. The existing `Subagent` mount is the natural owner of subagent policy.
-- **Reasoner emits `:no_tool_calls` signal**: Rejected — introduces a new signal type into the kernel to remove a subagent concept from the kernel. Lateral move.
+Phases are ordered by value/effort ratio. 1, 4, 6, 7 are cheap and
+independent. Phase 2 is the structural win; Phase 3 pairs with it.
 
-**Changes**:
+### [ ] Phase 1: Tool-driven termination (≤2h)
 
-1. Remove `subagent` field from `mount_context` / `Context`. Use `depth > 0` where the distinction is needed.
-2. Remove `if subagent, do: Lifecycle.noop()` from `build_runtime`. Subagents always get `Lifecycle.from_mount_registry(mount_context)`.
-3. Subagent agent profiles (in `.rho.exs`) specify their own mount list. Mounts that shouldn't run for subagents are simply not included in that profile.
-4. Remove `build_system_prompt(base, true = _subagent, _ctx), do: base` clause. Subagents get prompt sections from their own (scoped) mounts — if none are registered, the result is the same as today.
-5. Add `after_step/4` to `Rho.Plugins.Subagent`. When `depth > 0` and the step result is `{:done, %{type: :response}}`, return `{:inject, [nudge_message]}` to continue the loop.
-6. Remove the `handle_reasoner_result({:continue, %{type: :subagent_nudge, ...}}, ...)` clause from AgentLoop.
-7. Remove the `:subagent_nudge` return type from `Reasoner.Direct.handle_no_tool_calls/2`. The function becomes: always return `{:done, %{type: :response, text: text}}`.
-8. Remove the `runtime.subagent` check from Reasoner.Direct entirely.
-9. Remove the reasoner-type conditional in AgentLoop (lines 125–131). If the Structured reasoner needs prompt modifications, it should provide them via a mount's `prompt_sections/2` callback.
+**Goal:** Tools self-declare end-of-loop via `{:final, value}`.
+Drop `@terminal_tools`.
 
-**Testing**:
+1. `Rho.Stdlib.Tools.Finish.execute/2` already returns `{:final, args["result"]}`
+   (verify) — no changes needed if true.
+2. Update `Rho.Stdlib.Tools.EndTurn`, `Anchor`, `ClearMemory` to return
+   `{:final, value}` instead of `{:ok, value}`.
+3. Delete `@terminal_tools` and the two `MapSet.intersection` calls in
+   `runner.ex:501` + `runner.ex:782`. The existing `{:final, _}` handling
+   in `ToolExecutor` already terminates the loop.
 
-- The existing test at `agent_loop_test.exs:385` ("subagent mode does not run before_llm or after_step hooks") must be updated — subagents *will* run hooks after this change; the test should verify that the *correct* hooks run.
-- New test: subagent at depth > 0 with `Subagent` mount registered receives nudge injection on text-only response.
-- New test: subagent at depth > 0 *without* `Subagent` mount terminates normally on text-only response (proves the nudge is policy, not kernel).
-- New test: primary agent (depth 0) with `Subagent` mount does NOT receive nudge (proves depth gating).
-- End-to-end: `delegate_task` → subagent runs → receives nudge → calls `finish` → result collected.
+**Tests:** Characterisation tests first — for each terminal tool, assert
+the loop terminates. Must pass before and after.
 
-**Risk**: Medium. This is the most invasive phase. The five removal sites interact — partial completion leaves the kernel in an inconsistent state. All five changes should land in a single PR.
+**Risk:** Low. Removes redundancy.
 
-### Phase 3: Pluggable Signal Handlers
+### [ ] Phase 4: Delete direct-command syntax (≤1h)
 
-**Goal**: Remove signal-type knowledge from Worker. Signal dispatch becomes a mount concern.
+**Goal:** `,tool args` syntax is dead code — `rho_cli` was the only consumer
+and is gone. **Pure deletion**, not extraction (v1 plan called for CLI
+extraction, no longer needed).
 
-**Changes**:
+1. Delete `handle_call({:submit, "," <> command, _opts}, ...)` clause
+   (`worker.ex:316`).
+2. Delete the `{:value, {"," <> command, ...}}` branch in `process_queue/1`
+   (`worker.ex:748`).
+3. Delete `run_direct_command/3` (`worker.ex:952`) and
+   `execute_direct_command/3`.
+4. Delete `Rho.Config.parse_command/1` if no remaining callers.
 
-1. Add a new mount callback: `handle_signal(signal, mount_opts, context)` with return type:
-   ```elixir
-   {:start_turn, content, opts}   # start an agent turn with the given content
-   | {:update_state, fun}          # apply a state transformation (no turn)
-   | {:emit, signal_type, payload} # publish a derived signal
-   | :ignore                       # this mount doesn't handle this signal
-   ```
-   The return type is intentionally broader than the two current handlers need. `{:start_turn, ...}` covers both existing cases. `{:update_state, fun}` and `{:emit, ...}` prevent future signal handlers from being forced to start turns when they need different behaviour.
-2. Add `MountRegistry.dispatch_signal(signal, context)` that iterates registered mounts and returns the first non-`:ignore` result.
-3. In Worker, replace `process_signal/2` pattern-match clauses with a single dispatch:
+**Tests:** Run full suite. No behavior change expected.
 
+**Risk:** Negligible. ~70 lines, zero callers in the repo.
+
+### [ ] Phase 6: Typed tool errors (1d)
+
+**Goal:** Drop `classify_tool_error` string-matching from `TurnStrategy.Shared`.
+
+1. Define convention: tools return `{:error, reason}` where `reason` is an
+   atom or `{atom, detail}`. Examples:
+   `{:error, :timeout}`, `{:error, {:not_found, "/foo"}}`,
+   `{:error, {:permission_denied, path}}`.
+2. Migrate built-in tools in this order: `Bash` → `FsRead/Write/Edit` →
+   `WebFetch` → `Python` → `Sandbox`. Each PR keeps tests green.
+3. Add a `Logger.warning` in `TurnStrategy.Shared.classify_tool_error/1`
+   when called with a bare string — visibility for third-party tools that
+   haven't migrated. Keep this for one release cycle.
+4. Once all built-ins are migrated and the warning has been quiet, delete
+   `classify_tool_error/1` (`turn_strategy/shared.ex:99–120`). The
+   `tool_executor.ex:259` call site passes the atom through directly as
+   `error_type`.
+
+**Tests:** Per-tool: assert errors are atoms. Reasoner test: assert atom
+passthrough.
+
+**Risk:** Low. Forcing function (the warning) prevents the
+"both mechanisms forever" failure mode.
+
+### [ ] Phase 2: Subagent flag → `:post_step` transformer (1–1.5d)
+
+**Goal:** Remove the `subagent` boolean from kernel. Subagents are agents
+at `depth > 0`; the nudge becomes a transformer policy.
+
+**Architecture choice:** Add `Rho.Stdlib.Transformers.SubagentNudge`
+implementing `:post_step`. When `depth > 0` and the previous step result
+was a text-only assistant response (no tool calls), the transformer
+returns `{:inject, [nudge_msg]}` to continue the loop. Otherwise
+`{:cont, nil}`.
+
+This was chosen over alternatives because:
+- The `:post_step` stage already exists and returns the right shape.
+- Transformers are scoped — agents that don't include this transformer
+  don't get the behavior, making it opt-in.
+- No kernel changes to add the policy.
+
+**Changes:**
+
+1. Create `Rho.Stdlib.Transformers.SubagentNudge` with `:post_step` callback.
+   Logic: if `context.depth > 0` and the step yielded a text response with
+   no tool calls, inject the nudge message; otherwise pass through.
+2. Register the transformer in any agent profile that spawns subagents
+   (the existing `MultiAgent` plugin can register it as a side-effect of
+   being included).
+3. Delete the `if runtime.subagent` branch in `runner.ex:662–678`.
+   `handle_strategy_result({:respond, text}, ...)` becomes a single path:
+   record text, return `{:done, %{type: :response, text: text}}`.
+4. Delete the `subagent` field from:
+   - `Rho.RunSpec` struct (`run_spec.ex:96,120`)
+   - `Rho.Context` struct (`context.ex:59`)
+   - `Rho.Runner.Runtime` struct (`runner.ex:96`)
+5. Delete `subagent` plumbing in `runner.ex:174,182,208,223,243,258` and
+   `worker.ex:54,248,657,666,926`. Use `Rho.Agent.Primary.depth_of/1`
+   wherever the distinction is needed.
+6. Delete the `subagent` reference in the `LLM.Admission` docstring
+   (`llm/admission.ex:14`) — no logic change, just a comment.
+
+**Tests:**
+- New: agent at `depth > 0` with `SubagentNudge` transformer registered
+  → text response triggers nudge injection → loop continues.
+- New: agent at `depth > 0` *without* the transformer → text response
+  terminates normally (proves nudge is policy, not kernel).
+- New: agent at `depth = 0` with the transformer → text response
+  terminates normally (proves depth gating).
+- Update existing subagent tests: assertion shifts from "kernel injects
+  nudge" to "transformer injects nudge".
+
+**Risk:** Medium. All ~12 sites must land in one PR — partial completion
+leaves the kernel inconsistent. Subagent end-to-end tests in
+`MultiAgent`-using flows are the regression guard.
+
+### [ ] Phase 3: Plugin signal-handler callback (1d)
+
+**Goal:** Drop hardcoded signal-type strings from Worker. Plugins handle
+their own signals via the registry.
+
+**Architecture choice:** Add an optional `handle_signal/3` callback to
+`Rho.Plugin` behaviour with return shape:
+
+```elixir
+@callback handle_signal(signal :: map, opts :: keyword, context :: Rho.Context.t()) ::
+            {:start_turn, content :: String.t(), opts :: keyword()}
+          | {:update_state, (state -> state)}
+          | {:emit, signal_type :: String.t(), payload :: map()}
+          | :ignore
+```
+
+`Rho.PluginRegistry` adds `dispatch_signal(signal, context)` that iterates
+registered plugins and returns the first non-`:ignore` result. The four
+return variants keep the door open for future handlers without forcing
+"start a turn" semantics.
+
+**Changes:**
+
+1. Add `handle_signal/3` to `Rho.Plugin` (optional callback).
+2. Add `Rho.PluginRegistry.dispatch_signal/2`.
+3. Implement `handle_signal/3` in `Rho.Stdlib.Plugins.MultiAgent` for
+   `"rho.task.requested"` and `"rho.message.sent"`. The
+   `format_incoming_message/2` helper in `worker.ex:797–830` moves to
+   the plugin.
+4. Replace the three `process_signal/2` clauses in `worker.ex:763–795`
+   with a single dispatch:
    ```elixir
    defp process_signal(signal, state) do
-     context = build_context(state, state.depth)
-     case MountRegistry.dispatch_signal(signal, context) do
+     ctx = build_context(state, agent_depth(state))
+     case Rho.PluginRegistry.dispatch_signal(signal, ctx) do
        {:start_turn, content, opts} -> start_turn(content, opts, state)
-       {:update_state, fun} -> fun.(state)
-       {:emit, type, payload} -> Comms.publish(type, payload); state
-       :ignore -> state
+       {:update_state, fun}         -> fun.(state)
+       {:emit, type, payload}       -> Rho.Events.broadcast(...); state
+       :ignore                      -> state
      end
    end
    ```
+5. Optional: extract a `Rho.Events.Topics` module with helpers like
+   `inbox_topic(session_id, agent_id)`. ~6 inline string constructions
+   today; centralising them prevents drift.
 
-4. Move the `rho.task.requested` handler into `Rho.Mounts.MultiAgent` (it already provides the delegation tools).
-5. Move the `rho.message.sent` handler and inter-agent message formatting into `Rho.Mounts.MultiAgent`.
-6. Centralise signal topic naming: add `Rho.Comms.Topics` module with functions like `inbox_topic(session_id, agent_id)`, `events_topic(session_id)`, `events_topic(session_id, signal_type)`. Update all six call sites.
+**Tests:**
+- Worker with no signal-handling plugins → all signals ignored.
+- Plugin returning `{:start_turn, ...}` → turn starts.
+- Move existing signal-handling assertions from Worker tests to MultiAgent
+  plugin tests.
 
-**Testing**:
+**Risk:** Low-medium. The handler logic is straightforward to relocate.
+Existing inter-agent end-to-end tests are the regression guard.
 
-- New test: Worker with no signal-handling mounts ignores all signals.
-- New test: Mount returning `{:start_turn, ...}` triggers a turn.
-- Move existing signal-handling assertions from any Worker tests into MultiAgent mount tests.
+### [ ] Phase 7: Cleanup sweep (≤1h)
 
-**Risk**: Low-medium. The handler logic is straightforward to relocate. The `Rho.Comms.Topics` extraction is mechanical.
+**Goal:** Drop vestigial code exposed by other phases.
 
-### Phase 4: Extract Direct Commands to Edge
+1. Delete `Rho.Stdlib.Builtin` (14 lines, zero callbacks, only `resolve_session/1`
+   which isn't a behaviour callback). Verify no callers first.
+2. Audit `apps/rho/test/support/turn_strategy_harness.ex` for `subagent`
+   field references — update to drop the field.
+3. Search for any `# subagent:` comments or docstrings referencing the
+   deleted flag. Update or remove.
 
-**Goal**: Remove `,tool_name args` parsing from Worker.
-
-**Prerequisite**: The CLI does not currently have access to mount context or tool resolution. This must be solved first.
-
-**Changes**:
-
-1. Add a `Worker.resolve_tools/1` public API that returns the current tool list for the agent's context. This is a read-only query — the CLI calls it to get tool definitions without starting a turn.
-2. In CLI adapter, intercept input starting with `,`. Parse the command, resolve the tool (via `Worker.resolve_tools/1`), execute it locally, and display the result — without submitting to the worker.
-3. Remove the `handle_call({:submit, "," <> command, ...})` clause from Worker.
-4. Remove `run_direct_command/3` and `execute_direct_command/3` from Worker.
-5. Remove the direct-command branch from `process_queue/1`.
-
-**Testing**:
-
-- `command_parser_test.exs` already exists — keep it, as the parser itself doesn't move.
-- New test: CLI intercepts `,` prefix and does not call `Worker.submit/3`.
-- New test: `Worker.resolve_tools/1` returns expected tools for context.
-
-**Risk**: Low. The main subtlety is giving the CLI tool access without creating new coupling. The `resolve_tools` API keeps the Worker as the authority for tool resolution while the CLI handles the UX.
-
-### Phase 5: Single Event Path
-
-**Goal**: Remove dual-path broadcasting. Events flow through the bus only.
-
-**Prerequisite**: Latency benchmark. Before starting this phase, measure:
-- Baseline: time from `send(pid, {:session_event, ...})` to receipt in CLI, for `text_delta` events during streaming.
-- Bus path: time from `Comms.publish(...)` to receipt in a bus subscriber, for the same events.
-- **Abort threshold**: If bus path adds > 5ms p99 latency per token, do not proceed. Instead, keep a single direct-send path for the active turn's subscriber only and remove the general subscriber registry.
-
-**Changes**:
-
-1. CLI and web adapters subscribe to the signal bus instead of calling `Worker.subscribe/2`.
-   - CLI: subscribe via `Rho.Comms.subscribe("rho.session.#{session_id}.events.*")`.
-   - Web (`session_live.ex`): same pattern.
-2. Remove `subscribers` map, `subscribe/unsubscribe` API, and process monitoring from Worker.
-3. Remove direct `send(pid, {:session_event, ...})` from the emit function.
-4. The emit function becomes: tag event → publish to bus. One path.
-5. Remove `@high_freq_event_types` filtering — subscribers choose their own filter on the bus pattern.
-
-**Fallback plan**: If the benchmark fails the abort threshold, implement a hybrid: remove the subscriber registry and monitoring, but keep a single `active_subscriber` pid field set at turn start. Direct-send `text_delta` events to that pid; publish everything else through the bus. This still removes ~80% of the dual-path complexity.
-
-**Testing**:
-
-- Benchmark script (not a test — a Mix task): stream 1000 tokens, measure p50/p95/p99 delivery latency through the bus vs direct send. Run before and after.
-- New test: CLI receives events via bus subscription.
-- New test: Worker emits events without maintaining subscriber state.
-
-**Risk**: Medium. This is the highest-risk phase because it affects the hot path (token streaming). The benchmark prerequisite and fallback plan mitigate this.
-
-### Phase 6: Typed Tool Errors
-
-**Goal**: Remove string-matching error classification from the Reasoner.
-
-**Changes**:
-
-1. Define an error convention for tools:
-   ```elixir
-   {:error, reason}           # reason is atom or {atom, detail}
-   # e.g. {:error, :timeout}, {:error, {:not_found, "/foo/bar"}}
-   ```
-2. Update tool mounts to return typed errors. Migration order: `Bash` → `FsRead` → `FsWrite` → `FsEdit` → `WebFetch` → `Python` → `Sandbox`.
-3. Remove `classify_tool_error/1` from `Reasoner.Direct`.
-4. The reasoner passes the error atom through to the event as `:error_type` directly.
-
-**Forcing function**: After all built-in tool mounts are migrated, add a `Logger.warning` in the reasoner for any `{:error, reason}` where `reason` is a bare string. This creates visibility for third-party mounts that haven't migrated, without breaking them. Remove `classify_tool_error/1` once the warning has been in place for one release cycle.
-
-**Testing**:
-
-- For each migrated tool: test that error returns use atoms, not strings.
-- Test that the reasoner passes atom error types through without classification.
-- Test that the fallback logger fires for string errors during the transition period.
-
-**Risk**: Low. The forcing function prevents the "both mechanisms forever" problem.
-
-### Phase 7: Cleanup
-
-**Goal**: Remove vestigial code exposed by the other phases.
-
-**Changes**:
-
-1. Remove `Rho.Builtin` if it has no remaining callers after Phase 2 (it currently contributes nothing through the mount interface; `resolve_session/1` is not a mount callback).
-2. Remove `subagent` field from `Rho.Mount.Context` struct.
-3. Audit `Rho.Lifecycle.noop/0` — if no longer called after Phase 2, remove it or keep it only for tests.
-
-**Risk**: Negligible.
+**Risk:** Negligible.
 
 ---
 
 ## Sequencing
 
 ```
-Phase 1 (tool termination)     — standalone, no dependencies
-Phase 6 (typed errors)         — standalone, no dependencies
-Phase 4 (direct commands)      — standalone, no dependencies
-Phase 2 (subagent lifecycle)   — depends on Phase 1 (finish tool returns {:final, _})
-Phase 3 (signal handlers)      — standalone, but pairs well with Phase 2
-Phase 5 (single event path)    — do last, highest risk, benchmark gate
-Phase 7 (cleanup)              — after all others
+Phase 1 (terminal tools)       — standalone
+Phase 4 (delete direct cmds)   — standalone
+Phase 6 (typed errors)         — standalone, can run in parallel
+Phase 2 (subagent flag)        — depends on Phase 1 (Finish returns {:final, _})
+Phase 3 (signal handlers)      — independent, but pairs naturally with Phase 2
+Phase 7 (cleanup sweep)        — last
 ```
 
-Phases 1, 4, and 6 can be done in parallel. Phase 2 should follow Phase 1. Phase 5 should be last (before cleanup). Phase 7 is a sweep after everything else lands.
+**Recommended cadence:**
 
-### Rollback strategy
+- **Quick-win batch (½ day):** Phase 4 → Phase 1. ~150 lines deleted, no
+  behavior change. Single PR.
+- **Phase 6 (1 day):** Migrate built-in tools to typed errors. One PR
+  per tool batch is fine.
+- **Phase 2 (1–1.5 days):** Subagent flag removal. One PR, all sites.
+  Bisect-friendly because every commit must keep tests green.
+- **Phase 3 (1 day):** Plugin signal handlers. Independent PR.
+- **Phase 7 (≤1h):** Sweep.
 
-Each phase is a single PR. If a phase causes regressions after merge:
-
-- **Phases 1, 4, 6, 7**: Revert the PR. These are isolated extractions with no cross-phase state.
-- **Phase 2**: Revert the entire PR (all five subagent sites must move together). Do not attempt partial revert.
-- **Phase 3**: Revert the PR. Signal handlers return to Worker; `Rho.Comms.Topics` can remain (it's additive).
-- **Phase 5**: If latency regresses post-merge, switch to the hybrid fallback (direct-send for `text_delta` only) without reverting the subscriber registry removal.
+**Total:** ~3–4 days of work, ~1100 lines removed from kernel, biggest
+behavior change is "subagents now run transformer hooks".
 
 ---
 
-## Existing Test Coverage
+## Acceptance Criteria
 
-Current test coverage for affected behaviour:
+The plan is complete when all of the following return zero hits in
+`apps/rho/lib/`:
 
-| Area | Test file | Coverage |
-|------|-----------|----------|
-| Subagent lifecycle bypass | `agent_loop_test.exs:385` | Tests that hooks are skipped — **must be rewritten in Phase 2** |
-| Mount tool collection | `mount_integration_test.exs` | Good coverage of tool resolution |
-| Command parser | `command_parser_test.exs` | Parser logic — survives Phase 4 |
-| Signal handling in Worker | *None found* | **Gap — write characterisation tests before Phase 3** |
-| Dual-path broadcasting | *None found* | **Gap — write characterisation tests before Phase 5** |
-| Terminal tool termination | *None found* | **Gap — write characterisation tests before Phase 1** |
-| Typed tool errors | *None found* | **Gap — write tests as part of Phase 6 migration** |
+```
+grep -rn 'subagent'
+grep -rn '@terminal_tools\|"create_anchor"\|"clear_memory"\|"finish"\|"end_turn"' apps/rho/lib/rho/runner.ex apps/rho/lib/rho/tool_executor.ex
+grep -rn '"rho.task.requested"\|"rho.message.sent"' apps/rho/lib/rho/agent/worker.ex
+grep -rn '"," <> ' apps/rho/lib/rho/agent/worker.ex
+grep -rn 'classify_tool_error'
+```
 
-**Pre-work**: Before starting any phase, write characterisation tests for the behaviour being extracted. These tests assert current behaviour and must pass both before and after the extraction. This is non-negotiable — "low risk" extractions that change termination semantics or event delivery can fail silently.
+And:
+- `Rho.Stdlib.Builtin` deleted.
+- All existing tests pass.
+- New characterisation tests cover terminal tools, subagent nudge
+  transformer, and plugin signal dispatch.
+- File line counts: `worker.ex` ≤ 700 (down from 1005), `runner.ex`
+  ≤ 750 (down from 884). Direct.ex unchanged (already 163, well under
+  any target).
 
 ---
 
-## What Remains in the Kernel After All Phases
+## Rollback Strategy
 
-```
-AgentLoop.run/3
-  ├── step counting
-  ├── compaction trigger
-  ├── system prompt assembly (via MountRegistry, no special-casing)
-  ├── before_llm dispatch → Reasoner.run → after_step dispatch
-  └── tape recording
+Each phase is a single PR. If a phase regresses after merge:
 
-Reasoner.Direct.run/2
-  ├── LLM call + stream retry
-  ├── before_tool / execute / after_tool
-  └── {:continue, entries} | {:done, result} based on {:final, _} only
+| Phase | Rollback |
+|-------|----------|
+| 1 | Revert. Restore `@terminal_tools` MapSet. |
+| 4 | Revert. Code was dead anyway, but trivial restore. |
+| 6 | Revert per-tool batch. The forcing-function `Logger.warning` makes regressions visible during the transition window. |
+| 2 | Revert the entire PR. Subagent flag removal is atomic — partial revert leaves an inconsistent kernel. |
+| 3 | Revert. Signal handlers return to Worker; `Rho.Events.Topics` module (if added) can stay (additive). |
+| 7 | Revert. |
 
-Worker
-  ├── GenServer shell (init, terminate, trap_exit)
-  ├── turn management (start, queue, process)
-  ├── signal receipt → mount dispatch
-  └── event emission → bus
+---
 
-Recorder
-  ├── record input, assistant text, tool steps, injected messages
-  └── rebuild context
+## What's Next: After Kernel Minimisation
 
-MountRegistry
-  ├── collect tools, prompt sections, bindings
-  ├── dispatch lifecycle hooks
-  └── dispatch signal handlers (new)
-```
+Once the kernel is minimal, three directions open up that aren't
+practical today:
 
-No tool names. No signal types. No subagent flags. No CLI syntax. No dual broadcasting. No string-matching classifiers. No reasoner-specific prompt logic. A kernel you can read in ten minutes.
+### A. Carve `apps/rho` out as a standalone library
+
+The kernel would be small enough (~3500 LOC down from ~6000) and clean
+enough (no multi-agent baked in, no CLI vestiges) to publish on Hex as
+a standalone agent runtime. `apps/rho_stdlib/` becomes a separate
+`rho_stdlib` package depending on it. Consumers get a minimal Rho
+without the BAML/structured-output/multi-agent surface area unless they
+opt in.
+
+**Prerequisite work:**
+- Move `apps/rho/lib/mix/tasks/` mix tasks into a `rho_dev` package or
+  the umbrella root (they reference `RhoFrameworks` indirectly via
+  `Rho.AgentConfig`).
+- Audit `apps/rho/` for any remaining `Rho.Stdlib.*` references in test
+  setup.
+- Decide on a versioning policy and write a CHANGELOG.
+
+### B. Add a third TurnStrategy
+
+With the `subagent` flag gone, adding a new strategy becomes a real
+extension exercise rather than a copy-paste-and-remember-to-add-the-flag
+exercise. Candidates:
+
+- **`TurnStrategy.MultiModal`** — image/audio inputs, vision model calls.
+- **`TurnStrategy.HumanInLoop`** — pause and wait for human approval on
+  tool calls above a risk threshold; resumes via a signal handler
+  (which Phase 3 makes pluggable).
+- **`TurnStrategy.Plan`** — explicit plan-then-execute pattern with a
+  separate planning model (cheaper) and execution model (smarter).
+
+### C. Telemetry/observability layer
+
+With Phase 6 done (typed errors) and Phase 3 done (single signal
+dispatch path), `:telemetry.execute/3` calls fall naturally into:
+
+- `[:rho, :turn, :start | :stop | :exception]`
+- `[:rho, :tool, :start | :stop | :exception]` with `error_type` atom
+- `[:rho, :signal, :dispatch]` with plugin name + signal kind
+
+A `RhoTelemetry` package can subscribe and export OpenTelemetry traces,
+StatsD metrics, or Phoenix LiveDashboard panels — all without touching
+the kernel.
+
+### D. Performance pass
+
+Currently meaningless because the kernel still has dead branches and
+duplicate event paths. After this plan: the hot path (Runner →
+TurnStrategy → ToolExecutor → Recorder) is small enough to profile
+honestly. Worth doing only if a real workload reports latency issues —
+no premature optimization.
+
+### Recommendation
+
+Do this plan if any of A/B/C are on your roadmap. Skip it if you're
+purely shipping product features and the kernel works.

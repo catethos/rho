@@ -54,7 +54,6 @@ defmodule Rho.RunSpec do
     :session_id,
     :workspace,
     :depth,
-    :subagent,
     :user_id,
     :organization_id,
 
@@ -93,7 +92,6 @@ defmodule Rho.RunSpec do
           session_id: String.t() | nil,
           workspace: String.t() | nil,
           depth: non_neg_integer(),
-          subagent: boolean(),
           user_id: String.t() | nil,
           organization_id: String.t() | nil,
           emit: (map() -> :ok) | nil,
@@ -117,7 +115,6 @@ defmodule Rho.RunSpec do
     tape_module: Rho.Tape.Projection.JSONL,
     agent_name: :default,
     depth: 0,
-    subagent: false,
     description: nil,
     skills: [],
     avatar: nil,

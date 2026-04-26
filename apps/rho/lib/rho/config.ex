@@ -3,13 +3,12 @@ defmodule Rho.Config do
   Core configuration accessors for the Rho runtime.
 
   The `.rho.exs` loader lives in `Rho.AgentConfig`. The remaining
-  shims here discover `Rho.CLI.CommandParser` (about to be deleted)
-  and `Rho.Stdlib` (sibling umbrella app) at runtime.
+  shim here discovers `Rho.Stdlib` (sibling umbrella app) at runtime.
   """
 
-  # These modules live in sibling umbrella apps and are discovered
-  # at runtime via Code.ensure_loaded?/1.
-  @compile {:no_warn_undefined, [Rho.CLI.CommandParser, Rho.Stdlib]}
+  # Lives in a sibling umbrella app and is discovered at runtime via
+  # Code.ensure_loaded?/1.
+  @compile {:no_warn_undefined, [Rho.Stdlib]}
 
   @doc """
   Returns the configured tape projection module.
@@ -31,18 +30,6 @@ defmodule Rho.Config do
   Returns whether sandbox mode is enabled.
   """
   defdelegate sandbox_enabled?, to: Rho.AgentConfig
-
-  @doc """
-  Parses a direct command string into `{tool_name, args}`.
-  """
-  def parse_command(command) do
-    if Code.ensure_loaded?(Rho.CLI.CommandParser) and
-         function_exported?(Rho.CLI.CommandParser, :parse, 1) do
-      Rho.CLI.CommandParser.parse(command)
-    else
-      {"unknown", %{"error" => "no command parser configured"}}
-    end
-  end
 
   @doc """
   Derives capabilities from a list of plugin entries.

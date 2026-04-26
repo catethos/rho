@@ -166,61 +166,58 @@ defmodule Rho.RunnerTest do
     end
   end
 
-  # -- Test: loop stops when create_anchor tool is called --
+  # -- Test: terminal tools stop the loop --
+  #
+  # Characterisation tests for the four built-in tools that historically
+  # ended the loop. Each stub returns `{:final, _}` (the disposition shape)
+  # so the test passes both with and without the legacy `@terminal_tools`
+  # name list. Asserts only termination + status, not the exact return
+  # text — the two paths produce different text values for non-`finish`
+  # tools.
 
-  describe "create_anchor stops the loop" do
-    test "loop exits immediately after create_anchor is invoked" do
-      Service.ensure_bootstrap_anchor(@test_tape)
+  describe "terminal tools stop the loop" do
+    for tool_name <- ["finish", "end_turn", "create_anchor", "clear_memory"] do
+      test "#{tool_name} terminates after a single step" do
+        Service.ensure_bootstrap_anchor(@test_tape)
+        name = unquote(tool_name)
 
-      anchor_tool = %{
-        tool:
-          ReqLLM.tool(
-            name: "create_anchor",
-            description: "Mark a phase transition.",
-            parameter_schema: [
-              name: [type: :string, required: true, doc: "Phase name"],
-              summary: [type: :string, required: true, doc: "Summary"]
-            ],
-            callback: fn _args -> :ok end
-          ),
-        execute: fn args, _ctx ->
-          name = args[:name] || "checkpoint"
-          summary = args[:summary] || ""
+        tool = %{
+          tool:
+            ReqLLM.tool(
+              name: name,
+              description: "Stub terminal tool.",
+              parameter_schema: [],
+              callback: fn _args -> :ok end
+            ),
+          execute: fn _args, _ctx -> {:final, "#{name} stub-result"} end
+        }
 
-          case Rho.Tape.Service.handoff(@test_tape, name, summary, next_steps: []) do
-            {:ok, _entry} -> {:ok, "Anchor '#{name}' created."}
-            {:error, reason} -> {:error, "Failed: #{inspect(reason)}"}
-          end
-        end
-      }
+        tool_resp =
+          tool_call_response("Wrapping up.", [{"call_#{name}", name, %{}}])
 
-      tool_resp =
-        tool_call_response("Saving progress.", [
-          {"call_anchor", "create_anchor", %{"name" => "phase1", "summary" => "Did stuff"}}
-        ])
+        {_ref, _counter} = expect_stream_sequence([tool_resp])
 
-      {_ref, _counter} = expect_stream_sequence([tool_resp])
+        events =
+          collect_events(fn on_event ->
+            assert {:ok, _text} =
+                     Rho.Runner.run("mock:model", [ReqLLM.Context.user("done")],
+                       tape_name: @test_tape,
+                       tools: [tool],
+                       on_event: on_event,
+                       max_steps: 10
+                     )
+          end)
 
-      events =
-        collect_events(fn on_event ->
-          assert {:ok, "Saving progress."} =
-                   Rho.Runner.run("mock:model", [ReqLLM.Context.user("wrap up")],
-                     tape_name: @test_tape,
-                     tools: [anchor_tool],
-                     on_event: on_event,
-                     max_steps: 10
-                   )
-        end)
+        assert Enum.any?(events, &match?(%{type: :tool_start, name: ^name}, &1))
 
-      assert Enum.any?(events, &match?(%{type: :tool_start, name: "create_anchor"}, &1))
+        assert Enum.any?(
+                 events,
+                 &match?(%{type: :tool_result, name: ^name, status: :ok}, &1)
+               )
 
-      assert Enum.any?(
-               events,
-               &match?(%{type: :tool_result, name: "create_anchor", status: :ok}, &1)
-             )
-
-      step_starts = Enum.filter(events, &match?(%{type: :step_start}, &1))
-      assert length(step_starts) == 1
+        step_starts = Enum.filter(events, &match?(%{type: :step_start}, &1))
+        assert length(step_starts) == 1
+      end
     end
   end
 
@@ -254,10 +251,85 @@ defmodule Rho.RunnerTest do
     end
   end
 
-  describe "lifecycle: subagent skips mount hooks (needs transformer migration)" do
-    @describetag :skip
-    test "subagent mode does not run before_llm or after_step hooks" do
-      flunk("needs migration from Mount to Transformer")
+  describe "subagent nudge via :post_step transformer" do
+    # Test transformer scoped to :test_nudge agent_name to avoid leaking
+    # into other tests. Mirrors what Rho.Stdlib.Transformers.SubagentNudge
+    # does, but lives here so apps/rho stays self-contained.
+    defmodule TestNudge do
+      @behaviour Rho.Transformer
+
+      @impl Rho.Transformer
+      def transform(:post_step, %{step_kind: :text_response}, %{depth: depth})
+          when depth > 0 do
+        {:inject, ["[System] keep going, call finish when done"]}
+      end
+
+      def transform(_stage, data, _context), do: {:cont, data}
+    end
+
+    setup do
+      Rho.TransformerRegistry.register(TestNudge, scope: {:agent, :test_nudge})
+      :ok
+    end
+
+    test "depth > 0 + nudge registered → text response loops" do
+      # First call: text response → nudge fires → loop continues.
+      # Second call: text response again → nudge fires → step 3 → max_steps exceeded.
+      expect_stream_sequence([
+        text_response("first reply"),
+        text_response("second reply")
+      ])
+
+      result =
+        Rho.Runner.run("mock:model", [ReqLLM.Context.user("hi")],
+          on_event: fn _event -> :ok end,
+          max_steps: 2,
+          depth: 1,
+          agent_name: :test_nudge
+        )
+
+      assert {:error, "max steps exceeded (2)"} = result
+    end
+
+    test "depth > 0 + no transformer registered → text response terminates" do
+      # Snapshot any global transformers (e.g. SubagentNudge from rho_stdlib),
+      # clear, run, and re-register on exit. Proves the kernel itself doesn't
+      # nudge — termination depends on a registered transformer.
+      snapshot = :ets.tab2list(:rho_transformer_instances)
+      Rho.TransformerRegistry.clear()
+
+      on_exit(fn ->
+        Rho.TransformerRegistry.clear()
+
+        for {_priority, instance} <- snapshot do
+          Rho.TransformerRegistry.register(instance.module,
+            scope: instance.scope,
+            opts: instance.opts
+          )
+        end
+      end)
+
+      stub_stream_returning(text_response("done"))
+
+      assert {:ok, "done"} =
+               Rho.Runner.run("mock:model", [ReqLLM.Context.user("hi")],
+                 on_event: fn _event -> :ok end,
+                 max_steps: 5,
+                 depth: 1,
+                 agent_name: :no_transformer_agent
+               )
+    end
+
+    test "depth = 0 + nudge registered → text response terminates (depth-gated)" do
+      stub_stream_returning(text_response("done"))
+
+      assert {:ok, "done"} =
+               Rho.Runner.run("mock:model", [ReqLLM.Context.user("hi")],
+                 on_event: fn _event -> :ok end,
+                 max_steps: 5,
+                 depth: 0,
+                 agent_name: :test_nudge
+               )
     end
   end
 

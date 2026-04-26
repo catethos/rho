@@ -51,7 +51,6 @@ defmodule Rho.Agent.Worker do
     last_activity_at: nil,
     user_id: nil,
     organization_id: nil,
-    subagent: false,
     last_result: nil,
     current_task_id: nil
   ]
@@ -244,8 +243,7 @@ defmodule Rho.Agent.Worker do
       run_spec: run_spec,
       capabilities: capabilities,
       user_id: Keyword.get(opts, :user_id),
-      organization_id: Keyword.get(opts, :organization_id),
-      subagent: Keyword.get(opts, :subagent, false)
+      organization_id: Keyword.get(opts, :organization_id)
     }
 
     # Register in agent registry
@@ -313,14 +311,6 @@ defmodule Rho.Agent.Worker do
   # --- Submit ---
 
   @impl true
-  def handle_call({:submit, "," <> command, _opts}, _from, %{status: :idle} = state) do
-    turn_id = new_turn_id()
-    state = %{state | current_turn_id: turn_id}
-    run_direct_command(command, state, turn_id)
-    state = %{state | current_turn_id: nil}
-    {:reply, {:ok, turn_id}, state}
-  end
-
   def handle_call({:submit, content, opts}, _from, %{status: :idle} = state) do
     state = start_turn(content, opts, state)
     {:reply, {:ok, state.current_turn_id}, state}
@@ -653,17 +643,13 @@ defmodule Rho.Agent.Worker do
       opts[:tools] || state.persistent_tools || spec.tools ||
         resolve_all_tools(state, depth: agent_depth(state), emit: emit)
 
-    is_delegated = opts[:delegated] || false
-    subagent_flag = state.subagent or (is_delegated and agent_depth(state) > 0)
-
     %{
       spec
       | tools: tools,
         emit: emit,
         system_prompt: opts[:system_prompt] || spec.system_prompt,
         max_steps: opts[:max_steps] || spec.max_steps,
-        model: opts[:model] || spec.model,
-        subagent: subagent_flag || spec.subagent
+        model: opts[:model] || spec.model
     }
   end
 
@@ -745,11 +731,6 @@ defmodule Rho.Agent.Worker do
       {:empty, _} ->
         # Then check regular queue
         case :queue.out(state.queue) do
-          {{:value, {"," <> command, _opts, turn_id}}, rest} ->
-            state = %{state | queue: rest, current_turn_id: turn_id}
-            run_direct_command(command, state, turn_id)
-            %{state | current_turn_id: nil}
-
           {{:value, {content, opts, _turn_id}}, rest} ->
             state = %{state | queue: rest}
             start_turn(content, opts, state)
@@ -923,7 +904,6 @@ defmodule Rho.Agent.Worker do
       agent_id: state.agent_id,
       session_id: state.session_id,
       depth: depth,
-      subagent: false,
       user_id: state.user_id,
       organization_id: state.organization_id
     }
@@ -946,44 +926,6 @@ defmodule Rho.Agent.Worker do
 
   defp maybe_put_field(map, _key, nil), do: map
   defp maybe_put_field(map, key, value), do: Map.put(map, key, value)
-
-  # --- Direct command execution ---
-
-  defp run_direct_command(command, state, turn_id) do
-    emit = build_emit(state, turn_id)
-    {tool_name, args} = Rho.Config.parse_command(command)
-
-    emit.(%{type: :turn_started})
-    emit.(%{type: :tool_start, name: tool_name, args: args})
-    result = execute_direct_command(tool_name, args, state)
-
-    case result do
-      {:ok, output} -> emit.(%{type: :tool_result, status: :ok, output: output})
-      {:error, reason} -> emit.(%{type: :tool_result, status: :error, output: inspect(reason)})
-    end
-
-    emit.(%{type: :turn_finished, result: result})
-  end
-
-  defp execute_direct_command(tool_name, args, state) do
-    tools = Rho.PluginRegistry.collect_tools(build_context(state, agent_depth(state)))
-    tool_map = Map.new(tools, fn t -> {t.tool.name, t} end)
-
-    case Map.get(tool_map, tool_name) do
-      nil ->
-        available = tools |> Enum.map(& &1.tool.name) |> Enum.sort() |> Enum.join(", ")
-        {:error, "Unknown tool: #{tool_name}. Available: #{available}"}
-
-      tool_def ->
-        case Rho.ToolArgs.prepare(args, tool_def.tool.parameter_schema) do
-          {:ok, prepared_args, _repairs} ->
-            tool_def.execute.(prepared_args, build_context(state, agent_depth(state)))
-
-          {:error, reason} ->
-            {:error, "Arg preparation failed: #{inspect(reason)}"}
-        end
-    end
-  end
 
   defp agent_depth(%__MODULE__{agent_id: agent_id}) do
     Rho.Agent.Primary.depth_of(agent_id)
