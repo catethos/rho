@@ -182,7 +182,7 @@ passthrough.
 **Risk:** Low. Forcing function (the warning) prevents the
 "both mechanisms forever" failure mode.
 
-### [ ] Phase 2: Subagent flag → `:post_step` transformer (1–1.5d)
+### [x] Phase 2: Subagent flag → `:post_step` transformer (1–1.5d) — done in cf17f22
 
 **Goal:** Remove the `subagent` boolean from kernel. Subagents are agents
 at `depth > 0`; the nudge becomes a transformer policy.
@@ -234,7 +234,7 @@ This was chosen over alternatives because:
 leaves the kernel inconsistent. Subagent end-to-end tests in
 `MultiAgent`-using flows are the regression guard.
 
-### [ ] Phase 3: Plugin signal-handler callback (1d)
+### [x] Phase 3: Plugin signal-handler callback (1d) — done in 081009d
 
 **Goal:** Drop hardcoded signal-type strings from Worker. Plugins handle
 their own signals via the registry.
