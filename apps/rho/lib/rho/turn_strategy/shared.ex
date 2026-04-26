@@ -3,11 +3,8 @@ defmodule Rho.TurnStrategy.Shared do
   Shared helpers for turn strategy implementations.
 
   Extracts common patterns used by both `Direct` and `Structured`
-  strategies: stream retry logic, error classification, and tool
-  execution timeout handling.
+  strategies: stream retry logic and tool execution timeout handling.
   """
-
-  require Logger
 
   @max_stream_retries 2
   @tool_inactivity_timeout :timer.minutes(2)
@@ -90,41 +87,4 @@ defmodule Rho.TurnStrategy.Shared do
   Returns the default tool inactivity timeout in milliseconds.
   """
   def tool_inactivity_timeout, do: @tool_inactivity_timeout
-
-  # -- Tool error classification --
-
-  @doc """
-  Classifies a tool error reason into a category atom.
-
-  Legacy shim for tools that still return `{:error, binary}`. Prefer
-  `{:error, atom}` or `{:error, {atom, detail}}` — the tool executor
-  passes those atoms through directly without string-matching.
-  """
-  def classify_tool_error(reason) when is_binary(reason) do
-    Logger.warning(
-      "Tool returned legacy string error: #{inspect(reason)}. " <>
-        "Migrate to {:error, atom} or {:error, {atom, detail}} for typed errors."
-    )
-
-    reason_down = String.downcase(reason)
-
-    cond do
-      String.contains?(reason_down, "timeout") ->
-        :timeout
-
-      String.contains?(reason_down, "permission") or String.contains?(reason_down, "denied") ->
-        :permission_denied
-
-      String.contains?(reason_down, "not found") or String.contains?(reason_down, "no such") ->
-        :not_found
-
-      String.contains?(reason_down, "invalid") or String.contains?(reason_down, "argument") ->
-        :invalid_args
-
-      true ->
-        :runtime_error
-    end
-  end
-
-  def classify_tool_error(_), do: :runtime_error
 end

@@ -158,7 +158,7 @@ extraction, no longer needed).
 
 **Risk:** Negligible. ~70 lines, zero callers in the repo.
 
-### [~] Phase 6: Typed tool errors (1d) — built-ins migrated; deletion of `classify_tool_error/1` deferred per step 4
+### [x] Phase 6: Typed tool errors (1d) — built-ins migrated; `classify_tool_error/1` deleted (no third-party consumers, skipped the release-cycle wait)
 
 **Goal:** Drop `classify_tool_error` string-matching from `TurnStrategy.Shared`.
 
@@ -289,7 +289,7 @@ return variants keep the door open for future handlers without forcing
 **Risk:** Low-medium. The handler logic is straightforward to relocate.
 Existing inter-agent end-to-end tests are the regression guard.
 
-### [ ] Phase 7: Cleanup sweep (≤1h)
+### [x] Phase 7: Cleanup sweep (≤1h)
 
 **Goal:** Drop vestigial code exposed by other phases.
 

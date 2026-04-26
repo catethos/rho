@@ -20,7 +20,6 @@ defmodule Rho.Stdlib.PluginIntegrationTest do
     PluginRegistry.register(Rho.Stdlib.Tools.Sandbox)
     PluginRegistry.register(Rho.Stdlib.Plugins.Tape)
     PluginRegistry.register(Rho.Stdlib.Skill.Plugin)
-    PluginRegistry.register(Rho.Stdlib.Builtin)
     PluginRegistry.register(Rho.Stdlib.Plugins.StepBudget)
     PluginRegistry.register(Rho.Stdlib.Plugins.MultiAgent)
 

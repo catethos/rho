@@ -68,7 +68,6 @@ Module namespaces:
 - `Rho.Stdlib.DataTable.Schema` / `Rho.Stdlib.DataTable.Schema.Column` / `Rho.Stdlib.DataTable.Table` — pure data structs
 - `Rho.Stdlib.DataTable.SessionJanitor` — listens for `rho.agent.stopped` and stops the matching server
 - `Rho.Stdlib.Skill` / `Rho.Stdlib.Skill.Plugin` / `Rho.Stdlib.Skill.Loader`
-- `Rho.Stdlib.Builtin`
 
 #### Named tables
 

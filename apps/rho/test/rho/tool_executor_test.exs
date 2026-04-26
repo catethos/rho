@@ -52,16 +52,12 @@ defmodule Rho.ToolExecutorTest do
       assert result.result =~ "Cannot read foo.txt"
     end
 
-    test "binary error falls back to legacy classify_tool_error" do
-      # Capture the deprecation warning to keep test output clean.
-      ExUnit.CaptureLog.capture_log(fn ->
-        result = run_tool(fn _args, _ctx -> {:error, "operation timeout"} end)
-        send(self(), {:legacy_result, result})
-      end)
+    test "binary error becomes runtime_error" do
+      result = run_tool(fn _args, _ctx -> {:error, "operation timeout"} end)
 
-      assert_received {:legacy_result, result}
       assert result.status == :error
-      assert result.event.error_type == :timeout
+      assert result.event.error_type == :runtime_error
+      assert result.result =~ "operation timeout"
     end
   end
 end

@@ -38,9 +38,6 @@ defmodule Rho.Events.Event do
     * `:structured_partial` — `%{parsed: term(), text: String.t(), turn_id: String.t()}`
     * `:ui_spec_delta` — `%{message_id: String.t(), title: String.t(), spec: map(), turn_id: String.t()}`
     * `:ui_spec` — `%{message_id: String.t(), title: String.t(), spec: map(), turn_id: String.t()}`
-    * `:subagent_progress` — `%{step: integer(), max_steps: integer(), turn_id: String.t()}`
-    * `:subagent_tool` — `%{name: String.t(), turn_id: String.t()}`
-    * `:subagent_error` — `%{reason: term(), turn_id: String.t()}`
 
   ## Lifecycle event kinds (from Worker lifecycle)
 

@@ -277,7 +277,7 @@ defmodule Rho.ToolExecutor do
     do: {type, format_error_detail(detail)}
 
   defp error_info(reason) when is_binary(reason),
-    do: {Shared.classify_tool_error(reason), reason}
+    do: {:runtime_error, reason}
 
   defp error_info(other),
     do: {:runtime_error, inspect(other)}

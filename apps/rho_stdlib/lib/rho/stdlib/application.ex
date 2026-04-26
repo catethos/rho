@@ -28,7 +28,6 @@ defmodule Rho.Stdlib.Application do
   end
 
   defp register_builtin_plugins do
-    Rho.PluginRegistry.register(Rho.Stdlib.Builtin)
     Rho.TransformerRegistry.register(Rho.Stdlib.Transformers.SubagentNudge)
 
     for agent_name <- Rho.AgentConfig.agent_names() do

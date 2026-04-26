@@ -55,8 +55,7 @@ defmodule RhoWeb.Projections.SessionState do
   # Session event kinds — dispatched directly by atom
   @session_event_kinds ~w(
     text_delta llm_text tool_start tool_result step_start llm_usage
-    turn_started turn_finished turn_cancelled compact error
-    subagent_progress subagent_tool subagent_error before_llm
+    turn_started turn_finished turn_cancelled compact error before_llm
     structured_partial ui_spec_delta ui_spec message_sent
   )a
 
