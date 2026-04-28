@@ -9,12 +9,16 @@ defmodule RhoBaml.SchemaWriter do
 
   ## Generated BAML
 
-  Produces an `Action` class with:
-  - `tool` — string discriminant (required)
-  - All tool params flattened and made optional (only one tool's params are relevant per response)
-  - `thinking` — optional reasoning side-channel
+  Produces a **discriminated union** of per-tool action classes:
 
-  Plus an `AgentTurn` function wired to a configurable client.
+  - `RespondAction` — `tool "respond"`, `message string`, `thinking string?`
+  - `ThinkAction` — `tool "think"`, `thought string`, `thinking string?`
+  - One class per visible tool — `tool "<name>"` (literal), declared params
+    (required vs optional preserved from the parameter_schema), `thinking string?`
+
+  Plus an `AgentTurn(messages: string)` function returning the union, wired
+  to a configurable client. The LLM picks one variant and emits only its
+  fields — no `null` padding for unused tool params.
   """
 
   @type tool_def :: %{
@@ -58,36 +62,36 @@ defmodule RhoBaml.SchemaWriter do
     client = Keyword.get(opts, :client, "OpenRouter")
     visible_defs = Enum.reject(tool_defs, fn td -> td[:deferred] end)
 
-    builtin_fields = [
-      {"message", "string"},
-      {"thought", "string"}
+    reserved = [
+      {"RespondAction", "respond", "Reply to the user with a final message.",
+       [{"message", "string"}]},
+      {"ThinkAction", "think", "Record an internal reasoning step without external action.",
+       [{"thought", "string"}]}
     ]
 
-    tool_fields = collect_fields(visible_defs)
-    all_fields = builtin_fields ++ tool_fields
-
-    # Deduplicate by field name, keeping first occurrence
-    unique_fields =
-      all_fields
-      |> Enum.uniq_by(fn {name, _type} -> name end)
-
-    fields_baml =
-      Enum.map_join(unique_fields, "\n", fn {name, type} ->
-        "  #{name} #{type}?"
+    tool_variants =
+      Enum.map(visible_defs, fn td ->
+        {tool_name_to_class(td.tool.name), td.tool.name,
+         td.tool.description |> to_string() |> sanitize_desc(),
+         render_variant_fields(td.tool.parameter_schema || [])}
       end)
 
-    tool_names =
-      ["respond", "think" | Enum.map(visible_defs, & &1.tool.name)]
-      |> Enum.join(", ")
+    all_variants = reserved ++ tool_variants
+
+    classes_baml =
+      Enum.map_join(all_variants, "\n\n", fn {class_name, tool_lit, desc, fields} ->
+        build_variant_class(class_name, tool_lit, desc, fields)
+      end)
+
+    union_type =
+      all_variants
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.join(" | ")
 
     """
-    class Action {
-      tool string @description("One of: #{tool_names}")
-    #{fields_baml}
-      thinking string?
-    }
+    #{classes_baml}
 
-    function AgentTurn(messages: string) -> Action {
+    function AgentTurn(messages: string) -> #{union_type} {
       client #{client}
       prompt #"
         {{ messages }}
@@ -98,17 +102,45 @@ defmodule RhoBaml.SchemaWriter do
     """
   end
 
-  # -- Field collection --
+  defp build_variant_class(class_name, tool_lit, desc, fields) do
+    tool_line =
+      case desc do
+        "" -> "  tool \"#{tool_lit}\""
+        d -> "  tool \"#{tool_lit}\" @description(\"#{d}\")"
+      end
 
-  defp collect_fields(tool_defs) do
-    Enum.flat_map(tool_defs, fn td ->
-      schema = td.tool.parameter_schema || []
+    fields_baml =
+      Enum.map_join(fields, "\n", fn {name, type} -> "  #{name} #{type}" end)
 
-      Enum.map(schema, fn {name, opts} ->
-        type = Keyword.get(opts, :type, :string) |> to_baml_type()
-        {Atom.to_string(name), type}
-      end)
+    body =
+      case fields_baml do
+        "" -> "#{tool_line}\n  thinking string?"
+        nb -> "#{tool_line}\n#{nb}\n  thinking string?"
+      end
+
+    "class #{class_name} {\n#{body}\n}"
+  end
+
+  defp render_variant_fields(schema) do
+    Enum.map(schema, fn {name, opts} ->
+      base = Keyword.get(opts, :type, :string) |> to_baml_type()
+      type = if Keyword.get(opts, :required, false), do: base, else: "#{base}?"
+      {Atom.to_string(name), type}
     end)
+  end
+
+  defp tool_name_to_class(name) do
+    Macro.camelize(to_string(name)) <> "Action"
+  end
+
+  # Description renders inside `@description("...")` — escape backslash and
+  # double-quote, collapse newlines.
+  defp sanitize_desc(desc) do
+    desc
+    |> String.trim()
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\"", "\\\"")
+    |> String.replace("\n", " ")
   end
 
   # -- Dynamic client generation --

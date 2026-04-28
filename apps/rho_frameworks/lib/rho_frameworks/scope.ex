@@ -12,22 +12,32 @@ defmodule RhoFrameworks.Scope do
   defstruct [
     :organization_id,
     :session_id,
-    :user_id
+    :user_id,
+    :reason,
+    source: nil
   ]
+
+  @type source :: :user | :flow | :agent | nil
 
   @type t :: %__MODULE__{
           organization_id: String.t(),
           session_id: String.t(),
-          user_id: String.t() | nil
+          user_id: String.t() | nil,
+          source: source(),
+          reason: String.t() | nil
         }
 
-  @doc "Build a Scope from an agent's `Rho.Context`."
+  @doc """
+  Build a Scope from an agent's `Rho.Context`. Sets `source: :agent`
+  because contexts are constructed by the agent runner.
+  """
   @spec from_context(Rho.Context.t()) :: t()
   def from_context(%Rho.Context{} = ctx) do
     %__MODULE__{
       organization_id: ctx.organization_id,
       session_id: ctx.session_id,
-      user_id: ctx.user_id
+      user_id: ctx.user_id,
+      source: :agent
     }
   end
 end

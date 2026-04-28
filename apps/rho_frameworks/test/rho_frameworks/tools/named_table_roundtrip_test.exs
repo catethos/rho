@@ -6,7 +6,8 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
 
     * `load_library` writes rows into the library named table
     * `manage_role(action: load)` writes rows into the `"role_profile"` table
-    * `save_library` / `manage_role(action: save)` read from their named tables
+    * `WorkflowTools.save_framework` / `manage_role(action: save)` read from
+      their named tables
     * two named tables can coexist for a single session
     * save tools return an actionable error when no DataTable server is
       running for the session.
@@ -19,6 +20,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
   alias RhoFrameworks.Repo
   alias RhoFrameworks.Tools.LibraryTools
   alias RhoFrameworks.Tools.RoleTools
+  alias RhoFrameworks.Tools.WorkflowTools
 
   setup do
     org_id = Ecto.UUID.generate()
@@ -94,11 +96,11 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
   # --- library round trip -------------------------------------------------
 
   describe "library load → save round trip" do
-    test "load_library writes into the library table and save_library reads from it",
+    test "load_library writes into the library table and save_framework reads from it",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
       lib = seed_library_with_skill(org_id)
       load = tool(LibraryTools, "load_library")
-      save = tool(LibraryTools, "save_library")
+      save = tool(WorkflowTools, "save_framework")
 
       assert %Rho.ToolResponse{effects: effects} =
                load.(%{library_name: lib.name}, ctx)
@@ -110,17 +112,14 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
                _ -> false
              end)
 
-      # EffectDispatcher runs in the web layer; simulate its "canonical
-      # write" step so the rows actually land in the named table.
-      %Rho.Effect.Table{rows: rows} =
-        Enum.find(effects, &match?(%Rho.Effect.Table{}, &1))
+      # The tool now writes rows itself via Workbench — the effect is a
+      # UI signal only (rows: [], skip_write?: true). Verify the named
+      # table actually got populated.
+      written_rows = DataTable.get_rows(session_id, table: table_name)
+      assert is_list(written_rows) and written_rows != []
 
-      {:ok, _} = DataTable.replace_all(session_id, rows, table: table_name)
-
-      # Round trip: save_library should read from the library table.
-      assert %Rho.ToolResponse{text: text} =
-               save.(%{action: "save", library_id: lib.id}, ctx)
-
+      # Round trip: save_framework should read from the library table.
+      assert {:ok, text} = save.(%{library_id: lib.id}, ctx)
       assert text =~ "Saved"
       assert text =~ "skill"
 
@@ -128,19 +127,18 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       assert DataTable.get_rows(session_id, table: "main") == []
     end
 
-    test "save_library errors when the library is not found", %{ctx: ctx} do
+    test "save_framework errors when the library is not found", %{ctx: ctx} do
       lib_id = Ecto.UUID.generate()
-      save = tool(LibraryTools, "save_library")
+      save = tool(WorkflowTools, "save_framework")
 
-      # Library doesn't exist — save should refuse.
-      assert {:error, message} = save.(%{action: "save", library_id: lib_id}, ctx)
+      assert {:error, message} = save.(%{library_id: lib_id}, ctx)
       assert message =~ "not found"
     end
 
-    test "save_library errors when the library table is empty",
+    test "save_framework errors when the library table is empty",
          %{org_id: org_id, session_id: session_id, ctx: ctx} do
       lib = seed_library_with_skill(org_id)
-      save = tool(LibraryTools, "save_library")
+      save = tool(WorkflowTools, "save_framework")
       table_name = LibraryTools.library_table_name(lib.name)
 
       # Table exists but carries no rows.
@@ -151,7 +149,7 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
           RhoFrameworks.DataTableSchemas.library_schema()
         )
 
-      assert {:error, message} = save.(%{action: "save", library_id: lib.id}, ctx)
+      assert {:error, message} = save.(%{library_id: lib.id}, ctx)
       assert message =~ "empty"
     end
   end
@@ -209,8 +207,9 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
                _ -> false
              end)
 
-      %Rho.Effect.Table{rows: loaded_rows} =
-        Enum.find(effects, &match?(%Rho.Effect.Table{}, &1))
+      # The tool writes rows itself via Workbench — verify by reading
+      # the named table directly rather than the (now empty) effect.
+      loaded_rows = DataTable.get_rows(session_id, table: "role_profile")
 
       assert Enum.any?(loaded_rows, fn row ->
                row[:skill_name] == "Elixir" and row[:required_level] == 3
@@ -244,10 +243,11 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
       %Rho.ToolResponse{effects: lib_effects} =
         load_lib.(%{library_name: lib.name}, ctx)
 
-      %Rho.Effect.Table{rows: lib_rows, table_name: ^lib_table} =
-        Enum.find(lib_effects, &match?(%Rho.Effect.Table{}, &1))
-
-      {:ok, _} = DataTable.replace_all(session_id, lib_rows, table: lib_table)
+      # The tool writes the library rows itself; the effect carries no
+      # rows (skip_write?: true) — just verify the right table tab is
+      # signalled.
+      assert %Rho.Effect.Table{table_name: ^lib_table} =
+               Enum.find(lib_effects, &match?(%Rho.Effect.Table{}, &1))
 
       # --- role_profile tab ---
       # Seed a role profile in the DB by writing rows and saving.

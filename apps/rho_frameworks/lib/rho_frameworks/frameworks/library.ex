@@ -25,6 +25,7 @@ defmodule RhoFrameworks.Frameworks.Library do
     belongs_to(:derived_from, __MODULE__)
     belongs_to(:superseded_by, __MODULE__)
     has_many(:skills, RhoFrameworks.Frameworks.Skill)
+    has_many(:research_notes, RhoFrameworks.Frameworks.ResearchNote)
 
     timestamps(type: :utc_datetime)
   end

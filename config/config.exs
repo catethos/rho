@@ -3,7 +3,7 @@ import Config
 # Finch connection pool sized for subagent fan-out.
 # Each concurrent LLM stream occupies one HTTP/1 connection (size: 1 per pool),
 # so `count` is the effective concurrency ceiling. Primary agent + per-category
-# LiteWorkers spawned by tools like `save_and_generate` all stream in parallel;
+# LiteWorkers spawned by tools like `generate_proficiency` all stream in parallel;
 # count must exceed max expected fan-out or checkouts queue and time out
 # (see Rho.TurnStrategy.Shared.retryable?/1 for the pool-exhaustion retry path).
 config :req_llm,

@@ -11,10 +11,29 @@ defmodule RhoFrameworks.FlowTest do
 
       steps = CreateFramework.steps()
       assert is_list(steps)
-      assert length(steps) == 7
+      assert length(steps) == 17
 
       ids = Enum.map(steps, & &1.id)
-      assert ids == [:intake, :similar_roles, :generate, :review, :confirm, :proficiency, :save]
+
+      assert ids == [
+               :intake,
+               :choose_starting_point,
+               :research,
+               :similar_roles,
+               :pick_template,
+               :pick_existing_library,
+               :load_existing_library,
+               :identify_gaps,
+               :pick_two_libraries,
+               :diff_frameworks,
+               :resolve_conflicts,
+               :merge_frameworks,
+               :generate,
+               :review,
+               :confirm,
+               :proficiency,
+               :save
+             ]
     end
 
     test "each step has required keys" do
@@ -22,9 +41,84 @@ defmodule RhoFrameworks.FlowTest do
         assert is_atom(step.id)
         assert is_binary(step.label)
         assert step.type in [:form, :action, :table_review, :fan_out, :select]
-        assert Map.has_key?(step, :run)
         assert Map.has_key?(step, :config)
+        assert Map.has_key?(step, :next)
+        assert step.routing in [:fixed, :auto, :agent_loop]
       end
+    end
+
+    test "Phase 10a/b/c routing: :choose_starting_point, :similar_roles, :pick_existing_library, :pick_two_libraries use :auto, :research uses :agent_loop, rest :fixed" do
+      for step <- CreateFramework.steps() do
+        expected =
+          case step.id do
+            :choose_starting_point -> :auto
+            :similar_roles -> :auto
+            :pick_existing_library -> :auto
+            :pick_two_libraries -> :auto
+            :research -> :agent_loop
+            _ -> :fixed
+          end
+
+        assert step.routing == expected,
+               "#{step.id} routing should be #{inspect(expected)}, got #{inspect(step.routing)}"
+      end
+    end
+
+    test "next: intake→choose_starting_point single-edge, fork at choose_starting_point, similar_roles bounces on no matches" do
+      steps = CreateFramework.steps()
+      next_map = Map.new(steps, fn s -> {s.id, s.next} end)
+
+      assert next_map[:intake] == :choose_starting_point
+
+      assert is_list(next_map[:choose_starting_point])
+
+      ids_after_choose =
+        next_map[:choose_starting_point] |> Enum.map(& &1.to)
+
+      assert :similar_roles in ids_after_choose
+      assert :research in ids_after_choose
+
+      from_template_edge =
+        Enum.find(next_map[:choose_starting_point], &(&1.guard == :from_template_intent))
+
+      assert from_template_edge.to == :similar_roles
+
+      scratch_intent_edge =
+        Enum.find(next_map[:choose_starting_point], &(&1.guard == :scratch_intent))
+
+      assert scratch_intent_edge.to == :research
+
+      scratch_edge = Enum.find(next_map[:choose_starting_point], &(&1.guard == :scratch))
+      assert scratch_edge.to == :research
+
+      default_edge = Enum.find(next_map[:choose_starting_point], &(&1.guard == nil))
+      assert default_edge.to == :similar_roles
+
+      assert next_map[:research] == :generate
+      assert next_map[:pick_template] == :save
+      assert next_map[:generate] == :review
+      assert next_map[:review] == :confirm
+      assert next_map[:confirm] == :proficiency
+      assert next_map[:proficiency] == :save
+      assert next_map[:save] == :done
+
+      assert is_list(next_map[:similar_roles])
+
+      good_edge = Enum.find(next_map[:similar_roles], &(&1.guard == :good_matches))
+      assert good_edge.to == :pick_template
+
+      bounce_edge = Enum.find(next_map[:similar_roles], &(&1.guard == :no_similar_roles))
+      assert bounce_edge.to == :choose_starting_point
+    end
+
+    test ":research node references ResearchDomain UseCase" do
+      research = Enum.find(CreateFramework.steps(), &(&1.id == :research))
+      assert research.type == :action
+      assert research.use_case == RhoFrameworks.UseCases.ResearchDomain
+      assert research.routing == :agent_loop
+
+      assert research.config[:findings_table] ==
+               RhoFrameworks.UseCases.ResearchDomain.table_name()
     end
 
     test "intake step has form fields" do
@@ -42,10 +136,120 @@ defmodule RhoFrameworks.FlowTest do
       assert :levels in field_names
     end
 
-    test "similar_roles step has load config" do
+    test "choose_starting_point is a form with a single :starting_point select field including extend_existing and merge" do
+      step = Enum.find(CreateFramework.steps(), &(&1.id == :choose_starting_point))
+      assert step.type == :form
+      assert is_list(step.config.fields)
+      assert length(step.config.fields) == 1
+
+      [field] = step.config.fields
+      assert field.name == :starting_point
+      assert field.type == :select
+      assert field[:required] == true
+
+      values = Enum.map(field.options, fn {_label, val} -> val end)
+      assert "from_template" in values
+      assert "scratch" in values
+      assert "extend_existing" in values
+      assert "merge" in values
+    end
+
+    test "Phase 10c merge edges: choose_starting_point→pick_two_libraries→diff→resolve→merge→save" do
+      steps = CreateFramework.steps()
+      next_map = Map.new(steps, fn s -> {s.id, s.next} end)
+
+      merge_edge =
+        Enum.find(next_map[:choose_starting_point], &(&1.guard == :merge_intent))
+
+      assert merge_edge.to == :pick_two_libraries
+
+      pick_two_edges = next_map[:pick_two_libraries]
+      assert is_list(pick_two_edges)
+
+      assert Enum.find(pick_two_edges, &(&1.guard == :two_libraries_picked)).to ==
+               :diff_frameworks
+
+      assert Enum.find(pick_two_edges, &(&1.guard == :fewer_than_two_libraries)).to ==
+               :choose_starting_point
+
+      assert next_map[:diff_frameworks] == :resolve_conflicts
+      assert next_map[:resolve_conflicts] == :merge_frameworks
+      assert next_map[:merge_frameworks] == :save
+    end
+
+    test "Phase 10c new nodes reference the right UseCases and types" do
+      steps = CreateFramework.steps()
+
+      pick_two = Enum.find(steps, &(&1.id == :pick_two_libraries))
+      diff = Enum.find(steps, &(&1.id == :diff_frameworks))
+      resolve = Enum.find(steps, &(&1.id == :resolve_conflicts))
+      merge = Enum.find(steps, &(&1.id == :merge_frameworks))
+
+      assert pick_two.type == :select
+      assert pick_two.use_case == RhoFrameworks.UseCases.ListExistingLibraries
+      assert pick_two.config.skippable == false
+      assert pick_two.config.min_select == 2
+      assert pick_two.config.max_select == 2
+
+      assert diff.type == :action
+      assert diff.use_case == RhoFrameworks.UseCases.DiffFrameworks
+
+      assert resolve.type == :table_review
+      assert resolve.use_case == RhoFrameworks.UseCases.ResolveConflicts
+      assert resolve.config.conflict_mode == true
+
+      assert merge.type == :action
+      assert merge.use_case == RhoFrameworks.UseCases.MergeFrameworks
+    end
+
+    test "Phase 10b extend_existing edges: choose_starting_point→pick_existing_library, bounce on no pick" do
+      steps = CreateFramework.steps()
+      next_map = Map.new(steps, fn s -> {s.id, s.next} end)
+
+      extend_edge =
+        Enum.find(next_map[:choose_starting_point], &(&1.guard == :extend_existing_intent))
+
+      assert extend_edge.to == :pick_existing_library
+
+      pick_existing_edges = next_map[:pick_existing_library]
+      assert is_list(pick_existing_edges)
+
+      ids = Enum.map(pick_existing_edges, & &1.to)
+      assert :load_existing_library in ids
+      assert :choose_starting_point in ids
+
+      assert Enum.find(pick_existing_edges, &(&1.guard == :existing_library_picked)).to ==
+               :load_existing_library
+
+      assert Enum.find(pick_existing_edges, &(&1.guard == :no_existing_libraries)).to ==
+               :choose_starting_point
+
+      assert next_map[:load_existing_library] == :identify_gaps
+      assert next_map[:identify_gaps] == :generate
+    end
+
+    test "Phase 10b new nodes reference the right UseCases" do
+      steps = CreateFramework.steps()
+
+      pick_existing = Enum.find(steps, &(&1.id == :pick_existing_library))
+      load_existing = Enum.find(steps, &(&1.id == :load_existing_library))
+      identify_gaps = Enum.find(steps, &(&1.id == :identify_gaps))
+
+      assert pick_existing.type == :select
+      assert pick_existing.use_case == RhoFrameworks.UseCases.ListExistingLibraries
+      assert pick_existing.config.skippable == true
+
+      assert load_existing.type == :action
+      assert load_existing.use_case == RhoFrameworks.UseCases.LoadExistingFramework
+
+      assert identify_gaps.type == :action
+      assert identify_gaps.use_case == RhoFrameworks.UseCases.IdentifyFrameworkGaps
+    end
+
+    test "similar_roles step references LoadSimilarRoles use case" do
       step = Enum.find(CreateFramework.steps(), &(&1.id == :similar_roles))
       assert step.type == :select
-      assert {CreateFramework, :load_similar_roles, []} = step.config.load
+      assert step.use_case == RhoFrameworks.UseCases.LoadSimilarRoles
       assert step.config.skippable == true
     end
 
@@ -56,13 +260,15 @@ defmodule RhoFrameworks.FlowTest do
       assert is_binary(step.config.message)
     end
 
-    test "action steps have run tuples" do
+    test "action steps reference UseCases" do
       steps = CreateFramework.steps()
       generate = Enum.find(steps, &(&1.id == :generate))
       save = Enum.find(steps, &(&1.id == :save))
+      proficiency = Enum.find(steps, &(&1.id == :proficiency))
 
-      assert {RhoFrameworks.SkeletonGenerator, :generate, []} = generate.run
-      assert {RhoFrameworks.Library.Editor, :save_table, []} = save.run
+      assert generate.use_case == RhoFrameworks.UseCases.GenerateFrameworkSkeletons
+      assert save.use_case == RhoFrameworks.UseCases.SaveFramework
+      assert proficiency.use_case == RhoFrameworks.UseCases.GenerateProficiency
     end
   end
 

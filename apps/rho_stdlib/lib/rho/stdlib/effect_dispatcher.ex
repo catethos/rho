@@ -62,11 +62,14 @@ defmodule Rho.Stdlib.EffectDispatcher do
     # Canonical write: update the DataTable server. The server itself
     # publishes `:table_changed` on the `data_table` topic, which
     # subscribers react to by refetching the active snapshot.
+    #
+    # When `skip_write?` is set the caller has already written via
+    # `RhoFrameworks.Workbench` and only wants the UI tab switch.
     _ =
-      if effect.append? do
-        DataTable.add_rows(session_id, effect.rows, table: table_name)
-      else
-        DataTable.replace_all(session_id, effect.rows, table: table_name)
+      cond do
+        effect.skip_write? -> :ok
+        effect.append? -> DataTable.add_rows(session_id, effect.rows, table: table_name)
+        true -> DataTable.replace_all(session_id, effect.rows, table: table_name)
       end
 
     :ok

@@ -109,6 +109,16 @@ defmodule Rho.Events do
   @spec event(atom(), String.t(), String.t() | nil, map()) :: Event.t()
   def event(kind, session_id, agent_id \\ nil, data \\ %{})
       when is_atom(kind) and is_binary(session_id) do
+    # Inject session_id and agent_id into data so consumers (e.g. the LV
+    # session_state reducer) see a consistent shape regardless of whether
+    # an event came through `normalize/3` (runner emit) or this builder
+    # (agent lifecycle, delegation, effect dispatches). `Map.put_new`
+    # preserves any explicit value the caller already supplied.
+    data =
+      data
+      |> Map.put_new(:session_id, session_id)
+      |> Map.put_new(:agent_id, agent_id)
+
     %Event{
       kind: kind,
       session_id: session_id,

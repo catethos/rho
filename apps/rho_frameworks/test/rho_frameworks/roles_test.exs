@@ -213,4 +213,87 @@ defmodule RhoFrameworks.RolesTest do
       assert sql.required_level == 5
     end
   end
+
+  describe "clone_skills_for_library/2" do
+    test "preserves skill description and proficiency_levels", %{org_id: org_id, lib: lib} do
+      # Build the role profile first (auto-creates the SQL skill row via
+      # the role-profile upsert), then enrich the skill with description +
+      # proficiency_levels so the test exercises the read path Roles uses.
+      {:ok, %{role_profile: rp}} =
+        RhoFrameworks.Roles.save_role_profile(
+          org_id,
+          %{name: "DBA"},
+          [
+            %{
+              category: "Tech",
+              cluster: "Data",
+              skill_name: "SQL",
+              skill_description: "Structured Query Language fundamentals.",
+              required_level: 4
+            }
+          ],
+          resolve_library_id: lib.id
+        )
+
+      {:ok, _} =
+        RhoFrameworks.Library.upsert_skill(lib.id, %{
+          name: "SQL",
+          category: "Tech",
+          cluster: "Data",
+          description: "Structured Query Language fundamentals.",
+          proficiency_levels: [
+            %{"level" => 1, "level_name" => "Novice", "level_description" => "Basics"},
+            %{"level" => 3, "level_name" => "Intermediate", "level_description" => "Joins"},
+            %{"level" => 5, "level_name" => "Expert", "level_description" => "Optimization"}
+          ]
+        })
+
+      cloned = RhoFrameworks.Roles.clone_skills_for_library(org_id, [rp.id])
+
+      assert [row] = cloned
+      assert row.skill_name == "SQL"
+      assert row.skill_description == "Structured Query Language fundamentals."
+      assert row.category == "Tech"
+      assert row.cluster == "Data"
+      assert is_list(row.proficiency_levels)
+      assert length(row.proficiency_levels) == 3
+
+      expert = Enum.find(row.proficiency_levels, &(&1.level == 5))
+      assert expert.level_name == "Expert"
+      assert expert.level_description == "Optimization"
+    end
+
+    test "deduplicates skills shared across roles (first occurrence wins)", %{
+      org_id: org_id,
+      lib: lib
+    } do
+      RhoFrameworks.Library.upsert_skill(lib.id, %{
+        name: "SQL",
+        category: "Tech",
+        proficiency_levels: [%{"level" => 3, "level_name" => "Mid"}]
+      })
+
+      {:ok, %{role_profile: rp1}} =
+        RhoFrameworks.Roles.save_role_profile(
+          org_id,
+          %{name: "SRE"},
+          [%{category: "Tech", skill_name: "SQL", required_level: 3}],
+          resolve_library_id: lib.id
+        )
+
+      {:ok, %{role_profile: rp2}} =
+        RhoFrameworks.Roles.save_role_profile(
+          org_id,
+          %{name: "DevOps"},
+          [%{category: "Tech", skill_name: "SQL", required_level: 5}],
+          resolve_library_id: lib.id
+        )
+
+      cloned = RhoFrameworks.Roles.clone_skills_for_library(org_id, [rp1.id, rp2.id])
+
+      assert [row] = cloned
+      assert row.skill_name == "SQL"
+      assert length(row.proficiency_levels) == 1
+    end
+  end
 end

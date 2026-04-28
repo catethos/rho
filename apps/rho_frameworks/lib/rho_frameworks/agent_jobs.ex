@@ -61,7 +61,8 @@ defmodule RhoFrameworks.AgentJobs do
         agent_id: agent_id,
         session_id: session_id,
         organization_id: opts[:organization_id],
-        turn_strategy: opts[:turn_strategy] || Rho.TurnStrategy.Direct,
+        turn_strategy:
+          Rho.AgentConfig.resolve_turn_strategy(opts[:turn_strategy] || Rho.TurnStrategy.Direct),
         provider: opts[:provider],
         depth: (opts[:depth] || 0) + 1,
         lite: true
@@ -80,6 +81,26 @@ defmodule RhoFrameworks.AgentJobs do
     LiteTracker.register(agent_id, task.ref, task.pid)
 
     {:ok, agent_id}
+  end
+
+  @doc """
+  Best-effort cancel of a running lite worker. Used by the research
+  panel's "Continue early" — the flow advances regardless, so this is
+  fire-and-forget cleanup, not a synchronisation point.
+
+  Returns `:ok` whether the worker was running, already done, or never
+  existed. Safe to call concurrently with completion.
+  """
+  @spec cancel(String.t()) :: :ok
+  def cancel(agent_id) when is_binary(agent_id) do
+    case LiteTracker.lookup(agent_id) do
+      {:running, _result, pid} when is_pid(pid) ->
+        if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   # -- Private --

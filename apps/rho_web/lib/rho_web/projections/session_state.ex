@@ -209,6 +209,14 @@ defmodule RhoWeb.Projections.SessionState do
   defp dispatch_session_event(:llm_text, state, data, _s),
     do: reduce_text_delta(state, data)
 
+  # Use-case streaming events (e.g. "→ levels: SkillName (5 lvls)") share
+  # the same in-flight bubble as LLM text so users see continuous progress
+  # in the chat thread. Wizard's flow_live already does this; the chat
+  # path must too. Without this, partials only land in the signal log
+  # and the UI looks frozen during long streaming tools.
+  defp dispatch_session_event(:structured_partial, state, data, _s),
+    do: reduce_text_delta(state, data)
+
   defp dispatch_session_event(:tool_start, state, data, _s),
     do: reduce_tool_start(state, data)
 

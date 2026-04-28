@@ -480,6 +480,8 @@ defmodule Rho.Runner do
 
   # -- {:parse_error, ...} in lite mode --
 
+  # Invariant: `reason` is a binary — TypedStructured.dispatch_parsed/2
+  # is the only emitter and it builds the reason from string interpolation.
   defp handle_lite_result({:parse_error, reason, _raw}, context, runtime, step, max) do
     correction = ReqLLM.Context.user("Parse error: #{reason}. Please try again.")
     do_lite_loop(context ++ [correction], runtime, step: step + 1, max_steps: max)
@@ -535,10 +537,18 @@ defmodule Rho.Runner do
 
     {output_str, status, final, effects} =
       case result do
-        {:final, output} -> {to_string(output), :ok, to_string(output), []}
-        %Rho.ToolResponse{text: text, effects: fx} -> {text || "", :ok, nil, fx || []}
-        {:ok, output} -> {to_string(output), :ok, nil, []}
-        {:error, reason} -> {"Error: #{reason}", :error, nil, []}
+        {:final, output} ->
+          coerced = coerce_output(output)
+          {coerced, :ok, coerced, []}
+
+        %Rho.ToolResponse{text: text, effects: fx} ->
+          {text || "", :ok, nil, fx || []}
+
+        {:ok, output} ->
+          {coerce_output(output), :ok, nil, []}
+
+        {:error, reason} ->
+          {"Error: #{inspect(reason)}", :error, nil, []}
       end
 
     event = %{
@@ -832,4 +842,11 @@ defmodule Rho.Runner do
     if duration_ms > threshold, do: Logger.warning(message)
     :ok
   end
+
+  # Coerce an arbitrary tool return value into a string suitable for the
+  # message context. Binaries pass through unchanged so happy-path tools
+  # keep emitting their text byte-for-byte; anything else (tuples, structs,
+  # atoms) goes through `inspect/1` to avoid `String.Chars` crashes.
+  defp coerce_output(output) when is_binary(output), do: output
+  defp coerce_output(output), do: inspect(output)
 end

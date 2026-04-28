@@ -6,8 +6,8 @@ class ScoreLensOutputVariableScores {
 
 class ScoreLensOutputWorkActivities {
   tag string @description("One of: automatable, augmentable, human_essential, data_dependent")
-  activity string @description("Description of the work activity")
   confidence float @description("Confidence in tag 0.0-1.0")
+  activity string @description("Description of the work activity")
 }
 
 class ScoreLensOutput {

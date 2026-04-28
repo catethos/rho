@@ -502,6 +502,60 @@ defmodule RhoFrameworks.Roles do
     |> Enum.sort_by(&{&1.category, &1.cluster, &1.skill_name})
   end
 
+  @doc """
+  Library-shaped clone: union the given roles' skills and emit rows
+  matching `RhoFrameworks.DataTableSchemas.library_schema/0`. Includes
+  `skill_description` and the full `proficiency_levels` array attached
+  to each skill so downstream library tables get the proficiency data,
+  not just the names.
+
+  Skills appearing in multiple roles are kept once (first occurrence —
+  proficiency_levels live on `Skill`, so duplicates would carry
+  identical values).
+  """
+  @spec clone_skills_for_library(String.t(), [String.t()]) :: [map()]
+  def clone_skills_for_library(org_id, role_profile_ids) when is_list(role_profile_ids) do
+    profiles =
+      from(rp in RoleProfile,
+        where: rp.organization_id == ^org_id and rp.id in ^role_profile_ids,
+        preload: [role_skills: :skill]
+      )
+      |> Repo.all()
+
+    profiles
+    |> Enum.flat_map(& &1.role_skills)
+    |> Enum.reduce(%{}, fn rs, acc ->
+      Map.put_new(acc, rs.skill.name, %{
+        category: rs.skill.category || "",
+        cluster: rs.skill.cluster || "",
+        skill_name: rs.skill.name,
+        skill_description: rs.skill.description || "",
+        proficiency_levels: normalize_levels(rs.skill.proficiency_levels)
+      })
+    end)
+    |> Map.values()
+    |> Enum.sort_by(&{&1.category, &1.cluster, &1.skill_name})
+  end
+
+  defp normalize_levels(nil), do: []
+  defp normalize_levels([]), do: []
+
+  defp normalize_levels(levels) when is_list(levels) do
+    Enum.map(levels, fn lvl ->
+      %{
+        level: get_level_field(lvl, :level) || get_level_field(lvl, :level_number) || 0,
+        level_name: get_level_field(lvl, :level_name) || "",
+        level_description: get_level_field(lvl, :level_description) || ""
+      }
+    end)
+  end
+
+  defp get_level_field(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp get_level_field(_, _), do: nil
+
   # --- Version Currency ---
 
   # --- Private ---

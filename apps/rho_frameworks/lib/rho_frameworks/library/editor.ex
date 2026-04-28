@@ -7,11 +7,14 @@ defmodule RhoFrameworks.Library.Editor do
   structs. Agent tools and FlowLive both call these directly.
   """
 
+  require Logger
+
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Library, as: LibraryCtx
   alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Scope
+  alias RhoFrameworks.Workbench
 
   # -------------------------------------------------------------------
   # Table naming
@@ -57,9 +60,19 @@ defmodule RhoFrameworks.Library.Editor do
 
         case DataTable.ensure_table(rt.session_id, spec.name, spec.schema) do
           :ok ->
+            Logger.debug(fn ->
+              "[Editor.create] session=#{inspect(rt.session_id)} " <>
+                "library_id=#{lib.id} table=#{inspect(spec.name)} ensured OK"
+            end)
+
             {:ok, %{library: lib, table: spec}}
 
           {:error, reason} ->
+            Logger.warning(fn ->
+              "[Editor.create] ensure_table FAILED session=#{inspect(rt.session_id)} " <>
+                "library_id=#{lib.id} table=#{inspect(spec.name)} reason=#{inspect(reason)}"
+            end)
+
             {:ok, %{library: lib, table: spec, table_error: reason}}
         end
 
@@ -128,18 +141,27 @@ defmodule RhoFrameworks.Library.Editor do
   # Append rows
   # -------------------------------------------------------------------
 
-  @doc "Append rows to an existing library DataTable."
+  @doc "Append rows to an existing library DataTable via Workbench."
   @spec append_rows(%{table_name: String.t(), rows: [map()]}, Scope.t()) ::
           {:ok, %{count: non_neg_integer()}} | {:error, term()}
   def append_rows(%{table_name: tbl, rows: rows}, %Scope{} = rt) do
-    case DataTable.add_rows(rt.session_id, rows, table: tbl) do
+    case Workbench.append_rows(rt, rows, table: tbl) do
       {:ok, inserted} ->
         {:ok, %{count: length(inserted)}}
 
       {:error, :not_running} ->
+        Logger.debug(fn ->
+          "[Editor.append_rows] :not_running session=#{inspect(rt.session_id)} table=#{inspect(tbl)}"
+        end)
+
         {:error, {:not_running, tbl}}
 
       {:error, :not_found} ->
+        Logger.debug(fn ->
+          "[Editor.append_rows] :not_found (table missing) session=#{inspect(rt.session_id)} " <>
+            "table=#{inspect(tbl)}"
+        end)
+
         {:error, {:not_running, tbl}}
 
       {:error, reason} ->
@@ -151,11 +173,11 @@ defmodule RhoFrameworks.Library.Editor do
   # Replace rows
   # -------------------------------------------------------------------
 
-  @doc "Replace all rows in a library DataTable."
+  @doc "Replace all rows in a library DataTable via Workbench."
   @spec replace_rows(%{table_name: String.t(), rows: [map()]}, Scope.t()) ::
           {:ok, %{count: non_neg_integer()}} | {:error, term()}
   def replace_rows(%{table_name: tbl, rows: rows}, %Scope{} = rt) do
-    case DataTable.replace_all(rt.session_id, rows, table: tbl) do
+    case Workbench.replace_rows(rt, rows, table: tbl) do
       {:ok, _replaced} ->
         {:ok, %{count: length(rows)}}
 
@@ -243,7 +265,7 @@ defmodule RhoFrameworks.Library.Editor do
   end
 
   defp apply_changes(changes, matched, skipped, tbl, rt) do
-    case DataTable.update_cells(rt.session_id, changes, table: tbl) do
+    case Workbench.update_cells(rt, changes, table: tbl) do
       :ok -> {:ok, %{updated_count: length(matched), skipped: Enum.reverse(skipped)}}
       {:error, reason} -> {:error, {:update_failed, reason}}
     end

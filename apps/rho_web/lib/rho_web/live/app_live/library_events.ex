@@ -94,6 +94,31 @@ defmodule RhoWeb.AppLive.LibraryEvents do
     end
   end
 
+  def handle_event("fork_and_edit", %{"id" => source_id}, socket) do
+    org = socket.assigns.current_organization
+
+    try do
+      source = RhoFrameworks.Library.get_library!(org.id, source_id)
+      new_name = "#{source.name} (copy)"
+
+      case RhoFrameworks.Library.fork_library(org.id, source_id, new_name) do
+        {:ok, %{library: forked}} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Forked \"#{source.name}\" → editing copy")
+           |> push_navigate(
+             to: ~p"/orgs/#{org.slug}/flows/edit-framework?library_id=#{forked.id}"
+           )}
+
+        {:error, _step, reason, _changes} ->
+          {:noreply, put_flash(socket, :error, "Fork failed: #{inspect(reason)}")}
+      end
+    rescue
+      Ecto.NoResultsError ->
+        {:noreply, put_flash(socket, :error, "Cannot fork: library not found.")}
+    end
+  end
+
   def handle_event("show_diff", _params, socket) do
     org = socket.assigns.current_organization
     lib = socket.assigns.library

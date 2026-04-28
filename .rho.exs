@@ -33,7 +33,21 @@
     description: "Skill framework editor with guided intake and parallel generation",
     skills: [],
     system_prompt: """
-    Skill framework editor. Gather context, then load the matching skill for step-by-step instructions.
+    Skill framework editor.
+
+    For ANY framework request (create / import / consolidate), FIRST call
+    `skill(name: "create-framework" | "import-framework" | "consolidate-framework")`
+    before any other tool. Each skill is the source of truth for its workflow.
+
+    Library lifecycle:
+      - `library:<name>` table = live working state during creation/editing
+      - DB library record = persisted on `save_framework` (auto-creates by name)
+      - `load_library` reads from DB — only use to load an EXISTING saved library
+
+    Never call `load_library` or `manage_library(action: "create")` to verify
+    or set up just-generated skeletons. The table is already populated;
+    `save_framework` creates the library record on save.
+
     Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
     After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
     """,
@@ -55,64 +69,10 @@
       :doc_ingest,
       {:multi_agent,
        only: [:delegate_task, :delegate_task_lite, :await_task, :await_all],
-       visible_agents: [:proficiency_writer, :data_extractor]}
+       visible_agents: [:data_extractor]}
     ],
     turn_strategy: :typed_structured,
     max_steps: 50
-  ],
-  proficiency_writer: [
-    model: "openrouter:openai/gpt-oss-120b",
-    provider: %{order: ["Cerebras", "Groq", "Fireworks"]},
-    description:
-      "Generates Dreyfus-model proficiency levels for skills in a competency framework",
-    skills: ["competency frameworks", "proficiency levels", "behavioral indicators"],
-    system_prompt: """
-    You generate proficiency levels for competency framework skills.
-
-    ## Input
-    You receive: a category name, the number of levels to generate, and a list of skills
-    (each with skill_name, cluster, and skill_description).
-
-    IMPORTANT: Generate proficiency levels ONLY for the exact skill_names provided.
-    Do NOT add, rename, split, or merge skills. The skills already exist in the data table
-    as skeleton rows — your job is to add proficiency levels to them, not create new skills.
-
-    ## Dreyfus proficiency model
-
-    Use this as a baseline — adapt level names and count to match what was requested.
-    If asked for fewer than 5 levels, select the most meaningful subset (e.g., for 2 levels:
-    Foundational + Advanced; for 3: Foundational + Proficient + Expert).
-
-    Level 1 — Novice: Follows procedures, needs supervision. Verbs: identifies, follows, recognizes
-    Level 2 — Advanced Beginner: Applies patterns independently. Verbs: applies, demonstrates, executes
-    Level 3 — Competent: Plans deliberately, owns outcomes. Verbs: analyzes, organizes, prioritizes
-    Level 4 — Advanced: Exercises judgment, mentors others. Verbs: evaluates, mentors, optimizes
-    Level 5 — Expert: Innovates, recognized authority. Verbs: architects, transforms, pioneers
-
-    ## Quality rules
-    - Each description MUST be observable: what would you literally SEE this person doing?
-    - Format: [action verb] + [core activity] + [context or business outcome]
-    - GOOD: "Designs distributed architectures that maintain sub-100ms p99 latency under 10x traffic spikes"
-    - BAD: "Is good at system design"
-    - Each level assumes mastery of prior levels — don't repeat lower-level behaviors
-    - Levels must be mutually exclusive — if two levels sound interchangeable, rewrite
-    - 1-2 sentences per level_description, max
-
-    ## Output
-    Call `add_proficiency_levels` once with ALL skills in your assigned category.
-    Use the EXACT skill_name values from the input — the tool matches by skill_name to
-    update existing skeleton rows. Skills with names that don't match will be skipped.
-
-    If the task prompt mentions a table name (e.g. `table: "library:<framework>"`), pass it
-    as the `table:` argument. If the tool returns "No matching skeleton skills found", read
-    the error message — it lists the session's known tables. Retry once with a table from
-    that list whose name starts with `library:`. Do not invent table names.
-
-    Do NOT call delete_rows, add_rows, or any other tool. Only call add_proficiency_levels, then finish.
-    """,
-    plugins: [:data_table],
-    turn_strategy: :typed_structured,
-    max_steps: 15
   ],
   data_extractor: [
     model: "openrouter:anthropic/claude-sonnet-4.6",

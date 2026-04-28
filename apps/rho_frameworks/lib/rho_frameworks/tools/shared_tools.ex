@@ -16,7 +16,7 @@ defmodule RhoFrameworks.Tools.SharedTools do
 
   tool :add_proficiency_levels,
        "Update existing skeleton skills in the data table with proficiency levels. " <>
-         "Matches each entry by skill_name to a row already in the table (saved by save_library action=generate). " <>
+         "Matches each entry by skill_name to a row already in the table. " <>
          "Skills not found in the table are skipped." do
     param(:levels_json, :string, required: true, doc: "JSON array of {skill_name, levels}")
     param(:table, :string, doc: "default: library")
@@ -61,7 +61,7 @@ defmodule RhoFrameworks.Tools.SharedTools do
                "Skipped: #{skipped_names}. " <>
                known <>
                "If the framework lives in a different named table, retry with the correct `table:` arg. " <>
-               "Otherwise ensure save_library action=generate was called first."}
+               "Otherwise ensure generate_framework_skeletons was called first."}
 
           {:error, {:not_running, tbl}} ->
             known = known_tables_hint(ctx.session_id, table)
@@ -69,7 +69,7 @@ defmodule RhoFrameworks.Tools.SharedTools do
             {:error,
              "No '#{tbl}' table is active. " <>
                known <>
-               "Ensure save_library action=generate or load_library was called first."}
+               "Ensure generate_framework_skeletons or load_library was called first."}
 
           {:error, {:update_failed, reason}} ->
             {:error, "Failed to update rows: #{inspect(reason)}"}

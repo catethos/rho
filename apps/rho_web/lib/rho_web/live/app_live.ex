@@ -166,12 +166,14 @@ defmodule RhoWeb.AppLive do
       |> assign(:library_groups, group_libraries(libraries))
       |> assign_new(:chat_overlay_open, fn -> false end)
       |> assign_new(:overlay_session_id, fn -> nil end)
+      |> assign_new(:smart_entry_pending?, fn -> false end)
     else
       socket
       |> assign(:libraries, [])
       |> assign(:library_groups, [])
       |> assign_new(:chat_overlay_open, fn -> false end)
       |> assign_new(:overlay_session_id, fn -> nil end)
+      |> assign_new(:smart_entry_pending?, fn -> false end)
     end
   end
 
@@ -183,11 +185,13 @@ defmodule RhoWeb.AppLive do
       lib = RhoFrameworks.Library.get_visible_library!(org.id, id)
       skills = RhoFrameworks.Library.browse_library(id)
       grouped = group_skills(skills)
+      research_notes = RhoFrameworks.Library.list_research_notes(id)
 
       socket
       |> assign(:library, lib)
       |> assign(:skills, skills)
       |> assign(:grouped, grouped)
+      |> assign(:research_notes, research_notes)
       |> assign(:highlight_skill, params["skill"])
       |> maybe_scroll_to_skill(params["skill"])
       |> assign_new(:status_filter, fn -> nil end)
@@ -200,6 +204,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:library, nil)
       |> assign(:skills, [])
       |> assign(:grouped, [])
+      |> assign(:research_notes, [])
       |> assign(:highlight_skill, nil)
       |> assign_new(:status_filter, fn -> nil end)
       |> assign_new(:show_fork_modal, fn -> false end)
@@ -545,6 +550,26 @@ defmodule RhoWeb.AppLive do
         </:actions>
       </.page_header>
 
+      <section class="smart-entry" aria-label="Describe what you want to build">
+        <h3 class="smart-entry-title">Or describe it in plain English</h3>
+        <p class="smart-entry-hint">
+          e.g. <em>"create a framework for backend engineers"</em> — we'll route you to the right wizard with the form pre-filled.
+        </p>
+        <form phx-submit="smart_entry_submit" class="smart-entry-form">
+          <textarea
+            name="message"
+            class="smart-entry-textarea"
+            rows="2"
+            placeholder="Describe the framework you want to build…"
+            disabled={@smart_entry_pending?}
+            required
+          ></textarea>
+          <button type="submit" class="btn-secondary" disabled={@smart_entry_pending?}>
+            <%= if @smart_entry_pending?, do: "Matching…", else: "Suggest →" %>
+          </button>
+        </form>
+      </section>
+
       <.empty_state :if={@library_groups == []}>
         No libraries yet. Create one in the chat editor or load a standard template.
       </.empty_state>
@@ -602,6 +627,20 @@ defmodule RhoWeb.AppLive do
                 >
                   Set as Default
                 </button>
+                <.link
+                  :if={group.primary.visibility != "public" && !group.primary.immutable}
+                  navigate={~p"/orgs/#{@current_organization.slug}/flows/edit-framework?library_id=#{group.primary.id}"}
+                  class="btn-secondary-sm"
+                >
+                  Edit
+                </.link>
+                <button
+                  phx-click="fork_and_edit"
+                  phx-value-id={group.primary.id}
+                  class="btn-secondary-sm"
+                >
+                  Fork
+                </button>
                 <button
                   :if={group.primary.visibility != "public"}
                   phx-click="delete_library"
@@ -646,6 +685,20 @@ defmodule RhoWeb.AppLive do
                     class="btn-secondary-sm"
                   >
                     Set as Default
+                  </button>
+                  <.link
+                    :if={lib.visibility != "public" && !lib.immutable}
+                    navigate={~p"/orgs/#{@current_organization.slug}/flows/edit-framework?library_id=#{lib.id}"}
+                    class="btn-secondary-sm"
+                  >
+                    Edit
+                  </.link>
+                  <button
+                    phx-click="fork_and_edit"
+                    phx-value-id={lib.id}
+                    class="btn-secondary-sm"
+                  >
+                    Fork
                   </button>
                   <button
                     :if={lib.visibility != "public"}
@@ -760,6 +813,26 @@ defmodule RhoWeb.AppLive do
           </div>
         </div>
       <% end %>
+
+      <details :if={@library && @research_notes != []} class="research-archive">
+        <summary class="research-archive-summary">
+          <span class="research-archive-arrow"></span>
+          <span class="research-archive-title">Research notes</span>
+          <span class="badge-muted"><%= length(@research_notes) %></span>
+        </summary>
+        <ul class="research-archive-list" role="list">
+          <li :for={note <- @research_notes} class="research-archive-item">
+            <p class="research-fact"><%= note.fact %></p>
+            <div class="research-meta">
+              <span :if={note.tag} class="research-tag"><%= note.tag %></span>
+              <span class="research-source"><%= note.source %></span>
+              <span class="research-archive-by">
+                <%= if note.inserted_by == "user", do: "added by you", else: "found by agent" %>
+              </span>
+            </div>
+          </li>
+        </ul>
+      </details>
 
       <div :if={@library} class="filter-bar">
         <form phx-change="filter_status">
@@ -1743,7 +1816,7 @@ defmodule RhoWeb.AppLive do
   @library_events ~w(
     set_default_version delete_library set_default_version_from_show
     filter_status open_fork_modal close_fork_modal update_fork_name
-    submit_fork show_diff hide_diff
+    submit_fork fork_and_edit show_diff hide_diff
   )
 
   def handle_event(event, params, socket) when event in @library_events do
@@ -1757,6 +1830,30 @@ defmodule RhoWeb.AppLive do
   def handle_event("close_chat_overlay", _params, socket) do
     {:noreply, close_overlay(socket)}
   end
+
+  # §3.5 Phase 9 — Smart NL entry from the libraries landing page.
+  # Spawns the BAML classifier under TaskSupervisor and routes back to
+  # `handle_info({:smart_entry_result, ...})` so the LV stays responsive
+  # during the 1–3s round-trip.
+  def handle_event("smart_entry_submit", %{"message" => msg}, socket)
+      when is_binary(msg) and msg != "" do
+    parent = self()
+    classifier = match_flow_intent_mod()
+
+    Task.Supervisor.start_child(Rho.TaskSupervisor, fn ->
+      result =
+        classifier.call(%{
+          message: String.trim(msg),
+          known_flows: known_flows_string()
+        })
+
+      send(parent, {:smart_entry_result, msg, result})
+    end)
+
+    {:noreply, assign(socket, :smart_entry_pending?, true)}
+  end
+
+  def handle_event("smart_entry_submit", _params, socket), do: {:noreply, socket}
 
   # ── Events — Roles & Settings pages (delegated) ──────────────────
 
@@ -1775,6 +1872,131 @@ defmodule RhoWeb.AppLive do
   end
 
   # ── Private event helpers ─────────────────────────────────────────
+
+  # §3.5 Phase 9 — Routes the BAML classifier's result. High-confidence
+  # known-flow → push_navigate to the wizard with intake prefilled in
+  # the query string. Low-confidence or unknown → flash and stay put.
+  @smart_entry_min_confidence 0.5
+
+  defp dispatch_smart_entry_result(socket, _message, {:ok, %{flow_id: flow_id} = result}) do
+    confidence = Map.get(result, :confidence, 0.0)
+
+    case RhoFrameworks.Flows.Registry.get(flow_id) do
+      {:ok, _flow_mod} when confidence >= @smart_entry_min_confidence ->
+        org = socket.assigns.current_organization
+        query = build_intake_query(result, org.id)
+
+        url =
+          if query == "",
+            do: "/orgs/#{org.slug}/flows/#{flow_id}",
+            else: "/orgs/#{org.slug}/flows/#{flow_id}?#{query}"
+
+        socket
+        |> assign(:smart_entry_pending?, false)
+        |> push_navigate(to: url)
+
+      _ ->
+        reasoning =
+          case Map.get(result, :reasoning) do
+            s when is_binary(s) and s != "" -> s
+            _ -> "Could not match the message to a known flow."
+          end
+
+        socket
+        |> assign(:smart_entry_pending?, false)
+        |> put_flash(:info, reasoning <> " Try the wizard directly, or rephrase.")
+    end
+  end
+
+  defp dispatch_smart_entry_result(socket, _message, {:error, reason}) do
+    Logger.warning(fn -> "[AppLive] smart_entry classifier failed: #{inspect(reason)}" end)
+
+    socket
+    |> assign(:smart_entry_pending?, false)
+    |> put_flash(:error, "Couldn't process that — try again or use the wizard directly.")
+  end
+
+  defp dispatch_smart_entry_result(socket, _message, _other) do
+    socket
+    |> assign(:smart_entry_pending?, false)
+    |> put_flash(:error, "Unexpected response — try again.")
+  end
+
+  # §3.5 Phase 10d/10e — `starting_point` is whitelist-validated before it
+  # reaches the URL (Iron Law #10: never `String.to_atom` an LLM string).
+  # `library_hints` never enters the URL directly; each hint is resolved
+  # against the org's libraries. A singleton becomes `library_id`
+  # (extend_existing); a pair becomes `library_id_a` + `library_id_b`
+  # (merge).
+  @allowed_starting_points ~w(from_template scratch extend_existing merge)
+
+  defp build_intake_query(result, org_id) do
+    [:name, :description, :domain, :target_roles]
+    |> Enum.reduce([], fn key, acc ->
+      case Map.get(result, key) do
+        v when is_binary(v) and v != "" -> [{Atom.to_string(key), v} | acc]
+        _ -> acc
+      end
+    end)
+    |> maybe_put_starting_point(result)
+    |> maybe_put_library_ids(result, org_id)
+    |> URI.encode_query()
+  end
+
+  defp maybe_put_starting_point(pairs, result) do
+    case Map.get(result, :starting_point) do
+      sp when sp in @allowed_starting_points -> [{"starting_point", sp} | pairs]
+      _ -> pairs
+    end
+  end
+
+  defp maybe_put_library_ids(pairs, result, org_id) do
+    hints = Map.get(result, :library_hints, [])
+    libraries = if is_binary(org_id), do: RhoFrameworks.Library.list_libraries(org_id), else: []
+    resolved = resolve_library_hints(hints, libraries)
+
+    case resolved do
+      [id] -> [{"library_id", id} | pairs]
+      [id_a, id_b] -> [{"library_id_a", id_a}, {"library_id_b", id_b} | pairs]
+      _ -> pairs
+    end
+  end
+
+  # Resolve each hint against the org's libraries. Case-insensitive
+  # substring with a uniqueness guard per hint — multiple matches or no
+  # match → drop just that hint (a wrong pre-pick is harder to undo
+  # than a missing one). Returns a list of ids in the same order as
+  # the hints, with unresolved hints filtered out.
+  defp resolve_library_hints(hints, libraries) when is_list(hints) do
+    Enum.flat_map(hints, fn hint -> List.wrap(resolve_one_hint(hint, libraries)) end)
+  end
+
+  defp resolve_library_hints(_, _), do: []
+
+  defp resolve_one_hint(hint, libraries) when is_binary(hint) and hint != "" do
+    hint_down = String.downcase(hint)
+
+    matches =
+      Enum.filter(libraries, fn %{name: name} -> String.downcase(name) =~ hint_down end)
+
+    case matches do
+      [%{id: id}] -> id
+      _ -> nil
+    end
+  end
+
+  defp resolve_one_hint(_, _), do: nil
+
+  defp match_flow_intent_mod do
+    Application.get_env(:rho_web, :match_flow_intent_mod, RhoFrameworks.LLM.MatchFlowIntent)
+  end
+
+  defp known_flows_string do
+    """
+    - create-framework — Build a brand-new skill framework from scratch (with optional similar-role lookup or domain research). Use when the user wants to design or generate a new framework.
+    - edit-framework — Edit an existing framework in place: tweak skill names, descriptions, categories, then save back to the same library. Use when the user wants to change/update/fix/edit one of their existing frameworks. Requires a library_hint naming which framework to edit.
+    """
+  end
 
   defp maybe_consume_avatar(socket) do
     entry = List.first(socket.assigns.uploads.avatar.entries)
@@ -1800,6 +2022,10 @@ defmodule RhoWeb.AppLive do
   @impl true
   def handle_info({:clear_pulse, key}, socket) do
     {:noreply, assign(socket, :shell, Shell.clear_pulse(socket.assigns.shell, key))}
+  end
+
+  def handle_info({:smart_entry_result, message, result}, socket) do
+    {:noreply, dispatch_smart_entry_result(socket, message, result)}
   end
 
   def handle_info({:command_palette_action, action_id}, socket) do
@@ -1904,6 +2130,65 @@ defmodule RhoWeb.AppLive do
 
   def handle_info({:data_table_flash, message}, socket) do
     {:noreply, RhoWeb.SessionLive.DataTableHelpers.set_flash(socket, message)}
+  end
+
+  def handle_info({:suggest_skills, n, table_name, session_id}, socket) do
+    org = socket.assigns[:current_organization]
+    user = socket.assigns[:current_user]
+
+    cond do
+      is_nil(org) or is_nil(session_id) ->
+        send(self(), {:data_table_flash, "Suggest unavailable: no active session."})
+        {:noreply, socket}
+
+      true ->
+        scope = %RhoFrameworks.Scope{
+          organization_id: org.id,
+          session_id: session_id,
+          user_id: user && user.id,
+          source: :agent,
+          reason: "user requested suggest_skills"
+        }
+
+        lv_pid = self()
+
+        Task.Supervisor.start_child(Rho.TaskSupervisor, fn ->
+          case RhoFrameworks.UseCases.SuggestSkills.run(%{n: n, table: table_name}, scope) do
+            {:ok, %{added: added}} ->
+              send(lv_pid, {:suggest_completed, added})
+
+            {:error, reason} ->
+              Logger.warning(fn -> "[Suggest] failed: #{inspect(reason)}" end)
+              send(lv_pid, {:suggest_failed, reason})
+          end
+        end)
+
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:suggest_completed, added}, socket) when is_list(added) do
+    flash = format_suggest_flash(added)
+
+    expand_groups =
+      added
+      |> Enum.map(fn s -> {s.category, s.cluster} end)
+      |> Enum.uniq()
+
+    send_update(RhoWeb.DataTableComponent,
+      id: "workspace-data_table",
+      expand_groups: expand_groups
+    )
+
+    {:noreply, RhoWeb.SessionLive.DataTableHelpers.set_flash(socket, flash)}
+  end
+
+  def handle_info({:suggest_failed, reason}, socket) do
+    {:noreply,
+     RhoWeb.SessionLive.DataTableHelpers.set_flash(
+       socket,
+       "Suggest failed: #{inspect(reason)}"
+     )}
   end
 
   def handle_info({:chatroom_mention, target, text}, socket) do
@@ -3145,5 +3430,12 @@ defmodule RhoWeb.AppLive do
       ],
       &(&1 != nil && &1 != "")
     )
+  end
+
+  defp format_suggest_flash([]), do: "Suggest returned no skills."
+
+  defp format_suggest_flash(added) do
+    count = length(added)
+    "Added #{count} #{if count == 1, do: "skill", else: "skills"}"
   end
 end

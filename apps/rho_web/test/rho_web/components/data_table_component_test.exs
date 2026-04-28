@@ -179,4 +179,109 @@ defmodule RhoWeb.DataTableComponentTest do
       assert html =~ "Role Profile Editor"
     end
   end
+
+  describe "Suggest button gating" do
+    test "renders Suggest button on a library view" do
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: [],
+          schema: Schemas.skill_library(),
+          tables: [],
+          table_order: [],
+          active_table: "library:Engineering",
+          view_key: :skill_library,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: ""
+        )
+
+      assert html =~ "dt-suggest-btn"
+      assert html =~ "Suggest"
+    end
+
+    test "expand_groups hint expands the matching category and cluster" do
+      rows = [
+        %{
+          id: "r1",
+          category: "Software",
+          cluster: "Languages",
+          skill_name: "Elixir",
+          skill_description: "FP",
+          proficiency_levels: []
+        },
+        %{
+          id: "r2",
+          category: "Process",
+          cluster: "Agile",
+          skill_name: "Scrum",
+          skill_description: "Iterative",
+          proficiency_levels: []
+        }
+      ]
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.skill_library(),
+          tables: [],
+          table_order: [],
+          active_table: "library:Eng",
+          view_key: :skill_library,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: "",
+          expand_groups: [{"Software", "Languages"}]
+        )
+
+      # Software / Languages should NOT carry the dt-collapsed marker;
+      # Process / Agile should remain collapsed.
+      assert html =~ "Software"
+      assert html =~ "Process"
+
+      software_section =
+        html
+        |> String.split(~r/dt-group-l1/)
+        |> Enum.find(fn section -> section =~ "Software" end)
+
+      process_section =
+        html
+        |> String.split(~r/dt-group-l1/)
+        |> Enum.find(fn section -> section =~ "Process" end)
+
+      refute software_section =~ "dt-collapsed"
+      assert process_section =~ "dt-collapsed"
+    end
+
+    test "hides Suggest button on a role_profile view" do
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: [],
+          schema: Schemas.role_profile(),
+          tables: [],
+          table_order: [],
+          active_table: "role_profile",
+          view_key: :role_profile,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: ""
+        )
+
+      refute html =~ "dt-suggest-btn"
+    end
+  end
 end

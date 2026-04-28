@@ -29,15 +29,20 @@ defmodule RhoBaml.SchemaCompiler do
 
   # -- Class compilation --
 
-  defp compile_class(%Zoi.Types.Struct{fields: fields}, class_name, acc) when is_list(fields) do
-    do_compile_class(fields, class_name, acc)
+  defp compile_class(%Zoi.Types.Struct{fields: fields, meta: meta}, class_name, acc)
+       when is_list(fields) do
+    do_compile_class(fields, class_name, acc, meta_to_map(meta))
   end
 
-  defp compile_class(%Zoi.Types.Map{fields: fields}, class_name, acc) when is_list(fields) do
-    do_compile_class(fields, class_name, acc)
+  defp compile_class(%Zoi.Types.Map{fields: fields, meta: meta}, class_name, acc)
+       when is_list(fields) do
+    do_compile_class(fields, class_name, acc, meta_to_map(meta))
   end
 
-  defp do_compile_class(fields, class_name, acc) do
+  defp meta_to_map(%{} = meta), do: meta
+  defp meta_to_map(_), do: %{}
+
+  defp do_compile_class(fields, class_name, acc, class_meta) do
     {lines, acc} =
       Enum.reduce(fields, {[], acc}, fn {key, type}, {lines, acc} ->
         nested_name = "#{class_name}#{camelize(key)}"
@@ -55,9 +60,35 @@ defmodule RhoBaml.SchemaCompiler do
         {[line | lines], acc}
       end)
 
-    class_def = "class #{class_name} {\n#{lines |> Enum.reverse() |> Enum.join("\n")}\n}\n"
+    body = lines |> Enum.reverse() |> Enum.join("\n")
+    body = body <> class_attributes(class_meta)
+
+    class_def = "class #{class_name} {\n#{body}\n}\n"
     {[class_def | acc], class_name}
   end
+
+  # Class-level BAML attributes (e.g. `@@stream.done`). Read from the
+  # Zoi schema's `meta.metadata` keyword list. Currently supports:
+  #
+  #   metadata: [stream_done: true]    → emits `@@stream.done`
+  #
+  # See https://docs.boundaryml.com/guide/baml-basics/streaming for what
+  # each attribute does to the streaming behaviour.
+  defp class_attributes(class_meta) do
+    metadata = Map.get(class_meta, :metadata, []) || []
+
+    attrs =
+      []
+      |> maybe_attr(metadata[:stream_done], "@@stream.done")
+
+    case attrs do
+      [] -> ""
+      list -> "\n  " <> Enum.join(list, "\n  ")
+    end
+  end
+
+  defp maybe_attr(acc, true, attr), do: acc ++ [attr]
+  defp maybe_attr(acc, _, _), do: acc
 
   # -- Type resolution --
 

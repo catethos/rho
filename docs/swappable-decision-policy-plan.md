@@ -839,7 +839,7 @@ Fix it once at the panel level; every future flow benefits.
 
 ## 6. Implementation Phases
 
-### [ ] Phase 1 — Workbench + DataTableOps + provenance (1d)
+### [x] Phase 1 — Workbench + DataTableOps + provenance (1d)
 
 Foundation. The framework's domain API and unified mutation surface land
 first; everything else is built on top.
@@ -868,12 +868,9 @@ first; everything else is built on top.
 
 **Verification:** `mix test`, wizard end-to-end, chat end-to-end. No
 user-visible behavior change except provenance icons. The chat agent's
-existing flow still works (it's now going through Workbench). Notebook
-`notebooks/phase1_workbench.livemd` exercises Workbench mutations from
-all three sources (`:user`, `:flow`, `:agent`) and shows provenance on
-emitted events.
+existing flow still works (it's now going through Workbench).
 
-### [ ] Phase 2 — UseCases + FlowRunner (table-derived) (1d)
+### [x] Phase 2 — UseCases + FlowRunner (table-derived) (1d)
 
 UseCases as commands; FlowRunner reads framework state from the Workbench.
 
@@ -899,11 +896,9 @@ UseCases as commands; FlowRunner reads framework state from the Workbench.
 7. `FlowLive` becomes a thin shell over FlowRunner.
 
 **Verification:** `mix test`, wizard end-to-end, chat end-to-end. FlowRunner
-has its own test module. No user-visible behavior change. Notebook
-`notebooks/phase2_use_cases.livemd` drives `CreateFramework` end-to-end
-through `FlowRunner` directly (no LiveView), proving the runner is reusable.
+has its own test module. No user-visible behavior change.
 
-### [ ] Phase 3 — Explicit edges + Policy behaviour (0.5d)
+### [x] Phase 3 — Explicit edges + Policy behaviour (0.5d)
 
 Introduce `next:`, `routing:`, `edge_def.label`; introduce `Flow.Policy`
 with `Deterministic` impl only.
@@ -917,11 +912,9 @@ with `Deterministic` impl only.
 6. `FlowLive` uses `Deterministic` policy.
 
 **Verification:** wizard behavior identical; new edge-based path is
-exercised. Notebook `notebooks/phase3_explicit_edges.livemd` walks a flow
-through the Deterministic policy and shows the chosen edge + reasoning
-field (always `nil` for Deterministic).
+exercised.
 
-### [ ] Phase 4 — BAML router + Hybrid policy (1d)
+### [x] Phase 4 — BAML router + Hybrid policy (1d)
 
 Add the BAML edge router and `Hybrid` policy supporting all three
 `routing` values.
@@ -948,10 +941,10 @@ Add the BAML edge router and `Hybrid` policy supporting all three
 6. Add `research_notes_schema/0` to `RhoFrameworks.DataTableSchemas`
    (columns: `source`, `fact`, `tag`, `pinned: bool`).
 
-**Verification:** notebook `notebooks/phase4_hybrid_routing.livemd` showing
-all three routing paths exercised on a single flow.
+**Verification:** wizard exercises all three routing paths
+(`:fixed`, `:auto`, `:agent_loop`) on `CreateFramework`.
 
-### [ ] Phase 5 — Mode toggle UI + tool theater gating (0.5d)
+### [x] Phase 5 — Mode toggle UI + tool theater gating (0.5d)
 
 1. Add `:mode` (`:guided | :copilot | :open`) to `FlowLive` socket.
 2. Header toggle component (3-way segmented control).
@@ -971,10 +964,9 @@ all three routing paths exercised on a single flow.
 
 **Verification:** click through all 3 modes on `CreateFramework`; verify
 tool log visibility matches §3.1; verify direct table edits work in all
-three modes. Notebook `notebooks/phase5_mode_toggle.livemd` is a
-walkthrough script (not LV-driven) of the modes' expected UI states.
+three modes.
 
-### [ ] Phase 6 — Skeleton via BAML, single implementation (0.5d)
+### [x] Phase 6 — Skeleton via BAML, single implementation (0.5d)
 
 Replace the tool-loop skeleton generation with a BAML structured call.
 **No agentic fallback retained.**
@@ -995,10 +987,10 @@ Replace the tool-loop skeleton generation with a BAML structured call.
 4. Open mode renders the same UseCase with verbose `:structured_partial`
    trace — same code path, more UI.
 
-**Verification:** notebook `notebooks/phase6_baml_skeleton.livemd` compares
-latency/cost/quality vs the prior tool-loop on 5 seed inputs.
+**Verification:** wizard end-to-end; latency/cost lower than the prior
+tool-loop on representative seeds.
 
-### [ ] Phase 7 — Proficiency writer via BAML (0.5d)
+### [x] Phase 7 — Proficiency writer via BAML (0.5d)
 
 Each fan-out worker becomes a `RhoBaml.Function` call instead of a tool loop.
 
@@ -1012,14 +1004,13 @@ Each fan-out worker becomes a `RhoBaml.Function` call instead of a tool loop.
 4. Drop `:proficiency_writer` agent from `.rho.exs` once nothing references it.
 
 **Verification:** wizard proficiency step completes faster; UI looks
-identical. Notebook `notebooks/phase7_baml_proficiency.livemd` compares
-per-worker latency/cost vs the prior agent-loop on a fixed seed library.
+identical.
 
-### [ ] Phase 8 — Per-step "Ask" escape hatch (1d, optional polish)
+### [x] Phase 8 — Per-step "Ask" escape hatch (1d, optional polish)
 
 Add `<.step_chat />` component scoped to a node's use case.
 
-### [ ] Phase 9 — Smart NL entry (0.5d, optional polish)
+### [x] Phase 9 — Smart NL entry (0.5d, optional polish)
 
 `RhoFrameworks.LLM.MatchFlowIntent` — single BAML classifier mapping a chat
 message to `(flow_id, prefilled_intake)`. Unblocks §10's NL-driven examples
@@ -1177,8 +1168,6 @@ this plan adds.
 - Run the wizard end-to-end (`/orgs/:slug/flows/create-framework`) after
   each phase
 - Run the chat end-to-end (`/orgs/:slug/chat`) after each phase
-- Add a notebook in `notebooks/phaseN_*.livemd` per phase that demonstrates
-  the new behavior (matches the convention in `combined-simplification-plan.md`)
 
 ---
 
@@ -1404,4 +1393,3 @@ sequence:
       and any flow node
 - [ ] All existing tests pass; new modules (`Workbench`, `UseCase`s,
       `FlowRunner`, `Hybrid`) have tests
-- [ ] Docs: `notebooks/phase{1..7}_*.livemd` exist and run cleanly

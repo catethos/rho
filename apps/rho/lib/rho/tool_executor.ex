@@ -79,7 +79,7 @@ defmodule Rho.ToolExecutor do
 
     case Rho.PluginRegistry.apply_stage(:tool_args_out, args_data, context) do
       {:deny, reason} ->
-        result = "Denied: #{reason}"
+        result = "Denied: #{inspect(reason)}"
 
         event = %{
           type: :tool_result,
@@ -227,7 +227,7 @@ defmodule Rho.ToolExecutor do
   end
 
   defp normalize_result({:final, output}, name, call_id, latency_ms) do
-    output_str = to_string(output)
+    output_str = coerce_output(output)
 
     {output_str,
      %{
@@ -241,7 +241,7 @@ defmodule Rho.ToolExecutor do
   end
 
   defp normalize_result({:ok, output}, name, call_id, latency_ms) do
-    output_str = to_string(output)
+    output_str = coerce_output(output)
 
     {output_str,
      %{
@@ -293,10 +293,17 @@ defmodule Rho.ToolExecutor do
            %{tool_name: name, result: result},
            ctx
          ) do
-      {:cont, %{result: new}} -> to_string(new)
+      {:cont, %{result: new}} -> coerce_output(new)
       {:halt, reason} -> throw({:rho_transformer_halt, reason})
     end
   end
+
+  # Coerce an arbitrary tool return value into a string. Binaries pass
+  # through unchanged so happy-path tools keep emitting their text
+  # byte-for-byte; anything else (tuples, structs, atoms) goes through
+  # `inspect/1` to avoid `String.Chars` crashes.
+  defp coerce_output(output) when is_binary(output), do: output
+  defp coerce_output(output), do: inspect(output)
 
   # -- Result map builder --
 

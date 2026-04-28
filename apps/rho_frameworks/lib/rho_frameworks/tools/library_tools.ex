@@ -6,11 +6,12 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   use Rho.Tool
 
   alias RhoFrameworks.Library
-  alias RhoFrameworks.Library.{Editor, Operations}
+  alias RhoFrameworks.Library.Editor
   alias RhoFrameworks.Roles
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Scope
+  alias RhoFrameworks.Workbench
   alias Rho.Stdlib.DataTable
 
   # ── manage_library ─────────────────────────────────────────────────────
@@ -76,7 +77,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
 
       {:ok, %{library: lib, table: spec}} ->
         %Rho.ToolResponse{
-          text: "Created '#{lib.name}' (id: #{lib.id}), table: '#{spec.name}'.",
+          text: "Created library '#{lib.name}' (id: #{lib.id}).",
           effects: [
             %Rho.Effect.OpenWorkspace{key: :data_table},
             %Rho.Effect.Table{
@@ -123,7 +124,10 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   # ── load_library ───────────────────────────────────────────────────────
 
   tool :load_library,
-       "Load skill library into data table." do
+       "Load an EXISTING saved library from the DB into the `library:<name>` working table. " <>
+         "Do NOT use after `generate_framework_skeletons` — the skeleton rows are already in the " <>
+         "table; `save_framework` is what persists them to the DB. Use only for libraries that " <>
+         "have already been saved or for template keys (e.g. sfia_v8)." do
     param(:library_name, :string, doc: "library name or template key (e.g. sfia_v8)")
     param(:version, :string)
     param(:category, :string)
@@ -190,157 +194,33 @@ defmodule RhoFrameworks.Tools.LibraryTools do
           version_label = if lib.version, do: " v#{lib.version}", else: " (draft)"
           table_name = library_table_name(lib.name)
 
-          case DataTable.ensure_table(
-                 ctx.session_id,
-                 table_name,
-                 DataTableSchemas.library_schema()
-               ) do
-            :ok ->
-              %Rho.ToolResponse{
-                text:
-                  "'#{lib.name}'#{version_label} — #{length(rows)} skills, table: '#{table_name}'.",
-                effects: [
-                  %Rho.Effect.OpenWorkspace{key: :data_table},
-                  %Rho.Effect.Table{
-                    table_name: table_name,
-                    schema_key: :skill_library,
-                    mode_label: "Skill Library — #{lib.name}#{version_label}",
-                    rows: rows
-                  }
-                ]
-              }
+          scope = Scope.from_context(ctx)
 
-            {:error, reason} ->
-              {:error, "Failed to prepare table: #{inspect(reason)}"}
+          with :ok <-
+                 DataTable.ensure_table(
+                   ctx.session_id,
+                   table_name,
+                   DataTableSchemas.library_schema()
+                 ),
+               {:ok, _} <- Workbench.replace_rows(scope, rows, table: table_name) do
+            %Rho.ToolResponse{
+              text:
+                "'#{lib.name}'#{version_label} — #{length(rows)} skills, table: '#{table_name}'.",
+              effects: [
+                %Rho.Effect.OpenWorkspace{key: :data_table},
+                %Rho.Effect.Table{
+                  table_name: table_name,
+                  schema_key: :skill_library,
+                  mode_label: "Skill Library — #{lib.name}#{version_label}",
+                  rows: [],
+                  skip_write?: true
+                }
+              ]
+            }
+          else
+            {:error, reason} -> {:error, "Failed to prepare table: #{inspect(reason)}"}
           end
         end
-    end
-  end
-
-  # ── save_library ───────────────────────────────────────────────────────
-
-  tool :save_library,
-       "Persist or generate skill library." do
-    param(:action, :string, required: true, doc: "save | generate")
-    param(:library_id, :string)
-    param(:library_name, :string)
-    param(:skills_json, :string, doc: "JSON skeleton array")
-    param(:levels, :integer, doc: "default: 5")
-
-    run(fn args, ctx ->
-      case args[:action] do
-        "save" -> do_save_to_library(args, ctx)
-        "generate" -> do_save_and_generate(args, ctx)
-        other -> {:error, "Unknown action: #{other}. Use: save, generate"}
-      end
-    end)
-  end
-
-  defp do_save_to_library(args, ctx) do
-    rt = Scope.from_context(ctx)
-
-    lib =
-      case args[:library_id] do
-        nil -> Library.get_or_create_default_library(rt.organization_id)
-        id -> Library.get_library(rt.organization_id, id)
-      end
-
-    case lib do
-      nil ->
-        {:error, "Library not found"}
-
-      lib ->
-        tbl = Editor.table_name(lib.name)
-        params = %{library_id: lib.id, table_name: tbl}
-
-        case Editor.save_table(params, rt) do
-          {:ok, %{saved_count: count, draft_library_id: draft_id}} when is_binary(draft_id) ->
-            %Rho.ToolResponse{
-              text: "Saved #{count} skill(s), draft created (#{draft_id}).",
-              effects: [
-                %Rho.Effect.Table{
-                  table_name: tbl,
-                  schema_key: :skill_library,
-                  mode_label: "Skill Library (draft)",
-                  rows: [],
-                  append?: true
-                }
-              ]
-            }
-
-          {:ok, %{saved_count: count}} ->
-            %Rho.ToolResponse{
-              text: "Saved #{count} skill(s).",
-              effects: [
-                %Rho.Effect.Table{
-                  table_name: tbl,
-                  schema_key: :skill_library,
-                  mode_label: "Skill Library (saved)",
-                  rows: [],
-                  append?: true
-                }
-              ]
-            }
-
-          {:error, :not_found} ->
-            {:error, "Library not found"}
-
-          {:error, {:not_running, tbl}} ->
-            {:error, "No '#{tbl}' table — load a library first."}
-
-          {:error, {:empty_table, tbl}} ->
-            {:error, "The '#{tbl}' table is empty."}
-
-          {:error, {:save_failed, step, cs}} ->
-            {:error, "Save failed at #{step}: #{inspect(cs)}"}
-        end
-    end
-  end
-
-  defp do_save_and_generate(args, ctx) do
-    if is_nil(args[:library_name]) and is_nil(args[:skills_json]) do
-      {:error, "library_name is required for generate. Provide the framework name."}
-    else
-      rt = Scope.from_context(ctx)
-
-      params = %{
-        skills_json: args[:skills_json] || "[]",
-        levels: args[:levels] || 5,
-        library_name: args[:library_name]
-      }
-
-      case Operations.save_and_generate(params, rt) do
-        {:ok, %{rows_added: count, table_name: table_name, workers: workers}} ->
-          agent_ids = Enum.map(workers, & &1.agent_id)
-
-          %Rho.ToolResponse{
-            text:
-              "Saved #{count} skeleton(s), spawned #{length(workers)} writer(s). IDs: #{Jason.encode!(agent_ids)}",
-            effects: [
-              %Rho.Effect.Table{
-                table_name: table_name,
-                schema_key: :skill_library,
-                rows: [],
-                append?: true
-              }
-            ]
-          }
-
-        {:error, :empty_list} ->
-          {:error, "No valid data. Ensure skills_json is a valid JSON array."}
-
-        {:error, :not_a_list} ->
-          {:error, "No valid data. Ensure skills_json is a valid JSON array."}
-
-        {:error, {:json_decode, _}} ->
-          {:error, "Invalid JSON array."}
-
-        {:error, {:missing_required_keys, _, _}} ->
-          {:error, "Ensure skills_json has category and skill_name."}
-
-        {:error, reason} ->
-          {:error, "Failed: #{inspect(reason)}"}
-      end
     end
   end
 

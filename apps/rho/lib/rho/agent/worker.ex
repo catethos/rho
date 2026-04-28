@@ -94,6 +94,29 @@ defmodule Rho.Agent.Worker do
   end
 
   @doc """
+  Bump the agent's `last_activity_at` so the turn watchdog doesn't kill a
+  long-running tool. Use cases that stream partials via `Rho.Events`
+  (rather than the runner's `emit`) should call this so the runner can
+  see the tool is making progress.
+
+  Resolution lookup is best-effort — silently no-ops when the agent
+  isn't registered or the pid is dead.
+  """
+  @spec touch_activity(String.t() | nil) :: :ok
+  def touch_activity(nil), do: :ok
+
+  def touch_activity(agent_id) when is_binary(agent_id) do
+    case Registry.lookup(Rho.AgentRegistry, agent_id) do
+      [{pid, _}] when is_pid(pid) ->
+        send(pid, {:meta_update, :last_activity_at, System.monotonic_time(:millisecond)})
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  @doc """
   Synchronous submit — subscribe to the worker's session
   `turn_finished` bus topic, submit the input, collect signals
   until the turn is done, return the result.

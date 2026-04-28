@@ -239,27 +239,26 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
 
   @doc """
   Save the active data table rows back to their library.
-  If `new_name` differs from the current name, renames the library first.
+
+  If a library record already exists for the extracted name and the user
+  changed the name, renames the DB record + in-memory table first. If no
+  library exists yet (newly-generated framework that was never persisted),
+  delegates to `SaveFramework` which lookup-or-creates the library — so
+  the first save out of the framework wizard doesn't error out with
+  "library not found".
   """
   def handle_save(socket, table_name, new_name) do
     sid = socket.assigns[:session_id]
     org_id = get_in(socket.assigns, [:current_organization, Access.key(:id)])
+    user_id = get_in(socket.assigns, [:current_user, Access.key(:id)])
 
     with {:ok, lib_name} <- extract_library_name(table_name),
-         lib when not is_nil(lib) <- RhoFrameworks.Library.resolve_library(org_id, lib_name),
-         {:ok, effective_table} <- maybe_rename_library(lib, new_name, sid, table_name),
+         {:ok, effective_table, effective_name} <-
+           prepare_library_for_save(lib_name, new_name, org_id, sid, table_name),
          rows when is_list(rows) and rows != [] <-
            Rho.Stdlib.DataTable.get_rows(sid, table: effective_table) do
-      case RhoFrameworks.Library.save_to_library(org_id, lib.id, rows) do
-        {:ok, %{skills: skills}} ->
-          count = length(skills)
-          send(self(), {:data_table_flash, "Saved #{count} skill(s)."})
-          socket
-
-        {:error, reason} ->
-          send(self(), {:data_table_flash, "Save failed: #{inspect(reason)}"})
-          socket
-      end
+      do_save_via_use_case(effective_name, effective_table, org_id, sid, user_id)
+      socket
     else
       {:error, :not_library} ->
         send(self(), {:data_table_flash, "Save is only available for library tables."})
@@ -273,10 +272,6 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
         send(self(), {:data_table_flash, "Failed to rename library."})
         socket
 
-      nil ->
-        send(self(), {:data_table_flash, "Library not found."})
-        socket
-
       [] ->
         send(self(), {:data_table_flash, "Table is empty — nothing to save."})
         socket
@@ -284,6 +279,62 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       _ ->
         send(self(), {:data_table_flash, "Save failed."})
         socket
+    end
+  end
+
+  # Resolve the effective library name (after any rename) and its table
+  # name. If a library record already exists for `lib_name`, rename it
+  # (and the in-memory table) when `new_name` differs. If no library
+  # exists yet, just use the renamed-in-memory table — `SaveFramework`
+  # will create the record on save.
+  defp prepare_library_for_save(lib_name, new_name, org_id, sid, table_name) do
+    case RhoFrameworks.Library.resolve_library(org_id, lib_name) do
+      nil ->
+        effective_name = effective_save_name(lib_name, new_name)
+        effective_table = rename_in_session_table(sid, table_name, lib_name, effective_name)
+        {:ok, effective_table, effective_name}
+
+      lib ->
+        with {:ok, effective_table} <- maybe_rename_library(lib, new_name, sid, table_name) do
+          effective_name = effective_save_name(lib.name, new_name)
+          {:ok, effective_table, effective_name}
+        end
+    end
+  end
+
+  defp effective_save_name(current_name, new_name) do
+    if is_binary(new_name) and String.trim(new_name) != "" and new_name != current_name,
+      do: new_name,
+      else: current_name
+  end
+
+  defp rename_in_session_table(_sid, old_table, old_name, new_name)
+       when old_name == new_name,
+       do: old_table
+
+  defp rename_in_session_table(sid, old_table, _old_name, new_name) do
+    new_table = "library:" <> new_name
+    rename_data_table(sid, old_table, new_table)
+    new_table
+  end
+
+  defp do_save_via_use_case(name, table_name, org_id, sid, user_id) do
+    scope = %RhoFrameworks.Scope{
+      organization_id: org_id,
+      session_id: sid,
+      user_id: user_id,
+      source: :user,
+      reason: "data_table:save"
+    }
+
+    input = %{name: name, table_name: table_name}
+
+    case RhoFrameworks.UseCases.SaveFramework.run(input, scope) do
+      {:ok, %{saved_count: count, library_name: name}} ->
+        send(self(), {:data_table_flash, "Saved #{count} skill(s) to '#{name}'."})
+
+      {:error, reason} ->
+        send(self(), {:data_table_flash, "Save failed: #{inspect(reason)}"})
     end
   end
 

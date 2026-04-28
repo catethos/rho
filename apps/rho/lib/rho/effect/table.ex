@@ -23,6 +23,10 @@ defmodule Rho.Effect.Table do
     * `mode_label` — display label for the data table mode
     * `metadata` — arbitrary map passed through to the web component
       (e.g. `%{library_id: "..."}` for navigation links)
+    * `skip_write?` — when true the dispatcher emits only the UI
+      `:view_change` signal and skips writing rows. Used by tools that
+      have already written via `RhoFrameworks.Workbench` and only need
+      the workspace tab switch.
   """
 
   @type t :: %__MODULE__{
@@ -33,7 +37,8 @@ defmodule Rho.Effect.Table do
           append?: boolean(),
           schema_key: atom() | nil,
           mode_label: String.t() | nil,
-          metadata: map()
+          metadata: map(),
+          skip_write?: boolean()
         }
 
   defstruct workspace: :data_table,
@@ -43,5 +48,6 @@ defmodule Rho.Effect.Table do
             append?: false,
             schema_key: nil,
             mode_label: nil,
-            metadata: %{}
+            metadata: %{},
+            skip_write?: false
 end

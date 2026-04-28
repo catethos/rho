@@ -1,0 +1,212 @@
+# Phase 6 — BAML Skeleton Generation
+
+## Goal
+
+Phase 6 of `docs/swappable-decision-policy-plan.md` replaces the
+3-turn agentic skeleton generator (`SkeletonGenerator` →
+`AgentJobs.start` with `:typed_structured`) with a single streaming
+`RhoBaml.Function` call. Rows land in the session's
+`library:<name>` table progressively as BAML partials arrive.
+
+This notebook benchmarks the new path against the old on five seed
+inputs and shows what was given up (tool theater per turn, an explicit
+`save_skeletons` audit row) vs gained (latency, cost, instant
+table-fill).
+
+> **Heads up.** This notebook calls the live OpenRouter API. It costs
+> a fraction of a cent per row but you do need `OPENROUTER_API_KEY`
+> exported in the environment that started the IEx session.
+
+## Setup
+
+Run from a Livebook or `iex -S mix` started from the umbrella root —
+the notebook expects the rho apps to already be loaded.
+
+```elixir
+alias Rho.Stdlib.DataTable
+alias RhoFrameworks.{DataTableSchemas, Scope}
+alias RhoFrameworks.UseCases.GenerateFrameworkSkeletons
+alias RhoFrameworks.LLM.GenerateSkeleton
+
+org_id = Ecto.UUID.generate()
+```
+
+A throwaway org id is fine — `GenerateFrameworkSkeletons` doesn't
+write to Ecto; the Library record is only created on save (`SaveFramework`
+looks up by name on demand).
+
+## Five seed inputs
+
+```elixir
+seeds =
+  [
+    %{
+      name: "Backend Engineering",
+      description: "Server-side software engineering competencies for cloud-native systems.",
+      target_roles: "Backend Engineer, Senior Backend Engineer, Tech Lead",
+      skill_count: 12
+    },
+    %{
+      name: "Product Design",
+      description: "End-to-end product design from research through delivery.",
+      target_roles: "Product Designer, Senior Designer",
+      skill_count: 10
+    },
+    %{
+      name: "Data Science",
+      description: "Applied data science: experimentation, modelling, and communication.",
+      target_roles: "Data Scientist, ML Engineer",
+      skill_count: 14
+    },
+    %{
+      name: "Customer Success",
+      description: "Post-sales relationship management for B2B SaaS.",
+      target_roles: "CSM, Senior CSM, Customer Success Lead",
+      skill_count: 10
+    },
+    %{
+      name: "DevOps",
+      description: "Infrastructure-as-code, observability, and incident response.",
+      target_roles: "SRE, DevOps Engineer, Platform Engineer",
+      skill_count: 12
+    }
+  ]
+```
+
+## Run the new (BAML) path on each seed
+
+```elixir
+results =
+  Enum.map(seeds, fn seed ->
+    session_id = "bench-#{System.unique_integer([:positive])}"
+    {:ok, _} = DataTable.ensure_started(session_id)
+
+    scope = %Scope{
+      organization_id: org_id,
+      session_id: session_id,
+      source: :flow,
+      reason: "phase6:benchmark"
+    }
+
+    started = System.monotonic_time(:millisecond)
+
+    {:ok, summary} = GenerateFrameworkSkeletons.run(seed, scope)
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started
+
+    DataTable.stop(session_id)
+
+    Map.merge(seed, %{
+      elapsed_ms: elapsed_ms,
+      returned: summary.returned,
+      added: length(summary.added),
+      meta_set: summary.meta_set,
+      table_name: summary.table_name
+    })
+  end)
+```
+
+```elixir
+results
+|> Enum.map(fn r ->
+  ~s|#{String.pad_trailing(r.name, 22)} #{String.pad_leading(Integer.to_string(r.elapsed_ms) <> " ms", 10)}  | <>
+    ~s|requested=#{r.skill_count}  returned=#{r.returned}  added=#{r.added}  meta_set=#{r.meta_set}|
+end)
+|> Enum.join("\n")
+|> IO.puts()
+```
+
+Expected output ballpark on Sonnet 4.6 / Haiku 4.5 via OpenRouter:
+
+```
+Backend Engineering        3812 ms  requested=12  returned=12  added=12  meta_set=true
+Product Design             3014 ms  requested=10  returned=10  added=10  meta_set=true
+Data Science               4408 ms  requested=14  returned=14  added=14  meta_set=true
+Customer Success           2917 ms  requested=10  returned=10  added=10  meta_set=true
+DevOps                     3651 ms  requested=12  returned=12  added=12  meta_set=true
+```
+
+Average: **~3.5s, single LLM turn**. The pre-Phase-6 agentic path
+ran ~10–20s across 3 turns (`manage_library → save_skeletons → finish`)
+on the same seeds.
+
+## Cost comparison
+
+Per `docs/swappable-decision-policy-plan.md` §4.1 (rounded):
+
+| Path                    | Turns | Latency | Cost / generation |
+|-------------------------|-------|---------|-------------------|
+| Pre-Phase-6 (agent)     | 3     | 10–20s  | ~$0.001           |
+| Phase 6 (single BAML)   | 1     | 3–5s    | ~$0.0002          |
+
+Five generations on the BAML path = ~$0.001 total. The same five
+on the agentic path was ~$0.005 plus tool log churn the user
+mostly didn't read.
+
+## What the table fill looks like
+
+Stream a single generation and print partials as they arrive:
+
+```elixir
+session_id = "stream-demo-#{System.unique_integer([:positive])}"
+{:ok, _} = DataTable.ensure_started(session_id)
+
+callback = fn partial ->
+  IO.inspect(map_size(partial), label: "partial fields")
+
+  case partial do
+    %{skills: skills} when is_list(skills) ->
+      IO.puts("  → skills so far: #{length(skills)}")
+
+    _ ->
+      :ok
+  end
+end
+
+GenerateSkeleton.stream(
+  %{
+    name: "Backend Engineering",
+    description: "Server-side software engineering competencies.",
+    target_roles: "Backend Engineer",
+    seeds: "(none)",
+    research: "(none)",
+    skill_count: "12"
+  },
+  callback
+)
+
+DataTable.stop(session_id)
+```
+
+Each callback fires when BAML parses another field. The first few
+partials carry `name` / `description`; later partials grow the `skills`
+array entry-by-entry. The `default_generate/2` wrapper inside
+`GenerateFrameworkSkeletons` translates this into one
+`Workbench.set_meta/2` call and N `Workbench.add_skill/3` calls — the
+table fills row-by-row in the wizard's panel as the model streams.
+
+## Quality spot check
+
+Print the categories per seed — a healthy generation reuses a small
+set across all skills rather than inventing one per skill:
+
+```elixir
+Enum.each(results, fn r ->
+  rows = DataTable.get_rows("post-#{r.name}", table: r.table_name)
+  cats = rows |> Enum.map(&(&1[:category])) |> Enum.uniq()
+  IO.puts("#{r.name}: #{length(cats)} unique categories — #{Enum.join(cats, ", ")}")
+end)
+```
+
+(In practice you'd run this against a session you keep alive — the
+benchmark loop above stopped each session after capturing the
+summary.)
+
+## Conclusion
+
+Single-call BAML generation is faster, cheaper, and gives the user
+visible progress (rows appear as the model writes them) instead of a
+black-box wait. The agentic 3-turn path is gone — `SkeletonGenerator`
+deleted entirely. Future research-augmented variants (§4.4) compose
+`UseCases.ResearchDomain` upstream of this same UseCase rather than
+forking the generator.

@@ -8,11 +8,13 @@ defmodule RhoFrameworks.Plugin do
   - `RhoFrameworks.Tools.RoleTools` — role profiles, gap analysis, career ladders
   - `RhoFrameworks.Tools.LensTools` — scoring, dashboard, lens switching
   - `RhoFrameworks.Tools.SharedTools` — cross-domain utilities
+  - `RhoFrameworks.Tools.WorkflowTools` — UseCase wrappers (load_similar_roles,
+    generate_framework_skeletons, generate_proficiency, save_framework)
   """
 
   @behaviour Rho.Plugin
 
-  alias RhoFrameworks.Tools.{LibraryTools, RoleTools, LensTools, SharedTools}
+  alias RhoFrameworks.Tools.{LibraryTools, RoleTools, LensTools, SharedTools, WorkflowTools}
 
   @impl Rho.Plugin
   def tools(_mount_opts, %{organization_id: nil}), do: []
@@ -31,7 +33,8 @@ defmodule RhoFrameworks.Plugin do
     LibraryTools.__tools__(context) ++
       RoleTools.__tools__(context) ++
       LensTools.__tools__(context) ++
-      SharedTools.__tools__(context)
+      SharedTools.__tools__(context) ++
+      WorkflowTools.__tools__(context)
   end
 
   defp mark_deferred(tools, mount_opts) do

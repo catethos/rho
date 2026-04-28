@@ -111,10 +111,17 @@ defmodule Rho.EventsTest do
       assert event.agent_id == nil
     end
 
-    test "defaults data to empty map" do
+    test "injects session_id and agent_id into data when not supplied" do
       event = Events.event(:agent_stopped, @session_id, @agent_id)
 
-      assert event.data == %{}
+      assert event.data == %{session_id: @session_id, agent_id: @agent_id}
+    end
+
+    test "preserves caller-supplied session_id / agent_id in data" do
+      explicit_data = %{session_id: "explicit", agent_id: "explicit-agent", note: "x"}
+      event = Events.event(:agent_stopped, @session_id, @agent_id, explicit_data)
+
+      assert event.data == explicit_data
     end
   end
 

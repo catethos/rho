@@ -3,7 +3,15 @@ defmodule RhoFrameworks.Library do
 
   import Ecto.Query
   alias RhoFrameworks.Repo
-  alias RhoFrameworks.Frameworks.{Library, Skill, RoleProfile, RoleSkill, DuplicateDismissal}
+
+  alias RhoFrameworks.Frameworks.{
+    Library,
+    Skill,
+    RoleProfile,
+    RoleSkill,
+    DuplicateDismissal,
+    ResearchNote
+  }
 
   # --- Library CRUD ---
 
@@ -80,6 +88,20 @@ defmodule RhoFrameworks.Library do
         }
       end)
     end
+  end
+
+  @doc """
+  List archived research notes for a library, newest first.
+
+  Returns the rows persisted by `Workbench.save_framework/3` from the
+  pinned subset of the session's `research_notes` named table. Read-only.
+  """
+  def list_research_notes(library_id) when is_binary(library_id) do
+    from(n in ResearchNote,
+      where: n.library_id == ^library_id,
+      order_by: [desc: n.inserted_at]
+    )
+    |> Repo.all()
   end
 
   def get_library_by_name(org_id, name) do
@@ -919,8 +941,8 @@ defmodule RhoFrameworks.Library do
           many -> "Combined from: #{Enum.map_join(many, ", ", & &1.name)}"
         end
 
-    # Build skip/merge sets from resolutions
-    {skip_ids, merge_map} = build_resolution_plan(resolutions)
+    # Build skip/merge/disambiguate sets from resolutions
+    {skip_ids, merge_map, disambiguate_ids} = build_resolution_plan(resolutions)
 
     Ecto.Multi.new()
     |> Ecto.Multi.insert(:library, fn _ ->
@@ -939,8 +961,11 @@ defmodule RhoFrameworks.Library do
         |> Enum.flat_map(fn src -> list_skills(src.id) end)
         |> Enum.reject(&MapSet.member?(skip_ids, &1.id))
 
-      # First pass: copy non-skipped skills (dedup by slug)
-      {copied, _seen} = copy_skills_deduped(eligible_skills, lib.id)
+      # First pass: copy non-skipped skills. Skills in disambiguate_ids
+      # (keep_both resolutions) get a "(N)" suffix on slug collision
+      # instead of being deduped away.
+      {copied, _seen} =
+        copy_skills_with_targeted_disambiguation(eligible_skills, lib.id, disambiguate_ids)
 
       # Second pass: apply merge resolutions (absorb proficiency levels from dropped skill)
       copied_by_source = Map.new(copied, fn s -> {s.source_skill_id, s} end)
@@ -966,10 +991,10 @@ defmodule RhoFrameworks.Library do
   defp build_resolution_plan(resolutions) do
     resolutions
     |> Enum.map(&normalize_resolution/1)
-    |> Enum.reduce({MapSet.new(), %{}}, &apply_resolution/2)
+    |> Enum.reduce({MapSet.new(), %{}, MapSet.new()}, &apply_resolution/2)
   end
 
-  defp apply_resolution(res, {skip, merges}) do
+  defp apply_resolution(res, {skip, merges, disambiguate}) do
     keep_id = res["keep"]
     a_id = res["skill_a_id"]
     b_id = res["skill_b_id"]
@@ -978,10 +1003,16 @@ defmodule RhoFrameworks.Library do
       action when action in ["pick", "merge"] ->
         drop_id = if keep_id == a_id, do: b_id, else: a_id
         merges = if action == "merge", do: Map.put(merges, keep_id, drop_id), else: merges
-        {MapSet.put(skip, drop_id), merges}
+        {MapSet.put(skip, drop_id), merges, disambiguate}
+
+      "keep_both" when is_binary(a_id) and is_binary(b_id) ->
+        # Both skills survive; whichever is iterated second hits a slug
+        # collision and gets a "(N)" suffix in
+        # copy_skills_with_targeted_disambiguation/3.
+        {skip, merges, disambiguate |> MapSet.put(a_id) |> MapSet.put(b_id)}
 
       _ ->
-        {skip, merges}
+        {skip, merges, disambiguate}
     end
   end
 
@@ -1314,7 +1345,12 @@ defmodule RhoFrameworks.Library do
     Enum.count(slugs, fn {k, _} -> String.starts_with?(k, slug <> "-") end)
   end
 
-  defp copy_skills_deduped(skills, library_id) do
+  # Copy skills with optional targeted disambiguation. Skills whose id
+  # is in `disambiguate_ids` (keep_both resolutions) get a "(N)" suffix
+  # on slug collision; all others fall back to slug-dedup (skip).
+  # Equivalent to the deleted `copy_skills_deduped` when the set is
+  # empty.
+  defp copy_skills_with_targeted_disambiguation(skills, library_id, disambiguate_ids) do
     Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
       slug = Skill.slugify(skill.name)
 
@@ -1323,8 +1359,20 @@ defmodule RhoFrameworks.Library do
           {:ok, new_skill} = copy_skill(skill, library_id, source_skill_id: skill.id)
           {[new_skill | acc], Map.put(slugs, slug, true)}
 
-        _ ->
-          {acc, slugs}
+        _existing ->
+          if MapSet.member?(disambiguate_ids, skill.id) do
+            counter = count_slug_variants(slugs, slug) + 2
+            disambiguated_name = "#{skill.name} (#{counter})"
+
+            {:ok, new_skill} =
+              copy_skill(%{skill | name: disambiguated_name}, library_id,
+                source_skill_id: skill.id
+              )
+
+            {[new_skill | acc], Map.put(slugs, Skill.slugify(disambiguated_name), true)}
+          else
+            {acc, slugs}
+          end
       end
     end)
   end

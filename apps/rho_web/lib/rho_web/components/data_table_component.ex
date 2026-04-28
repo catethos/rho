@@ -70,6 +70,39 @@ defmodule RhoWeb.DataTableComponent do
           other
       end
 
+    # `expand_groups` is a transient hint pushed by the parent LV
+    # (via send_update) when an external action — e.g. Suggest — added
+    # rows the user needs to see. Each entry is a `{category, cluster
+    # | nil}` tuple. We materialize the collapsed set if needed and
+    # drop the matching group ids from it.
+    {collapsed, socket} =
+      case Map.get(assigns, :expand_groups) do
+        nil ->
+          {collapsed, socket}
+
+        [] ->
+          {collapsed, socket}
+
+        groups when is_list(groups) ->
+          base =
+            case collapsed do
+              :all_collapsed -> collect_all_group_ids(grouped)
+              set -> set
+            end
+
+          new_collapsed =
+            Enum.reduce(groups, base, fn {category, cluster}, acc ->
+              acc
+              |> MapSet.delete(group_id_for(category))
+              |> then(fn s ->
+                if cluster, do: MapSet.delete(s, group_id_for(category, cluster)), else: s
+              end)
+            end)
+
+          # Clear the hint so it doesn't reapply on every re-render.
+          {new_collapsed, assign(socket, :expand_groups, nil)}
+      end
+
     socket =
       socket
       |> assign(:rows, effective_rows)
@@ -79,6 +112,14 @@ defmodule RhoWeb.DataTableComponent do
       |> assign(:grouped, grouped)
 
     {:ok, socket}
+  end
+
+  defp group_id_for(category) do
+    "grp-" <> slug(to_string(category))
+  end
+
+  defp group_id_for(category, cluster) do
+    "grp-" <> slug(to_string(category)) <> "-" <> slug(to_string(cluster))
   end
 
   @impl true
@@ -102,8 +143,16 @@ defmodule RhoWeb.DataTableComponent do
     {:noreply, assign(socket, action_dialog: {:publish, name})}
   end
 
+  def handle_event("open_suggest_dialog", _params, socket) do
+    {:noreply, assign(socket, action_dialog: {:suggest, 5})}
+  end
+
   def handle_event("close_dialog", _params, socket) do
     {:noreply, assign(socket, :action_dialog, nil)}
+  end
+
+  def handle_event("dismiss_flash", _params, socket) do
+    {:noreply, assign(socket, :flash_message, nil)}
   end
 
   def handle_event("confirm_save", %{"name" => name}, socket) do
@@ -123,6 +172,19 @@ defmodule RhoWeb.DataTableComponent do
 
     send(self(), {:data_table_publish, active_table, String.trim(name), tag})
     {:noreply, socket |> assign(:action_dialog, nil) |> assign(:flash_message, "Publishing...")}
+  end
+
+  def handle_event("confirm_suggest", %{"n" => n_str}, socket) do
+    active_table = socket.assigns[:active_table] || "main"
+    session_id = socket.assigns[:session_id]
+    n = clamp_suggest_n(n_str)
+
+    send(self(), {:suggest_skills, n, active_table, session_id})
+
+    {:noreply,
+     socket
+     |> assign(:action_dialog, nil)
+     |> assign(:flash_message, "Suggesting #{n} skills...")}
   end
 
   def handle_event("fork_library", _params, socket) do
@@ -502,7 +564,20 @@ defmodule RhoWeb.DataTableComponent do
         <span :if={@total_cost > 0} class="dt-cost">
           $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
         </span>
-        <span :if={@flash_message} class="dt-flash"><%= @flash_message %></span>
+        <span
+          :if={@flash_message}
+          id={"dt-flash-" <> Integer.to_string(:erlang.phash2(@flash_message))}
+          class="dt-flash"
+        >
+          <span class="dt-flash-text"><%= @flash_message %></span>
+          <button
+            type="button"
+            class="dt-flash-close"
+            phx-click="dismiss_flash"
+            phx-target={@myself}
+            title="Dismiss"
+          >&times;</button>
+        </span>
         <div class="dt-toolbar-actions">
           <button
             :if={library_view?(@view_key, @active_table)}
@@ -533,6 +608,16 @@ defmodule RhoWeb.DataTableComponent do
             title="Fork as new library"
           >
             Fork
+          </button>
+          <button
+            :if={library_view?(@view_key, @active_table)}
+            type="button"
+            class="dt-action-btn dt-suggest-btn"
+            phx-click="open_suggest_dialog"
+            phx-target={@myself}
+            title="Ask the model for additional skills"
+          >
+            Suggest
           </button>
           <div
             class="dt-export-dropdown"
@@ -586,6 +671,16 @@ defmodule RhoWeb.DataTableComponent do
                   <div class="dt-dialog-actions">
                     <button type="button" class="dt-dialog-btn dt-dialog-cancel" phx-click="close_dialog" phx-target={@myself}>Cancel</button>
                     <button type="submit" class="dt-dialog-btn dt-dialog-confirm dt-publish-btn">Publish</button>
+                  </div>
+                </form>
+              <% {:suggest, default_n} -> %>
+                <h3 class="dt-dialog-title">Suggest more skills</h3>
+                <form phx-submit="confirm_suggest" phx-target={@myself}>
+                  <label class="dt-dialog-label">How many? <span class="dt-dialog-hint">(1–10)</span></label>
+                  <input type="number" name="n" value={default_n} min="1" max="10" class="dt-dialog-input" phx-hook="AutoFocus" id="suggest-dialog-n" />
+                  <div class="dt-dialog-actions">
+                    <button type="button" class="dt-dialog-btn dt-dialog-cancel" phx-click="close_dialog" phx-target={@myself}>Cancel</button>
+                    <button type="submit" class="dt-dialog-btn dt-dialog-confirm dt-suggest-btn">Suggest</button>
                   </div>
                 </form>
             <% end %>
@@ -685,6 +780,7 @@ defmodule RhoWeb.DataTableComponent do
             <th class="dt-th dt-th-expand"></th>
           <% end %>
           <th :if={@show_id} class="dt-th dt-th-id">ID</th>
+          <th class="dt-th dt-th-source" title="Provenance"></th>
           <th :for={col <- @visible_columns} class={"dt-th " <> (col.css_class || "dt-th-#{col.key}") <> if(@sort_by == col.key, do: " dt-th-sorted", else: "")}
               phx-click="sort_column" phx-target={@myself} phx-value-field={col.key}
               style="cursor: pointer; user-select: none;">
@@ -711,6 +807,9 @@ defmodule RhoWeb.DataTableComponent do
                 <span class={"dt-chevron" <> if(expanded, do: " dt-expanded", else: "")}></span>
               </td>
               <td :if={@show_id} class="dt-td dt-td-id"><%= row_id_str %></td>
+              <td class="dt-td dt-td-source">
+                <.provenance_badge source={get_cell(row, :_source)} />
+              </td>
               <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={row_id_str} metadata={@metadata} />
               <%= if !@panel_mode do %>
                 <td :for={_col <- @child_columns} class="dt-td dt-td-empty"></td>
@@ -724,7 +823,7 @@ defmodule RhoWeb.DataTableComponent do
             <%= if expanded do %>
               <%= if @panel_mode do %>
                 <tr class="dt-row dt-proficiency-row">
-                  <td colspan={length(@visible_columns) + 3} style="padding: 0;">
+                  <td colspan={length(@visible_columns) + 4} style="padding: 0;">
                     <div :if={children != []} class="dt-proficiency-panel">
                       <%= for {child, idx} <- children |> Enum.with_index() |> Enum.sort_by(fn {c, _} -> get_child_level(c) end) do %>
                         <% child_id = row_id_str <> ":child:" <> to_string(idx) %>
@@ -751,6 +850,7 @@ defmodule RhoWeb.DataTableComponent do
                   <tr id={"row-#{child_id}"} class="dt-row dt-child-row">
                     <td class="dt-td dt-td-expand"></td>
                     <td :if={@show_id} class="dt-td dt-td-id dt-child-id"><%= idx + 1 %></td>
+                    <td class="dt-td dt-td-source"></td>
                     <td :for={_col <- @visible_columns} class="dt-td dt-td-empty"></td>
                     <.editable_cell :for={col <- @child_columns} row={child || %{}} col={col} editing={@editing} myself={@myself} row_id={child_id} metadata={@metadata} />
                     <td class="dt-td dt-td-row-actions">
@@ -766,6 +866,9 @@ defmodule RhoWeb.DataTableComponent do
         <% else %>
           <tr :for={row <- @rows} id={"row-#{row_id(row)}"} class="dt-row">
             <td :if={@show_id} class="dt-td dt-td-id"><%= row_id(row) %></td>
+            <td class="dt-td dt-td-source">
+              <.provenance_badge source={get_cell(row, :_source)} />
+            </td>
             <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={to_string(row_id(row))} metadata={@metadata} />
             <td class="dt-td dt-td-row-actions">
               <.delete_button row_id={to_string(row_id(row))} confirm_delete={@confirm_delete} myself={@myself} />
@@ -776,6 +879,28 @@ defmodule RhoWeb.DataTableComponent do
     </table>
     """
   end
+
+  # --- provenance_badge component ---
+  #
+  # Renders a small letter badge per row indicating who wrote it
+  # (`U`ser / `F`low / `A`gent). Empty when source is missing — keeps
+  # the layout aligned without needing a placeholder character.
+
+  attr(:source, :any, default: nil)
+
+  defp provenance_badge(assigns) do
+    {label, title, klass} = badge_for(assigns.source)
+    assigns = assign(assigns, label: label, title: title, klass: klass)
+
+    ~H"""
+    <span :if={@label} class={"dt-source-badge " <> @klass} title={@title}><%= @label %></span>
+    """
+  end
+
+  defp badge_for(s) when s in [:user, "user"], do: {"U", "Edited by user", "dt-source-user"}
+  defp badge_for(s) when s in [:flow, "flow"], do: {"F", "Written by flow", "dt-source-flow"}
+  defp badge_for(s) when s in [:agent, "agent"], do: {"A", "Written by agent", "dt-source-agent"}
+  defp badge_for(_), do: {nil, nil, nil}
 
   # --- editable_cell component ---
 
@@ -1206,6 +1331,16 @@ defmodule RhoWeb.DataTableComponent do
     view_key in [:skill_library, "skill_library"] or
       (is_binary(active_table) and String.starts_with?(active_table, "library:"))
   end
+
+  defp clamp_suggest_n(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, _} -> clamp_suggest_n(n)
+      :error -> 5
+    end
+  end
+
+  defp clamp_suggest_n(n) when is_integer(n), do: n |> max(1) |> min(10)
+  defp clamp_suggest_n(_), do: 5
 
   defp build_csv(rows, schema) do
     columns = Enum.reject(schema.columns, fn col -> col.type == :action end)

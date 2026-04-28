@@ -19,6 +19,15 @@ defmodule Rho.Events.Event do
 
     * `:data` — event payload map. Shape varies by kind (see below).
 
+    * `:source` — provenance of the event, one of `:user | :flow | :agent | nil`.
+      Stamped on framework-mutation events by `RhoFrameworks.Workbench` (via
+      `DataTableOps`) and on coarse `:data_table` invalidation events when
+      the calling process has set `:rho_source` in its process dictionary.
+      `nil` for events that don't carry provenance (lifecycle, turn, task).
+
+    * `:reason` — optional free-form reason for the mutation (e.g. why a
+      skill was removed). `nil` unless the caller supplied one.
+
   ## Turn-level event kinds (from Worker.emit)
 
   These map 1:1 from the Runner emit `%{type: atom}`:
@@ -58,16 +67,36 @@ defmodule Rho.Events.Event do
   ## Inter-agent messaging
 
     * `:message_sent` — `%{from: String.t(), to: String.t(), message: String.t()}`
+
+  ## Step-chat event kinds
+
+    * `:step_chat_clarify` — `%{question: String.t(), agent_id: String.t()}`.
+      Emitted by the `clarify` tool inside a per-step chat agent (Phase 8 of
+      the swappable-decision-policy plan). The wizard renders the question
+      inline as a follow-up prompt so the user can answer without losing
+      step context.
   """
+
+  @type source :: :user | :flow | :agent | nil
 
   @type t :: %__MODULE__{
           kind: atom(),
           session_id: String.t(),
           agent_id: String.t() | nil,
           timestamp: integer(),
-          data: map()
+          data: map(),
+          source: source(),
+          reason: String.t() | nil
         }
 
   @enforce_keys [:kind, :session_id]
-  defstruct [:kind, :session_id, :agent_id, :timestamp, data: %{}]
+  defstruct [
+    :kind,
+    :session_id,
+    :agent_id,
+    :timestamp,
+    :source,
+    :reason,
+    data: %{}
+  ]
 end

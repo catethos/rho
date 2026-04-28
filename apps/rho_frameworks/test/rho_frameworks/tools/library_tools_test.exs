@@ -17,8 +17,7 @@ defmodule RhoFrameworks.Tools.LibraryToolsTest do
           "fork_library",
           "library_versions",
           "load_library",
-          "manage_library",
-          "save_library"
+          "manage_library"
         ]
 
       assert names == expected
@@ -58,15 +57,6 @@ defmodule RhoFrameworks.Tools.LibraryToolsTest do
       tools = LibraryTools.__tools__()
       manage = Enum.find(tools, &(&1.tool.name == "manage_library"))
       schema = manage.tool.parameter_schema
-
-      assert schema[:action][:type] == :string
-      assert schema[:action][:required] == true
-    end
-
-    test "save_library has required action" do
-      tools = LibraryTools.__tools__()
-      save = Enum.find(tools, &(&1.tool.name == "save_library"))
-      schema = save.tool.parameter_schema
 
       assert schema[:action][:type] == :string
       assert schema[:action][:required] == true

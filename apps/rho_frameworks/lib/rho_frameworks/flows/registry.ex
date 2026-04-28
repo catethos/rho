@@ -4,7 +4,8 @@ defmodule RhoFrameworks.Flows.Registry do
   """
 
   @flows %{
-    "create-framework" => RhoFrameworks.Flows.CreateFramework
+    "create-framework" => RhoFrameworks.Flows.CreateFramework,
+    "edit-framework" => RhoFrameworks.Flows.EditFramework
   }
 
   @doc "Look up a flow module by string ID. Returns `{:ok, module}` or `:error`."

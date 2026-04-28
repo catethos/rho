@@ -13,9 +13,14 @@ defmodule RhoWeb.FlowComponents do
   attr(:completed_steps, :list, default: [])
 
   def step_indicator(assigns) do
+    {visible, has_more} =
+      compute_visible_path(assigns.steps, assigns.current_step, assigns.completed_steps)
+
+    assigns = assign(assigns, visible: visible, has_more: has_more)
+
     ~H"""
     <div class="flow-stepper">
-      <%= for {step, idx} <- Enum.with_index(@steps) do %>
+      <%= for {step, idx} <- Enum.with_index(@visible) do %>
         <div class={step_class(step.id, @current_step, @completed_steps)}>
           <div class="flow-step-number">
             <%= if step.id in @completed_steps do %>
@@ -28,8 +33,12 @@ defmodule RhoWeb.FlowComponents do
           </div>
           <span class="flow-step-label"><%= step.label %></span>
         </div>
-        <div :if={idx < length(@steps) - 1} class="flow-step-connector"></div>
+        <div :if={idx < length(@visible) - 1 or @has_more} class="flow-step-connector"></div>
       <% end %>
+      <div :if={@has_more} class="flow-step flow-step-more" aria-hidden="true">
+        <div class="flow-step-number">…</div>
+        <span class="flow-step-label">More</span>
+      </div>
     </div>
     """
   end
@@ -40,6 +49,89 @@ defmodule RhoWeb.FlowComponents do
       id in completed -> "flow-step flow-step-completed"
       true -> "flow-step flow-step-pending"
     end
+  end
+
+  # Visible path = completed ++ current ++ deterministic look-ahead until the
+  # next fork (`next:` is a list). `has_more` is true when the walk stopped at
+  # a fork or cycle — i.e. the journey continues beyond what we can preview.
+  defp compute_visible_path(steps, current, completed) do
+    index = Map.new(steps, fn s -> {s.id, s} end)
+    visited_ids = Enum.uniq(completed ++ [current])
+    {lookahead_ids, has_more} = walk_deterministic(index, current, MapSet.new(visited_ids))
+
+    visible =
+      (visited_ids ++ lookahead_ids)
+      |> Enum.flat_map(fn id ->
+        case Map.get(index, id) do
+          nil -> []
+          step -> [step]
+        end
+      end)
+
+    {visible, has_more}
+  end
+
+  defp walk_deterministic(_index, nil, _seen), do: {[], false}
+
+  defp walk_deterministic(index, from, seen) do
+    case Map.get(index, from) do
+      %{next: next} when is_atom(next) and not is_nil(next) ->
+        cond do
+          not Map.has_key?(index, next) ->
+            {[], false}
+
+          MapSet.member?(seen, next) ->
+            {[], true}
+
+          true ->
+            {rest, more?} = walk_deterministic(index, next, MapSet.put(seen, next))
+            {[next | rest], more?}
+        end
+
+      %{next: list} when is_list(list) and list != [] ->
+        {[], true}
+
+      _ ->
+        {[], false}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Mode toggle (Phase 5)
+  # -------------------------------------------------------------------
+
+  attr(:mode, :atom, required: true)
+
+  def mode_toggle(assigns) do
+    ~H"""
+    <div class="flow-mode-toggle" role="tablist" aria-label="Flow mode">
+      <button
+        :for={{m, label, hint} <- mode_options()}
+        type="button"
+        role="tab"
+        aria-selected={if @mode == m, do: "true", else: "false"}
+        class={mode_button_class(@mode, m)}
+        title={hint}
+        phx-click="set_mode"
+        phx-value-mode={Atom.to_string(m)}
+      >
+        <%= label %>
+      </button>
+    </div>
+    """
+  end
+
+  defp mode_options do
+    [
+      {:guided, "Guided", "Wizard rails — no agent reasoning shown"},
+      {:copilot, "Co-pilot", "Agent reasoning visible on auto-routed steps"},
+      {:open, "Open", "All agent reasoning + raw traces visible"}
+    ]
+  end
+
+  defp mode_button_class(current, target) do
+    base = "flow-mode-button"
+    if current == target, do: "#{base} flow-mode-button-active", else: base
   end
 
   # -------------------------------------------------------------------
@@ -155,6 +247,9 @@ defmodule RhoWeb.FlowComponents do
   attr(:step_error, :string, default: nil)
   attr(:streaming_text, :string, default: "")
   attr(:tool_events, :list, default: [])
+  attr(:summary_message, :string, default: nil)
+  attr(:summary_detail, :string, default: nil)
+  attr(:show_theater, :boolean, default: false)
 
   def action_step(assigns) do
     ~H"""
@@ -164,7 +259,7 @@ defmodule RhoWeb.FlowComponents do
           <div class="flow-spinner"></div>
           <span><%= @step_label %>...</span>
         </div>
-        <div :if={@tool_events != []} class="flow-tool-log">
+        <div :if={@show_theater and @tool_events != []} class="flow-tool-log">
           <%= for event <- @tool_events do %>
             <div class={"flow-tool-event flow-tool-#{event.phase}"}>
               <span class="flow-tool-name"><%= event.name %></span>
@@ -175,7 +270,7 @@ defmodule RhoWeb.FlowComponents do
             </div>
           <% end %>
         </div>
-        <div :if={@streaming_text != ""} class="flow-stream-output">
+        <div :if={@show_theater and @streaming_text != ""} class="flow-stream-output">
           <pre class="flow-stream-text"><%= @streaming_text %></pre>
         </div>
       </div>
@@ -184,7 +279,12 @@ defmodule RhoWeb.FlowComponents do
           <circle cx="12" cy="12" r="10" />
           <polyline points="16 9 10.5 14.5 8 12" />
         </svg>
-        <span><%= @step_label %> — Done</span>
+        <span class="flow-action-headline">
+          <%= @summary_message || "#{@step_label} — Done" %>
+        </span>
+        <span :if={@summary_detail} class="flow-action-detail">
+          <%= @summary_detail %>
+        </span>
         <button phx-click="continue" class="btn-primary flow-submit">Continue</button>
       </div>
       <div :if={@step_status == :failed} class="flow-action-error">
@@ -233,6 +333,138 @@ defmodule RhoWeb.FlowComponents do
       </button>
     </div>
     """
+  end
+
+  # -------------------------------------------------------------------
+  # Conflict resolution (table_review with conflict_mode: true)
+  # -------------------------------------------------------------------
+
+  attr(:rows, :list, default: [])
+  attr(:session_id, :string, default: nil)
+
+  def conflict_resolution_step(assigns) do
+    resolved = Enum.count(assigns.rows, &conflict_row_resolved?/1)
+
+    assigns =
+      assigns
+      |> assign(:resolved_count, resolved)
+      |> assign(:total, length(assigns.rows))
+
+    ~H"""
+    <div class="flow-conflict-resolve">
+      <div :if={@total == 0} class="flow-conflict-empty">
+        <p>No conflicts detected — every skill can be merged directly.</p>
+        <button phx-click="confirm_resolutions" class="btn-primary flow-submit">Continue</button>
+      </div>
+      <div :if={@total > 0} class="flow-conflict-list">
+        <p class="flow-conflict-summary">
+          <%= @resolved_count %> of <%= @total %> conflicts resolved
+        </p>
+        <%= for row <- @rows do %>
+          <.conflict_row row={row} />
+        <% end %>
+        <button
+          phx-click="confirm_resolutions"
+          class="btn-primary flow-submit"
+          disabled={@resolved_count < @total}
+        >
+          Continue
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  attr(:row, :map, required: true)
+
+  defp conflict_row(assigns) do
+    resolution = conflict_field(assigns.row, :resolution) || "unresolved"
+    row_id = to_string(conflict_field(assigns.row, :id) || "")
+
+    assigns =
+      assigns
+      |> assign(:row_id, row_id)
+      |> assign(:resolution, resolution)
+      |> assign(:skill_a_name, conflict_field(assigns.row, :skill_a_name) || "")
+      |> assign(:skill_a_desc, conflict_field(assigns.row, :skill_a_description) || "")
+      |> assign(:skill_a_source, conflict_field(assigns.row, :skill_a_source) || "")
+      |> assign(:skill_b_name, conflict_field(assigns.row, :skill_b_name) || "")
+      |> assign(:skill_b_desc, conflict_field(assigns.row, :skill_b_description) || "")
+      |> assign(:skill_b_source, conflict_field(assigns.row, :skill_b_source) || "")
+      |> assign(:confidence, conflict_field(assigns.row, :confidence) || "")
+      |> assign(:category, conflict_field(assigns.row, :category) || "")
+
+    ~H"""
+    <div class={"flow-conflict-row flow-conflict-#{@resolution}"}>
+      <div class="flow-conflict-row-header">
+        <span class="flow-conflict-confidence flow-confidence-{@confidence}">
+          <%= @confidence %>
+        </span>
+        <span :if={@category != ""} class="flow-conflict-category"><%= @category %></span>
+      </div>
+      <div class="flow-conflict-pair">
+        <div class="flow-conflict-side">
+          <span class="flow-conflict-side-label">A · <%= @skill_a_source %></span>
+          <span class="flow-conflict-side-name"><%= @skill_a_name %></span>
+          <span :if={@skill_a_desc != ""} class="flow-conflict-side-desc">
+            <%= @skill_a_desc %>
+          </span>
+        </div>
+        <div class="flow-conflict-side">
+          <span class="flow-conflict-side-label">B · <%= @skill_b_source %></span>
+          <span class="flow-conflict-side-name"><%= @skill_b_name %></span>
+          <span :if={@skill_b_desc != ""} class="flow-conflict-side-desc">
+            <%= @skill_b_desc %>
+          </span>
+        </div>
+      </div>
+      <div class="flow-conflict-actions">
+        <button
+          type="button"
+          phx-click="resolve_conflict"
+          phx-value-id={@row_id}
+          phx-value-action="merge_a"
+          class={conflict_action_class(@resolution, "merge_a")}
+        >
+          Use A
+        </button>
+        <button
+          type="button"
+          phx-click="resolve_conflict"
+          phx-value-id={@row_id}
+          phx-value-action="merge_b"
+          class={conflict_action_class(@resolution, "merge_b")}
+        >
+          Use B
+        </button>
+        <button
+          type="button"
+          phx-click="resolve_conflict"
+          phx-value-id={@row_id}
+          phx-value-action="keep_both"
+          class={conflict_action_class(@resolution, "keep_both")}
+        >
+          Keep both
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp conflict_field(row, key) when is_map(row) do
+    Map.get(row, key) || Map.get(row, Atom.to_string(key))
+  end
+
+  defp conflict_row_resolved?(row) do
+    case conflict_field(row, :resolution) do
+      v when v in ["merge_a", "merge_b", "keep_both"] -> true
+      _ -> false
+    end
+  end
+
+  defp conflict_action_class(resolution, action) do
+    base = "btn-secondary flow-conflict-action"
+    if resolution == action, do: "#{base} flow-conflict-action-active", else: base
   end
 
   # -------------------------------------------------------------------

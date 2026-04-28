@@ -9,7 +9,7 @@ defmodule RhoFrameworks.Library.DataPathIntegrationTest do
   alias Rho.Stdlib.DataTable
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Library, as: LibraryCtx
-  alias RhoFrameworks.Library.{Editor, Proficiency}
+  alias RhoFrameworks.Library.Editor
   alias RhoFrameworks.Scope
   alias RhoFrameworks.Repo
 
@@ -35,91 +35,6 @@ defmodule RhoFrameworks.Library.DataPathIntegrationTest do
     :ok = DataTable.ensure_table(session_id, tbl, DataTableSchemas.library_schema())
 
     %{org_id: org_id, session_id: session_id, rt: rt, tbl: tbl}
-  end
-
-  # -------------------------------------------------------------------
-  # DataTable (atom keys) → Proficiency.build_prompt
-  # -------------------------------------------------------------------
-
-  describe "DataTable atom-key rows → Proficiency.build_prompt" do
-    test "skill names from atom-keyed DataTable rows appear in prompt text", ctx do
-      # Insert rows with atom keys (as DataTable produces)
-      {:ok, _} =
-        DataTable.add_rows(
-          ctx.session_id,
-          [
-            %{
-              category: "Engineering",
-              cluster: "Languages",
-              skill_name: "Elixir",
-              skill_description: "Functional programming on BEAM"
-            },
-            %{
-              category: "Engineering",
-              cluster: "Languages",
-              skill_name: "TypeScript",
-              skill_description: "Typed JavaScript"
-            },
-            %{
-              category: "Data",
-              cluster: "Analytics",
-              skill_name: "SQL",
-              skill_description: "Database querying"
-            }
-          ],
-          table: ctx.tbl
-        )
-
-      # Read rows back through Editor (same path FlowLive uses)
-      {:ok, rows} = Editor.read_rows(%{table_name: ctx.tbl}, ctx.rt)
-      assert length(rows) == 3
-
-      # Group by category and build prompts (same path Proficiency.start_fanout uses)
-      by_category = Enum.group_by(rows, fn r -> r[:category] || r["category"] end)
-
-      for {category, cat_skills} <- by_category do
-        prompt =
-          Proficiency.build_prompt(%{
-            category: category,
-            skills: cat_skills,
-            levels: 5,
-            table_name: ctx.tbl
-          })
-
-        # Every skill name in this category must appear in the prompt
-        for skill <- cat_skills do
-          skill_name = skill[:skill_name] || skill["skill_name"]
-          assert prompt =~ skill_name, "Skill '#{skill_name}' missing from prompt for #{category}"
-        end
-
-        assert prompt =~ "Category: #{category}"
-        assert prompt =~ ctx.tbl
-      end
-    end
-
-    test "works with string-keyed maps too (LLM JSON decode path)", ctx do
-      # Simulate LLM-generated maps (string keys)
-      string_keyed_skills = [
-        %{
-          "category" => "DevOps",
-          "cluster" => "CI/CD",
-          "skill_name" => "Docker",
-          "skill_description" => "Containerization"
-        }
-      ]
-
-      prompt =
-        Proficiency.build_prompt(%{
-          category: "DevOps",
-          skills: string_keyed_skills,
-          levels: 3,
-          table_name: ctx.tbl
-        })
-
-      assert prompt =~ "Docker"
-      assert prompt =~ "CI/CD"
-      assert prompt =~ "Containerization"
-    end
   end
 
   # -------------------------------------------------------------------

@@ -26,7 +26,19 @@ defmodule RhoFrameworks.DataTableSchemas do
           doc: "Sub-grouping within category"
         },
         %Column{name: :skill_name, type: :string, required?: true, doc: "Skill name"},
-        %Column{name: :skill_description, type: :string, required?: false}
+        %Column{name: :skill_description, type: :string, required?: false},
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        },
+        %Column{
+          name: :_reason,
+          type: :string,
+          required?: false,
+          doc: "Optional mutation rationale"
+        }
       ],
       children_key: :proficiency_levels,
       child_columns: [
@@ -68,6 +80,18 @@ defmodule RhoFrameworks.DataTableSchemas do
           type: :string,
           required?: false,
           doc: "merge_a/merge_b/keep_both/unresolved"
+        },
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        },
+        %Column{
+          name: :_reason,
+          type: :string,
+          required?: false,
+          doc: "Optional mutation rationale"
         }
       ],
       key_fields: [:skill_a_id, :skill_b_id]
@@ -114,9 +138,103 @@ defmodule RhoFrameworks.DataTableSchemas do
         %Column{name: :skill_name, type: :string, required?: true},
         %Column{name: :skill_description, type: :string, required?: false},
         %Column{name: :required_level, type: :integer, required?: true},
-        %Column{name: :required, type: :boolean, required?: true}
+        %Column{name: :required, type: :boolean, required?: true},
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        },
+        %Column{
+          name: :_reason,
+          type: :string,
+          required?: false,
+          doc: "Optional mutation rationale"
+        }
       ],
       key_fields: [:skill_name]
+    }
+  end
+
+  @doc """
+  Schema for the `"research_notes"` table — findings the `ResearchDomain`
+  agent emits, plus user-added notes. Pinned rows feed downstream
+  generation; unpinned rows are visible context only.
+  """
+  def research_notes_schema do
+    %Schema{
+      name: "research_notes",
+      mode: :strict,
+      columns: [
+        %Column{
+          name: :source,
+          type: :string,
+          required?: true,
+          doc: "URL/identifier of the finding's origin, or 'user' for manual notes"
+        },
+        %Column{name: :fact, type: :string, required?: true, doc: "The finding itself"},
+        %Column{
+          name: :tag,
+          type: :string,
+          required?: false,
+          doc: "Optional category — e.g. 'trend', 'role', 'tooling'"
+        },
+        %Column{
+          name: :pinned,
+          type: :boolean,
+          required?: false,
+          doc: "Pinned rows feed downstream generation; defaults to false"
+        },
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        },
+        %Column{
+          name: :_reason,
+          type: :string,
+          required?: false,
+          doc: "Optional mutation rationale"
+        }
+      ],
+      key_fields: [:source, :fact]
+    }
+  end
+
+  @doc "Schema for the `\"meta\"` table: single-row framework metadata used during intake."
+  def meta_schema do
+    %Schema{
+      name: "meta",
+      mode: :strict,
+      columns: [
+        %Column{name: :name, type: :string, required?: false, doc: "Framework name"},
+        %Column{
+          name: :description,
+          type: :string,
+          required?: false,
+          doc: "Framework description"
+        },
+        %Column{
+          name: :target_roles,
+          type: :string,
+          required?: false,
+          doc: "Comma-separated target role names (kept as string for strict-mode compat)"
+        },
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        },
+        %Column{
+          name: :_reason,
+          type: :string,
+          required?: false,
+          doc: "Optional mutation rationale"
+        }
+      ],
+      key_fields: [:name]
     }
   end
 end

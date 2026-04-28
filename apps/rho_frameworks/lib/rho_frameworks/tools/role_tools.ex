@@ -8,6 +8,8 @@ defmodule RhoFrameworks.Tools.RoleTools do
   alias RhoFrameworks.Roles
   alias RhoFrameworks.GapAnalysis
   alias RhoFrameworks.DataTableSchemas
+  alias RhoFrameworks.Scope
+  alias RhoFrameworks.Workbench
   alias Rho.Stdlib.DataTable
 
   # ── manage_role ────────────────────────────────────────────────────────
@@ -114,27 +116,30 @@ defmodule RhoFrameworks.Tools.RoleTools do
          "Role profile '#{identifier}' not found for org #{ctx.organization_id}. Use manage_role(action: \"list\") to see available roles."}
 
       {:ok, %{role_profile: rp, rows: rows}} ->
-        case DataTable.ensure_table(
-               ctx.session_id,
-               "role_profile",
-               DataTableSchemas.role_profile_schema()
-             ) do
-          :ok ->
-            %Rho.ToolResponse{
-              text: "'#{rp.name}' — #{length(rows)} skills, table: 'role_profile'.",
-              effects: [
-                %Rho.Effect.OpenWorkspace{key: :data_table},
-                %Rho.Effect.Table{
-                  table_name: "role_profile",
-                  schema_key: :role_profile,
-                  mode_label: "Role Profile — #{rp.name}",
-                  rows: rows
-                }
-              ]
-            }
+        scope = Scope.from_context(ctx)
 
-          {:error, reason} ->
-            {:error, "Failed to prepare table: #{inspect(reason)}"}
+        with :ok <-
+               DataTable.ensure_table(
+                 ctx.session_id,
+                 "role_profile",
+                 DataTableSchemas.role_profile_schema()
+               ),
+             {:ok, _} <- Workbench.replace_rows(scope, rows, table: "role_profile") do
+          %Rho.ToolResponse{
+            text: "'#{rp.name}' — #{length(rows)} skills, table: 'role_profile'.",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: "role_profile",
+                schema_key: :role_profile,
+                mode_label: "Role Profile — #{rp.name}",
+                rows: [],
+                skip_write?: true
+              }
+            ]
+          }
+        else
+          {:error, reason} -> {:error, "Failed to prepare table: #{inspect(reason)}"}
         end
     end
   end
@@ -225,28 +230,30 @@ defmodule RhoFrameworks.Tools.RoleTools do
     case Jason.decode(raw) do
       {:ok, ids} when is_list(ids) and ids != [] ->
         rows = Roles.clone_role_skills(ctx.organization_id, ids)
+        scope = Scope.from_context(ctx)
 
-        case DataTable.ensure_table(
-               ctx.session_id,
-               "role_profile",
-               DataTableSchemas.role_profile_schema()
-             ) do
-          :ok ->
-            %Rho.ToolResponse{
-              text: "Cloned #{length(rows)} skills from #{length(ids)} role(s).",
-              effects: [
-                %Rho.Effect.OpenWorkspace{key: :data_table},
-                %Rho.Effect.Table{
-                  table_name: "role_profile",
-                  schema_key: :role_profile,
-                  mode_label: "New Role Profile (cloned)",
-                  rows: rows
-                }
-              ]
-            }
-
-          {:error, reason} ->
-            {:error, "Failed to prepare table: #{inspect(reason)}"}
+        with :ok <-
+               DataTable.ensure_table(
+                 ctx.session_id,
+                 "role_profile",
+                 DataTableSchemas.role_profile_schema()
+               ),
+             {:ok, _} <- Workbench.replace_rows(scope, rows, table: "role_profile") do
+          %Rho.ToolResponse{
+            text: "Cloned #{length(rows)} skills from #{length(ids)} role(s).",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: "role_profile",
+                schema_key: :role_profile,
+                mode_label: "New Role Profile (cloned)",
+                rows: [],
+                skip_write?: true
+              }
+            ]
+          }
+        else
+          {:error, reason} -> {:error, "Failed to prepare table: #{inspect(reason)}"}
         end
 
       _ ->
