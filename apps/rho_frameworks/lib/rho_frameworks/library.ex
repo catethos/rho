@@ -58,7 +58,23 @@ defmodule RhoFrameworks.Library do
     # Skip public libraries: ESCO has 14k skills and naive enumeration blows
     # agent prompt budgets. Agents discover public skills via
     # `search_skills_across/3` instead.
-    libraries = list_libraries(org_id, include_public: false)
+    #
+    # Two queries: a simple library list (no aggregation) and a single skills
+    # fetch covering all of them. `skill_count` is derived from the second
+    # query, so the first query doesn't need a left-join + group_by.
+    libraries =
+      from(l in Library,
+        where: l.organization_id == ^org_id,
+        order_by: [desc: l.updated_at],
+        select: %{
+          id: l.id,
+          name: l.name,
+          immutable: l.immutable,
+          version: l.version,
+          published_at: l.published_at
+        }
+      )
+      |> Repo.all()
 
     if libraries == [] do
       []
@@ -81,7 +97,7 @@ defmodule RhoFrameworks.Library do
         %{
           id: lib.id,
           name: lib.name,
-          skill_count: lib.skill_count,
+          skill_count: length(skills),
           immutable: lib.immutable,
           version: lib.version,
           published_at: lib.published_at,
@@ -199,25 +215,19 @@ defmodule RhoFrameworks.Library do
   """
   def next_version_tag(org_id, library_name) do
     year = Date.utc_today().year
+    pattern = "#{year}.%"
 
     latest_n =
       from(l in Library,
         where:
           l.organization_id == ^org_id and
             l.name == ^library_name and
-            like(l.version, ^"#{year}.%"),
-        select: l.version
+            like(l.version, ^pattern),
+        select: max(fragment("CAST(split_part(?, '.', 2) AS INTEGER)", l.version))
       )
-      |> Repo.all()
-      |> Enum.map(fn v ->
-        case String.split(v, ".") do
-          [_year, n] -> String.to_integer(n)
-          _ -> 0
-        end
-      end)
-      |> Enum.max(fn -> 0 end)
+      |> Repo.one()
 
-    "#{year}.#{latest_n + 1}"
+    "#{year}.#{(latest_n || 0) + 1}"
   end
 
   @doc """
@@ -529,11 +539,22 @@ defmodule RhoFrameworks.Library do
   # Round-trip shape against Postgres:
   #   1. Pre-fetch existing slugs in `library_id`         (1 query)
   #   2. Bulk-embed any rows whose text hash changed      (≤1 embed_many call)
-  #   3. `insert_all` for new rows                        (1 query, returning rows)
-  #   4. Per-row update for existing rows                 (N_existing queries)
-  # Net wins are biggest on first-save (N_existing = 0): N+2 round-trips → 2.
+  #   3. `insert_all` with ON CONFLICT for the whole set  (1 query, returning rows)
+  # Status downgrade rule (a published skill keeps its status) is enforced in
+  # SQL via a CASE expression in the on-conflict update; embedding fields use
+  # COALESCE so rows whose text didn't change keep the existing vector.
 
-  defp bulk_upsert_skills(library_id, skill_attr_list, opts \\ []) do
+  @doc """
+  Upsert a batch of skills into `library_id`. Pre-normalised attrs (`:name`,
+  `:category`, `:cluster`, `:description`, `:status`, …) — no slugification
+  required by the caller. Single round-trip via `INSERT … ON CONFLICT`.
+
+  Mirrors `Skill.changeset` semantics: a key absent from `attrs` keeps the
+  existing row's value. Status of an existing `published` skill is preserved;
+  vector embedding fields fall back to the existing values when the new row
+  doesn't carry them.
+  """
+  def bulk_upsert_skills(library_id, skill_attr_list, opts \\ []) do
     library = Repo.get!(Library, library_id)
 
     with :ok <- maybe_check_mutable(library, opts) do
@@ -544,29 +565,90 @@ defmodule RhoFrameworks.Library do
         |> Repo.all()
         |> Map.new(&{&1.slug, &1})
 
-      attr_list_with_embeddings = add_embedding_attrs_bulk(skill_attr_list, existing)
+      filled =
+        skill_attr_list
+        |> add_embedding_attrs_bulk(existing)
+        |> Enum.map(&fill_missing_from_existing(&1, existing))
 
-      {to_insert, to_update} =
-        Enum.split_with(attr_list_with_embeddings, fn attrs ->
-          is_nil(Map.get(existing, Skill.slugify(attrs[:name])))
-        end)
-
-      inserted = bulk_insert_new_skills(to_insert, library_id)
-      updated = Enum.map(to_update, &update_existing_skill(&1, existing))
-
-      {:ok, inserted ++ updated}
+      {:ok, bulk_upsert_skill_rows(library_id, filled)}
     end
   end
 
-  defp bulk_insert_new_skills([], _library_id), do: []
+  # Fields that should follow the changeset rule "absent key -> keep existing
+  # value". Embedding fields are NOT in this list — they're handled by COALESCE
+  # in the on-conflict SQL so an absent embedding row still keeps any vector
+  # written by the backfill task.
+  @upsert_preserve_keys [
+    :description,
+    :category,
+    :cluster,
+    :status,
+    :sort_order,
+    :metadata,
+    :proficiency_levels,
+    :source_skill_id
+  ]
 
-  defp bulk_insert_new_skills(attr_list, library_id) do
+  defp fill_missing_from_existing(attrs, existing_by_slug) do
+    slug = Skill.slugify(attrs[:name])
+
+    case Map.get(existing_by_slug, slug) do
+      nil ->
+        attrs
+
+      existing ->
+        Enum.reduce(@upsert_preserve_keys, attrs, fn key, acc ->
+          if Map.has_key?(acc, key) or Map.has_key?(acc, Atom.to_string(key)) do
+            acc
+          else
+            Map.put(acc, key, Map.get(existing, key))
+          end
+        end)
+    end
+  end
+
+  defp bulk_upsert_skill_rows(_library_id, []), do: []
+
+  defp bulk_upsert_skill_rows(library_id, attr_list) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
-
     rows = Enum.map(attr_list, &build_insert_all_row(&1, library_id, now))
 
-    {_n, returned} = Repo.insert_all(Skill, rows, returning: true)
+    {_n, returned} =
+      Repo.insert_all(Skill, rows,
+        on_conflict: skill_on_conflict_query(),
+        conflict_target: [:library_id, :slug],
+        returning: true
+      )
+
     returned
+  end
+
+  defp skill_on_conflict_query do
+    from(s in Skill,
+      update: [
+        set: [
+          name: fragment("EXCLUDED.name"),
+          description: fragment("EXCLUDED.description"),
+          category: fragment("EXCLUDED.category"),
+          cluster: fragment("EXCLUDED.cluster"),
+          sort_order: fragment("EXCLUDED.sort_order"),
+          metadata: fragment("EXCLUDED.metadata"),
+          proficiency_levels: fragment("EXCLUDED.proficiency_levels"),
+          source_skill_id: fragment("EXCLUDED.source_skill_id"),
+          embedding: fragment("COALESCE(EXCLUDED.embedding, ?)", s.embedding),
+          embedding_text_hash:
+            fragment("COALESCE(EXCLUDED.embedding_text_hash, ?)", s.embedding_text_hash),
+          embedded_at: fragment("COALESCE(EXCLUDED.embedded_at, ?)", s.embedded_at),
+          status:
+            fragment(
+              "CASE WHEN ? = 'published' THEN ? ELSE EXCLUDED.status END",
+              s.status,
+              s.status
+            ),
+          updated_at: fragment("EXCLUDED.updated_at")
+        ]
+      ]
+    )
   end
 
   defp build_insert_all_row(attrs, library_id, now) do
@@ -591,19 +673,6 @@ defmodule RhoFrameworks.Library do
       inserted_at: now,
       updated_at: now
     }
-  end
-
-  defp update_existing_skill(attrs, existing_by_slug) do
-    slug = Skill.slugify(attrs[:name])
-    existing_skill = Map.fetch!(existing_by_slug, slug)
-    attrs = guard_status_downgrade(existing_skill, attrs)
-
-    {:ok, skill} =
-      existing_skill
-      |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
-      |> Repo.update()
-
-    skill
   end
 
   defp guard_status_downgrade(%Skill{status: "published"}, attrs) do
@@ -687,6 +756,102 @@ defmodule RhoFrameworks.Library do
   end
 
   # --- Browse Library ---
+
+  @doc """
+  Returns one row per (category, cluster) with a skill count, ordered for UI rendering.
+  Used to render a collapsed library tree without loading every skill row.
+  """
+  def list_skill_index(library_id, opts \\ []) when is_binary(library_id) do
+    status = Keyword.get(opts, :status)
+
+    from(s in Skill,
+      where: s.library_id == ^library_id,
+      group_by: [s.category, s.cluster],
+      order_by: [s.category, s.cluster],
+      select: %{
+        category: s.category,
+        cluster: s.cluster,
+        count: count(s.id)
+      }
+    )
+    |> maybe_filter(:status, status)
+    |> Repo.all()
+  end
+
+  @doc """
+  Loads skills in one (category, cluster) cell of a library, ordered for display.
+  `category` and `cluster` may be nil to match rows with no value.
+  """
+  def list_cluster_skills(library_id, category, cluster, opts \\ [])
+      when is_binary(library_id) do
+    status = Keyword.get(opts, :status)
+
+    from(s in Skill,
+      where: s.library_id == ^library_id,
+      order_by: [s.sort_order, s.name],
+      select: %{
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        category: s.category,
+        cluster: s.cluster,
+        status: s.status,
+        description: s.description,
+        proficiency_levels: s.proficiency_levels
+      }
+    )
+    |> where_match(:category, category)
+    |> where_match(:cluster, cluster)
+    |> maybe_filter(:status, status)
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns matching skills (with proficiency) across an entire library for the
+  search bar. No limit — assumes the user-supplied query narrows the set enough.
+  """
+  def search_in_library(library_id, query, opts \\ []) when is_binary(library_id) do
+    status = Keyword.get(opts, :status)
+    pattern = "%#{sanitize_query(query)}%"
+
+    from(s in Skill,
+      where: s.library_id == ^library_id,
+      where:
+        like(s.name, ^pattern) or
+          like(s.description, ^pattern) or
+          like(s.category, ^pattern) or
+          like(s.cluster, ^pattern),
+      order_by: [s.category, s.cluster, s.sort_order, s.name],
+      select: %{
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        category: s.category,
+        cluster: s.cluster,
+        status: s.status,
+        description: s.description,
+        proficiency_levels: s.proficiency_levels
+      }
+    )
+    |> maybe_filter(:status, status)
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns `{category, cluster}` for the given skill in a library, or nil.
+  Used to pre-load the right cluster when deep-linking to a single skill.
+  """
+  def cluster_for_skill(library_id, skill_id)
+      when is_binary(library_id) and is_binary(skill_id) do
+    from(s in Skill,
+      where: s.library_id == ^library_id and s.id == ^skill_id,
+      select: {s.category, s.cluster}
+    )
+    |> Repo.one()
+  end
+
+  defp where_match(query, field, nil), do: from(s in query, where: is_nil(field(s, ^field)))
+  defp where_match(query, field, value), do: from(s in query, where: field(s, ^field) == ^value)
 
   def browse_library(library_id, opts \\ []) do
     list_skills(library_id, opts)
@@ -848,16 +1013,7 @@ defmodule RhoFrameworks.Library do
       |> Map.new(&{&1.slug, &1})
 
     attr_list = build_copy_attrs_bulk(pairs, existing)
-
-    {to_insert, to_update} =
-      Enum.split_with(attr_list, fn attrs ->
-        is_nil(Map.get(existing, Skill.slugify(attrs[:name])))
-      end)
-
-    inserted = bulk_insert_new_skills(to_insert, target_library_id)
-    updated = Enum.map(to_update, &update_existing_skill(&1, existing))
-
-    inserted ++ updated
+    bulk_upsert_skill_rows(target_library_id, attr_list)
   end
 
   defp build_copy_attrs_bulk(pairs, existing) do

@@ -4,7 +4,7 @@ defmodule RhoFrameworks.Roles do
   require Logger
   import Ecto.Query
   alias RhoFrameworks.Repo
-  alias RhoFrameworks.Frameworks.{RoleProfile, RoleSkill}
+  alias RhoFrameworks.Frameworks.{RoleProfile, RoleSkill, Skill}
   alias RhoFrameworks.Library, as: Lib
 
   # --- Role Profile CRUD ---
@@ -88,9 +88,7 @@ defmodule RhoFrameworks.Roles do
 
     Ecto.Multi.new()
     |> Ecto.Multi.run(:skills, fn _repo, _ ->
-      resolve_fn = skill_resolve_fn(library, resolve_library_id)
-
-      resolve_all_skills(role_rows, resolve_fn)
+      resolve_skills_for_role(library, resolve_library_id, role_rows)
     end)
     |> Ecto.Multi.run(:role_profile, fn repo, _ ->
       rp_attrs =
@@ -138,40 +136,68 @@ defmodule RhoFrameworks.Roles do
     |> Repo.transaction()
   end
 
-  defp resolve_all_skills(role_rows, resolve_fn) do
-    Enum.reduce_while(role_rows, {:ok, []}, fn row, {:ok, acc} ->
-      case resolve_fn.(row) do
-        {:ok, skill} -> {:cont, {:ok, [{skill, row} | acc]}}
-        {:error, _} = err -> {:halt, err}
-      end
-    end)
-    |> then(fn
-      {:ok, pairs} -> {:ok, Enum.reverse(pairs)}
-      {:error, reason} -> {:error, reason}
-    end)
-  end
+  # Returns `{:ok, [{%Skill{}, row}, ...]}` preserving `role_rows` order.
+  # Mutable libraries: a single bulk upsert against the skills table.
+  # Immutable libraries: a single batched lookup; surfaces the first row
+  # whose skill isn't present in the library.
+  defp resolve_skills_for_role(%{immutable: true}, library_id, role_rows),
+    do: resolve_immutable_skills(library_id, role_rows)
 
-  defp skill_resolve_fn(%{immutable: true}, library_id) do
-    fn row ->
+  defp resolve_skills_for_role(_library, library_id, role_rows),
+    do: resolve_mutable_skills(library_id, role_rows)
+
+  defp resolve_immutable_skills(library_id, role_rows) do
+    slugs = Enum.map(role_rows, fn r -> Skill.slugify(r[:skill_name] || r[:name]) end)
+
+    skill_by_slug =
+      from(s in Skill, where: s.library_id == ^library_id and s.slug in ^slugs)
+      |> Repo.all()
+      |> Map.new(&{&1.slug, &1})
+
+    role_rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
       name = row[:skill_name] || row[:name]
-      slug = RhoFrameworks.Frameworks.Skill.slugify(name)
+      slug = Skill.slugify(name)
 
-      case Repo.get_by(RhoFrameworks.Frameworks.Skill, library_id: library_id, slug: slug) do
-        nil -> {:error, "Skill '#{name}' not found in immutable library"}
-        skill -> {:ok, skill}
+      case Map.get(skill_by_slug, slug) do
+        nil -> {:halt, {:error, "Skill '#{name}' not found in immutable library"}}
+        skill -> {:cont, {:ok, [{skill, row} | acc]}}
       end
+    end)
+    |> case do
+      {:ok, pairs} -> {:ok, Enum.reverse(pairs)}
+      {:error, _} = err -> err
     end
   end
 
-  defp skill_resolve_fn(_library, library_id) do
-    fn row ->
-      Lib.upsert_skill(library_id, %{
-        category: row[:category] || "",
-        cluster: row[:cluster] || "",
-        name: row[:skill_name] || row[:name],
-        description: row[:skill_description] || "",
-        status: "draft"
-      })
+  defp resolve_mutable_skills(library_id, role_rows) do
+    skill_attrs =
+      role_rows
+      |> Enum.map(fn row ->
+        %{
+          category: row[:category] || "",
+          cluster: row[:cluster] || "",
+          name: row[:skill_name] || row[:name],
+          description: row[:skill_description] || "",
+          status: "draft"
+        }
+      end)
+      |> Enum.uniq_by(fn a -> Skill.slugify(a[:name]) end)
+
+    case Lib.bulk_upsert_skills(library_id, skill_attrs) do
+      {:ok, skills} ->
+        by_slug = Map.new(skills, &{&1.slug, &1})
+
+        pairs =
+          Enum.map(role_rows, fn row ->
+            slug = Skill.slugify(row[:skill_name] || row[:name])
+            {Map.fetch!(by_slug, slug), row}
+          end)
+
+        {:ok, pairs}
+
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -391,17 +417,44 @@ defmodule RhoFrameworks.Roles do
   #   1. Embedding KNN — when the query embeds and rows have embeddings,
   #      pgvector's HNSW index resolves the top-K nearest in sub-ms.
   #      Cosine distance is the relevance score; no LLM rerank.
+  #      Results above `:max_distance` (default 0.6 ≈ 0.4 cosine sim, tuned
+  #      for paraphrase-multilingual-MiniLM-L12-v2) are dropped so off-topic
+  #      queries like "superman" return empty instead of nearest-anything.
   #   2. LIKE fallback — when embeddings are unavailable (server not ready,
   #      no rows embedded yet) or the query is empty, fall back to the
   #      previous SQL `like` search across name/role_family/description.
 
-  def find_similar_roles(org_id, query, opts \\ []) do
+  # Cosine distance cutoff for KNN results. Calibrated for
+  # paraphrase-multilingual-MiniLM-L12-v2; raise for stricter models, lower
+  # for looser ones. Override per-call with `max_distance: 0.x`.
+  @default_max_distance 0.6
+
+  def find_similar_roles(org_id, query, opts \\ []),
+    do: find_similar_roles_semantic(org_id, query, opts)
+
+  @doc """
+  LIKE-only synchronous search. Returns the same map shape as the semantic
+  branch. Intended for the instant-render tier in LiveView, before the
+  semantic backfill arrives.
+  """
+  def find_similar_roles_fast(org_id, query, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 10)
+    find_similar_roles_fallback(org_id, query, limit)
+  end
+
+  @doc """
+  Embedding-KNN search with a process-wide query→vector cache. Falls back
+  to LIKE on empty query, embed failure, or no embedded rows visible to
+  the org.
+  """
+  def find_similar_roles_semantic(org_id, query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
     k = Keyword.get(opts, :k, 25)
+    max_distance = Keyword.get(opts, :max_distance, @default_max_distance)
 
     case maybe_embed_query(query) do
       {:ok, query_vec} ->
-        find_similar_roles_via_knn(org_id, query_vec, k, limit) ||
+        find_similar_roles_via_knn(org_id, query_vec, k, limit, max_distance) ||
           find_similar_roles_fallback(org_id, query, limit)
 
       :unavailable ->
@@ -412,9 +465,20 @@ defmodule RhoFrameworks.Roles do
   defp maybe_embed_query(query) when query in [nil, ""], do: :unavailable
 
   defp maybe_embed_query(query) when is_binary(query) do
+    case RhoFrameworks.Roles.EmbeddingCache.get(query) do
+      {:ok, vec} ->
+        {:ok, vec}
+
+      :miss ->
+        embed_and_cache(query)
+    end
+  end
+
+  defp embed_and_cache(query) do
     if RhoEmbeddings.ready?() do
       case RhoEmbeddings.embed_many([query]) do
         {:ok, [vec]} ->
+          RhoFrameworks.Roles.EmbeddingCache.put(query, vec)
           {:ok, vec}
 
         other ->
@@ -429,48 +493,67 @@ defmodule RhoFrameworks.Roles do
     end
   end
 
-  # Returns the top-K nearest roles by cosine distance, then truncates to
-  # `limit`. `nil` if no embedded rows are visible to the org — the caller
-  # falls back to LIKE so the caller never gets an empty list when there
-  # are matching un-embedded rows in the DB.
-  defp find_similar_roles_via_knn(org_id, query_vec, k, limit) do
-    candidate_ids =
+  # Returns the top-K nearest roles by cosine distance with `distance <
+  # max_distance`, then truncates to `limit`. Returns `nil` *only* when no
+  # embedded rows are visible to the org (bootstrap case) — caller falls
+  # back to LIKE. Returns `[]` when embeddings exist but no row clears the
+  # distance threshold (off-topic query like "superman") — caller does NOT
+  # fall back, so the UI shows "no matches" instead of nearest-anything.
+  defp find_similar_roles_via_knn(org_id, query_vec, k, limit, max_distance) do
+    has_embedded? =
       from(rp in RoleProfile,
         where: rp.organization_id == ^org_id or rp.visibility == "public",
         where: not is_nil(rp.embedding),
-        order_by: fragment("? <=> ?", rp.embedding, type(^query_vec, Pgvector.Ecto.Vector)),
-        limit: ^k,
-        select: rp.id
+        select: 1,
+        limit: 1
       )
-      |> Repo.all()
+      |> Repo.one()
+      |> Kernel.==(1)
 
-    case candidate_ids do
-      [] ->
-        nil
-
-      ids ->
-        # Re-query in the same map shape as the LIKE branch (skill_count
-        # via left-join + group_by). Preserve KNN order via id_index.
-        id_index = Map.new(Enum.with_index(ids), fn {id, idx} -> {id, idx} end)
-
+    if not has_embedded? do
+      nil
+    else
+      candidate_ids =
         from(rp in RoleProfile,
-          where: rp.id in ^ids,
-          left_join: rs in RoleSkill,
-          on: rs.role_profile_id == rp.id,
-          group_by: rp.id,
-          select: %{
-            id: rp.id,
-            name: rp.name,
-            role_family: rp.role_family,
-            seniority_label: rp.seniority_label,
-            skill_count: count(rs.id),
-            organization_id: rp.organization_id
-          }
+          where: rp.organization_id == ^org_id or rp.visibility == "public",
+          where: not is_nil(rp.embedding),
+          where:
+            fragment("? <=> ?", rp.embedding, type(^query_vec, Pgvector.Ecto.Vector)) <
+              ^max_distance,
+          order_by: fragment("? <=> ?", rp.embedding, type(^query_vec, Pgvector.Ecto.Vector)),
+          limit: ^k,
+          select: rp.id
         )
         |> Repo.all()
-        |> Enum.sort_by(fn r -> Map.fetch!(id_index, r.id) end)
-        |> Enum.take(limit)
+
+      knn_results(candidate_ids, limit)
     end
+  end
+
+  defp knn_results([], _limit), do: []
+
+  defp knn_results(ids, limit) do
+    # Re-query in the same map shape as the LIKE branch (skill_count via
+    # left-join + group_by). Preserve KNN order via id_index.
+    id_index = Map.new(Enum.with_index(ids), fn {id, idx} -> {id, idx} end)
+
+    from(rp in RoleProfile,
+      where: rp.id in ^ids,
+      left_join: rs in RoleSkill,
+      on: rs.role_profile_id == rp.id,
+      group_by: rp.id,
+      select: %{
+        id: rp.id,
+        name: rp.name,
+        role_family: rp.role_family,
+        seniority_label: rp.seniority_label,
+        skill_count: count(rs.id),
+        organization_id: rp.organization_id
+      }
+    )
+    |> Repo.all()
+    |> Enum.sort_by(fn r -> Map.fetch!(id_index, r.id) end)
+    |> Enum.take(limit)
   end
 
   defp find_similar_roles_fallback(org_id, query, limit) do

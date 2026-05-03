@@ -52,11 +52,26 @@ defmodule RhoWeb.AppLive.LibraryEvents do
 
   def handle_event("filter_status", %{"status" => status}, socket) do
     status = if status == "", do: nil, else: status
+    library_id = socket.assigns.library.id
     opts = if status, do: [status: status], else: []
-    skills = RhoFrameworks.Library.browse_library(socket.assigns.library.id, opts)
+    index = RhoFrameworks.Library.list_skill_index(library_id, opts)
+    grouped_index = RhoWeb.AppLive.group_skill_index(index)
+    total = Enum.reduce(index, 0, fn row, acc -> acc + row.count end)
 
-    {:noreply,
-     assign(socket, skills: skills, grouped: group_skills(skills), status_filter: status)}
+    socket =
+      socket
+      |> assign(
+        skill_index: index,
+        grouped_index: grouped_index,
+        total_skill_count: total,
+        cluster_skills: %{},
+        open_clusters: MapSet.new(),
+        open_categories: MapSet.new(),
+        status_filter: status
+      )
+      |> RhoWeb.AppLive.refresh_skill_search()
+
+    {:noreply, socket}
   end
 
   def handle_event("open_fork_modal", _params, socket) do
@@ -155,20 +170,5 @@ defmodule RhoWeb.AppLive.LibraryEvents do
       }
     end)
     |> Enum.sort_by(& &1.primary.updated_at, {:desc, DateTime})
-  end
-
-  defp group_skills(skills) do
-    skills
-    |> Enum.sort_by(fn s -> {s.category, s.cluster, s.name} end)
-    |> Enum.group_by(fn s -> s.category || "Other" end)
-    |> Enum.sort_by(fn {cat, _} -> cat end)
-    |> Enum.map(fn {category, cat_skills} ->
-      clusters =
-        cat_skills
-        |> Enum.group_by(fn s -> s.cluster || "General" end)
-        |> Enum.sort_by(fn {cluster, _} -> cluster end)
-
-      {category, clusters}
-    end)
   end
 end

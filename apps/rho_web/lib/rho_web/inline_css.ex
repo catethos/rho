@@ -3356,6 +3356,14 @@ defmodule RhoWeb.InlineCSS do
     }
     .fw-collapse-summary:hover { background: var(--bg-hover); }
     .fw-collapse-summary::-webkit-details-marker { display: none; }
+    button.fw-collapse-summary {
+      width: 100%;
+      background: transparent;
+      border: 0;
+      font: inherit;
+      color: inherit;
+      text-align: left;
+    }
 
     .fw-collapse-arrow {
       display: inline-block;
@@ -3366,7 +3374,8 @@ defmodule RhoWeb.InlineCSS do
       transition: transform 0.15s;
       flex-shrink: 0;
     }
-    details[open] > .fw-collapse-summary > .fw-collapse-arrow {
+    details[open] > .fw-collapse-summary > .fw-collapse-arrow,
+    .fw-collapse.is-open > .fw-collapse-summary > .fw-collapse-arrow {
       transform: rotate(90deg);
     }
 

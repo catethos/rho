@@ -7,7 +7,8 @@ defmodule RhoFrameworks.Application do
   def start(_type, _args) do
     children = [
       RhoFrameworks.Repo,
-      RhoFrameworks.Accounts.TokenSweeper
+      RhoFrameworks.Accounts.TokenSweeper,
+      RhoFrameworks.Roles.EmbeddingCache
     ]
 
     opts = [strategy: :one_for_one, name: RhoFrameworks.Supervisor]

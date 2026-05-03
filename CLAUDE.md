@@ -13,7 +13,7 @@ rho/
 │   ├── rho_stdlib/        # Built-in tools & plugins
 │   ├── rho_baml/          # BAML-driven structured-output helpers
 │   ├── rho_web/           # Phoenix endpoint, LiveViews
-│   └── rho_frameworks/    # Ecto/SQLite skill-assessment domain
+│   └── rho_frameworks/    # Ecto/Postgres (pgvector) skill-assessment domain
 ├── config/
 │   ├── config.exs
 │   └── runtime.exs
@@ -113,9 +113,9 @@ Deps: `rho`, `rho_stdlib`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_l
 
 ### `apps/rho_frameworks/` — Skill Assessment Domain
 
-Deps: `rho`, `rho_stdlib` (in_umbrella), `ecto_sqlite3`, `phoenix_ecto`, `bcrypt_elixir`.
+Deps: `rho`, `rho_stdlib` (in_umbrella), `ecto_sql`, `postgrex`, `pgvector`, `phoenix_ecto`, `bcrypt_elixir`.
 
-- `RhoFrameworks.Repo` — Ecto SQLite repo
+- `RhoFrameworks.Repo` — Ecto Postgres repo (pgvector enabled)
 - `RhoFrameworks.Accounts` / `.Accounts.User` / `.Accounts.UserToken`
 - `RhoFrameworks.Frameworks` / `.Frameworks.Framework` / `.Frameworks.Skill`
 - `RhoFrameworks.Plugin` — tool plugin for framework persistence

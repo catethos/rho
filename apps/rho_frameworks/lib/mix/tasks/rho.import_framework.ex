@@ -205,131 +205,89 @@ defmodule Mix.Tasks.Rho.ImportFramework do
 
   # --- Bulk import helpers ---
   #
-  # Each `bulk_*_for_import` helper does:
-  #   1. one `IN ^ids` SELECT to find existing rows
-  #   2. one `insert_all` for the new-row slice
-  #   3. per-row `Repo.update!` only for rows that already exist
-  #
-  # Drops the import from N×(get_by + insert) round-trips per table to ~3
-  # round-trips total per table — significant against Neon.
+  # Each `bulk_*_for_import` helper does a single `insert_all` with
+  # `on_conflict: {:replace, [...]}` against the natural-key unique index.
+  # Embedding fields are intentionally excluded from the replace list so a
+  # re-import doesn't wipe vectors written by the backfill task. One
+  # round-trip per table regardless of new-vs-existing split.
 
   defp bulk_upsert_skills_for_import(library_id, skills_data) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    enriched =
+    rows =
       skills_data
       |> Enum.with_index(1)
       |> Enum.map(fn {attrs, idx} ->
-        Map.merge(attrs, %{
+        %{
+          id: Ecto.UUID.generate(),
           library_id: library_id,
+          slug: Skill.slugify(attrs[:name]),
+          name: attrs[:name],
+          description: attrs[:description],
+          category: attrs[:category] || "",
+          cluster: attrs[:cluster],
+          status: attrs[:status] || "draft",
           sort_order: idx,
-          slug: Skill.slugify(attrs[:name])
-        })
+          metadata: %{},
+          proficiency_levels: attrs[:proficiency_levels] || [],
+          inserted_at: now,
+          updated_at: now
+        }
       end)
 
-    slugs = Enum.map(enriched, & &1.slug)
+    {_n, returned} =
+      Repo.insert_all(Skill, rows,
+        on_conflict:
+          {:replace,
+           [
+             :name,
+             :description,
+             :category,
+             :cluster,
+             :status,
+             :sort_order,
+             :metadata,
+             :proficiency_levels,
+             :updated_at
+           ]},
+        conflict_target: [:library_id, :slug],
+        returning: true
+      )
 
-    existing =
-      from(s in Skill, where: s.library_id == ^library_id and s.slug in ^slugs)
-      |> Repo.all()
-      |> Map.new(&{&1.slug, &1})
-
-    {to_insert, to_update} =
-      Enum.split_with(enriched, fn a -> is_nil(Map.get(existing, a.slug)) end)
-
-    inserted =
-      case to_insert do
-        [] ->
-          []
-
-        rows ->
-          insert_rows =
-            Enum.map(rows, fn a ->
-              %{
-                id: Ecto.UUID.generate(),
-                library_id: library_id,
-                slug: a.slug,
-                name: a.name,
-                description: a.description,
-                category: a.category || "",
-                cluster: a.cluster,
-                status: a.status || "draft",
-                sort_order: a.sort_order,
-                metadata: %{},
-                proficiency_levels: a.proficiency_levels || [],
-                inserted_at: now,
-                updated_at: now
-              }
-            end)
-
-          {_n, returned} = Repo.insert_all(Skill, insert_rows, returning: true)
-          returned
-      end
-
-    updated =
-      Enum.map(to_update, fn a ->
-        existing_skill = Map.fetch!(existing, a.slug)
-
-        existing_skill
-        |> Skill.changeset(Map.drop(a, [:library_id, :slug]))
-        |> Repo.update!()
-      end)
-
-    inserted ++ updated
+    returned
   end
 
   defp bulk_upsert_roles_for_import(org_id, user_id, roles_data) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
-    names = Enum.map(roles_data, & &1.name)
 
-    existing =
-      from(rp in RoleProfile, where: rp.organization_id == ^org_id and rp.name in ^names)
-      |> Repo.all()
-      |> Map.new(&{&1.name, &1})
-
-    {to_insert, to_update} =
-      Enum.split_with(roles_data, fn r -> is_nil(Map.get(existing, r.name)) end)
-
-    inserted =
-      case to_insert do
-        [] ->
-          []
-
-        rows ->
-          insert_rows =
-            Enum.map(rows, fn r ->
-              %{
-                id: Ecto.UUID.generate(),
-                organization_id: org_id,
-                created_by_id: user_id,
-                name: r.name,
-                role_family: r[:role_family],
-                description: r[:description],
-                purpose: r[:purpose],
-                metadata: r[:metadata] || %{},
-                work_activities: [],
-                headcount: 1,
-                visibility: "private",
-                immutable: false,
-                inserted_at: now,
-                updated_at: now
-              }
-            end)
-
-          {_n, returned} = Repo.insert_all(RoleProfile, insert_rows, returning: true)
-          returned
-      end
-
-    updated =
-      Enum.map(to_update, fn r ->
-        existing_rp = Map.fetch!(existing, r.name)
-
-        existing_rp
-        |> RoleProfile.changeset(Map.drop(r, [:organization_id]))
-        |> Repo.update!()
+    rows =
+      Enum.map(roles_data, fn r ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org_id,
+          created_by_id: user_id,
+          name: r.name,
+          role_family: r[:role_family],
+          description: r[:description],
+          purpose: r[:purpose],
+          metadata: r[:metadata] || %{},
+          work_activities: [],
+          headcount: 1,
+          visibility: "private",
+          immutable: false,
+          inserted_at: now,
+          updated_at: now
+        }
       end)
 
-    inserted ++ updated
+    {_n, returned} =
+      Repo.insert_all(RoleProfile, rows,
+        on_conflict: {:replace, [:role_family, :description, :purpose, :metadata, :updated_at]},
+        conflict_target: [:organization_id, :name],
+        returning: true
+      )
+
+    returned
   end
 
   defp bulk_upsert_role_skills_for_import(skills, role_profiles, mapping_data) do
