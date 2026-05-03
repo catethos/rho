@@ -3461,6 +3461,30 @@ defmodule RhoWeb.InlineCSS do
       color: var(--text-muted);
     }
 
+    /* === Search Bar === */
+    .search-bar {
+      margin-bottom: 1rem;
+      display: flex;
+    }
+    .search-bar--inline {
+      flex: 1;
+      margin-bottom: 0;
+    }
+    .search-input {
+      flex: 1;
+      width: 100%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.45rem 0.75rem;
+      font-size: 0.85rem;
+      font-family: inherit;
+      color: var(--text-primary);
+    }
+    .search-input::placeholder { color: var(--text-muted); }
+    .search-input:hover { border-color: var(--border-active); }
+    .search-input:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 2px var(--teal-dim); }
+
     /* === Role Profile Styles === */
     .role-description {
       display: grid;

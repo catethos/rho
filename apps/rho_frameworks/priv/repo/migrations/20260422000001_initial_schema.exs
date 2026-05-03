@@ -114,7 +114,7 @@ defmodule RhoFrameworks.Repo.Migrations.InitialSchema do
       add(:status, :string, null: false, default: "draft")
       add(:sort_order, :integer)
       add(:metadata, :map, default: %{})
-      add(:proficiency_levels, :map, default: [])
+      add(:proficiency_levels, {:array, :map}, default: [])
 
       add(:library_id, references(:libraries, type: :binary_id, on_delete: :delete_all),
         null: false
@@ -146,7 +146,7 @@ defmodule RhoFrameworks.Repo.Migrations.InitialSchema do
       add(:reporting_context, :text)
       add(:headcount, :integer, default: 1)
       add(:metadata, :map, default: %{})
-      add(:work_activities, :map, default: [])
+      add(:work_activities, {:array, :map}, default: [])
       add(:visibility, :string, null: false, default: "private")
       add(:immutable, :boolean, null: false, default: false)
 

@@ -1,0 +1,7 @@
+threshold,cosine_candidates,fallback_candidates,total_unique,llm_chunks,confirmed_dupes,est_tokens,elapsed_ms
+0.30,18,0,18,1,11,2500,1021
+0.35,56,0,56,2,30,5000,1016
+0.40,121,0,121,4,46,10000,1649
+0.45,257,0,257,7,52,17500,3131
+0.50,609,0,609,16,65,40000,6490
+0.55,1395,0,1395,35,71,87500,13847

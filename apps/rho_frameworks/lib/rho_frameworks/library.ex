@@ -2,6 +2,7 @@ defmodule RhoFrameworks.Library do
   @moduledoc "Context for library CRUD, skills, immutability, forking, and deduplication."
 
   import Ecto.Query
+  require Logger
   alias RhoFrameworks.Repo
 
   alias RhoFrameworks.Frameworks.{
@@ -54,7 +55,10 @@ defmodule RhoFrameworks.Library do
   Designed for prompt injection — lightweight query, no proficiency data.
   """
   def library_summary(org_id) do
-    libraries = list_libraries(org_id)
+    # Skip public libraries: ESCO has 14k skills and naive enumeration blows
+    # agent prompt budgets. Agents discover public skills via
+    # `search_skills_across/3` instead.
+    libraries = list_libraries(org_id, include_public: false)
 
     if libraries == [] do
       []
@@ -501,12 +505,17 @@ defmodule RhoFrameworks.Library do
 
       case Repo.get_by(Skill, library_id: library_id, slug: slug) do
         nil ->
+          attrs = add_embedding_attrs(attrs, nil)
+
           %Skill{}
           |> Skill.changeset(Map.merge(attrs, %{library_id: library_id}))
           |> Repo.insert()
 
         existing ->
-          attrs = guard_status_downgrade(existing, attrs)
+          attrs =
+            existing
+            |> guard_status_downgrade(attrs)
+            |> add_embedding_attrs(existing)
 
           existing
           |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
@@ -516,6 +525,13 @@ defmodule RhoFrameworks.Library do
   end
 
   # --- Batch upsert (private) ---
+  #
+  # Round-trip shape against Postgres:
+  #   1. Pre-fetch existing slugs in `library_id`         (1 query)
+  #   2. Bulk-embed any rows whose text hash changed      (≤1 embed_many call)
+  #   3. `insert_all` for new rows                        (1 query, returning rows)
+  #   4. Per-row update for existing rows                 (N_existing queries)
+  # Net wins are biggest on first-save (N_existing = 0): N+2 round-trips → 2.
 
   defp bulk_upsert_skills(library_id, skill_attr_list, opts \\ []) do
     library = Repo.get!(Library, library_id)
@@ -528,32 +544,66 @@ defmodule RhoFrameworks.Library do
         |> Repo.all()
         |> Map.new(&{&1.slug, &1})
 
-      results =
-        Enum.map(skill_attr_list, &upsert_one_skill(&1, library_id, existing))
+      attr_list_with_embeddings = add_embedding_attrs_bulk(skill_attr_list, existing)
 
-      {:ok, results}
+      {to_insert, to_update} =
+        Enum.split_with(attr_list_with_embeddings, fn attrs ->
+          is_nil(Map.get(existing, Skill.slugify(attrs[:name])))
+        end)
+
+      inserted = bulk_insert_new_skills(to_insert, library_id)
+      updated = Enum.map(to_update, &update_existing_skill(&1, existing))
+
+      {:ok, inserted ++ updated}
     end
   end
 
-  defp upsert_one_skill(attrs, library_id, existing) do
+  defp bulk_insert_new_skills([], _library_id), do: []
+
+  defp bulk_insert_new_skills(attr_list, library_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    rows = Enum.map(attr_list, &build_insert_all_row(&1, library_id, now))
+
+    {_n, returned} = Repo.insert_all(Skill, rows, returning: true)
+    returned
+  end
+
+  defp build_insert_all_row(attrs, library_id, now) do
+    name = attrs[:name]
+
+    %{
+      id: Ecto.UUID.generate(),
+      library_id: library_id,
+      slug: Skill.slugify(name),
+      name: name,
+      description: attrs[:description],
+      category: attrs[:category] || "",
+      cluster: attrs[:cluster],
+      status: attrs[:status] || "draft",
+      sort_order: attrs[:sort_order],
+      metadata: attrs[:metadata] || %{},
+      proficiency_levels: attrs[:proficiency_levels] || [],
+      source_skill_id: attrs[:source_skill_id],
+      embedding: attrs[:embedding],
+      embedding_text_hash: attrs[:embedding_text_hash],
+      embedded_at: attrs[:embedded_at],
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp update_existing_skill(attrs, existing_by_slug) do
     slug = Skill.slugify(attrs[:name])
-    merged = Map.merge(attrs, %{library_id: library_id})
+    existing_skill = Map.fetch!(existing_by_slug, slug)
+    attrs = guard_status_downgrade(existing_skill, attrs)
 
-    case Map.get(existing, slug) do
-      nil ->
-        {:ok, skill} = %Skill{} |> Skill.changeset(merged) |> Repo.insert()
-        skill
+    {:ok, skill} =
+      existing_skill
+      |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
+      |> Repo.update()
 
-      existing_skill ->
-        attrs = guard_status_downgrade(existing_skill, attrs)
-
-        {:ok, skill} =
-          existing_skill
-          |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
-          |> Repo.update()
-
-        skill
-    end
+    skill
   end
 
   defp guard_status_downgrade(%Skill{status: "published"}, attrs) do
@@ -678,30 +728,42 @@ defmodule RhoFrameworks.Library do
   def search_skills_across(org_id, query, opts \\ []) do
     category = Keyword.get(opts, :category)
     limit = Keyword.get(opts, :limit, 50)
+    include_public = Keyword.get(opts, :include_public, true)
     pattern = "%#{sanitize_query(query)}%"
 
-    from(s in Skill,
-      join: l in Library,
-      on: s.library_id == l.id,
-      where: l.organization_id == ^org_id,
-      where:
-        like(s.name, ^pattern) or
-          like(s.description, ^pattern) or
-          like(s.category, ^pattern),
-      limit: ^limit,
-      order_by: s.name,
-      select: %{
-        id: s.id,
-        name: s.name,
-        category: s.category,
-        cluster: s.cluster,
-        status: s.status,
-        library_id: l.id,
-        library_name: l.name
-      }
-    )
+    base =
+      from(s in Skill,
+        join: l in Library,
+        on: s.library_id == l.id,
+        where:
+          like(s.name, ^pattern) or
+            like(s.description, ^pattern) or
+            like(s.category, ^pattern),
+        limit: ^limit,
+        order_by: s.name,
+        select: %{
+          id: s.id,
+          name: s.name,
+          category: s.category,
+          cluster: s.cluster,
+          status: s.status,
+          library_id: l.id,
+          library_name: l.name
+        }
+      )
+
+    base
+    |> scope_skills_to_visible_libraries(org_id, include_public)
     |> maybe_filter(:category, category)
     |> Repo.all()
+  end
+
+  defp scope_skills_to_visible_libraries(query, org_id, true) do
+    from([_s, l] in query, where: l.organization_id == ^org_id or l.visibility == "public")
+  end
+
+  defp scope_skills_to_visible_libraries(query, org_id, false) do
+    from([_s, l] in query, where: l.organization_id == ^org_id)
   end
 
   # --- Fork / Derive ---
@@ -732,11 +794,8 @@ defmodule RhoFrameworks.Library do
   end
 
   defp copy_all_skills(source_id, draft_id) do
-    list_skills(source_id)
-    |> Enum.map(fn skill ->
-      {:ok, new_skill} = copy_skill(skill, draft_id, source_skill_id: skill.id)
-      new_skill
-    end)
+    pairs = list_skills(source_id) |> Enum.map(fn s -> {s, s.name} end)
+    copy_skills_bulk(pairs, draft_id)
   end
 
   def copy_skill(skill, target_library_id, opts \\ []) do
@@ -756,7 +815,10 @@ defmodule RhoFrameworks.Library do
       source_skill_id: source_skill_id
     }
 
-    case Repo.get_by(Skill, library_id: target_library_id, slug: slug) do
+    existing = Repo.get_by(Skill, library_id: target_library_id, slug: slug)
+    attrs = add_embedding_attrs_with_source(attrs, existing, skill)
+
+    case existing do
       nil ->
         %Skill{}
         |> Skill.changeset(attrs)
@@ -767,6 +829,99 @@ defmodule RhoFrameworks.Library do
         |> Skill.changeset(Map.drop(attrs, [:library_id]))
         |> Repo.update()
     end
+  end
+
+  # Bulk copy: takes [{source_skill, target_name}] pairs (target_name may
+  # differ from source.name when disambiguated by the merge flow). Pre-fetches
+  # target slugs in a single query, batches embedding generation through one
+  # `embed_many` call (reusing the source's embedding when its text hash
+  # matches), then `insert_all`s the new rows. Existing rows in the target
+  # library still go through per-row update via the shared helper.
+  defp copy_skills_bulk([], _target_library_id), do: []
+
+  defp copy_skills_bulk(pairs, target_library_id) do
+    slugs = Enum.map(pairs, fn {_, name} -> Skill.slugify(name) end)
+
+    existing =
+      from(s in Skill, where: s.library_id == ^target_library_id and s.slug in ^slugs)
+      |> Repo.all()
+      |> Map.new(&{&1.slug, &1})
+
+    attr_list = build_copy_attrs_bulk(pairs, existing)
+
+    {to_insert, to_update} =
+      Enum.split_with(attr_list, fn attrs ->
+        is_nil(Map.get(existing, Skill.slugify(attrs[:name])))
+      end)
+
+    inserted = bulk_insert_new_skills(to_insert, target_library_id)
+    updated = Enum.map(to_update, &update_existing_skill(&1, existing))
+
+    inserted ++ updated
+  end
+
+  defp build_copy_attrs_bulk(pairs, existing) do
+    prepared =
+      Enum.map(pairs, fn {source_skill, target_name} ->
+        attrs = base_copy_attrs(source_skill, target_name)
+        slug = Skill.slugify(target_name)
+        target_existing = Map.get(existing, slug)
+        text = embed_text_for(attrs, target_existing)
+        hash = text_hash(text)
+
+        cond do
+          target_existing && target_existing.embedding_text_hash == hash &&
+              not is_nil(target_existing.embedding) ->
+            {attrs, :reuse_target, nil, hash}
+
+          source_skill.embedding_text_hash == hash and
+              not is_nil(source_skill.embedding) ->
+            {attrs, :reuse_source, source_skill.embedding, hash}
+
+          true ->
+            {attrs, :needs_embed, text, hash}
+        end
+      end)
+
+    texts_to_embed =
+      prepared
+      |> Enum.filter(fn {_, tag, _, _} -> tag == :needs_embed end)
+      |> Enum.map(fn {_, _, text_or_vec, _} -> text_or_vec end)
+      |> Enum.uniq()
+
+    vec_by_text =
+      case rho_embed_many(texts_to_embed) do
+        {:ok, vecs} -> texts_to_embed |> Enum.zip(vecs) |> Map.new()
+        {:error, _} -> %{}
+      end
+
+    Enum.map(prepared, fn
+      {attrs, :reuse_target, _, _} ->
+        attrs
+
+      {attrs, :reuse_source, vec, hash} ->
+        put_embedding_fields(attrs, vec, hash)
+
+      {attrs, :needs_embed, text, hash} ->
+        case Map.get(vec_by_text, text) do
+          nil -> attrs
+          vec -> put_embedding_fields(attrs, vec, hash)
+        end
+    end)
+  end
+
+  defp base_copy_attrs(source_skill, target_name) do
+    %{
+      name: target_name,
+      description: source_skill.description,
+      category: source_skill.category,
+      cluster: source_skill.cluster,
+      status: source_skill.status,
+      sort_order: source_skill.sort_order,
+      metadata: source_skill.metadata,
+      proficiency_levels: source_skill.proficiency_levels,
+      source_skill_id: source_skill.id
+    }
   end
 
   # --- Diff ---
@@ -1268,7 +1423,7 @@ defmodule RhoFrameworks.Library do
 
     candidates =
       if depth == :deep do
-        candidates ++ find_semantic_duplicates_via_llm(skills)
+        candidates ++ find_semantic_duplicates_via_llm(library_id, skills)
       else
         candidates
       end
@@ -1351,56 +1506,54 @@ defmodule RhoFrameworks.Library do
   # Equivalent to the deleted `copy_skills_deduped` when the set is
   # empty.
   defp copy_skills_with_targeted_disambiguation(skills, library_id, disambiguate_ids) do
-    Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
-      slug = Skill.slugify(skill.name)
+    {pairs, _slugs} =
+      Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
+        slug = Skill.slugify(skill.name)
 
-      case Map.get(slugs, slug) do
-        nil ->
-          {:ok, new_skill} = copy_skill(skill, library_id, source_skill_id: skill.id)
-          {[new_skill | acc], Map.put(slugs, slug, true)}
+        case Map.get(slugs, slug) do
+          nil ->
+            {[{skill, skill.name} | acc], Map.put(slugs, slug, true)}
 
-        _existing ->
-          if MapSet.member?(disambiguate_ids, skill.id) do
-            counter = count_slug_variants(slugs, slug) + 2
-            disambiguated_name = "#{skill.name} (#{counter})"
+          _existing ->
+            if MapSet.member?(disambiguate_ids, skill.id) do
+              counter = count_slug_variants(slugs, slug) + 2
+              disambiguated_name = "#{skill.name} (#{counter})"
 
-            {:ok, new_skill} =
-              copy_skill(%{skill | name: disambiguated_name}, library_id,
-                source_skill_id: skill.id
-              )
+              {[{skill, disambiguated_name} | acc],
+               Map.put(slugs, Skill.slugify(disambiguated_name), true)}
+            else
+              {acc, slugs}
+            end
+        end
+      end)
 
-            {[new_skill | acc], Map.put(slugs, Skill.slugify(disambiguated_name), true)}
-          else
-            {acc, slugs}
-          end
-      end
-    end)
+    copied = pairs |> Enum.reverse() |> copy_skills_bulk(library_id)
+    {copied, %{}}
   end
 
   defp copy_skills_with_disambiguation(skills, library_id) do
-    Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
-      slug = Skill.slugify(skill.name)
+    {pairs, _slugs} =
+      Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
+        slug = Skill.slugify(skill.name)
 
-      case Map.get(slugs, slug) do
-        nil ->
-          {:ok, new_skill} = copy_skill(skill, library_id, source_skill_id: skill.id)
-          {[new_skill | acc], Map.put(slugs, slug, skill.description)}
+        case Map.get(slugs, slug) do
+          nil ->
+            {[{skill, skill.name} | acc], Map.put(slugs, slug, skill.description)}
 
-        existing_desc when existing_desc == skill.description ->
-          {acc, slugs}
+          existing_desc when existing_desc == skill.description ->
+            {acc, slugs}
 
-        _different_desc ->
-          counter = count_slug_variants(slugs, slug) + 2
+          _different_desc ->
+            counter = count_slug_variants(slugs, slug) + 2
+            disambiguated_name = "#{skill.name} (#{counter})"
 
-          disambiguated_name = "#{skill.name} (#{counter})"
+            {[{skill, disambiguated_name} | acc],
+             Map.put(slugs, Skill.slugify(disambiguated_name), skill.description)}
+        end
+      end)
 
-          {:ok, new_skill} =
-            copy_skill(%{skill | name: disambiguated_name}, library_id, source_skill_id: skill.id)
-
-          {[new_skill | acc],
-           Map.put(slugs, Skill.slugify(disambiguated_name), skill.description)}
-      end
-    end)
+    copied = pairs |> Enum.reverse() |> copy_skills_bulk(library_id)
+    {copied, %{}}
   end
 
   defp resolve_conflicts(conflicted, target_ref_map, strategy) do
@@ -1451,43 +1604,310 @@ defmodule RhoFrameworks.Library do
   end
 
   # --- LLM-based semantic dedup ---
+  #
+  # Two-stage funnel keeps cost flat as the library grows:
+  #   1. Embedding pre-filter — pgvector cosine distance (`<=>`) finds pairs
+  #      of skills whose embeddings cluster within
+  #      @semantic_distance_threshold. Surfaces cross-name matches the jaro
+  #      filter cannot catch ("数据分析" ↔ "Data Analysis"). Skills without
+  #      embeddings (load failed, backfill not yet run) fall back to a
+  #      jaro pairwise filter against the full skill list.
+  #   2. LLM verification — chunked candidate pairs run in parallel; the
+  #      model only sees plausible pairs and returns the indices that are
+  #      TRUE duplicates. Token cost scales with candidate-pair count, not
+  #      total skill count.
 
-  defp find_semantic_duplicates_via_llm(skills) when length(skills) < 2, do: []
+  # Cosine distance threshold (1 - cosine_similarity). 0.40 picked for
+  # the post-LLM pipeline: dropping the LLM verifier means the cosine
+  # filter alone is the signal, so we tighten the threshold so the
+  # candidate set stays manageable for human review (~120 pairs at
+  # 157 skills; ~600 at 0.50 was too noisy without LLM filtering).
+  @semantic_distance_threshold 0.40
 
-  defp find_semantic_duplicates_via_llm(skills) do
-    skill_index = Map.new(skills, fn s -> {s.id, s} end)
+  # Confidence tiers for semantic pairs based on cosine distance.
+  # Tighter distance ⇒ more likely a real duplicate.
+  @semantic_high_distance_threshold 0.20
+  @semantic_medium_distance_threshold 0.30
 
-    skill_list =
-      skills
-      |> Enum.map_join("\n", fn s ->
-        desc = if s.description && s.description != "", do: " — #{s.description}", else: ""
-        "- [#{s.id}] #{s.name} (#{s.category})#{desc}"
-      end)
+  # Soft cap on neighbors-per-skill returned by the HNSW KNN inner query.
+  # Empirically the largest neighbor set we've seen per skill is ~30 at
+  # 0.50; 200 is a generous ceiling. If a skill has >200 neighbors
+  # within threshold, the tail gets dropped — accepted because the
+  # tail is increasingly noisy and the LLM filter is the precision
+  # gate.
+  @semantic_knn_top_k 200
 
-    case RhoFrameworks.LLM.SemanticDuplicates.call(%{skill_list: skill_list}) do
-      {:ok, %{pairs: pairs}} ->
-        pairs
-        |> Enum.filter(fn p ->
-          Map.has_key?(skill_index, p[:id_a]) && Map.has_key?(skill_index, p[:id_b])
-        end)
-        |> Enum.map(&build_semantic_pair(&1, skill_index))
+  @semantic_jaro_fallback_threshold 0.6
 
-      {:error, _reason} ->
-        []
-    end
+  # Embedding-only semantic dedup. Returns pairs with their cosine
+  # distance attached so the UI / caller can rank candidates and apply
+  # its own threshold per use case.
+  #
+  # An LLM verifier was tried (DeepSeek-V3, Gemini 2.5 Flash, Haiku 4.5,
+  # GPT-4o-mini, gpt-oss-120b) and rejected: the FSFM eval found ~75%
+  # false-positive rate on the LLM's "confirmed" pairs regardless of
+  # prompt iteration. The cosine signal is cleaner — surface it as
+  # candidates, let humans dismiss/merge via `dismiss_duplicate/3`.
+  defp find_semantic_duplicates_via_llm(_library_id, skills) when length(skills) < 2, do: []
+
+  defp find_semantic_duplicates_via_llm(library_id, skills) do
+    embedding_pairs = candidate_pairs_via_embedding_with_distance(library_id)
+
+    fallback_pairs =
+      candidate_pairs_via_jaro_fallback(skills)
+      # Jaro-only pairs don't have a meaningful cosine distance — tag
+      # them with nil and bucket them as :low confidence.
+      |> Enum.map(fn {a, b} -> {a, b, nil} end)
+
+    (embedding_pairs ++ fallback_pairs)
+    |> Enum.uniq_by(fn {a, b, _} -> sorted_pair_key(a.id, b.id) end)
+    |> Enum.map(&build_semantic_pair_with_distance/1)
   end
 
-  defp build_semantic_pair(p, skill_index) do
-    a = skill_index[p[:id_a]]
-    b = skill_index[p[:id_b]]
+  defp build_semantic_pair_with_distance({a, b, distance}) do
     {sa, sb} = if a.id < b.id, do: {a, b}, else: {b, a}
 
     %{
       skill_a: %{id: sa.id, name: sa.name, category: sa.category},
       skill_b: %{id: sb.id, name: sb.name, category: sb.category},
-      confidence: :low,
+      cosine_distance: distance,
+      confidence: confidence_from_distance(distance),
       detection_method: :semantic
     }
+  end
+
+  defp confidence_from_distance(nil), do: :low
+  defp confidence_from_distance(d) when d < @semantic_high_distance_threshold, do: :high
+  defp confidence_from_distance(d) when d < @semantic_medium_distance_threshold, do: :medium
+  defp confidence_from_distance(_), do: :low
+
+  defp sorted_pair_key(id_a, id_b) do
+    if id_a < id_b, do: {id_a, id_b}, else: {id_b, id_a}
+  end
+
+  # Per-skill KNN via LATERAL join. The inner subquery's
+  # `ORDER BY ... <=> ... LIMIT N` is exactly the shape pgvector's HNSW
+  # index accelerates — drops a 6s pairwise scan to sub-second on real
+  # libraries. Returns {skill_a, skill_b, cosine_distance} triples; the
+  # full Skill rows are fetched in a single follow-up query and stitched
+  # back together.
+  defp candidate_pairs_via_embedding_with_distance(library_id) do
+    threshold = @semantic_distance_threshold
+    top_k = @semantic_knn_top_k
+
+    sql = """
+    SELECT s1.id AS a_id, s2.id AS b_id, s2.dist AS dist
+    FROM skills s1
+    CROSS JOIN LATERAL (
+      SELECT s.id, (s.embedding <=> s1.embedding) AS dist
+      FROM skills s
+      WHERE s.library_id = s1.library_id
+        AND s.id > s1.id
+        AND s.embedding IS NOT NULL
+        AND (s.embedding <=> s1.embedding) < $2
+      ORDER BY s.embedding <=> s1.embedding
+      LIMIT $3
+    ) s2
+    WHERE s1.library_id = $1
+      AND s1.embedding IS NOT NULL
+    """
+
+    %{rows: rows} =
+      Repo.query!(sql, [Ecto.UUID.dump!(library_id), threshold, top_k],
+        timeout: :timer.minutes(2)
+      )
+
+    case rows do
+      [] ->
+        []
+
+      _ ->
+        triples =
+          Enum.map(rows, fn [a_uuid, b_uuid, dist] ->
+            {Ecto.UUID.cast!(a_uuid), Ecto.UUID.cast!(b_uuid), dist}
+          end)
+
+        ids =
+          triples
+          |> Enum.flat_map(fn {a, b, _} -> [a, b] end)
+          |> Enum.uniq()
+
+        skills_by_id =
+          from(s in Skill, where: s.id in ^ids)
+          |> Repo.all()
+          |> Map.new(&{&1.id, &1})
+
+        Enum.map(triples, fn {a_id, b_id, dist} ->
+          {Map.fetch!(skills_by_id, a_id), Map.fetch!(skills_by_id, b_id), dist}
+        end)
+    end
+  end
+
+  # Jaro fallback for skills missing embeddings — pairs each non-embedded
+  # skill against the full library list so a non-embedded row can still
+  # pair with an embedded one. Runs in-memory; cheap O(n) per non-embedded
+  # skill.
+  defp candidate_pairs_via_jaro_fallback(skills) do
+    {without_embedding, _with_embedding} =
+      Enum.split_with(skills, fn s -> is_nil(s.embedding) end)
+
+    case without_embedding do
+      [] ->
+        []
+
+      _ ->
+        threshold = @semantic_jaro_fallback_threshold
+
+        for a <- without_embedding,
+            b <- skills,
+            a.id != b.id,
+            String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold do
+          if a.id < b.id, do: {a, b}, else: {b, a}
+        end
+    end
+  end
+
+  # --- Embedding helpers ---
+  #
+  # Embeddings are computed inline on upsert so dedup pre-filtering can run
+  # against pgvector's `<=>` operator. The text is `name\ndescription`,
+  # SHA-256 hashed for change detection — re-embedding only happens when the
+  # hash differs (or when no embedding has ever been written).
+  #
+  # If RhoEmbeddings returns `{:error, :not_ready | :disabled | _}`, we log
+  # and save the row WITHOUT an embedding. The `BackfillEmbeddings` mix
+  # task picks these up later.
+
+  defp add_embedding_attrs(attrs, existing) do
+    text = embed_text_for(attrs, existing)
+    hash = text_hash(text)
+
+    cond do
+      existing && existing.embedding_text_hash == hash && not is_nil(existing.embedding) ->
+        attrs
+
+      true ->
+        case rho_embed_one(text) do
+          {:ok, vec} -> put_embedding_fields(attrs, vec, hash)
+          {:error, _} -> attrs
+        end
+    end
+  end
+
+  # Like add_embedding_attrs/2 but, on a fresh copy whose source row already
+  # has an embedding for the exact same text, copies that embedding instead
+  # of calling embed_many. Cheaper than re-embedding for fork/derive paths.
+  defp add_embedding_attrs_with_source(attrs, existing, source_skill) do
+    text = embed_text_for(attrs, existing)
+    hash = text_hash(text)
+
+    cond do
+      existing && existing.embedding_text_hash == hash && not is_nil(existing.embedding) ->
+        attrs
+
+      source_skill && source_skill.embedding_text_hash == hash &&
+          not is_nil(source_skill.embedding) ->
+        put_embedding_fields(attrs, source_skill.embedding, hash)
+
+      true ->
+        case rho_embed_one(text) do
+          {:ok, vec} -> put_embedding_fields(attrs, vec, hash)
+          {:error, _} -> attrs
+        end
+    end
+  end
+
+  # Bulk path: build texts that need embedding for the whole batch, run a
+  # single embed_many call, then merge results back per-attrs. No-op for
+  # rows where the existing hash already matches the new text.
+  defp add_embedding_attrs_bulk(attr_list, existing_by_slug) do
+    prepared =
+      Enum.map(attr_list, fn attrs ->
+        slug = Skill.slugify(attrs[:name])
+        existing = Map.get(existing_by_slug, slug)
+        text = embed_text_for(attrs, existing)
+        hash = text_hash(text)
+
+        needs_embed? =
+          is_nil(existing) or existing.embedding_text_hash != hash or
+            is_nil(existing.embedding)
+
+        {attrs, text, hash, needs_embed?}
+      end)
+
+    texts_to_embed =
+      prepared
+      |> Enum.filter(fn {_a, _t, _h, needs?} -> needs? end)
+      |> Enum.map(fn {_a, t, _h, _n} -> t end)
+      |> Enum.uniq()
+
+    vec_by_text =
+      case rho_embed_many(texts_to_embed) do
+        {:ok, vecs} -> texts_to_embed |> Enum.zip(vecs) |> Map.new()
+        {:error, _} -> %{}
+      end
+
+    Enum.map(prepared, fn {attrs, text, hash, needs_embed?} ->
+      case needs_embed? && Map.get(vec_by_text, text) do
+        false -> attrs
+        nil -> attrs
+        vec -> put_embedding_fields(attrs, vec, hash)
+      end
+    end)
+  end
+
+  defp put_embedding_fields(attrs, vec, hash) do
+    Map.merge(attrs, %{
+      embedding: vec,
+      embedding_text_hash: hash,
+      embedded_at: DateTime.utc_now()
+    })
+  end
+
+  defp embed_text_for(attrs, existing) do
+    name = attrs[:name] || (existing && existing.name) || ""
+
+    desc =
+      cond do
+        Map.has_key?(attrs, :description) -> attrs[:description] || ""
+        Map.has_key?(attrs, "description") -> attrs["description"] || ""
+        existing -> existing.description || ""
+        true -> ""
+      end
+
+    "#{name}\n#{desc}"
+  end
+
+  defp text_hash(text), do: :crypto.hash(:sha256, text)
+
+  defp rho_embed_one(text) do
+    case rho_embed_many([text]) do
+      {:ok, [vec]} -> {:ok, vec}
+      other -> other
+    end
+  end
+
+  defp rho_embed_many([]), do: {:ok, []}
+
+  defp rho_embed_many(texts) do
+    case RhoEmbeddings.embed_many(texts) do
+      {:ok, vecs} ->
+        {:ok, vecs}
+
+      {:error, reason} = err ->
+        Logger.warning(
+          "RhoEmbeddings.embed_many failed (#{inspect(reason)}); saving skills without embeddings"
+        )
+
+        err
+    end
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "RhoEmbeddings.Server unavailable (#{inspect(reason)}); saving skills without embeddings"
+      )
+
+      {:error, :not_running}
   end
 
   # --- Private helpers ---

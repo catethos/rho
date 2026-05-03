@@ -1,8 +1,6 @@
 import Config
 
-config :rho_frameworks, RhoFrameworks.Repo,
-  database: Path.expand("../apps/rho_frameworks/priv/rho_dev.db", __DIR__),
-  pool_size: 5
+# Database URL is configured in config/runtime.exs (sourced via dotenvy from .env).
 
 # Enable code reloading on file changes
 config :rho_web, RhoWeb.Endpoint,

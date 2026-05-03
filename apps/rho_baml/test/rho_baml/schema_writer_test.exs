@@ -20,13 +20,19 @@ defmodule RhoBaml.SchemaWriterTest do
       assert baml =~ ~s(class RespondAction {)
       assert baml =~ ~s(  tool "respond")
       assert baml =~ ~s(  message string\n)
-      assert baml =~ ~s(  thinking string?)
 
       assert baml =~ ~s(class ThinkAction {)
       assert baml =~ ~s(  tool "think")
       assert baml =~ ~s(  thought string\n)
 
       assert baml =~ "function AgentTurn(messages: string) -> RespondAction | ThinkAction {"
+    end
+
+    test "no auto-injected `thinking` field on any variant" do
+      defs = [tool_def("bash", cmd: [type: :string, required: true])]
+      baml = SchemaWriter.to_baml(defs)
+
+      refute baml =~ "thinking string?"
     end
 
     test "emits one variant per tool with literal tool discriminant" do
@@ -119,32 +125,12 @@ defmodule RhoBaml.SchemaWriterTest do
     end
   end
 
-  describe "to_baml/2 — thinking field" do
-    test "every variant carries `thinking string?`" do
-      defs = [
-        tool_def("bash", cmd: [type: :string, required: true]),
-        tool_def("fs_read", path: [type: :string, required: true])
-      ]
-
-      baml = SchemaWriter.to_baml(defs)
-
-      # Count `thinking string?` — once per variant: respond, think, bash, fs_read = 4
-      occurrences =
-        baml
-        |> String.split("thinking string?")
-        |> length()
-        |> Kernel.-(1)
-
-      assert occurrences == 4
-    end
-  end
-
   describe "to_baml/2 — descriptions on tool literal" do
     test "each variant carries description as @description on its tool field" do
       defs = [tool_def("bash", [cmd: [type: :string, required: true]], "Run a shell command")]
       baml = SchemaWriter.to_baml(defs)
 
-      assert baml =~ ~s|  tool "respond" @description("Reply to the user with a final message.")|
+      assert baml =~ ~s|  tool "respond" @description("Reply directly to the user.|
 
       assert baml =~
                ~s|  tool "think" @description("Record an internal reasoning step without external action.")|

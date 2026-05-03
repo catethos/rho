@@ -31,10 +31,14 @@ defmodule RhoFrameworks.MixProject do
       {:rho, in_umbrella: true},
       {:rho_stdlib, in_umbrella: true},
       {:rho_baml, in_umbrella: true},
-      {:ecto_sqlite3, "~> 0.17"},
+      {:rho_embeddings, in_umbrella: true},
+      {:ecto_sql, "~> 3.13"},
+      {:postgrex, "~> 0.21"},
+      {:pgvector, "~> 0.3.1"},
       {:phoenix_ecto, "~> 4.6"},
       {:bcrypt_elixir, "~> 3.0"},
       {:jason, "~> 1.4"},
+      {:nimble_csv, "~> 1.2"},
       {:mimic, "~> 1.10", only: :test}
     ]
   end

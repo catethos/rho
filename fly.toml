@@ -1,48 +1,36 @@
 # Fly.io deployment config for the Rho umbrella.
 #
-# Before first deploy:
-#   1. Generate a Dockerfile + release assembly:
-#        mix phx.gen.release --docker
-#      (Umbrella caveat: the generated Dockerfile may need manual edits so
-#      `mix compile` runs at the umbrella root; see phx.gen.release output.)
+# Database: external Neon Postgres (no volume needed).
+# Required secrets (set via `just set-secrets`):
+#   - NEON_URL (or DATABASE_URL)
+#   - SECRET_KEY_BASE
+#   - LLM provider keys (OPENAI_API_KEY, OPENROUTER_API_KEY, ...)
 #
-#   2. Create the persistent volume (one per region the app runs in):
-#        fly volumes create rho_data --size 1 --region ord
-#
-#   3. Set secrets:
-#        fly secrets set SECRET_KEY_BASE=$(mix phx.gen.secret)
-#
-#   4. Update `app` below to whatever `fly apps create` assigns you, and
-#      `PHX_HOST` to the matching `*.fly.dev` hostname (or your custom one).
+# First-time setup:
+#   fly apps create rho
+#   just set-secrets
+#   just deploy
+#   just migrate
 
 app = "rho"
-primary_region = "ord"
+primary_region = "sin"
 
 [build]
 
 [env]
-  # These are non-secret runtime.exs inputs. Secrets go through `fly secrets`.
   PHX_HOST = "rho.fly.dev"
   PORT = "8080"
-  DATABASE_PATH = "/data/rho.db"
+  # Fly's internal proxy → app hop is IPv6-only; runtime.exs binds to ::.
+  ELIXIR_ERL_OPTIONS = "+fnu"
 
 [http_service]
-  # Must match the `PORT` above and the `http:` port in runtime.exs.
   internal_port = 8080
   force_https = true
-
-  # Scale-to-zero for a single-node SQLite app. Safe because every request
-  # lands on the same machine that owns the volume. If you ever horizontally
-  # scale, SQLite-on-volume stops working — migrate to LiteFS or Postgres.
-  auto_stop_machines = "stop"
+  # Scale-to-zero is safe with Neon — no local state on the machine.
+  auto_stop_machines = "suspend"
   auto_start_machines = true
-  min_machines_running = 1
-
-# Persistent volume for SQLite. Mounted at /data; runtime.exs reads
-# DATABASE_PATH=/data/rho.db from that mount. Survives deploys and restarts.
-[[mounts]]
-  source = "rho_data"
-  destination = "/data"
+  min_machines_running = 0
+  processes = ["app"]
 
 [[vm]]
   cpu_kind = "shared"

@@ -1,0 +1,10 @@
+conceptType,conceptUri,skillType,reuseLevel,preferredLabel,altLabels,description
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/L3_S5.0.1,skill/competence,sector-specific,managing staff,"manage personnel
+oversee staff",Plan and direct work assigned to a team or department.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/managea4f2c1,skill/competence,occupation-specific,manage staff,"",Specific skill of supervising kitchen staff in a restaurant.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/manageb7c0d3,skill/competence,occupation-specific,manage staff,"",Specific skill of supervising stage crew in a theatre.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/leadteam0001,skill/competence,,lead a team,"",Take responsibility for guiding a small team to a goal.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/javapr0001,knowledge,occupation-specific,Java (computer programming),"Java programming",Knowledge of the techniques and principles of software development in Java.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/handle0001,skill/competence,transversal,handle multilingual material,"",Read and process documents written in more than one language.
+SkillGroup,http://data.europa.eu/esco/skill/L1_S5,,,Management skills,"",Skill pillar group covering management-related competences.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/programming0001,knowledge,sector-specific,object-oriented programming,"OOP",Knowledge of designing software using objects.

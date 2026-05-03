@@ -11,7 +11,7 @@ defmodule RhoWeb.RoleProfileListLive do
     profiles =
       if connected?(socket) do
         org = socket.assigns.current_organization
-        Roles.list_role_profiles(org.id)
+        Roles.list_role_profiles(org.id, include_public: false)
       else
         []
       end
@@ -25,7 +25,7 @@ defmodule RhoWeb.RoleProfileListLive do
   def handle_event("delete", %{"name" => name}, socket) do
     org = socket.assigns.current_organization
     Roles.delete_role_profile(org.id, name)
-    profiles = Roles.list_role_profiles(org.id)
+    profiles = Roles.list_role_profiles(org.id, include_public: false)
     {:noreply, assign(socket, profiles: profiles, grouped: group_by_family(profiles))}
   end
 

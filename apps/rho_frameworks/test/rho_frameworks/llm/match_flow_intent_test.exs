@@ -7,7 +7,7 @@ defmodule RhoFrameworks.LLM.MatchFlowIntentTest do
   the `starting_point` / `library_hints` rules the LV depends on.
   """
 
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.LLM.MatchFlowIntent
 

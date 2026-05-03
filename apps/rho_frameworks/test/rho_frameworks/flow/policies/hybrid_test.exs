@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.Flow.Policies.HybridTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Flow.Policies.Hybrid
 

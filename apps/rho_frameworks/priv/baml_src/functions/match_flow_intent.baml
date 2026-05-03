@@ -1,13 +1,13 @@
 class MatchFlowIntentOutput {
-  name string? @description("Framework name. Empty when flow_id is \"unknown\".")
-  domain string? @description("Industry/domain noun phrase. Empty when flow_id is \"unknown\".")
-  description string? @description("One-sentence framework description. Empty when flow_id is \"unknown\".")
+  name string @description("Framework name. Empty string when flow_id is \"unknown\".")
+  domain string @description("Industry/domain noun phrase. Empty string when flow_id is \"unknown\".")
+  description string @description("One-sentence framework description. Empty string when flow_id is \"unknown\".")
   flow_id string @description("Matched flow id, or \"unknown\".")
   confidence float @description("0.0 (no match) to 1.0 (clearly this flow).")
-  reasoning string? @description("One-sentence justification.")
-  target_roles string? @description("Title-case singular role names. Empty when flow_id is \"unknown\".")
-  starting_point string? @description("One of \"from_template\", \"scratch\", \"extend_existing\", \"merge\", or \"\" when no signal.")
-  library_hints string[]? @description("Name fragments of existing libraries: singleton for \"extend_existing\", two for \"merge\", empty otherwise.")
+  reasoning string @description("One-sentence justification.")
+  target_roles string @description("Title-case singular role names. Empty string when flow_id is \"unknown\".")
+  starting_point string @description("One of \"from_template\", \"scratch\", \"extend_existing\", \"merge\", or \"\" when no signal.")
+  library_hints string[] @description("Name fragments of existing libraries: singleton for \"extend_existing\", two for \"merge\", empty list otherwise.")
 }
 
 function MatchFlowIntent(message: string, known_flows: string) -> MatchFlowIntentOutput {

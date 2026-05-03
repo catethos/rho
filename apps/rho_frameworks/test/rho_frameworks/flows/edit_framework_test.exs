@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.Flows.EditFrameworkTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Flows.{EditFramework, FinalizeSkeleton, Registry}
   alias RhoFrameworks.Scope

@@ -1,0 +1,12 @@
+occupationUri,relationType,skillType,skillUri
+http://data.europa.eu/esco/occupation/0001,essential,skill/competence,http://data.europa.eu/esco/skill/L3_S5.0.1
+http://data.europa.eu/esco/occupation/0001,optional,skill/competence,http://data.europa.eu/esco/skill/leadteam0001
+http://data.europa.eu/esco/occupation/0002,essential,knowledge,http://data.europa.eu/esco/skill/javapr0001
+http://data.europa.eu/esco/occupation/0002,essential,knowledge,http://data.europa.eu/esco/skill/programming0001
+http://data.europa.eu/esco/occupation/0002,optional,skill/competence,http://data.europa.eu/esco/skill/L3_S5.0.1
+http://data.europa.eu/esco/occupation/0003,optional,skill/competence,http://data.europa.eu/esco/skill/handle0001
+http://data.europa.eu/esco/occupation/0003,essential,skill/competence,http://data.europa.eu/esco/skill/handle0001
+http://data.europa.eu/esco/occupation/0003,essential,skill/competence,http://data.europa.eu/esco/skill/leadteam0001
+http://data.europa.eu/esco/occupation/0003,optional,skill/competence,http://data.europa.eu/esco/skill/leadteam0001
+http://data.europa.eu/esco/occupation/0004,essential,skill/competence,http://data.europa.eu/esco/skill/managea4f2c1
+http://data.europa.eu/esco/occupation/0004,essential,skill/competence,http://data.europa.eu/esco/skill/notinskillsfile

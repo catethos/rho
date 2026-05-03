@@ -42,11 +42,11 @@ config :rho_web, RhoWeb.Endpoint,
   pubsub_server: Rho.PubSub,
   live_view: [signing_salt: "Rv8nBqK2dYhF6mP3"]
 
-# Ecto / SQLite
+# Ecto / Postgres (+ pgvector). URL is set per-env in runtime.exs / dev.exs / test.exs.
 config :rho_frameworks, ecto_repos: [RhoFrameworks.Repo]
 
 config :rho_frameworks, RhoFrameworks.Repo,
-  database: Path.expand("../apps/rho_frameworks/priv/rho.db", __DIR__),
+  types: RhoFrameworks.PostgrexTypes,
   pool_size: 5
 
 import_config "#{config_env()}.exs"

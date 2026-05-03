@@ -1,0 +1,58 @@
+# Build artifacts — recreated inside the container.
+_build/
+deps/
+cover/
+*.beam
+
+# Python virtualenvs — pythonx initializes its own at runtime.
+**/.venv/
+**/__pycache__/
+**/*.pyc
+
+# IDE / editor state.
+.elixir_ls/
+.expert/
+.claude/
+.vscode/
+.idea/
+.DS_Store
+# NOTE: .agents/ is intentionally NOT excluded — it holds skill markdown
+# files loaded by the :skills plugin at runtime.
+
+# VCS — not needed in the image.
+.git/
+.gitignore
+
+# Local secrets — must never leak into a layer.
+.env
+.envrc
+.env.*
+
+# Local SQLite dev/test databases.
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
+# Crash dumps and logs.
+erl_crash.dump
+**/*.dump
+logs/
+
+# Scratch / dev-only.
+tmp/
+apps/*/tmp/
+notebooks/
+docs/
+cover/
+
+# Docs and ad-hoc files at repo root.
+*.md
+data.xlsx
+
+# Test code — :prod never compiles it, but no reason to ship it either.
+apps/*/test/
+test/
+
+# Keep these (explicit allow, in case a parent rule excludes them).
+!apps/*/priv/repo/migrations/
+!config/

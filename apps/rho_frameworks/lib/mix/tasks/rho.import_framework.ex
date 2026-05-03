@@ -57,6 +57,11 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     XLSX only contains Y/N (not proficiency-level requirements per role).
   """
 
+  import Ecto.Query
+
+  alias RhoFrameworks.Repo
+  alias RhoFrameworks.Frameworks.{Skill, RoleProfile, RoleSkill}
+
   @sub_sector_columns [
     "Retail Banking and Islamic Retail Banking",
     "Corporate and Commercial Banking and Islamic Corporate and Commercial Banking",
@@ -90,13 +95,10 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     Application.ensure_all_started(:xlsxir)
     Mix.Task.run("app.start", ["--no-start"])
     Application.ensure_all_started(:ecto_sql)
-    Application.ensure_all_started(:ecto_sqlite3)
+    Application.ensure_all_started(:postgrex)
     {:ok, _} = RhoFrameworks.Repo.start_link([])
 
-    import Ecto.Query
-
-    alias RhoFrameworks.Repo
-    alias RhoFrameworks.Frameworks.{Library, Skill, RoleProfile, RoleSkill}
+    alias RhoFrameworks.Frameworks.Library
 
     # 1. Resolve user and org (auto-create if missing)
     user =
@@ -174,107 +176,13 @@ defmodule Mix.Tasks.Rho.ImportFramework do
         end
       end)
       |> Ecto.Multi.run(:skills, fn _repo, %{library: library} ->
-        results =
-          Enum.with_index(skills_data, 1)
-          |> Enum.map(fn {skill_attrs, idx} ->
-            attrs = Map.put(skill_attrs, :library_id, library.id) |> Map.put(:sort_order, idx)
-
-            case Repo.get_by(Skill, library_id: library.id, slug: Skill.slugify(attrs[:name])) do
-              nil ->
-                %Skill{}
-                |> Skill.changeset(attrs)
-                |> Repo.insert!()
-
-              existing ->
-                existing
-                |> Skill.changeset(Map.drop(attrs, [:library_id]))
-                |> Repo.update!()
-            end
-          end)
-
-        {:ok, results}
+        {:ok, bulk_upsert_skills_for_import(library.id, skills_data)}
       end)
-      |> Ecto.Multi.run(:role_profiles, fn _repo, %{library: _library} ->
-        results =
-          Enum.map(roles_data, fn role_attrs ->
-            case Repo.get_by(RoleProfile, organization_id: org.id, name: role_attrs[:name]) do
-              nil ->
-                %RoleProfile{}
-                |> RoleProfile.changeset(
-                  Map.merge(role_attrs, %{
-                    organization_id: org.id,
-                    created_by_id: user.id
-                  })
-                )
-                |> Repo.insert!()
-
-              existing ->
-                existing
-                |> RoleProfile.changeset(Map.drop(role_attrs, [:organization_id]))
-                |> Repo.update!()
-            end
-          end)
-
-        {:ok, results}
+      |> Ecto.Multi.run(:role_profiles, fn _repo, _ ->
+        {:ok, bulk_upsert_roles_for_import(org.id, user.id, roles_data)}
       end)
       |> Ecto.Multi.run(:role_skills, fn _repo, %{skills: skills, role_profiles: rps} ->
-        skill_by_name =
-          Map.new(skills, fn s -> {normalize_name(s.name), s} end)
-
-        rp_by_name =
-          Map.new(rps, fn rp -> {normalize_name(rp.name), rp} end)
-
-        results =
-          Enum.flat_map(mapping_data, fn {role_name, skill_names} ->
-            rp_key = normalize_name(role_name)
-
-            rp = Map.get(rp_by_name, rp_key) || fuzzy_match(rp_key, rp_by_name, role_name)
-
-            case rp do
-              nil ->
-                Mix.shell().info("  WARN: role '#{role_name}' not found, skipping mappings")
-                []
-
-              rp ->
-                Enum.flat_map(skill_names, fn skill_name ->
-                  sk_key = normalize_name(skill_name)
-
-                  case Map.get(skill_by_name, sk_key) do
-                    nil ->
-                      Mix.shell().info(
-                        "  WARN: skill '#{skill_name}' not found for role '#{role_name}'"
-                      )
-
-                      []
-
-                    skill ->
-                      case Repo.get_by(RoleSkill,
-                             role_profile_id: rp.id,
-                             skill_id: skill.id
-                           ) do
-                        nil ->
-                          rs =
-                            %RoleSkill{}
-                            |> RoleSkill.changeset(%{
-                              role_profile_id: rp.id,
-                              skill_id: skill.id,
-                              min_expected_level: 1,
-                              weight: 1.0,
-                              required: true
-                            })
-                            |> Repo.insert!()
-
-                          [rs]
-
-                        existing ->
-                          [existing]
-                      end
-                  end
-                end)
-            end
-          end)
-
-        {:ok, results}
+        {:ok, bulk_upsert_role_skills_for_import(skills, rps, mapping_data)}
       end)
       |> Repo.transaction(timeout: :infinity)
 
@@ -292,6 +200,207 @@ defmodule Mix.Tasks.Rho.ImportFramework do
         Mix.shell().error("Import failed at step #{step}:")
         Mix.shell().error(inspect(changeset))
         exit({:shutdown, 1})
+    end
+  end
+
+  # --- Bulk import helpers ---
+  #
+  # Each `bulk_*_for_import` helper does:
+  #   1. one `IN ^ids` SELECT to find existing rows
+  #   2. one `insert_all` for the new-row slice
+  #   3. per-row `Repo.update!` only for rows that already exist
+  #
+  # Drops the import from N×(get_by + insert) round-trips per table to ~3
+  # round-trips total per table — significant against Neon.
+
+  defp bulk_upsert_skills_for_import(library_id, skills_data) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    enriched =
+      skills_data
+      |> Enum.with_index(1)
+      |> Enum.map(fn {attrs, idx} ->
+        Map.merge(attrs, %{
+          library_id: library_id,
+          sort_order: idx,
+          slug: Skill.slugify(attrs[:name])
+        })
+      end)
+
+    slugs = Enum.map(enriched, & &1.slug)
+
+    existing =
+      from(s in Skill, where: s.library_id == ^library_id and s.slug in ^slugs)
+      |> Repo.all()
+      |> Map.new(&{&1.slug, &1})
+
+    {to_insert, to_update} =
+      Enum.split_with(enriched, fn a -> is_nil(Map.get(existing, a.slug)) end)
+
+    inserted =
+      case to_insert do
+        [] ->
+          []
+
+        rows ->
+          insert_rows =
+            Enum.map(rows, fn a ->
+              %{
+                id: Ecto.UUID.generate(),
+                library_id: library_id,
+                slug: a.slug,
+                name: a.name,
+                description: a.description,
+                category: a.category || "",
+                cluster: a.cluster,
+                status: a.status || "draft",
+                sort_order: a.sort_order,
+                metadata: %{},
+                proficiency_levels: a.proficiency_levels || [],
+                inserted_at: now,
+                updated_at: now
+              }
+            end)
+
+          {_n, returned} = Repo.insert_all(Skill, insert_rows, returning: true)
+          returned
+      end
+
+    updated =
+      Enum.map(to_update, fn a ->
+        existing_skill = Map.fetch!(existing, a.slug)
+
+        existing_skill
+        |> Skill.changeset(Map.drop(a, [:library_id, :slug]))
+        |> Repo.update!()
+      end)
+
+    inserted ++ updated
+  end
+
+  defp bulk_upsert_roles_for_import(org_id, user_id, roles_data) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    names = Enum.map(roles_data, & &1.name)
+
+    existing =
+      from(rp in RoleProfile, where: rp.organization_id == ^org_id and rp.name in ^names)
+      |> Repo.all()
+      |> Map.new(&{&1.name, &1})
+
+    {to_insert, to_update} =
+      Enum.split_with(roles_data, fn r -> is_nil(Map.get(existing, r.name)) end)
+
+    inserted =
+      case to_insert do
+        [] ->
+          []
+
+        rows ->
+          insert_rows =
+            Enum.map(rows, fn r ->
+              %{
+                id: Ecto.UUID.generate(),
+                organization_id: org_id,
+                created_by_id: user_id,
+                name: r.name,
+                role_family: r[:role_family],
+                description: r[:description],
+                purpose: r[:purpose],
+                metadata: r[:metadata] || %{},
+                work_activities: [],
+                headcount: 1,
+                visibility: "private",
+                immutable: false,
+                inserted_at: now,
+                updated_at: now
+              }
+            end)
+
+          {_n, returned} = Repo.insert_all(RoleProfile, insert_rows, returning: true)
+          returned
+      end
+
+    updated =
+      Enum.map(to_update, fn r ->
+        existing_rp = Map.fetch!(existing, r.name)
+
+        existing_rp
+        |> RoleProfile.changeset(Map.drop(r, [:organization_id]))
+        |> Repo.update!()
+      end)
+
+    inserted ++ updated
+  end
+
+  defp bulk_upsert_role_skills_for_import(skills, role_profiles, mapping_data) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    skill_by_name = Map.new(skills, fn s -> {normalize_name(s.name), s} end)
+    rp_by_name = Map.new(role_profiles, fn rp -> {normalize_name(rp.name), rp} end)
+
+    desired_pairs =
+      Enum.flat_map(mapping_data, fn {role_name, skill_names} ->
+        rp_key = normalize_name(role_name)
+        rp = Map.get(rp_by_name, rp_key) || fuzzy_match(rp_key, rp_by_name, role_name)
+
+        case rp do
+          nil ->
+            Mix.shell().info("  WARN: role '#{role_name}' not found, skipping mappings")
+            []
+
+          rp ->
+            Enum.flat_map(skill_names, fn skill_name ->
+              sk_key = normalize_name(skill_name)
+
+              case Map.get(skill_by_name, sk_key) do
+                nil ->
+                  Mix.shell().info(
+                    "  WARN: skill '#{skill_name}' not found for role '#{role_name}'"
+                  )
+
+                  []
+
+                skill ->
+                  [{rp.id, skill.id}]
+              end
+            end)
+        end
+      end)
+      |> Enum.uniq()
+
+    rp_ids = desired_pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+
+    existing_pairs =
+      from(rs in RoleSkill,
+        where: rs.role_profile_id in ^rp_ids,
+        select: {rs.role_profile_id, rs.skill_id}
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    new_pairs = Enum.reject(desired_pairs, &MapSet.member?(existing_pairs, &1))
+
+    case new_pairs do
+      [] ->
+        []
+
+      _ ->
+        rows =
+          Enum.map(new_pairs, fn {rp_id, skill_id} ->
+            %{
+              id: Ecto.UUID.generate(),
+              role_profile_id: rp_id,
+              skill_id: skill_id,
+              min_expected_level: 1,
+              weight: 1.0,
+              required: true,
+              inserted_at: now,
+              updated_at: now
+            }
+          end)
+
+        {_n, returned} = Repo.insert_all(RoleSkill, rows, returning: true)
+        returned
     end
   end
 

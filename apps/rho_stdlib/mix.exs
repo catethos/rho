@@ -29,6 +29,7 @@ defmodule RhoStdlib.MixProject do
   defp deps do
     [
       {:rho, in_umbrella: true},
+      {:rho_python, in_umbrella: true},
       {:floki, "~> 0.37"},
       {:pythonx, "~> 0.4"},
       {:erlang_python, "~> 2.3"},

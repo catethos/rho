@@ -12,6 +12,11 @@ defmodule RhoFrameworks.LLM.MatchFlowIntent do
 
   ## Output contract
 
+  All fields are required. Non-applicable values are returned as the
+  empty string `""` (or the empty list `[]` for `library_hints`) — never
+  `null`. This keeps the caller's pattern-matching uniform (everything
+  is `is_binary/1` or `is_list/1`).
+
     * `flow_id` — string, must match a known flow's `id()`
       (`"create-framework"` or `"edit-framework"`) or the literal
       `"unknown"`. Emitted as a string because `RhoBaml.SchemaCompiler`
@@ -58,38 +63,34 @@ defmodule RhoFrameworks.LLM.MatchFlowIntent do
   @schema Zoi.struct(__MODULE__, %{
             flow_id: Zoi.string(description: "Matched flow id, or \"unknown\"."),
             confidence: Zoi.float(description: "0.0 (no match) to 1.0 (clearly this flow)."),
-            reasoning: Zoi.string(description: "One-sentence justification.") |> Zoi.optional(),
+            reasoning: Zoi.string(description: "One-sentence justification."),
             name:
-              Zoi.string(description: "Framework name. Empty when flow_id is \"unknown\".")
-              |> Zoi.optional(),
+              Zoi.string(description: "Framework name. Empty string when flow_id is \"unknown\"."),
             description:
               Zoi.string(
                 description:
-                  "One-sentence framework description. Empty when flow_id is \"unknown\"."
-              )
-              |> Zoi.optional(),
+                  "One-sentence framework description. Empty string when flow_id is \"unknown\"."
+              ),
             domain:
               Zoi.string(
-                description: "Industry/domain noun phrase. Empty when flow_id is \"unknown\"."
-              )
-              |> Zoi.optional(),
+                description:
+                  "Industry/domain noun phrase. Empty string when flow_id is \"unknown\"."
+              ),
             target_roles:
               Zoi.string(
-                description: "Title-case singular role names. Empty when flow_id is \"unknown\"."
-              )
-              |> Zoi.optional(),
+                description:
+                  "Title-case singular role names. Empty string when flow_id is \"unknown\"."
+              ),
             starting_point:
               Zoi.string(
                 description:
                   "One of \"from_template\", \"scratch\", \"extend_existing\", \"merge\", or \"\" when no signal."
-              )
-              |> Zoi.optional(),
+              ),
             library_hints:
               Zoi.array(Zoi.string(),
                 description:
-                  "Name fragments of existing libraries: singleton for \"extend_existing\", two for \"merge\", empty otherwise."
+                  "Name fragments of existing libraries: singleton for \"extend_existing\", two for \"merge\", empty list otherwise."
               )
-              |> Zoi.optional()
           })
 
   @enforce_keys Zoi.Struct.enforce_keys(@schema)

@@ -34,6 +34,11 @@ defmodule RhoFrameworks.Frameworks.RoleProfile do
     field(:immutable, :boolean, default: false)
     belongs_to(:source_role_profile, __MODULE__)
 
+    # Embeddings (populated by `mix rho_frameworks.backfill_embeddings --target role`)
+    field(:embedding, Pgvector.Ecto.Vector)
+    field(:embedding_text_hash, :binary)
+    field(:embedded_at, :utc_datetime_usec)
+
     belongs_to(:organization, RhoFrameworks.Accounts.Organization)
     belongs_to(:created_by, RhoFrameworks.Accounts.User)
     has_many(:role_skills, RhoFrameworks.Frameworks.RoleSkill)
@@ -61,7 +66,10 @@ defmodule RhoFrameworks.Frameworks.RoleProfile do
       :immutable,
       :source_role_profile_id,
       :organization_id,
-      :created_by_id
+      :created_by_id,
+      :embedding,
+      :embedding_text_hash,
+      :embedded_at
     ])
     |> validate_required([:name, :organization_id])
     |> validate_length(:name, min: 1, max: 255)

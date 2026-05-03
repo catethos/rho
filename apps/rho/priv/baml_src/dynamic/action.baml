@@ -1,13 +1,11 @@
 class RespondAction {
-  tool "respond" @description("Reply to the user with a final message.")
+  tool "respond" @description("Reply directly to the user. The default action — use this whenever no other tool applies. It is the only way to talk to the user, so prefer it for answers, summaries, follow-up questions, and ending a turn after presenting tool results.")
   message string
-  thinking string?
 }
 
 class ThinkAction {
   tool "think" @description("Record an internal reasoning step without external action.")
   thought string
-  thinking string?
 }
 
 class DelegateTaskAction {
@@ -18,7 +16,6 @@ class DelegateTaskAction {
   context_summary string?
   inherit_context bool?
   max_steps int?
-  thinking string?
 }
 
 class DelegateTaskLiteAction {
@@ -26,28 +23,24 @@ class DelegateTaskLiteAction {
   task string
   role string?
   max_steps int?
-  thinking string?
 }
 
 class AwaitTaskAction {
   tool "await_task" @description("Wait for a delegated agent to finish.")
   agent_id string
   timeout int?
-  thinking string?
 }
 
 class AwaitAllAction {
   tool "await_all" @description("Wait for all delegated agents to finish.")
   agent_ids string
   timeout int?
-  thinking string?
 }
 
 class IngestDocumentAction {
   tool "ingest_document" @description("Extract text or table data from an external file (Excel .xlsx, PDF .pdf, Word .docx). Returns the extracted content as text or structured table data. Use the extracted content to populate the spreadsheet with add_rows.")
   file_path string
   format string?
-  thinking string?
 }
 
 class ManageLibraryAction {
@@ -59,7 +52,6 @@ class ManageLibraryAction {
   library_name string?
   version_tag string?
   notes string?
-  thinking string?
 }
 
 class LoadLibraryAction {
@@ -67,7 +59,6 @@ class LoadLibraryAction {
   library_name string?
   version string?
   category string?
-  thinking string?
 }
 
 class ForkLibraryAction {
@@ -75,7 +66,6 @@ class ForkLibraryAction {
   source_library_id string
   new_name string
   categories_json string?
-  thinking string?
 }
 
 class ManageRoleAction {
@@ -91,14 +81,12 @@ class ManageRoleAction {
   resolve_library_id string?
   role_profile_ids_json string?
   mode_label string?
-  thinking string?
 }
 
 class AddProficiencyLevelsAction {
   tool "add_proficiency_levels" @description("Update existing skeleton skills in the data table with proficiency levels. Matches each entry by skill_name to a row already in the table. Skills not found in the table are skipped.")
   levels_json string
   table string?
-  thinking string?
 }
 
 class LoadSimilarRolesAction {
@@ -108,7 +96,6 @@ class LoadSimilarRolesAction {
   domain string?
   target_roles string?
   limit int?
-  thinking string?
 }
 
 class GenerateFrameworkSkeletonsAction {
@@ -120,47 +107,40 @@ class GenerateFrameworkSkeletonsAction {
   skill_count int?
   similar_role_skills string?
   research string?
-  thinking string?
 }
 
 class GenerateProficiencyAction {
   tool "generate_proficiency" @description("Spawn one proficiency-writer agent per category for the given library table. Reads skeleton rows from the named table and fans out asynchronously.")
   table_name string
   levels int?
-  thinking string?
 }
 
 class SaveFrameworkAction {
   tool "save_framework" @description("Persist the framework currently in the session's library table to the database. If library_id is omitted, saves to (or creates) the org's default library.")
   library_id string?
   table string?
-  thinking string?
 }
 
 class ClarifyAction {
   tool "clarify" @description("Ask the user a clarifying question when the request is genuinely ambiguous. Use only when no reasonable assumption resolves the ambiguity — otherwise call the use-case tool directly. Calling clarify ends your turn.")
   question string
-  thinking string?
 }
 
 class SkillAction {
   tool "skill" @description("Load a skill's workflow instructions by name.")
   name string
-  thinking string?
 }
 
 class UpdateCellsAction {
   tool "update_cells" @description("Update data table cells.")
   changes_json string
   table string?
-  thinking string?
 }
 
 class AddRowsAction {
   tool "add_rows" @description("Add rows to data table.")
   rows_json string
   table string?
-  thinking string?
 }
 
 class DeleteRowsAction {
@@ -168,7 +148,6 @@ class DeleteRowsAction {
   ids_json string?
   filter_json string?
   table string?
-  thinking string?
 }
 
 function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | DelegateTaskLiteAction | AwaitTaskAction | AwaitAllAction | IngestDocumentAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | ManageRoleAction | AddProficiencyLevelsAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ClarifyAction | SkillAction | UpdateCellsAction | AddRowsAction | DeleteRowsAction {

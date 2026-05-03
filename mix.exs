@@ -10,7 +10,25 @@ defmodule Rho.Umbrella.MixProject do
       listeners: [Phoenix.CodeReloader],
       deps: deps(),
       aliases: aliases(),
-      cli: cli()
+      cli: cli(),
+      releases: releases()
+    ]
+  end
+
+  defp releases do
+    [
+      rho_web: [
+        include_executables_for: [:unix],
+        applications: [
+          rho: :permanent,
+          rho_stdlib: :permanent,
+          rho_baml: :permanent,
+          rho_python: :permanent,
+          rho_embeddings: :permanent,
+          rho_frameworks: :permanent,
+          rho_web: :permanent
+        ]
+      ]
     ]
   end
 

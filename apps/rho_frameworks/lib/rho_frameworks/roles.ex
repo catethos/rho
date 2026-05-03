@@ -210,42 +210,48 @@ defmodule RhoFrameworks.Roles do
       )
       |> Repo.all()
 
+    id_to_name =
+      profiles
+      |> Enum.flat_map(& &1.role_skills)
+      |> Map.new(fn rs -> {rs.skill.id, rs.skill.name} end)
+
     skill_sets =
       Map.new(profiles, fn rp ->
-        skills =
-          rp.role_skills
-          |> Enum.map(& &1.skill.name)
-          |> MapSet.new()
-
-        {rp.name, skills}
+        ids = rp.role_skills |> Enum.map(& &1.skill.id) |> MapSet.new()
+        {rp.name, ids}
       end)
 
-    all_skills =
+    all_skill_ids =
       skill_sets
       |> Map.values()
       |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
-    shared =
+    shared_ids =
       skill_sets
       |> Map.values()
       |> Enum.reduce(fn set, acc -> MapSet.intersection(acc, set) end)
 
     unique_per_role =
-      Map.new(skill_sets, fn {name, skills} ->
+      Map.new(skill_sets, fn {name, ids} ->
         others =
           skill_sets
           |> Map.delete(name)
           |> Map.values()
           |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
-        {name, MapSet.difference(skills, others) |> MapSet.to_list()}
+        unique_names =
+          ids
+          |> MapSet.difference(others)
+          |> Enum.map(&id_to_name[&1])
+
+        {name, unique_names}
       end)
 
     %{
       roles: Map.keys(skill_sets),
-      total_unique_skills: MapSet.size(all_skills),
-      shared_skills: MapSet.to_list(shared),
-      shared_count: MapSet.size(shared),
+      total_unique_skills: MapSet.size(all_skill_ids),
+      shared_skills: shared_ids |> Enum.map(&id_to_name[&1]),
+      shared_count: MapSet.size(shared_ids),
       unique_per_role: unique_per_role
     }
   end
@@ -293,35 +299,42 @@ defmodule RhoFrameworks.Roles do
         }
 
       _ ->
+        id_to_name =
+          profiles
+          |> Enum.flat_map(& &1.role_skills)
+          |> Map.new(fn rs -> {rs.skill.id, rs.skill.name} end)
+
         skill_sets =
           Map.new(profiles, fn rp ->
-            skills =
-              rp.role_skills
-              |> Enum.map(& &1.skill.name)
-              |> MapSet.new()
-
-            {rp.name, skills}
+            ids = rp.role_skills |> Enum.map(& &1.skill.id) |> MapSet.new()
+            {rp.name, ids}
           end)
 
-        all_skills =
+        all_skill_ids =
           skill_sets
           |> Map.values()
           |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
-        shared =
+        shared_ids =
           skill_sets
           |> Map.values()
           |> Enum.reduce(fn set, acc -> MapSet.intersection(acc, set) end)
 
         unique_per_role =
-          Map.new(skill_sets, fn {name, skills} ->
+          Map.new(skill_sets, fn {name, ids} ->
             others =
               skill_sets
               |> Map.delete(name)
               |> Map.values()
               |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
-            {name, MapSet.difference(skills, others) |> MapSet.to_list() |> Enum.sort()}
+            unique_names =
+              ids
+              |> MapSet.difference(others)
+              |> Enum.map(&id_to_name[&1])
+              |> Enum.sort()
+
+            {name, unique_names}
           end)
 
         role_families =
@@ -343,9 +356,9 @@ defmodule RhoFrameworks.Roles do
 
         %{
           role_count: length(profiles),
-          total_unique_skills: MapSet.size(all_skills),
-          shared_skills: shared |> MapSet.to_list() |> Enum.sort(),
-          shared_count: MapSet.size(shared),
+          total_unique_skills: MapSet.size(all_skill_ids),
+          shared_skills: shared_ids |> Enum.map(&id_to_name[&1]) |> Enum.sort(),
+          shared_count: MapSet.size(shared_ids),
           unique_per_role: unique_per_role,
           role_families: role_families,
           roles: roles
@@ -370,70 +383,93 @@ defmodule RhoFrameworks.Roles do
   end
 
   # --- Similar Roles ---
+  #
+  # Two-tier strategy. ESCO ships ~3,008 occupations, so the prior approach
+  # ("load every visible role, ask the LLM which match") would overflow
+  # prompt budgets and hit the LLM API on every wizard call.
+  #
+  #   1. Embedding KNN — when the query embeds and rows have embeddings,
+  #      pgvector's HNSW index resolves the top-K nearest in sub-ms.
+  #      Cosine distance is the relevance score; no LLM rerank.
+  #   2. LIKE fallback — when embeddings are unavailable (server not ready,
+  #      no rows embedded yet) or the query is empty, fall back to the
+  #      previous SQL `like` search across name/role_family/description.
 
   def find_similar_roles(org_id, query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
+    k = Keyword.get(opts, :k, 25)
 
-    # Fetch all roles visible to the org (own + public) with their skill counts
-    candidates =
-      from(rp in RoleProfile,
-        where: rp.organization_id == ^org_id or rp.visibility == "public",
-        left_join: rs in RoleSkill,
-        on: rs.role_profile_id == rp.id,
-        group_by: rp.id,
-        select: %{
-          id: rp.id,
-          name: rp.name,
-          role_family: rp.role_family,
-          seniority_label: rp.seniority_label,
-          skill_count: count(rs.id)
-        }
-      )
-      |> Repo.all()
+    case maybe_embed_query(query) do
+      {:ok, query_vec} ->
+        find_similar_roles_via_knn(org_id, query_vec, k, limit) ||
+          find_similar_roles_fallback(org_id, query, limit)
 
-    case candidates do
-      [] -> []
-      _ -> rank_or_fallback(candidates, org_id, query, limit)
-    end
-  end
-
-  defp rank_or_fallback(candidates, org_id, query, limit) do
-    case rank_similar_via_llm(candidates, query, limit) do
-      {:ok, ranked_ids} ->
-        Logger.warning(
-          "[find_similar_roles] LLM returned #{length(ranked_ids)} ids: #{inspect(ranked_ids)}"
-        )
-
-        id_index = Map.new(candidates, &{&1.id, &1})
-        ranked_ids |> Enum.map(&id_index[&1]) |> Enum.reject(&is_nil/1)
-
-      {:error, reason} ->
-        Logger.warning(
-          "[find_similar_roles] LLM failed: #{inspect(reason)}, falling back to LIKE"
-        )
-
+      :unavailable ->
         find_similar_roles_fallback(org_id, query, limit)
     end
   end
 
-  defp rank_similar_via_llm(candidates, query, limit) do
-    # Use short indices so the LLM doesn't hallucinate large DB ids
-    indexed = Enum.with_index(candidates, 1)
+  defp maybe_embed_query(query) when query in [nil, ""], do: :unavailable
 
-    role_list =
-      Enum.map_join(indexed, "\n", fn {c, idx} ->
-        "#{idx}. #{c.name} (family: #{c.role_family || "N/A"}, seniority: #{c.seniority_label || "N/A"})"
-      end)
+  defp maybe_embed_query(query) when is_binary(query) do
+    if RhoEmbeddings.ready?() do
+      case RhoEmbeddings.embed_many([query]) do
+        {:ok, [vec]} ->
+          {:ok, vec}
 
-    idx_to_id = Map.new(indexed, fn {c, idx} -> {idx, c.id} end)
+        other ->
+          Logger.warning(
+            "[find_similar_roles] embed_many failed: #{inspect(other)}, using LIKE fallback"
+          )
 
-    case RhoFrameworks.LLM.RankRoles.call(%{query: query, role_list: role_list, limit: limit}) do
-      {:ok, %{indices: indices}} ->
-        ids = indices |> Enum.map(&idx_to_id[&1]) |> Enum.reject(&is_nil/1)
-        {:ok, ids}
+          :unavailable
+      end
+    else
+      :unavailable
+    end
+  end
 
-      {:error, reason} ->
-        {:error, reason}
+  # Returns the top-K nearest roles by cosine distance, then truncates to
+  # `limit`. `nil` if no embedded rows are visible to the org — the caller
+  # falls back to LIKE so the caller never gets an empty list when there
+  # are matching un-embedded rows in the DB.
+  defp find_similar_roles_via_knn(org_id, query_vec, k, limit) do
+    candidate_ids =
+      from(rp in RoleProfile,
+        where: rp.organization_id == ^org_id or rp.visibility == "public",
+        where: not is_nil(rp.embedding),
+        order_by: fragment("? <=> ?", rp.embedding, type(^query_vec, Pgvector.Ecto.Vector)),
+        limit: ^k,
+        select: rp.id
+      )
+      |> Repo.all()
+
+    case candidate_ids do
+      [] ->
+        nil
+
+      ids ->
+        # Re-query in the same map shape as the LIKE branch (skill_count
+        # via left-join + group_by). Preserve KNN order via id_index.
+        id_index = Map.new(Enum.with_index(ids), fn {id, idx} -> {id, idx} end)
+
+        from(rp in RoleProfile,
+          where: rp.id in ^ids,
+          left_join: rs in RoleSkill,
+          on: rs.role_profile_id == rp.id,
+          group_by: rp.id,
+          select: %{
+            id: rp.id,
+            name: rp.name,
+            role_family: rp.role_family,
+            seniority_label: rp.seniority_label,
+            skill_count: count(rs.id),
+            organization_id: rp.organization_id
+          }
+        )
+        |> Repo.all()
+        |> Enum.sort_by(fn r -> Map.fetch!(id_index, r.id) end)
+        |> Enum.take(limit)
     end
   end
 
@@ -455,7 +491,8 @@ defmodule RhoFrameworks.Roles do
         name: rp.name,
         role_family: rp.role_family,
         seniority_label: rp.seniority_label,
-        skill_count: count(rs.id)
+        skill_count: count(rs.id),
+        organization_id: rp.organization_id
       }
     )
     |> Repo.all()
@@ -466,16 +503,20 @@ defmodule RhoFrameworks.Roles do
   def clone_role_skills(org_id, role_profile_ids) when is_list(role_profile_ids) do
     profiles =
       from(rp in RoleProfile,
-        where: rp.organization_id == ^org_id and rp.id in ^role_profile_ids,
+        where:
+          (rp.organization_id == ^org_id or rp.visibility == "public") and
+            rp.id in ^role_profile_ids,
         preload: [role_skills: :skill]
       )
       |> Repo.all()
 
-    # Union skills, keep highest required_level on overlap
+    # Union skills, keep highest required_level on overlap (keyed by skill.id —
+    # ESCO contains distinct skills sharing a preferredLabel, so identity-by-name
+    # would silently merge them).
     profiles
     |> Enum.flat_map(& &1.role_skills)
     |> Enum.reduce(%{}, fn rs, acc ->
-      key = rs.skill.name
+      key = rs.skill.id
 
       case Map.get(acc, key) do
         nil ->
@@ -517,7 +558,9 @@ defmodule RhoFrameworks.Roles do
   def clone_skills_for_library(org_id, role_profile_ids) when is_list(role_profile_ids) do
     profiles =
       from(rp in RoleProfile,
-        where: rp.organization_id == ^org_id and rp.id in ^role_profile_ids,
+        where:
+          (rp.organization_id == ^org_id or rp.visibility == "public") and
+            rp.id in ^role_profile_ids,
         preload: [role_skills: :skill]
       )
       |> Repo.all()
@@ -525,7 +568,7 @@ defmodule RhoFrameworks.Roles do
     profiles
     |> Enum.flat_map(& &1.role_skills)
     |> Enum.reduce(%{}, fn rs, acc ->
-      Map.put_new(acc, rs.skill.name, %{
+      Map.put_new(acc, rs.skill.id, %{
         category: rs.skill.category || "",
         cluster: rs.skill.cluster || "",
         skill_name: rs.skill.name,

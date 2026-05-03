@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.FlowRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.{FlowRunner, Scope}
   alias RhoFrameworks.Flow.Policies.Deterministic

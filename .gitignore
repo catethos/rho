@@ -23,6 +23,7 @@ erl_crash.dump
 rho-*.tar
 
 .env
+.env.test
 
 # Rho runtime session data (root + every umbrella app)
 _rho/

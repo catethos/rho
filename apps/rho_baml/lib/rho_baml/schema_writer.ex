@@ -11,10 +11,13 @@ defmodule RhoBaml.SchemaWriter do
 
   Produces a **discriminated union** of per-tool action classes:
 
-  - `RespondAction` — `tool "respond"`, `message string`, `thinking string?`
-  - `ThinkAction` — `tool "think"`, `thought string`, `thinking string?`
+  - `RespondAction` — `tool "respond"`, `message string`
+  - `ThinkAction` — `tool "think"`, `thought string`
   - One class per visible tool — `tool "<name>"` (literal), declared params
-    (required vs optional preserved from the parameter_schema), `thinking string?`
+    (required vs optional preserved from the parameter_schema)
+
+  No auto-injected `thinking` field — use the dedicated `:think` tool when
+  the model needs an explicit reasoning step.
 
   Plus an `AgentTurn(messages: string)` function returning the union, wired
   to a configurable client. The LLM picks one variant and emits only its
@@ -63,7 +66,10 @@ defmodule RhoBaml.SchemaWriter do
     visible_defs = Enum.reject(tool_defs, fn td -> td[:deferred] end)
 
     reserved = [
-      {"RespondAction", "respond", "Reply to the user with a final message.",
+      {"RespondAction", "respond",
+       "Reply directly to the user. The default action — use this whenever no other tool applies. " <>
+         "It is the only way to talk to the user, so prefer it for answers, summaries, " <>
+         "follow-up questions, and ending a turn after presenting tool results.",
        [{"message", "string"}]},
       {"ThinkAction", "think", "Record an internal reasoning step without external action.",
        [{"thought", "string"}]}
@@ -114,8 +120,8 @@ defmodule RhoBaml.SchemaWriter do
 
     body =
       case fields_baml do
-        "" -> "#{tool_line}\n  thinking string?"
-        nb -> "#{tool_line}\n#{nb}\n  thinking string?"
+        "" -> tool_line
+        nb -> "#{tool_line}\n#{nb}"
       end
 
     "class #{class_name} {\n#{body}\n}"

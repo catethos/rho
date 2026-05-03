@@ -1,7 +1,7 @@
 class ScoreLensOutputVariableScores {
   key string @description("Variable key matching the lens definition")
-  score float @description("Score from 0 to 100")
   rationale string @description("Brief evidence-based rationale")
+  score float @description("Score from 0 to 100")
 }
 
 class ScoreLensOutputWorkActivities {

@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.Tools.LibraryToolsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Tools.LibraryTools
 

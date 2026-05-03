@@ -1,0 +1,6 @@
+conceptType,conceptUri,iscoGroup,preferredLabel,altLabels,description,regulatedProfessionNote
+Occupation,http://data.europa.eu/esco/occupation/0001,2654,film director,"motion picture director
+movie director",Plans and directs the production of motion pictures.,
+Occupation,http://data.europa.eu/esco/occupation/0002,2511,systems analyst,"IT systems analyst",Analyses and evaluates client information technology requirements.,
+Occupation,http://data.europa.eu/esco/occupation/0003,5113,tour guide,"travel guide",Accompanies visitors on sightseeing tours.,Regulated in some EU member states.
+Occupation,http://data.europa.eu/esco/occupation/0004,9999,unknown role,"",Role with an ISCO code not present in the lookup file.,

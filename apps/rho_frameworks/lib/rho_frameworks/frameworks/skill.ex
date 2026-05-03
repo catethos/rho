@@ -15,6 +15,9 @@ defmodule RhoFrameworks.Frameworks.Skill do
     field(:sort_order, :integer)
     field(:metadata, :map, default: %{})
     field(:proficiency_levels, {:array, :map}, default: [])
+    field(:embedding, Pgvector.Ecto.Vector)
+    field(:embedding_text_hash, :binary)
+    field(:embedded_at, :utc_datetime_usec)
 
     belongs_to(:library, RhoFrameworks.Frameworks.Library)
     belongs_to(:source_skill, __MODULE__)
@@ -35,7 +38,10 @@ defmodule RhoFrameworks.Frameworks.Skill do
       :metadata,
       :proficiency_levels,
       :library_id,
-      :source_skill_id
+      :source_skill_id,
+      :embedding,
+      :embedding_text_hash,
+      :embedded_at
     ])
     |> validate_required([:name, :category, :library_id])
     |> validate_inclusion(:status, ["draft", "published", "archived"])

@@ -1,22 +1,29 @@
 defmodule RhoFrameworks.LLM.SemanticDuplicates do
   @moduledoc """
-  BAML-backed LLM function for finding semantically duplicate skills.
+  BAML-backed verifier for semantically-duplicate skills.
 
-  Given a formatted list of skills (with IDs in brackets), returns pairs
-  of skills that describe the same underlying competency.
+  Per-focal formulation: caller passes one `focal` skill plus a numbered
+  list of `candidates` (its top embedding-cosine neighbors). The model
+  returns the indices of candidates that name the SAME underlying
+  competency as the focal.
+
+  This shape replaces the older flat-pairs format because it (1) avoids
+  duplicating each skill's description across many pairs, and (2) gives
+  the LLM a single anchor to reason against — empirically improves
+  recall on smaller models that otherwise drift conservative.
   """
   use RhoBaml.Function,
     client: "OpenRouter",
-    params: [skill_list: :string]
+    params: [focal: :string, candidates: :string]
 
   @schema Zoi.struct(__MODULE__, %{
-            pairs:
+            duplicate_indices:
               Zoi.array(
-                Zoi.map(%{
-                  id_a: Zoi.integer(description: "ID of first skill"),
-                  id_b: Zoi.integer(description: "ID of second skill")
-                }),
-                description: "Pairs of semantically duplicate skills"
+                Zoi.integer(
+                  description: "Index of a candidate confirmed as a duplicate of the focal"
+                ),
+                description:
+                  "Indices (referencing the candidate list) of skills that describe the same underlying competency as the focal"
               )
           })
 
@@ -26,20 +33,39 @@ defmodule RhoFrameworks.LLM.SemanticDuplicates do
 
   @prompt ~S"""
   {{ _.role("system") }}
-  You are a competency framework expert that identifies semantically duplicate skills.
+  You are a competency framework expert. You judge whether two skill
+  descriptions name the SAME underlying competency, despite differences
+  in wording, language, or phrasing.
 
   {{ _.role("user") }}
-  Below is a list of skills from a single competency library.
-  Identify pairs that are semantically the same competency despite different names.
+  Below is a FOCAL skill and a list of CANDIDATES that an embedding
+  model flagged as semantically similar to it. For each candidate,
+  decide whether it describes the same underlying competency as the
+  focal.
 
-  Only flag pairs where you are confident they describe the same underlying skill.
-  Do NOT flag pairs that are related but distinct (e.g., "Data Analysis" and "Statistical Analysis"
-  are different if one focuses on exploratory work and the other on hypothesis testing).
+  Only include a candidate's index in `duplicate_indices` when you are
+  CONFIDENT it is the same competency.
 
-  Skills:
-  {{skill_list}}
+  Do NOT confirm:
+    - Subset/superset relationships (e.g. "Marketing" vs "Brand
+      Management")
+    - Pairs that share a topic but differ in scope or focus (e.g.
+      "Data Analysis" exploratory vs "Statistical Analysis"
+      hypothesis testing; "Liquidity Management" vs "Cash Flow
+      Management")
 
-  If no semantic duplicates are found, return an empty pairs array.
+  DO confirm cross-language or paraphrased pairs that name the exact
+  same competency (e.g. "Data Analysis" / "数据分析"; "SQL
+  Programming" / "SQL Querying" when both describe query authoring).
+
+  FOCAL:
+  {{focal}}
+
+  CANDIDATES:
+  {{candidates}}
+
+  Return only the indices of confirmed duplicates. Empty array if none
+  of the candidates name the same competency as the focal.
 
   {{ ctx.output_format }}
   """

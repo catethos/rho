@@ -26,7 +26,7 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
     struct!(Phoenix.LiveView.Socket, assigns: assigns)
   end
 
-  defp org, do: %{id: "org-1", slug: "acme", name: "Acme"}
+  defp org, do: %{id: Ecto.UUID.generate(), slug: "acme", name: "Acme"}
 
   defp create_org do
     org_id = Ecto.UUID.generate()

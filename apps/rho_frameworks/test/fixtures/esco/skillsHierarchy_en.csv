@@ -1,0 +1,6 @@
+Level 0 URI,Level 0 preferred term,Level 1 URI,Level 1 preferred term,Level 2 URI,Level 2 preferred term,Level 3 URI,Level 3 preferred term
+http://data.europa.eu/esco/skill/L0_S,Skills,http://data.europa.eu/esco/skill/L1_S1,"Communication, collaboration and creativity",http://data.europa.eu/esco/skill/L2_S1.0,communicating,http://data.europa.eu/esco/skill/L3_S1.0.1,handling languages
+http://data.europa.eu/esco/skill/L0_S,Skills,http://data.europa.eu/esco/skill/L1_S1,"Communication, collaboration and creativity",http://data.europa.eu/esco/skill/L2_S1.0,communicating,http://data.europa.eu/esco/skill/L3_S1.0.2,liaising
+http://data.europa.eu/esco/skill/L0_S,Skills,http://data.europa.eu/esco/skill/L1_S2,Information skills,http://data.europa.eu/esco/skill/L2_S2.0,gathering and processing information,,
+http://data.europa.eu/esco/skill/L0_S,Skills,http://data.europa.eu/esco/skill/L1_S5,Management skills,http://data.europa.eu/esco/skill/L2_S5.0,leading and motivating,http://data.europa.eu/esco/skill/L3_S5.0.1,managing staff
+http://data.europa.eu/esco/skill/L0_K,Knowledge,http://data.europa.eu/esco/skill/L1_K06,Information and Communication Technologies,http://data.europa.eu/esco/skill/L2_K06.1,programming,,

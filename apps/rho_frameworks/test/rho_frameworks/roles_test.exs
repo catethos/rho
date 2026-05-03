@@ -1,8 +1,11 @@
 defmodule RhoFrameworks.RolesTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query
+
   alias RhoFrameworks.Repo
-  alias RhoFrameworks.Frameworks.Skill
+  alias RhoFrameworks.Frameworks.{RoleProfile, Skill}
+  alias RhoEmbeddings.Backend.Fake, as: FakeEmbeddings
 
   setup do
     org_id = Ecto.UUID.generate()
@@ -295,5 +298,291 @@ defmodule RhoFrameworks.RolesTest do
       assert row.skill_name == "SQL"
       assert length(row.proficiency_levels) == 1
     end
+  end
+
+  describe "identity-by-id (ESCO duplicate-name resilience)" do
+    # Two skills sharing a `name` but with distinct ids — mirrors ESCO's
+    # ~200 skills that share a preferredLabel. Identity-by-name would
+    # silently collapse them; identity-by-id keeps them distinct.
+    setup %{org_id: org_id, lib: lib} do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      skill_a =
+        Repo.insert!(%Skill{
+          name: "Project Management",
+          slug: "project-management-aaa111",
+          category: "Tech",
+          cluster: "PM",
+          library_id: lib.id,
+          status: "published",
+          inserted_at: now,
+          updated_at: now
+        })
+
+      skill_b =
+        Repo.insert!(%Skill{
+          name: "Project Management",
+          slug: "project-management-bbb222",
+          category: "Tech",
+          cluster: "PM",
+          library_id: lib.id,
+          status: "published",
+          inserted_at: now,
+          updated_at: now
+        })
+
+      role_a =
+        Repo.insert!(%RhoFrameworks.Frameworks.RoleProfile{
+          name: "Role A",
+          organization_id: org_id,
+          inserted_at: now,
+          updated_at: now
+        })
+
+      role_b =
+        Repo.insert!(%RhoFrameworks.Frameworks.RoleProfile{
+          name: "Role B",
+          organization_id: org_id,
+          inserted_at: now,
+          updated_at: now
+        })
+
+      Repo.insert!(%RhoFrameworks.Frameworks.RoleSkill{
+        role_profile_id: role_a.id,
+        skill_id: skill_a.id,
+        min_expected_level: 3,
+        required: true,
+        inserted_at: now,
+        updated_at: now
+      })
+
+      Repo.insert!(%RhoFrameworks.Frameworks.RoleSkill{
+        role_profile_id: role_b.id,
+        skill_id: skill_b.id,
+        min_expected_level: 3,
+        required: true,
+        inserted_at: now,
+        updated_at: now
+      })
+
+      %{skill_a: skill_a, skill_b: skill_b, role_a: role_a, role_b: role_b}
+    end
+
+    test "compare_role_profiles/2 does not silently merge same-name skills",
+         %{org_id: org_id} do
+      result = RhoFrameworks.Roles.compare_role_profiles(org_id, ["Role A", "Role B"])
+
+      # Different skill ids → no shared skills, both roles claim "Project
+      # Management" as unique. (With identity-by-name this would have been
+      # shared_count: 1 and unique_per_role each empty.)
+      assert result.shared_count == 0
+      assert result.shared_skills == []
+      assert result.unique_per_role["Role A"] == ["Project Management"]
+      assert result.unique_per_role["Role B"] == ["Project Management"]
+      assert result.total_unique_skills == 2
+    end
+
+    test "org_view/1 does not silently merge same-name skills", %{org_id: org_id} do
+      view = RhoFrameworks.Roles.org_view(org_id)
+
+      assert view.role_count == 2
+      assert view.shared_count == 0
+      assert view.total_unique_skills == 2
+      assert view.unique_per_role["Role A"] == ["Project Management"]
+      assert view.unique_per_role["Role B"] == ["Project Management"]
+    end
+
+    test "clone_role_skills/2 returns one row per distinct skill id, not per name",
+         %{org_id: org_id, role_a: role_a, role_b: role_b} do
+      cloned = RhoFrameworks.Roles.clone_role_skills(org_id, [role_a.id, role_b.id])
+
+      # Two distinct ids → two rows (despite identical names). Identity-by-name
+      # would have collapsed to a single merged row.
+      assert length(cloned) == 2
+      assert Enum.all?(cloned, &(&1.skill_name == "Project Management"))
+    end
+
+    test "clone_skills_for_library/2 returns one row per distinct skill id",
+         %{org_id: org_id, role_a: role_a, role_b: role_b} do
+      cloned = RhoFrameworks.Roles.clone_skills_for_library(org_id, [role_a.id, role_b.id])
+
+      assert length(cloned) == 2
+      assert Enum.all?(cloned, &(&1.skill_name == "Project Management"))
+    end
+  end
+
+  describe "public role visibility" do
+    test "clone_role_skills/2 includes skills from public roles owned by another org",
+         %{org_id: caller_org_id, lib: lib} do
+      other_org_id = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org_id,
+        name: "Other Org",
+        slug: "other-org-#{System.unique_integer([:positive])}"
+      })
+
+      {:ok, %{role_profile: rp}} =
+        RhoFrameworks.Roles.save_role_profile(
+          other_org_id,
+          %{name: "Public Role", visibility: "public"},
+          [%{category: "Tech", skill_name: "Kubernetes", required_level: 3}],
+          resolve_library_id: lib.id
+        )
+
+      # Caller is a different org; the role lives in `other_org_id`.
+      cloned = RhoFrameworks.Roles.clone_role_skills(caller_org_id, [rp.id])
+
+      assert length(cloned) == 1
+      assert hd(cloned).skill_name == "Kubernetes"
+    end
+
+    test "clone_skills_for_library/2 includes skills from public roles owned by another org",
+         %{org_id: caller_org_id, lib: lib} do
+      other_org_id = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org_id,
+        name: "Other Org 2",
+        slug: "other-org-#{System.unique_integer([:positive])}"
+      })
+
+      {:ok, %{role_profile: rp}} =
+        RhoFrameworks.Roles.save_role_profile(
+          other_org_id,
+          %{name: "Public Role 2", visibility: "public"},
+          [%{category: "Tech", skill_name: "Terraform", required_level: 3}],
+          resolve_library_id: lib.id
+        )
+
+      cloned = RhoFrameworks.Roles.clone_skills_for_library(caller_org_id, [rp.id])
+
+      assert length(cloned) == 1
+      assert hd(cloned).skill_name == "Terraform"
+    end
+  end
+
+  describe "find_similar_roles/3" do
+    @query "find an analyst"
+
+    setup %{org_id: org_id} do
+      FakeEmbeddings.reset()
+
+      # Shared SQL.Sandbox holds one transaction for the whole test run, so
+      # public/embedded role profiles from prior tests in this describe
+      # leak in via the `visibility == "public"` clause and tie at
+      # distance 0 with our `rp_a`. Wipe them before seeding.
+      Repo.delete_all(
+        from(rp in RoleProfile,
+          where: rp.visibility == "public" or not is_nil(rp.embedding)
+        )
+      )
+
+      # Pin the query → vec_a so the KNN orders against vec_a, vec_b, vec_c
+      # in monotonically increasing cosine distance (0 / 1 / 2).
+      :ok = FakeEmbeddings.put_vector(@query, vec_a())
+
+      rp_a = insert_role(org_id, "Data Analyst", "Number cruncher.", embedding: vec_a())
+      rp_b = insert_role(org_id, "Project Manager", "Schedules timelines.", embedding: vec_b())
+      rp_c = insert_role(org_id, "HR Specialist", "People work.", embedding: vec_c())
+
+      %{rp_a: rp_a, rp_b: rp_b, rp_c: rp_c}
+    end
+
+    test "returns roles in KNN order by cosine distance",
+         %{org_id: org_id, rp_a: rp_a, rp_b: rp_b, rp_c: rp_c} do
+      results = RhoFrameworks.Roles.find_similar_roles(org_id, @query)
+      ids = Enum.map(results, & &1.id)
+
+      # vec_a is identical to the query → distance 0 (closest).
+      # vec_b is orthogonal → distance ~1.
+      # vec_c is anti-parallel → distance ~2.
+      assert hd(ids) == rp_a.id
+
+      assert Enum.find_index(ids, &(&1 == rp_b.id)) <
+               Enum.find_index(ids, &(&1 == rp_c.id))
+    end
+
+    test "respects :limit option", %{org_id: org_id, rp_a: rp_a} do
+      [only] = RhoFrameworks.Roles.find_similar_roles(org_id, @query, limit: 1)
+      assert only.id == rp_a.id
+    end
+
+    test "falls back to LIKE when the query is empty (KNN unavailable)",
+         %{org_id: org_id, rp_a: rp_a} do
+      # Empty query short-circuits embedding; LIKE matches everything (`%%`).
+      results = RhoFrameworks.Roles.find_similar_roles(org_id, "")
+      ids = Enum.map(results, & &1.id) |> MapSet.new()
+      assert rp_a.id in ids
+    end
+
+    test "falls back to LIKE when no rows have embeddings", %{org_id: org_id} do
+      # Wipe embeddings so KNN returns no candidates; LIKE still finds the
+      # role by name match.
+      Repo.update_all(RoleProfile, set: [embedding: nil])
+
+      [match] = RhoFrameworks.Roles.find_similar_roles(org_id, "Analyst")
+      assert match.name == "Data Analyst"
+    end
+
+    test "ignores roles from other orgs that aren't public", %{org_id: org_id} do
+      other_org = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org,
+        name: "Other",
+        slug: "other-#{System.unique_integer([:positive])}"
+      })
+
+      _foreign =
+        insert_role(other_org, "Foreign Analyst", "Hidden.",
+          embedding: vec_a(),
+          visibility: "private"
+        )
+
+      results = RhoFrameworks.Roles.find_similar_roles(org_id, @query)
+      assert Enum.all?(results, &(&1.name != "Foreign Analyst"))
+    end
+
+    test "includes public roles from other orgs", %{org_id: org_id} do
+      other_org = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org,
+        name: "Public Owner",
+        slug: "pub-#{System.unique_integer([:positive])}"
+      })
+
+      pub =
+        insert_role(other_org, "Public Analyst", "Shared.",
+          embedding: vec_a(),
+          visibility: "public"
+        )
+
+      ids =
+        RhoFrameworks.Roles.find_similar_roles(org_id, @query)
+        |> Enum.map(& &1.id)
+
+      assert pub.id in ids
+    end
+  end
+
+  # ── helpers ───────────────────────────────────────────────────────────
+
+  # Three orthogonal-ish 384-dim unit vectors. Cosine distance to vec_a:
+  # vec_a = 0, vec_b ≈ 1 (orthogonal), vec_c ≈ 2 (antiparallel).
+  defp vec_a, do: [1.0 | List.duplicate(0.0, 383)]
+  defp vec_b, do: [0.0, 1.0 | List.duplicate(0.0, 382)]
+  defp vec_c, do: [-1.0 | List.duplicate(0.0, 383)]
+
+  defp insert_role(org_id, name, description, opts) do
+    Repo.insert!(%RoleProfile{
+      organization_id: org_id,
+      name: name,
+      description: description,
+      visibility: Keyword.get(opts, :visibility, "private"),
+      embedding: Keyword.get(opts, :embedding),
+      headcount: 1
+    })
   end
 end

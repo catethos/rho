@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Flows.FinalizeSkeleton
   alias RhoFrameworks.Scope

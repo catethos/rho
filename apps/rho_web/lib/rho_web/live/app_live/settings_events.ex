@@ -8,7 +8,7 @@ defmodule RhoWeb.AppLive.SettingsEvents do
   def handle_event("delete_role", %{"name" => name}, socket) do
     org = socket.assigns.current_organization
     RhoFrameworks.Roles.delete_role_profile(org.id, name)
-    profiles = RhoFrameworks.Roles.list_role_profiles(org.id)
+    profiles = RhoFrameworks.Roles.list_role_profiles(org.id, include_public: false)
     {:noreply, assign(socket, profiles: profiles, role_grouped: group_roles_by_family(profiles))}
   end
 

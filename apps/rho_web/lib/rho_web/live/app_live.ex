@@ -164,6 +164,7 @@ defmodule RhoWeb.AppLive do
       socket
       |> assign(:libraries, libraries)
       |> assign(:library_groups, group_libraries(libraries))
+      |> assign(:library_search_query, "")
       |> assign_new(:chat_overlay_open, fn -> false end)
       |> assign_new(:overlay_session_id, fn -> nil end)
       |> assign_new(:smart_entry_pending?, fn -> false end)
@@ -171,6 +172,7 @@ defmodule RhoWeb.AppLive do
       socket
       |> assign(:libraries, [])
       |> assign(:library_groups, [])
+      |> assign(:library_search_query, "")
       |> assign_new(:chat_overlay_open, fn -> false end)
       |> assign_new(:overlay_session_id, fn -> nil end)
       |> assign_new(:smart_entry_pending?, fn -> false end)
@@ -199,6 +201,7 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:fork_name, fn -> "" end)
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
+      |> assign_new(:skill_search_query, fn -> "" end)
     else
       socket
       |> assign(:library, nil)
@@ -211,17 +214,29 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:fork_name, fn -> "" end)
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
+      |> assign_new(:skill_search_query, fn -> "" end)
     end
   end
 
   defp apply_page(socket, :roles, _params) do
     if connected?(socket) do
       org = socket.assigns.current_organization
-      profiles = RhoFrameworks.Roles.list_role_profiles(org.id)
+      profiles = RhoFrameworks.Roles.list_role_profiles(org.id, include_public: false)
       grouped = group_roles_by_family(profiles)
-      assign(socket, profiles: profiles, role_grouped: grouped)
+
+      assign(socket,
+        profiles: profiles,
+        role_grouped: grouped,
+        role_search_query: "",
+        role_search_results: nil
+      )
     else
-      assign(socket, profiles: [], role_grouped: [])
+      assign(socket,
+        profiles: [],
+        role_grouped: [],
+        role_search_query: "",
+        role_search_results: nil
+      )
     end
   end
 
@@ -306,11 +321,14 @@ defmodule RhoWeb.AppLive do
           |> assign(:grouped, nil)
           |> assign(:show_diff, false)
           |> assign(:diff_result, nil)
+          |> assign(:skill_search_query, "")
 
         :roles ->
           socket
           |> assign(:profiles, nil)
           |> assign(:role_grouped, nil)
+          |> assign(:role_search_query, "")
+          |> assign(:role_search_results, nil)
 
         :role_show ->
           socket
@@ -340,6 +358,7 @@ defmodule RhoWeb.AppLive do
 
     socket
     |> assign(:libraries, nil)
+    |> assign(:library_search_query, "")
     |> assign(:chat_overlay_open, false)
     |> assign(:overlay_session_id, nil)
   end
@@ -570,11 +589,29 @@ defmodule RhoWeb.AppLive do
         </form>
       </section>
 
+      <form phx-change="search_libraries" phx-submit="search_libraries" class="search-bar">
+        <input
+          type="search"
+          name="q"
+          value={@library_search_query}
+          placeholder="Filter libraries by name…"
+          phx-debounce="150"
+          class="search-input"
+          autocomplete="off"
+        />
+      </form>
+
+      <% filtered_groups = filter_library_groups(@library_groups, @library_search_query) %>
+
       <.empty_state :if={@library_groups == []}>
         No libraries yet. Create one in the chat editor or load a standard template.
       </.empty_state>
 
-      <div :if={@library_groups != []} class="lib-list">
+      <.empty_state :if={@library_groups != [] && filtered_groups == []}>
+        No libraries match "<%= @library_search_query %>".
+      </.empty_state>
+
+      <div :if={filtered_groups != []} class="lib-list">
         <div class="lib-list-header">
           <span class="lib-col-name">Name</span>
           <span class="lib-col-version">Version</span>
@@ -583,7 +620,7 @@ defmodule RhoWeb.AppLive do
           <span class="lib-col-actions"></span>
         </div>
 
-        <%= for group <- @library_groups do %>
+        <%= for group <- filtered_groups do %>
           <details class="lib-group" open={group.version_count == 1}>
             <summary class="lib-row lib-row-primary">
               <span class="lib-col-name">
@@ -732,6 +769,17 @@ defmodule RhoWeb.AppLive do
   # ── Library Show page render ───────────────────────────────────────
 
   defp render_library_show(assigns) do
+    assigns =
+      assigns
+      |> assign(:skill_search_active?, String.trim(assigns[:skill_search_query] || "") != "")
+      |> assign(
+        :filtered_grouped,
+        filter_grouped_skills(assigns[:grouped] || [], assigns[:skill_search_query])
+      )
+      |> then(fn a ->
+        assign(a, :filtered_skill_count, filtered_skill_count(a.filtered_grouped))
+      end)
+
     ~H"""
     <.page_shell>
       <div :if={@library} class="breadcrumb">
@@ -843,12 +891,33 @@ defmodule RhoWeb.AppLive do
             <option value="archived" selected={@status_filter == "archived"}>Archived</option>
           </select>
         </form>
-        <span class="filter-count"><%= length(@skills) %> skills</span>
+        <form phx-change="search_skills" phx-submit="search_skills" class="search-bar search-bar--inline">
+          <input
+            type="search"
+            name="q"
+            value={@skill_search_query}
+            placeholder="Filter skills…"
+            phx-debounce="150"
+            class="search-input"
+            autocomplete="off"
+          />
+        </form>
+        <span class="filter-count">
+          <%= if @skill_search_active? do %>
+            <%= @filtered_skill_count %> / <%= length(@skills) %> skills
+          <% else %>
+            <%= length(@skills) %> skills
+          <% end %>
+        </span>
       </div>
 
-      <div :for={{category, clusters} <- @grouped} class="fw-collapse"
-        id={"cat-#{category}"} phx-update="ignore">
-        <details>
+      <.empty_state :if={@library && @skill_search_active? && @filtered_skill_count == 0}>
+        No skills match "<%= @skill_search_query %>".
+      </.empty_state>
+
+      <div :for={{category, clusters} <- @filtered_grouped} class="fw-collapse"
+        id={"cat-#{category}-#{String.length(@skill_search_query || "")}"} phx-update="ignore">
+        <details open={@skill_search_active?}>
           <summary class="fw-collapse-summary">
             <span class="fw-collapse-arrow"></span>
             <span class="fw-cluster-title"><%= category %></span>
@@ -856,7 +925,7 @@ defmodule RhoWeb.AppLive do
           </summary>
 
           <div class="fw-collapse-body">
-            <details :for={{cluster, cluster_skills} <- clusters} class="fw-collapse fw-collapse--nested">
+            <details :for={{cluster, cluster_skills} <- clusters} class="fw-collapse fw-collapse--nested" open={@skill_search_active?}>
               <summary class="fw-collapse-summary">
                 <span class="fw-collapse-arrow"></span>
                 <span class="fw-category-title"><%= cluster %></span>
@@ -922,68 +991,116 @@ defmodule RhoWeb.AppLive do
         </:actions>
       </.page_header>
 
-      <.empty_state :if={@profiles == []}>
-        No role profiles yet. Create one in the chat editor.
-      </.empty_state>
+      <form phx-change="search_roles" phx-submit="search_roles" class="search-bar">
+        <input
+          type="search"
+          name="q"
+          value={@role_search_query}
+          placeholder="Search across your roles + ESCO public catalog…"
+          phx-debounce="300"
+          class="search-input"
+          autocomplete="off"
+        />
+      </form>
 
-      <div :if={@profiles != []} class="lib-list">
-        <div class="lib-list-header">
-          <span class="lib-col-name">Name</span>
-          <span class="lib-col-version">Seniority</span>
-          <span class="lib-col-skills">Skills</span>
-          <span class="lib-col-updated">Updated</span>
-          <span class="lib-col-actions"></span>
-        </div>
+      <%= if @role_search_results do %>
+        <.empty_state :if={@role_search_results == []}>
+          No matches for "<%= @role_search_query %>".
+        </.empty_state>
 
-        <%= for {family, family_profiles} <- @role_grouped do %>
-          <details class="lib-group" open={length(@role_grouped) <= 3}>
-            <summary class="lib-row lib-row-primary">
-              <span class="lib-col-name">
-                <span class="lib-name-link"><%= family || "Ungrouped" %></span>
-                <span class="badge-muted"><%= length(family_profiles) %> roles</span>
+        <div :if={@role_search_results != []} class="lib-list">
+          <div class="lib-list-header">
+            <span class="lib-col-name">Name</span>
+            <span class="lib-col-version">Seniority</span>
+            <span class="lib-col-skills">Skills</span>
+            <span class="lib-col-updated">Family</span>
+            <span class="lib-col-actions"></span>
+          </div>
+
+          <div :for={rp <- @role_search_results} class="lib-row lib-row-version">
+            <span class="lib-col-name">
+              <.link
+                patch={~p"/orgs/#{@current_organization.slug}/roles/#{rp.id}"}
+                class="lib-name-link"
+              >
+                <%= rp.name %>
+              </.link>
+              <span :if={rp.organization_id != @current_organization.id} class="badge-public">
+                Public
               </span>
-              <span class="lib-col-version"></span>
-              <span class="lib-col-skills"></span>
-              <span class="lib-col-updated"></span>
-              <span class="lib-col-actions"></span>
-            </summary>
+            </span>
+            <span class="lib-col-version">
+              <span :if={rp.seniority_label} class="badge-muted"><%= rp.seniority_label %></span>
+            </span>
+            <span class="lib-col-skills"><%= rp.skill_count %></span>
+            <span class="lib-col-updated"><%= rp.role_family || "—" %></span>
+            <span class="lib-col-actions"></span>
+          </div>
+        </div>
+      <% else %>
+        <.empty_state :if={@profiles == []}>
+          No role profiles yet. Create one in the chat editor.
+        </.empty_state>
 
-            <%= for rp <- family_profiles do %>
-              <div class="lib-row lib-row-version">
-                <span class="lib-col-name lib-version-indent">
-                  <.link
-                    patch={~p"/orgs/#{@current_organization.slug}/roles/#{rp.id}"}
-                    class="lib-name-link"
-                  >
-                    <%= rp.name %>
-                  </.link>
-                  <span :if={rp.organization_id != @current_organization.id} class="badge-public">
-                    Public
+        <div :if={@profiles != []} class="lib-list">
+          <div class="lib-list-header">
+            <span class="lib-col-name">Name</span>
+            <span class="lib-col-version">Seniority</span>
+            <span class="lib-col-skills">Skills</span>
+            <span class="lib-col-updated">Updated</span>
+            <span class="lib-col-actions"></span>
+          </div>
+
+          <%= for {family, family_profiles} <- @role_grouped do %>
+            <details class="lib-group" open={length(@role_grouped) <= 3}>
+              <summary class="lib-row lib-row-primary">
+                <span class="lib-col-name">
+                  <span class="lib-name-link"><%= family || "Ungrouped" %></span>
+                  <span class="badge-muted"><%= length(family_profiles) %> roles</span>
+                </span>
+                <span class="lib-col-version"></span>
+                <span class="lib-col-skills"></span>
+                <span class="lib-col-updated"></span>
+                <span class="lib-col-actions"></span>
+              </summary>
+
+              <%= for rp <- family_profiles do %>
+                <div class="lib-row lib-row-version">
+                  <span class="lib-col-name lib-version-indent">
+                    <.link
+                      patch={~p"/orgs/#{@current_organization.slug}/roles/#{rp.id}"}
+                      class="lib-name-link"
+                    >
+                      <%= rp.name %>
+                    </.link>
+                    <span :if={rp.organization_id != @current_organization.id} class="badge-public">
+                      Public
+                    </span>
                   </span>
-                </span>
-                <span class="lib-col-version">
-                  <span :if={rp.seniority_label} class="badge-muted"><%= rp.seniority_label %></span>
-                </span>
-                <span class="lib-col-skills"><%= rp.skill_count %></span>
-                <span class="lib-col-updated">
-                  <%= Calendar.strftime(rp.updated_at, "%b %d, %Y %H:%M") %>
-                </span>
-                <span class="lib-col-actions">
-                  <button
-                    :if={rp.organization_id == @current_organization.id}
-                    phx-click="delete_role"
-                    phx-value-name={rp.name}
-                    data-confirm={"Delete role profile '#{rp.name}'?"}
-                    class="btn-danger-sm"
-                  >
-                    Delete
-                  </button>
-                </span>
-              </div>
-            <% end %>
-          </details>
-        <% end %>
-      </div>
+                  <span class="lib-col-version">
+                    <span :if={rp.seniority_label} class="badge-muted"><%= rp.seniority_label %></span>
+                  </span>
+                  <span class="lib-col-skills"><%= rp.skill_count %></span>
+                  <span class="lib-col-updated">
+                    <%= Calendar.strftime(rp.updated_at, "%b %d, %Y %H:%M") %>
+                  </span>
+                  <span class="lib-col-actions">
+                    <button
+                      :if={rp.organization_id == @current_organization.id}
+                      phx-click="delete_role"
+                      phx-value-name={rp.name}
+                      data-confirm={"Delete role profile '#{rp.name}'?"}
+                      class="btn-danger-sm"
+                    >
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              <% end %>
+            </details>
+          <% end %>
+        </div>
+      <% end %>
     </.page_shell>
     """
   end
@@ -1856,6 +1973,36 @@ defmodule RhoWeb.AppLive do
   def handle_event("smart_entry_submit", _params, socket), do: {:noreply, socket}
 
   # ── Events — Roles & Settings pages (delegated) ──────────────────
+
+  def handle_event("search_libraries", %{"q" => q}, socket) do
+    {:noreply, assign(socket, :library_search_query, q)}
+  end
+
+  def handle_event("search_skills", %{"q" => q}, socket) do
+    {:noreply, assign(socket, :skill_search_query, q)}
+  end
+
+  def handle_event("search_roles", %{"q" => q}, socket) do
+    query = String.trim(q)
+
+    results =
+      case query do
+        "" ->
+          nil
+
+        _ ->
+          RhoFrameworks.Roles.find_similar_roles(
+            socket.assigns.current_organization.id,
+            query,
+            limit: 50
+          )
+      end
+
+    {:noreply,
+     socket
+     |> assign(:role_search_query, q)
+     |> assign(:role_search_results, results)}
+  end
 
   @settings_events ~w(delete_role save_org save_profile delete_org)
 
@@ -3355,6 +3502,61 @@ defmodule RhoWeb.AppLive do
   end
 
   # --- Page-specific grouping helpers ---
+
+  defp filter_library_groups(groups, query) when is_binary(query) do
+    case String.trim(query) do
+      "" ->
+        groups
+
+      needle ->
+        needle = String.downcase(needle)
+
+        Enum.filter(groups, fn g ->
+          String.contains?(String.downcase(g.name), needle) or
+            Enum.any?(g.versions, fn lib ->
+              String.contains?(String.downcase(lib.name), needle)
+            end)
+        end)
+    end
+  end
+
+  defp filter_library_groups(groups, _), do: groups
+
+  defp filter_grouped_skills(grouped, query) when is_binary(query) do
+    case String.trim(query) do
+      "" ->
+        grouped
+
+      needle ->
+        needle = String.downcase(needle)
+
+        grouped
+        |> Enum.map(fn {category, clusters} ->
+          filtered_clusters =
+            clusters
+            |> Enum.map(fn {cluster, skills} ->
+              {cluster, Enum.filter(skills, &skill_matches?(&1, needle))}
+            end)
+            |> Enum.reject(fn {_, skills} -> skills == [] end)
+
+          {category, filtered_clusters}
+        end)
+        |> Enum.reject(fn {_, clusters} -> clusters == [] end)
+    end
+  end
+
+  defp filter_grouped_skills(grouped, _), do: grouped
+
+  defp skill_matches?(skill, needle) do
+    String.contains?(String.downcase(skill.name || ""), needle) or
+      String.contains?(String.downcase(skill.description || ""), needle)
+  end
+
+  defp filtered_skill_count(grouped) do
+    Enum.reduce(grouped, 0, fn {_, clusters}, acc ->
+      acc + Enum.reduce(clusters, 0, fn {_, skills}, sub -> sub + length(skills) end)
+    end)
+  end
 
   defp group_libraries(libraries) do
     libraries

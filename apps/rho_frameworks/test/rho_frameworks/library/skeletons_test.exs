@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.Library.SkeletonsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Library.Skeletons
 

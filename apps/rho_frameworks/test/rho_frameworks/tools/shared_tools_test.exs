@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.Tools.SharedToolsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Tools.SharedTools
 

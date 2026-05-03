@@ -1,11 +1,16 @@
 defmodule RhoFrameworks.LibraryTest do
   use ExUnit.Case, async: false
+  use Mimic
 
   import Ecto.Query
   alias RhoFrameworks.Repo
   alias RhoFrameworks.Frameworks.{Library, Skill}
+  alias RhoEmbeddings.Backend.Fake, as: FakeEmbeddings
 
   setup do
+    # Reset stashed embedding vectors so tests don't cross-contaminate.
+    FakeEmbeddings.reset()
+
     # Create org
     org_id = Ecto.UUID.generate()
 
@@ -16,6 +21,25 @@ defmodule RhoFrameworks.LibraryTest do
     })
 
     %{org_id: org_id}
+  end
+
+  defp wait_for_embeddings(deadline_ms \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_wait_for_embeddings(deadline)
+  end
+
+  defp do_wait_for_embeddings(deadline) do
+    cond do
+      RhoEmbeddings.ready?() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("RhoEmbeddings.Server never became ready")
+
+      true ->
+        Process.sleep(20)
+        do_wait_for_embeddings(deadline)
+    end
   end
 
   describe "create_library/2" do
@@ -228,6 +252,103 @@ defmodule RhoFrameworks.LibraryTest do
       dupes = RhoFrameworks.Library.find_duplicates(lib.id)
       assert dupes != []
       assert hd(dupes).confidence == :high
+    end
+
+    test "SQL cosine pre-filter pairs cross-name skills with similar embeddings", %{
+      org_id: org_id
+    } do
+      wait_for_embeddings()
+
+      {:ok, lib} = RhoFrameworks.Library.create_library(org_id, %{name: "Cosine Lib"})
+
+      # Names share NO words and NO slug prefix, and the skills live in
+      # different categories — so neither slug_prefix nor word_overlap
+      # detection fires. The only way the pair surfaces is via the SQL
+      # pgvector cosine pre-filter on identical stashed embeddings.
+      text_a = "Database Programming\nSQL queries and schemas"
+      text_b = "Storage Engineering\nWarehouse design and indexing"
+
+      shared_vec = List.duplicate(0.5, 384)
+      :ok = FakeEmbeddings.put_vector(text_a, shared_vec)
+      :ok = FakeEmbeddings.put_vector(text_b, shared_vec)
+
+      {:ok, sa} =
+        RhoFrameworks.Library.upsert_skill(lib.id, %{
+          name: "Database Programming",
+          description: "SQL queries and schemas",
+          category: "Tech"
+        })
+
+      {:ok, sb} =
+        RhoFrameworks.Library.upsert_skill(lib.id, %{
+          name: "Storage Engineering",
+          description: "Warehouse design and indexing",
+          category: "Infra"
+        })
+
+      assert sa.embedding != nil
+      assert sb.embedding != nil
+
+      dupes = RhoFrameworks.Library.find_duplicates(lib.id, depth: :deep)
+
+      pair =
+        Enum.find(dupes, fn d ->
+          MapSet.equal?(
+            MapSet.new([d.skill_a.id, d.skill_b.id]),
+            MapSet.new([sa.id, sb.id])
+          )
+        end)
+
+      assert pair, "expected the cross-name pair to be flagged via embedding cosine"
+      assert pair.detection_method == :semantic
+      # Cosine distance attached so callers can rank candidates by tightness.
+      assert is_float(pair.cosine_distance)
+      assert pair.cosine_distance < 0.40
+    end
+
+    test "non-embedded skill is paired with similar-named embedded skill via jaro fallback",
+         %{org_id: org_id} do
+      wait_for_embeddings()
+
+      {:ok, lib} = RhoFrameworks.Library.create_library(org_id, %{name: "Fallback Lib"})
+
+      # Insert via raw changeset so add_embedding_attrs is bypassed —
+      # this skill ends up with embedding: nil and tests the fallback
+      # path that pairs it against the rest of the library via jaro.
+      {:ok, sa} =
+        %Skill{}
+        |> Skill.changeset(%{
+          name: "Active Listening",
+          category: "Communication",
+          library_id: lib.id
+        })
+        |> Repo.insert()
+
+      assert is_nil(sa.embedding)
+
+      {:ok, sb} =
+        RhoFrameworks.Library.upsert_skill(lib.id, %{
+          name: "Active Listening Skills",
+          category: "Communication"
+        })
+
+      assert sb.embedding != nil
+
+      dupes = RhoFrameworks.Library.find_duplicates(lib.id, depth: :deep)
+
+      # The pair surfaces — slug_prefix wins on confidence ordering
+      # (these names share >=3-char prefix), but the jaro fallback also
+      # produced this candidate from the embedding-only path. Either
+      # detection method is fine; we just need the pair to appear.
+      pair =
+        Enum.find(dupes, fn d ->
+          MapSet.equal?(
+            MapSet.new([d.skill_a.id, d.skill_b.id]),
+            MapSet.new([sa.id, sb.id])
+          )
+        end)
+
+      assert pair
     end
   end
 
@@ -908,6 +1029,85 @@ defmodule RhoFrameworks.LibraryTest do
 
       dupes = RhoFrameworks.Library.find_duplicates(combined.id)
       assert dupes != []
+    end
+  end
+
+  describe "search_skills_across/3 (public library visibility)" do
+    test "finds skills in a public library owned by another org", %{org_id: caller_org_id} do
+      other_org_id = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org_id,
+        name: "System",
+        slug: "system-#{System.unique_integer([:positive])}"
+      })
+
+      {:ok, public_lib} =
+        RhoFrameworks.Library.create_library(other_org_id, %{
+          name: "Public Lib",
+          visibility: "public"
+        })
+
+      RhoFrameworks.Library.upsert_skill(public_lib.id, %{
+        name: "Kubernetes",
+        category: "Tech"
+      })
+
+      results = RhoFrameworks.Library.search_skills_across(caller_org_id, "Kubernetes")
+      assert Enum.any?(results, &(&1.name == "Kubernetes"))
+    end
+
+    test "include_public: false hides public-library skills from another org",
+         %{org_id: caller_org_id} do
+      other_org_id = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org_id,
+        name: "System2",
+        slug: "system2-#{System.unique_integer([:positive])}"
+      })
+
+      {:ok, public_lib} =
+        RhoFrameworks.Library.create_library(other_org_id, %{
+          name: "Public Lib 2",
+          visibility: "public"
+        })
+
+      RhoFrameworks.Library.upsert_skill(public_lib.id, %{name: "Helm", category: "Tech"})
+
+      results =
+        RhoFrameworks.Library.search_skills_across(caller_org_id, "Helm", include_public: false)
+
+      refute Enum.any?(results, &(&1.name == "Helm"))
+    end
+  end
+
+  describe "library_summary/1 (public library exclusion)" do
+    test "does not enumerate skills from public libraries", %{org_id: caller_org_id} do
+      other_org_id = Ecto.UUID.generate()
+
+      Repo.insert!(%RhoFrameworks.Accounts.Organization{
+        id: other_org_id,
+        name: "System3",
+        slug: "system3-#{System.unique_integer([:positive])}"
+      })
+
+      {:ok, public_lib} =
+        RhoFrameworks.Library.create_library(other_org_id, %{
+          name: "ESCO-like Public Lib",
+          visibility: "public"
+        })
+
+      RhoFrameworks.Library.upsert_skill(public_lib.id, %{
+        name: "PublicOnlySkill",
+        category: "Tech"
+      })
+
+      summary = RhoFrameworks.Library.library_summary(caller_org_id)
+
+      # Public lib should not appear in the summary regardless of visibility
+      # to the caller (prompt-budget protection: see ESCO import plan).
+      refute Enum.any?(summary, &(&1.name == "ESCO-like Public Lib"))
     end
   end
 end

@@ -1,5 +1,5 @@
 defmodule RhoFrameworks.FlowTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoFrameworks.Flow
   alias RhoFrameworks.Flows.{CreateFramework, Registry}
