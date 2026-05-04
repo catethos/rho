@@ -12,6 +12,12 @@ defmodule Rho.PromptSectionTest do
       assert s.kind == :instructions
       assert s.subsections == []
       assert s.examples == []
+      assert s.volatile == false
+    end
+
+    test "accepts volatile: true" do
+      s = PromptSection.new(key: :test, body: "live", volatile: true)
+      assert s.volatile == true
     end
   end
 
@@ -21,12 +27,18 @@ defmodule Rho.PromptSectionTest do
       assert s.body == "Be helpful."
       assert s.key == :unknown
       assert s.priority == :normal
+      assert s.volatile == false
     end
 
     test "accepts key and kind options" do
       s = PromptSection.from_string("data", key: :my_key, kind: :metadata)
       assert s.key == :my_key
       assert s.kind == :metadata
+    end
+
+    test "accepts volatile option" do
+      s = PromptSection.from_string("live state", volatile: true)
+      assert s.volatile == true
     end
   end
 

@@ -33,7 +33,10 @@ defmodule Rho.ActionSchema do
   @reserved_variants %{
     "respond" => %{
       name: "respond",
-      fields: [message: [type: :string, required: true]],
+      fields: [
+        message: [type: :string, required: true],
+        kind: [type: :string, required: false]
+      ],
       builtin: true
     },
     "think" => %{
@@ -97,11 +100,16 @@ defmodule Rho.ActionSchema do
   `"thinking"` side-channel.
 
   Returns one of:
-    - `{:respond, message, thinking: thinking}`
+    - `{:respond, message, thinking: thinking, kind: kind}`
     - `{:think, thought}`
     - `{:tool, name, args, tool_def, thinking: thinking, repairs: repairs}`
     - `{:unknown, name, raw_args}`
     - `{:parse_error, reason}`
+
+  `kind` is an optional hint set by the LLM (e.g., `"question"`, `"error"`,
+  `"answer"`) — `nil` when the LLM omits it. Carried in the result for
+  downstream surfaces (UI, telemetry); the runner currently treats every
+  `:respond` the same regardless of `kind`.
   """
   @spec dispatch_parsed(map(), t(), %{String.t() => map()}) ::
           {:respond, String.t(), keyword()}
@@ -156,7 +164,13 @@ defmodule Rho.ActionSchema do
   defp dispatch_respond(args, fields, thinking) do
     case coerce_variant_fields(args, fields) do
       {:ok, coerced, _repairs} ->
-        {:respond, coerced[:message] || "", thinking: thinking}
+        kind =
+          case coerced[:kind] do
+            k when is_binary(k) and k != "" -> k
+            _ -> nil
+          end
+
+        {:respond, coerced[:message] || "", thinking: thinking, kind: kind}
 
       {:error, reason} ->
         {:parse_error, {:coerce_failed, "respond", reason}}

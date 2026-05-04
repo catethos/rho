@@ -11,7 +11,7 @@ defmodule RhoBaml.SchemaWriter do
 
   Produces a **discriminated union** of per-tool action classes:
 
-  - `RespondAction` — `tool "respond"`, `message string`
+  - `RespondAction` — `tool "respond"`, `message string`, optional `kind string?`
   - `ThinkAction` — `tool "think"`, `thought string`
   - One class per visible tool — `tool "<name>"` (literal), declared params
     (required vs optional preserved from the parameter_schema)
@@ -51,8 +51,18 @@ defmodule RhoBaml.SchemaWriter do
     opts = maybe_generate_client(dynamic_dir, opts)
 
     baml = to_baml(tool_defs, opts)
-    File.write!(Path.join(dynamic_dir, "action.baml"), baml)
+    write_if_changed(Path.join(dynamic_dir, "action.baml"), baml)
     :ok
+  end
+
+  # Read the existing file and only rewrite when bytes differ. BAML
+  # re-reads on every `sync_stream` so a no-op write is harmless, but
+  # cuts disk I/O on every turn when nothing changed.
+  defp write_if_changed(path, bytes) do
+    case File.read(path) do
+      {:ok, ^bytes} -> :ok
+      _ -> File.write!(path, bytes)
+    end
   end
 
   @doc """
@@ -67,10 +77,12 @@ defmodule RhoBaml.SchemaWriter do
 
     reserved = [
       {"RespondAction", "respond",
-       "Reply directly to the user. The default action — use this whenever no other tool applies. " <>
-         "It is the only way to talk to the user, so prefer it for answers, summaries, " <>
-         "follow-up questions, and ending a turn after presenting tool results.",
-       [{"message", "string"}]},
+       "Reply directly to the user. The ONLY way to send text to the user — use it for answers, " <>
+         "summaries, follow-up questions, error reports, and clarification requests. " <>
+         "When you are missing information, blocked, or uncertain, ALWAYS use respond " <>
+         "(set kind to question, error, or clarification) instead of free-text — " <>
+         "never write user-facing prose outside this action.",
+       [{"message", "string"}, {"kind", "string?"}]},
       {"ThinkAction", "think", "Record an internal reasoning step without external action.",
        [{"thought", "string"}]}
     ]
@@ -103,6 +115,12 @@ defmodule RhoBaml.SchemaWriter do
         {{ messages }}
 
         {{ ctx.output_format }}
+
+        Reply with exactly one JSON object matching one of the schemas above.
+        It must include the "tool" discriminator field. Do not write any prose,
+        commentary, or explanation outside the JSON object — if you need to
+        speak to the user, use the "respond" action and put the text in its
+        "message" field.
       "#
     }
     """
@@ -160,7 +178,7 @@ defmodule RhoBaml.SchemaWriter do
         case parse_model(model) do
           {:ok, provider, model_id, client_name} ->
             client_baml = build_client_baml(client_name, provider, model_id)
-            File.write!(Path.join(dynamic_dir, "client.baml"), client_baml)
+            write_if_changed(Path.join(dynamic_dir, "client.baml"), client_baml)
             Keyword.put(opts, :client, client_name)
 
           :error ->

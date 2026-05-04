@@ -14,7 +14,8 @@ defmodule Rho.PromptSection do
           examples: [String.t()],
           priority: :high | :normal | :low,
           kind: :instructions | :reference | :metadata,
-          position: :prelude | :postlude
+          position: :prelude | :postlude,
+          volatile: boolean()
         }
 
   defstruct [
@@ -25,7 +26,8 @@ defmodule Rho.PromptSection do
     examples: [],
     priority: :normal,
     kind: :instructions,
-    position: :prelude
+    position: :prelude,
+    volatile: false
   ]
 
   @priority_order %{high: 0, normal: 1, low: 2}
@@ -42,7 +44,8 @@ defmodule Rho.PromptSection do
       heading: Keyword.get(opts, :heading),
       body: text,
       priority: Keyword.get(opts, :priority, :normal),
-      kind: Keyword.get(opts, :kind, :instructions)
+      kind: Keyword.get(opts, :kind, :instructions),
+      volatile: Keyword.get(opts, :volatile, false)
     }
   end
 

@@ -61,7 +61,7 @@ defmodule Rho.Runner do
       :tool_defs,
       :req_tools,
       :tool_map,
-      :system_prompt,
+      :system_prompt_stable,
       :depth,
       :tape,
       :context
@@ -74,11 +74,12 @@ defmodule Rho.Runner do
       :tool_defs,
       :req_tools,
       :tool_map,
-      :system_prompt,
+      :system_prompt_stable,
       :depth,
       :tape,
       :context,
       :lifecycle,
+      system_prompt_volatile: "",
       lite: false
     ]
 
@@ -90,7 +91,8 @@ defmodule Rho.Runner do
             tool_defs: [map()],
             req_tools: [ReqLLM.Tool.t()],
             tool_map: %{String.t() => map()},
-            system_prompt: String.t(),
+            system_prompt_stable: String.t(),
+            system_prompt_volatile: String.t(),
             depth: non_neg_integer(),
             tape: Rho.Runner.TapeConfig.t(),
             context: Context.t(),
@@ -182,7 +184,9 @@ defmodule Rho.Runner do
     strategy = spec.turn_strategy || Rho.TurnStrategy.Direct
 
     base_prompt = spec.system_prompt || "You are a helpful assistant."
-    system_prompt = build_system_prompt(base_prompt, context, strategy, tool_defs)
+
+    {stable_prompt, volatile_prompt} =
+      build_system_prompt(base_prompt, context, strategy, tool_defs)
 
     raw_emit = if is_function(spec.emit), do: spec.emit, else: fn _event -> :ok end
     emit = wrap_emit_with_tape(raw_emit, tape_name, memory_mod)
@@ -195,7 +199,8 @@ defmodule Rho.Runner do
       tool_defs: tool_defs,
       req_tools: Enum.map(tool_defs, & &1.tool),
       tool_map: Map.new(tool_defs, fn t -> {t.tool.name, t} end),
-      system_prompt: system_prompt,
+      system_prompt_stable: stable_prompt,
+      system_prompt_volatile: volatile_prompt,
       depth: spec.depth || 0,
       tape: tape,
       context: context,
@@ -216,7 +221,9 @@ defmodule Rho.Runner do
     strategy = opts[:turn_strategy] || opts[:reasoner] || Rho.TurnStrategy.Direct
 
     base_prompt = opts[:system_prompt] || "You are a helpful assistant."
-    system_prompt = build_system_prompt(base_prompt, context, strategy, tool_defs)
+
+    {stable_prompt, volatile_prompt} =
+      build_system_prompt(base_prompt, context, strategy, tool_defs)
 
     emit = wrap_emit_with_tape(resolve_emit(opts), tape_name, memory_mod)
 
@@ -228,7 +235,8 @@ defmodule Rho.Runner do
       tool_defs: tool_defs,
       req_tools: Enum.map(tool_defs, & &1.tool),
       tool_map: Map.new(tool_defs, fn t -> {t.tool.name, t} end),
-      system_prompt: system_prompt,
+      system_prompt_stable: stable_prompt,
+      system_prompt_volatile: volatile_prompt,
       depth: opts[:depth] || 0,
       tape: tape,
       context: context,
@@ -318,13 +326,31 @@ defmodule Rho.Runner do
         (s.position || :prelude) == :prelude
       end)
 
-    prelude_text = PromptSection.render([base_section | plugin_prelude], format)
-    strategy_text = PromptSection.render(strategy_sections, format)
-    postlude_text = PromptSection.render(plugin_postlude ++ [@conciseness_section], format)
+    # Within each render group, render stable sections first then volatile.
+    # Joining the two strings preserves the rendered ordering of today's
+    # prompt when nothing is marked volatile (volatile_text == "").
+    {prelude_stable, prelude_volatile} = render_split([base_section | plugin_prelude], format)
+    {strategy_stable, strategy_volatile} = render_split(strategy_sections, format)
 
-    [prelude_text, strategy_text, postlude_text]
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join("\n\n")
+    {postlude_stable, postlude_volatile} =
+      render_split(plugin_postlude ++ [@conciseness_section], format)
+
+    stable_text =
+      [prelude_stable, strategy_stable, postlude_stable]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+
+    volatile_text =
+      [prelude_volatile, strategy_volatile, postlude_volatile]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+
+    {stable_text, volatile_text}
+  end
+
+  defp render_split(sections, format) do
+    {stable, volatile} = Enum.split_with(sections, fn s -> not (s.volatile || false) end)
+    {Rho.PromptSection.render(stable, format), Rho.PromptSection.render(volatile, format)}
   end
 
   defp collect_strategy_sections(strategy, tool_defs, ctx) do
@@ -347,19 +373,83 @@ defmodule Rho.Runner do
   # -- Initial context --
 
   defp build_initial_context(runtime, messages) do
-    system_msg =
-      ReqLLM.Context.system([
-        ReqLLM.Message.ContentPart.text(runtime.system_prompt, %{
-          cache_control: %{type: "ephemeral"}
-        })
-      ])
+    system_msg = build_system_message(runtime)
 
     tail =
       if runtime.tape.name,
         do: Rho.Tape.Projection.build(runtime.tape.name),
         else: messages
 
-    [system_msg | tail]
+    [system_msg | mark_conversation_prefix(tail)]
+  end
+
+  # Adds a second `cache_control: ephemeral` breakpoint on the last
+  # non-user message in the tail (typically an assistant or tool-result
+  # message just before the most recent user turn). This lets the entire
+  # prefix up to and including the last assistant turn be cached, so
+  # multi-turn conversations don't replay the whole tape.
+  #
+  # Anthropic supports up to 4 breakpoints; we use at most 2 (stable
+  # system + conversation prefix). Skips when there is nothing meaningful
+  # to cache (empty tail or only user messages).
+  defp mark_conversation_prefix(tail) when is_list(tail) do
+    case last_non_user_index(tail) do
+      nil -> tail
+      idx -> List.update_at(tail, idx, &add_cache_breakpoint/1)
+    end
+  end
+
+  defp last_non_user_index(messages) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      {%{role: :user}, _idx} -> nil
+      {%{role: "user"}, _idx} -> nil
+      {_msg, idx} -> idx
+    end)
+  end
+
+  defp add_cache_breakpoint(%{content: parts} = msg) when is_list(parts) and parts != [] do
+    {init, [last]} = Enum.split(parts, -1)
+    %{msg | content: init ++ [put_cache_control(last)]}
+  end
+
+  defp add_cache_breakpoint(msg), do: msg
+
+  defp put_cache_control(%{metadata: meta} = part) when is_map(meta) do
+    %{part | metadata: Map.put(meta, :cache_control, %{type: "ephemeral"})}
+  end
+
+  defp put_cache_control(part) do
+    Map.put(part, :metadata, %{cache_control: %{type: "ephemeral"}})
+  end
+
+  # Builds the system message with split stable / volatile parts.
+  # The stable part carries an ephemeral `cache_control` breakpoint so its
+  # bytes can be re-used as a cache prefix on subsequent calls. The
+  # volatile part is appended after with no breakpoint, so it doesn't
+  # invalidate the earlier cached prefix when its body changes.
+  @doc false
+  def build_system_message(%Runtime{
+        system_prompt_stable: stable,
+        system_prompt_volatile: volatile
+      }) do
+    parts =
+      case volatile do
+        v when is_binary(v) and v != "" ->
+          [
+            ReqLLM.Message.ContentPart.text(stable, %{cache_control: %{type: "ephemeral"}}),
+            ReqLLM.Message.ContentPart.text(v)
+          ]
+
+        _ ->
+          [
+            ReqLLM.Message.ContentPart.text(stable, %{cache_control: %{type: "ephemeral"}})
+          ]
+      end
+
+    ReqLLM.Context.system(parts)
   end
 
   defp build_gen_opts(nil), do: []
@@ -425,14 +515,7 @@ defmodule Rho.Runner do
   # pipeline, no transformer stages).
 
   defp build_lite_context(runtime, messages) do
-    system_msg =
-      ReqLLM.Context.system([
-        ReqLLM.Message.ContentPart.text(runtime.system_prompt, %{
-          cache_control: %{type: "ephemeral"}
-        })
-      ])
-
-    [system_msg | messages]
+    [build_system_message(runtime) | messages]
   end
 
   defp do_lite_loop(_context, _runtime, step: step, max_steps: max)

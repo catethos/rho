@@ -50,6 +50,27 @@
 
     Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
     After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
+
+    Editing tables:
+      - The "Active data tables" section lists every table; the one marked
+        "currently open in panel" is what the user sees. When the user says
+        "this row" or "the table", assume that one and pass it as `table:`.
+      - Selected rows are explicit user picks. When the user says "these"
+        or "the highlighted rows", use those exact IDs (full length, copied
+        verbatim from the Selected list) — do not re-resolve via locator.
+      - One row, one field, by locator: `edit_row` with flat string params
+        (`match_field`, `match_value`, `set_field`, `set_value`).
+      - Multiple rows or multiple fields: `update_cells`. `changes_json` is
+        a string containing a JSON array; each entry is one single-cell
+        update of the form {"id": <id>, "field": <col>, "value": <new>}.
+        To set two fields on one row, emit two entries with the same id.
+        Do not use a row-patch shape like {"id": ..., "skill_name": ...} —
+        every entry must have explicit `field` and `value` keys.
+      - Destructive replace of all rows: `replace_all`.
+      - After a successful edit, ALWAYS close the turn with a `respond`
+        action carrying a short confirmation message. Do not write the
+        confirmation as free-text — every user-facing reply must be a
+        `respond` action.
     """,
     plugins: [
       {:data_table, deferred: [:describe_table, :query_table, :replace_all, :list_tables]},
@@ -64,12 +85,12 @@
          :analyze_role,
          :org_view,
          :score_role,
-         :lens_dashboard
+         :lens_dashboard,
+         :add_proficiency_levels,
+         :clarify
        ]},
       :doc_ingest,
-      {:multi_agent,
-       only: [:delegate_task, :delegate_task_lite, :await_task, :await_all],
-       visible_agents: [:data_extractor]}
+      {:multi_agent, only: [:delegate_task, :await_task], visible_agents: [:data_extractor]}
     ],
     turn_strategy: :typed_structured,
     max_steps: 50

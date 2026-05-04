@@ -61,7 +61,8 @@ defmodule Rho.Test.TurnStrategyHarness do
       tool_defs: tool_defs,
       req_tools: Enum.map(tool_defs, & &1.tool),
       tool_map: tool_map,
-      system_prompt: "",
+      system_prompt_stable: "",
+      system_prompt_volatile: "",
       depth: 0,
       tape: %TapeConfig{},
       context: %Context{

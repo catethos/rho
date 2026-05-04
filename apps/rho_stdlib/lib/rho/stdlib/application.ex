@@ -14,7 +14,8 @@ defmodule Rho.Stdlib.Application do
       {DynamicSupervisor, name: Rho.Stdlib.Tools.Python.Supervisor, strategy: :one_for_one},
       {Registry, keys: :unique, name: Rho.Stdlib.DataTable.Registry},
       {DynamicSupervisor, name: Rho.Stdlib.DataTable.Supervisor, strategy: :one_for_one},
-      Rho.Stdlib.DataTable.SessionJanitor
+      Rho.Stdlib.DataTable.SessionJanitor,
+      Rho.Stdlib.DataTable.ActiveViewListener
     ]
 
     opts = [strategy: :one_for_one, name: Rho.Stdlib.Supervisor]

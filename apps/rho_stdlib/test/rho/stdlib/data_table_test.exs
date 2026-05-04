@@ -196,6 +196,44 @@ defmodule Rho.Stdlib.DataTableTest do
       assert updated["k"] == "new"
     end
 
+    test "update_cells rejects unknown fields in strict mode", %{session_id: sid} do
+      DataTable.ensure_table(sid, "library", library_schema())
+
+      {:ok, [row]} =
+        DataTable.add_rows(
+          sid,
+          [%{category: "Tech", skill_name: "SQL"}],
+          table: "library"
+        )
+
+      # "description" is not a declared column — schema field is `skill_description`.
+      # Previously this silently no-op'd (set a string key the LV ignored);
+      # now it errors with the available column list.
+      assert {:error, {:unknown_field, "description", [available: cols]}} =
+               DataTable.update_cells(
+                 sid,
+                 [%{"id" => row.id, "field" => "description", "value" => "blah"}],
+                 table: "library"
+               )
+
+      assert "skill_name" in cols
+      assert "skill_description" in cols
+    end
+
+    test "update_cells still works on dynamic-mode 'main' table", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [row]} = DataTable.add_rows(sid, [%{"k" => "orig"}])
+
+      # Dynamic mode allows any string key — adding a new field is fine.
+      assert :ok =
+               DataTable.update_cells(sid, [
+                 %{"id" => row.id, "field" => "newly_introduced", "value" => "ok"}
+               ])
+
+      [updated] = DataTable.get_rows(sid)
+      assert updated["newly_introduced"] == "ok"
+    end
+
     test "replace_all wipes and refills", %{session_id: sid} do
       DataTable.ensure_started(sid)
       DataTable.add_rows(sid, [%{"a" => 1}, %{"a" => 2}])
@@ -248,6 +286,37 @@ defmodule Rho.Stdlib.DataTableTest do
     end
   end
 
+  describe "active_table" do
+    test "defaults to nil", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      assert DataTable.get_active_table(sid) == nil
+    end
+
+    test "round-trips set and get", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      assert :ok = DataTable.set_active_table(sid, "library")
+      assert DataTable.get_active_table(sid) == "library"
+    end
+
+    test "set to nil clears", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      DataTable.set_active_table(sid, "library")
+      assert :ok = DataTable.set_active_table(sid, nil)
+      assert DataTable.get_active_table(sid) == nil
+    end
+
+    test "accepts table name even before the table is created", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      assert :ok = DataTable.set_active_table(sid, "not_yet_made")
+      assert DataTable.get_active_table(sid) == "not_yet_made"
+    end
+
+    test "returns {:error, :not_running} when no server", %{session_id: sid} do
+      assert DataTable.set_active_table(sid, "library") == {:error, :not_running}
+      assert DataTable.get_active_table(sid) == {:error, :not_running}
+    end
+  end
+
   describe "crash behavior" do
     test "server stays down after crash (restart :temporary)", %{session_id: sid} do
       {:ok, pid} = DataTable.ensure_started(sid)
@@ -296,6 +365,113 @@ defmodule Rho.Stdlib.DataTableTest do
       schema = library_schema()
       assert :ok = DataTable.ensure_table(sid, "library", schema)
       assert is_pid(DataTable.whereis(sid))
+    end
+  end
+
+  describe "row selections" do
+    test "round-trips set and get on main", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [r1, r2]} = DataTable.add_rows(sid, [%{name: "a"}, %{name: "b"}])
+
+      assert :ok = DataTable.set_selection(sid, "main", [r1.id, r2.id])
+      assert Enum.sort(DataTable.get_selection(sid, "main")) == Enum.sort([r1.id, r2.id])
+    end
+
+    test "empty selection by default", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      assert DataTable.get_selection(sid, "main") == []
+    end
+
+    test "set_selection drops unknown ids (prune at write)", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [r1]} = DataTable.add_rows(sid, [%{name: "a"}])
+
+      assert :ok = DataTable.set_selection(sid, "main", [r1.id, "phantom-id"])
+      assert DataTable.get_selection(sid, "main") == [r1.id]
+    end
+
+    test "auto-prunes after delete_rows", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [r1, r2]} = DataTable.add_rows(sid, [%{name: "a"}, %{name: "b"}])
+      :ok = DataTable.set_selection(sid, "main", [r1.id, r2.id])
+
+      :ok = DataTable.delete_rows(sid, [r1.id])
+      assert DataTable.get_selection(sid, "main") == [r2.id]
+    end
+
+    test "auto-prunes after replace_all wipes selection", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [r1]} = DataTable.add_rows(sid, [%{name: "a"}])
+      :ok = DataTable.set_selection(sid, "main", [r1.id])
+
+      {:ok, _} = DataTable.replace_all(sid, [%{name: "fresh"}])
+      assert DataTable.get_selection(sid, "main") == []
+    end
+
+    test "selection survives non-id field updates (key on row id)", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [r1]} = DataTable.add_rows(sid, [%{name: "a"}])
+      :ok = DataTable.set_selection(sid, "main", [r1.id])
+
+      :ok =
+        DataTable.update_cells(sid, [%{"id" => r1.id, "field" => "name", "value" => "renamed"}])
+
+      assert DataTable.get_selection(sid, "main") == [r1.id]
+    end
+
+    test "set_selection on unknown table returns :not_found", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      assert {:error, :not_found} = DataTable.set_selection(sid, "nope", ["x"])
+    end
+
+    test "drop_table clears the selection", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      schema = library_schema()
+      :ok = DataTable.ensure_table(sid, "library", schema)
+
+      {:ok, [r]} =
+        DataTable.add_rows(
+          sid,
+          [%{category: "Tech", skill_name: "SQL"}],
+          table: "library"
+        )
+
+      :ok = DataTable.set_selection(sid, "library", [r.id])
+      :ok = DataTable.drop_table(sid, "library")
+
+      DataTable.ensure_table(sid, "library", schema)
+      assert DataTable.get_selection(sid, "library") == []
+    end
+
+    test "clear_selection empties without affecting other tables", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [r1]} = DataTable.add_rows(sid, [%{name: "a"}])
+      :ok = DataTable.set_selection(sid, "main", [r1.id])
+
+      assert :ok = DataTable.clear_selection(sid, "main")
+      assert DataTable.get_selection(sid, "main") == []
+    end
+
+    test "selections are per-table and isolated", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      :ok = DataTable.ensure_table(sid, "library", library_schema())
+
+      {:ok, [main_row]} = DataTable.add_rows(sid, [%{name: "m"}])
+
+      {:ok, [lib_row]} =
+        DataTable.add_rows(sid, [%{category: "Tech", skill_name: "SQL"}], table: "library")
+
+      :ok = DataTable.set_selection(sid, "main", [main_row.id])
+      :ok = DataTable.set_selection(sid, "library", [lib_row.id])
+
+      assert DataTable.get_selection(sid, "main") == [main_row.id]
+      assert DataTable.get_selection(sid, "library") == [lib_row.id]
+    end
+
+    test "selection ops return :not_running if no server", %{session_id: sid} do
+      assert DataTable.set_selection(sid, "main", []) == {:error, :not_running}
+      assert DataTable.get_selection(sid, "main") == {:error, :not_running}
+      assert DataTable.clear_selection(sid, "main") == {:error, :not_running}
     end
   end
 end

@@ -54,7 +54,9 @@ defmodule Rho.Stdlib.DataTable.Server do
     state = %{
       session_id: session_id,
       tables: %{"main" => main},
-      table_order: ["main"]
+      table_order: ["main"],
+      active_table: nil,
+      selections: %{}
     }
 
     Logger.debug(fn -> "[DataTable.Server] init session=#{session_id}" end)
@@ -204,6 +206,15 @@ defmodule Rho.Stdlib.DataTable.Server do
     end
   end
 
+  def handle_call({:set_active_table, name}, _from, state)
+      when is_binary(name) or is_nil(name) do
+    {:reply, :ok, %{state | active_table: name}}
+  end
+
+  def handle_call(:get_active_table, _from, state) do
+    {:reply, state.active_table, state}
+  end
+
   def handle_call({:drop_table, name}, from, state) do
     case Map.fetch(state.tables, name) do
       :error ->
@@ -213,7 +224,8 @@ defmodule Rho.Stdlib.DataTable.Server do
         new_state = %{
           state
           | tables: Map.delete(state.tables, name),
-            table_order: List.delete(state.table_order, name)
+            table_order: List.delete(state.table_order, name),
+            selections: Map.delete(state.selections, name)
         }
 
         publish(
@@ -224,6 +236,37 @@ defmodule Rho.Stdlib.DataTable.Server do
 
         {:reply, :ok, new_state}
     end
+  end
+
+  # --- Row selection ---
+
+  def handle_call({:set_selection, name, ids}, _from, state)
+      when is_binary(name) and is_list(ids) do
+    case Map.fetch(state.tables, name) do
+      {:ok, table} ->
+        pruned = prune_selection(MapSet.new(ids, &to_string/1), table)
+        new_state = %{state | selections: Map.put(state.selections, name, pruned)}
+
+        publish(
+          state.session_id,
+          %{event: :selection_changed, table_name: name, count: MapSet.size(pruned)},
+          :user
+        )
+
+        {:reply, :ok, new_state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:get_selection, name}, _from, state) when is_binary(name) do
+    set = Map.get(state.selections, name, MapSet.new())
+    {:reply, MapSet.to_list(set), state}
+  end
+
+  def handle_call({:clear_selection, name}, _from, state) when is_binary(name) do
+    {:reply, :ok, %{state | selections: Map.delete(state.selections, name)}}
   end
 
   # --- Row operations ---
@@ -245,6 +288,13 @@ defmodule Rho.Stdlib.DataTable.Server do
   def handle_call({:get_rows, name, filter}, _from, state) do
     case Map.fetch(state.tables, name) do
       {:ok, table} -> {:reply, {:ok, Table.filter_rows(table, filter)}, state}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:get_rows_by_ids, name, ids}, _from, state) do
+    case Map.fetch(state.tables, name) do
+      {:ok, table} -> {:reply, {:ok, Table.rows_by_ids(table, ids)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
@@ -315,7 +365,8 @@ defmodule Rho.Stdlib.DataTable.Server do
         case fun.(table) do
           {:ok, updated_table, reply} ->
             new_tables = Map.put(state.tables, name, updated_table)
-            new_state = %{state | tables: new_tables}
+            new_selections = maybe_prune_selection(state.selections, name, updated_table)
+            new_state = %{state | tables: new_tables, selections: new_selections}
 
             publish(
               state.session_id,
@@ -380,6 +431,17 @@ defmodule Rho.Stdlib.DataTable.Server do
   end
 
   defp caller_source(_), do: nil
+
+  defp maybe_prune_selection(selections, name, table) do
+    case Map.fetch(selections, name) do
+      :error -> selections
+      {:ok, ids} -> Map.put(selections, name, prune_selection(ids, table))
+    end
+  end
+
+  defp prune_selection(%MapSet{} = ids, %Table{rows_by_id: rows_by_id}) do
+    MapSet.filter(ids, &Map.has_key?(rows_by_id, &1))
+  end
 
   defp schemas_compatible?(%Schema{} = a, %Schema{} = b) do
     a.mode == b.mode and Schema.column_names(a) == Schema.column_names(b) and

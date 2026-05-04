@@ -65,6 +65,7 @@ defmodule RhoWeb.DataTableComponent do
       |> assign_new(:flash_message, fn -> nil end)
       |> assign_new(:action_dialog, fn -> nil end)
       |> assign_new(:export_menu_open, fn -> false end)
+      |> assign_new(:selected_ids, fn -> MapSet.new() end)
       |> assign_new(:_streams_configured, fn -> MapSet.new() end)
       |> assign_new(:_streamed_groups, fn -> %{} end)
       |> assign_new(:_group_to_stream, fn -> %{} end)
@@ -133,6 +134,8 @@ defmodule RhoWeb.DataTableComponent do
           {new_collapsed, assign(socket, :expand_groups, nil)}
       end
 
+    select_all_state = compute_select_all_state(effective_rows, socket.assigns[:selected_ids])
+
     socket =
       socket
       |> assign(:rows, effective_rows)
@@ -140,6 +143,7 @@ defmodule RhoWeb.DataTableComponent do
       |> assign(:optimistic_edits, optimistic)
       |> assign(:collapsed, collapsed)
       |> assign(:grouped, grouped)
+      |> assign(:select_all_state, select_all_state)
 
     # Phase B/D: lazy + version-gated stream refresh.
     #
@@ -326,6 +330,25 @@ defmodule RhoWeb.DataTableComponent do
   @impl true
   def handle_event("select_tab", %{"table" => name}, socket) do
     send(self(), {:data_table_switch_tab, name})
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_row_selection", %{"row-id" => id}, socket) do
+    table = socket.assigns[:active_table] || "main"
+    send(self(), {:data_table_toggle_row, table, id})
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_all_selection", _params, socket) do
+    table = socket.assigns[:active_table] || "main"
+    visible_ids = current_visible_row_ids(socket)
+    send(self(), {:data_table_toggle_all, table, visible_ids})
+    {:noreply, socket}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    table = socket.assigns[:active_table] || "main"
+    send(self(), {:data_table_clear_selection, table})
     {:noreply, socket}
   end
 
@@ -1030,6 +1053,22 @@ defmodule RhoWeb.DataTableComponent do
         </div>
       <% end %>
 
+      <%= if MapSet.size(@selected_ids) > 0 do %>
+        <div class="dt-selection-bar">
+          <span class="dt-selection-count">
+            <%= MapSet.size(@selected_ids) %> <%= if MapSet.size(@selected_ids) == 1, do: "row", else: "rows" %> selected
+          </span>
+          <button
+            type="button"
+            class="dt-selection-clear"
+            phx-click="clear_selection"
+            phx-target={@myself}
+          >
+            Clear
+          </button>
+        </div>
+      <% end %>
+
       <div class="dt-toolbar">
         <h2 class="dt-title"><%= @schema.title %></h2>
         <span class="dt-row-count"><%= length(@rows) %> rows</span>
@@ -1201,6 +1240,8 @@ defmodule RhoWeb.DataTableComponent do
                       sort_by={@sort_by}
                       sort_dir={@sort_dir}
                       confirm_delete={@confirm_delete}
+                      selected_ids={@selected_ids}
+                      select_all_state={@select_all_state}
                     />
                     <.add_row_in_group myself={@myself} group_by={group_by} group_label={group_label} sub_label={nil} />
                   <% {:nested, sub_groups} -> %>
@@ -1236,6 +1277,8 @@ defmodule RhoWeb.DataTableComponent do
                             sort_by={@sort_by}
                             sort_dir={@sort_dir}
                             confirm_delete={@confirm_delete}
+                            selected_ids={@selected_ids}
+                            select_all_state={@select_all_state}
                           />
                           <.add_row_in_group myself={@myself} group_by={group_by} group_label={group_label} sub_label={sub_label} />
                         </div>
@@ -1277,13 +1320,24 @@ defmodule RhoWeb.DataTableComponent do
         children_key: children_key,
         show_id: show_id,
         panel_mode: panel_mode,
-        panel_colspan: length(visible_columns) + 4
+        panel_colspan: length(visible_columns) + 5
       )
 
     ~H"""
     <table class="dt-table">
       <thead>
         <tr>
+          <th class="dt-th dt-th-select">
+            <input
+              type="checkbox"
+              class="dt-row-checkbox dt-row-checkbox-header"
+              phx-click="toggle_all_selection"
+              phx-target={@myself}
+              checked={@select_all_state == :all}
+              data-indeterminate={@select_all_state == :some && "true"}
+              aria-label="Select all visible rows"
+            />
+          </th>
           <%= if @has_children do %>
             <th class="dt-th dt-th-expand"></th>
           <% end %>
@@ -1338,6 +1392,7 @@ defmodule RhoWeb.DataTableComponent do
                 collapsed={@collapsed}
                 metadata={@metadata}
                 confirm_delete={@confirm_delete}
+                selected_ids={@selected_ids}
               />
           <% end %>
         <% end %>
@@ -1363,16 +1418,24 @@ defmodule RhoWeb.DataTableComponent do
         []
       end
 
+    selected? = MapSet.member?(assigns.selected_ids, row_id_str)
+
     assigns =
       assign(assigns,
         row_id_str: row_id_str,
         expanded?: expanded?,
-        children: children
+        children: children,
+        selected?: selected?
       )
 
     ~H"""
     <%= if @has_children do %>
-      <tr id={@dom_id} class={"dt-row dt-parent-row" <> if(@expanded? && @panel_mode, do: " dt-skill-expanded", else: "")}>
+      <tr id={@dom_id} class={[
+        "dt-row dt-parent-row",
+        @expanded? && @panel_mode && "dt-skill-expanded",
+        @selected? && "dt-row-selected"
+      ]}>
+        <.row_select_cell row_id={@row_id_str} selected?={@selected?} myself={@myself} />
         <td class="dt-td dt-td-expand" phx-click="toggle_group" phx-target={@myself} phx-value-group={"row-" <> @row_id_str}>
           <span class={"dt-chevron" <> if(@expanded?, do: " dt-expanded", else: "")}></span>
         </td>
@@ -1391,7 +1454,8 @@ defmodule RhoWeb.DataTableComponent do
         </td>
       </tr>
     <% else %>
-      <tr id={@dom_id} class="dt-row">
+      <tr id={@dom_id} class={["dt-row", @selected? && "dt-row-selected"]}>
+        <.row_select_cell row_id={@row_id_str} selected?={@selected?} myself={@myself} />
         <td :if={@show_id} class="dt-td dt-td-id"><%= @row_id_str %></td>
         <td class="dt-td dt-td-source">
           <.provenance_badge source={get_cell(@row, :_source)} />
@@ -1402,6 +1466,23 @@ defmodule RhoWeb.DataTableComponent do
         </td>
       </tr>
     <% end %>
+    """
+  end
+
+  # Per-row selection checkbox cell. Sticky left column. The `phx-click`
+  # only fires from the cell — clicking elsewhere on the row does not
+  # toggle (avoids accidental selections during scrolling/editing).
+  defp row_select_cell(assigns) do
+    ~H"""
+    <td class="dt-td dt-td-select" phx-click="toggle_row_selection" phx-target={@myself} phx-value-row-id={@row_id}>
+      <input
+        type="checkbox"
+        class="dt-row-checkbox"
+        checked={@selected?}
+        aria-label={"Select row " <> @row_id}
+        tabindex="-1"
+      />
+    </td>
     """
   end
 
@@ -1849,6 +1930,35 @@ defmodule RhoWeb.DataTableComponent do
   defp row_id(row) do
     Map.get(row, :id) || Map.get(row, "id")
   end
+
+  # Visible rows = the active table's rows (post-filter, post-sort) that the
+  # user can reach in the panel. The select-all checkbox toggles exactly
+  # this set against the current selection.
+  defp current_visible_row_ids(socket) do
+    visible_row_ids(socket.assigns[:rows])
+  end
+
+  defp visible_row_ids(rows) when is_list(rows) do
+    rows
+    |> Enum.map(&row_id/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+  end
+
+  defp visible_row_ids(_), do: []
+
+  defp compute_select_all_state(rows, %MapSet{} = selected) do
+    visible = MapSet.new(visible_row_ids(rows))
+
+    cond do
+      MapSet.size(visible) == 0 -> :none
+      MapSet.subset?(visible, selected) -> :all
+      MapSet.disjoint?(visible, selected) -> :none
+      true -> :some
+    end
+  end
+
+  defp compute_select_all_state(_rows, _), do: :none
 
   defp get_cell(row, key) when is_atom(key) do
     Map.get(row, key) || Map.get(row, Atom.to_string(key)) || ""

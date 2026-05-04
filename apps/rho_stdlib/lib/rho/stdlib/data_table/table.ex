@@ -127,6 +127,14 @@ defmodule Rho.Stdlib.DataTable.Table do
   end
 
   @doc """
+  Look up rows by id. Returns a `%{id => row}` map containing only ids
+  that exist in the table. O(length(ids)).
+  """
+  def rows_by_ids(%__MODULE__{rows_by_id: map}, ids) when is_list(ids) do
+    Map.take(map, Enum.map(ids, &to_string/1))
+  end
+
+  @doc """
   Query rows with optional filter, column projection, limit, and offset.
 
   Options:
@@ -343,11 +351,44 @@ defmodule Rho.Stdlib.DataTable.Table do
         {:cont, {:ok, table}}
 
       row ->
-        field_atom = field_to_atom(field, table.schema)
-        updated_row = Map.put(row, field_atom, value)
-        {:cont, {:ok, %{table | rows_by_id: Map.put(table.rows_by_id, id, updated_row)}}}
+        case resolve_strict_field(field, table.schema) do
+          {:ok, resolved_field} ->
+            updated_row = Map.put(row, resolved_field, value)
+
+            {:cont, {:ok, %{table | rows_by_id: Map.put(table.rows_by_id, id, updated_row)}}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
     end
   end
+
+  # Strict-mode tables reject writes to fields not declared in the schema.
+  # Returns the atom-keyed field name on success so the row stores it under
+  # the same key the schema/UI uses. Dynamic-mode tables fall through to
+  # the legacy field_to_atom path.
+  defp resolve_strict_field(field, %Schema{mode: :strict} = schema) do
+    known = known_field_atoms(schema)
+
+    cond do
+      is_atom(field) and field in known ->
+        {:ok, field}
+
+      is_binary(field) ->
+        case Enum.find(known, fn a -> Atom.to_string(a) == field end) do
+          nil ->
+            {:error, {:unknown_field, field, [available: Enum.map(known, &Atom.to_string/1)]}}
+
+          atom ->
+            {:ok, atom}
+        end
+
+      true ->
+        {:error, {:unknown_field, field, []}}
+    end
+  end
+
+  defp resolve_strict_field(field, schema), do: {:ok, field_to_atom(field, schema)}
 
   defp apply_child_change(table, id, field_path, value) do
     # Format: "child_field:child:idx" or "idx:child:field"

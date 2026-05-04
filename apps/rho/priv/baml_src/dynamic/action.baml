@@ -1,6 +1,7 @@
 class RespondAction {
-  tool "respond" @description("Reply directly to the user. The default action — use this whenever no other tool applies. It is the only way to talk to the user, so prefer it for answers, summaries, follow-up questions, and ending a turn after presenting tool results.")
+  tool "respond" @description("Reply directly to the user. The ONLY way to send text to the user — use it for answers, summaries, follow-up questions, error reports, and clarification requests. When you are missing information, blocked, or uncertain, ALWAYS use respond (set kind to question, error, or clarification) instead of free-text — never write user-facing prose outside this action.")
   message string
+  kind string?
 }
 
 class ThinkAction {
@@ -18,22 +19,9 @@ class DelegateTaskAction {
   max_steps int?
 }
 
-class DelegateTaskLiteAction {
-  tool "delegate_task_lite" @description("Spawn a lightweight agent for single-purpose generation. Use await_all for results.")
-  task string
-  role string?
-  max_steps int?
-}
-
 class AwaitTaskAction {
   tool "await_task" @description("Wait for a delegated agent to finish.")
   agent_id string
-  timeout int?
-}
-
-class AwaitAllAction {
-  tool "await_all" @description("Wait for all delegated agents to finish.")
-  agent_ids string
   timeout int?
 }
 
@@ -83,12 +71,6 @@ class ManageRoleAction {
   mode_label string?
 }
 
-class AddProficiencyLevelsAction {
-  tool "add_proficiency_levels" @description("Update existing skeleton skills in the data table with proficiency levels. Matches each entry by skill_name to a row already in the table. Skills not found in the table are skipped.")
-  levels_json string
-  table string?
-}
-
 class LoadSimilarRolesAction {
   tool "load_similar_roles" @description("Find existing role profiles similar to the framework being built. Pass intake-style fields; returns the top matches.")
   name string?
@@ -121,11 +103,6 @@ class SaveFrameworkAction {
   table string?
 }
 
-class ClarifyAction {
-  tool "clarify" @description("Ask the user a clarifying question when the request is genuinely ambiguous. Use only when no reasonable assumption resolves the ambiguity — otherwise call the use-case tool directly. Calling clarify ends your turn.")
-  question string
-}
-
 class SkillAction {
   tool "skill" @description("Load a skill's workflow instructions by name.")
   name string
@@ -135,6 +112,17 @@ class UpdateCellsAction {
   tool "update_cells" @description("Update data table cells.")
   changes_json string
   table string?
+}
+
+class EditRowAction {
+  tool "edit_row" @description("Edit one row by a natural locator. Prefer the flat string params (match_field/match_value, set_field/set_value) — they avoid JSON encoding entirely. Use match_json/set_json only for multi-field locators or updates. Errors if 0 or >1 rows match.")
+  table string?
+  match_field string?
+  match_value string?
+  set_field string?
+  set_value string?
+  match_json string?
+  set_json string?
 }
 
 class AddRowsAction {
@@ -150,11 +138,17 @@ class DeleteRowsAction {
   table string?
 }
 
-function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | DelegateTaskLiteAction | AwaitTaskAction | AwaitAllAction | IngestDocumentAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | ManageRoleAction | AddProficiencyLevelsAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ClarifyAction | SkillAction | UpdateCellsAction | AddRowsAction | DeleteRowsAction {
+function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | ManageRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | SkillAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
   client Openrouter
   prompt #"
     {{ messages }}
 
     {{ ctx.output_format }}
+
+    Reply with exactly one JSON object matching one of the schemas above.
+    It must include the "tool" discriminator field. Do not write any prose,
+    commentary, or explanation outside the JSON object — if you need to
+    speak to the user, use the "respond" action and put the text in its
+    "message" field.
   "#
 }

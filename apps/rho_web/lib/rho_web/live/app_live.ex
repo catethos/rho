@@ -2518,6 +2518,8 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns.session_id
     state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
 
+    if name != state.active_table, do: publish_view_focus(sid, name)
+
     new_state = %{state | active_table: name, view_key: nil, mode_label: nil}
 
     new_state =
@@ -2533,6 +2535,37 @@ defmodule RhoWeb.AppLive do
       end
 
     {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:data_table_toggle_row, table, id}, socket) do
+    state = read_dt_state(socket)
+    current = Map.get(state.selections, table, MapSet.new())
+
+    new_set =
+      if MapSet.member?(current, id),
+        do: MapSet.delete(current, id),
+        else: MapSet.put(current, id)
+
+    {:noreply, update_selection(socket, state, table, new_set)}
+  end
+
+  def handle_info({:data_table_toggle_all, table, visible_ids}, socket) do
+    state = read_dt_state(socket)
+    current = Map.get(state.selections, table, MapSet.new())
+    visible = MapSet.new(visible_ids)
+    all_selected? = visible != MapSet.new() and MapSet.subset?(visible, current)
+
+    new_set =
+      if all_selected?,
+        do: MapSet.difference(current, visible),
+        else: MapSet.union(current, visible)
+
+    {:noreply, update_selection(socket, state, table, new_set)}
+  end
+
+  def handle_info({:data_table_clear_selection, table}, socket) do
+    state = read_dt_state(socket)
+    {:noreply, update_selection(socket, state, table, MapSet.new())}
   end
 
   def handle_info({:data_table_view_change, view_key, mode_label}, socket) do
@@ -3491,10 +3524,15 @@ defmodule RhoWeb.AppLive do
   defp refresh_dt_session_from_server(socket, sid, state) do
     case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
       %{tables: tables, table_order: order} ->
+        previous_active = state.active_table
+
         state =
           %{state | tables: tables, table_order: order, error: nil}
           |> maybe_adopt_default_active()
           |> fetch_active_snapshot(sid)
+
+        if state.active_table != previous_active,
+          do: publish_view_focus(sid, state.active_table)
 
         SignalRouter.write_ws_state(socket, :data_table, state)
 
@@ -3657,6 +3695,8 @@ defmodule RhoWeb.AppLive do
         mode_label: "Skill Library — #{lib.name}#{version_label} (loading…)"
     }
 
+    if state.active_table != table_name, do: publish_view_focus(sid, table_name)
+
     socket
     |> open_data_table_workspace()
     |> SignalRouter.write_ws_state(:data_table, new_state)
@@ -3709,6 +3749,65 @@ defmodule RhoWeb.AppLive do
       order != [] -> hd(order)
       true -> "main"
     end
+  end
+
+  defp publish_view_focus(nil, _table_name), do: :ok
+  defp publish_view_focus(_sid, nil), do: :ok
+
+  defp publish_view_focus(sid, table_name)
+       when is_binary(sid) and is_binary(table_name) do
+    row_count =
+      case Rho.Stdlib.DataTable.summarize_table(sid, table: table_name) do
+        {:ok, %{total_rows: n}} -> n
+        _ -> 0
+      end
+
+    event = %Rho.Events.Event{
+      kind: :view_focus,
+      session_id: sid,
+      agent_id: nil,
+      timestamp: System.monotonic_time(:millisecond),
+      data: %{table_name: table_name, row_count: row_count},
+      source: :user
+    }
+
+    Rho.Events.broadcast(sid, event)
+    :ok
+  end
+
+  defp update_selection(socket, state, table, %MapSet{} = new_set) do
+    sid = socket.assigns[:session_id]
+    ids = MapSet.to_list(new_set)
+
+    # Write directly to the server so the agent's `prompt_sections/2` sees
+    # the selection on the next turn. The PubSub broadcast + listener
+    # bridge has a race: the listener only subscribes between
+    # `:agent_started` and `:agent_stopped`, so clicks during the
+    # between-turn gap would otherwise be lost.
+    if is_binary(sid), do: Rho.Stdlib.DataTable.set_selection(sid, table, ids)
+
+    publish_row_selection(sid, table, ids)
+
+    new_state = %{state | selections: Map.put(state.selections, table, new_set)}
+    SignalRouter.write_ws_state(socket, :data_table, new_state)
+  end
+
+  defp publish_row_selection(nil, _table, _ids), do: :ok
+  defp publish_row_selection(_sid, nil, _ids), do: :ok
+
+  defp publish_row_selection(sid, table, ids)
+       when is_binary(sid) and is_binary(table) and is_list(ids) do
+    event = %Rho.Events.Event{
+      kind: :row_selection,
+      session_id: sid,
+      agent_id: nil,
+      timestamp: System.monotonic_time(:millisecond),
+      data: %{table_name: table, row_ids: ids},
+      source: :user
+    }
+
+    Rho.Events.broadcast(sid, event)
+    :ok
   end
 
   defp determine_workspaces(_live_action), do: %{}
