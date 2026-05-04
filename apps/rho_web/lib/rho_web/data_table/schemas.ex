@@ -65,6 +65,7 @@ defmodule RhoWeb.DataTable.Schemas do
       empty_message: "No data — ask the assistant to generate a skill framework",
       group_by: [:category, :cluster],
       children_key: :proficiency_levels,
+      child_key_fields: [:level],
       show_id: false,
       children_display: :panel,
       columns: [

@@ -71,10 +71,17 @@ defmodule Rho.Stdlib.DataTable.Table do
   end
 
   @doc """
-  Update cells. `changes` is a list of maps with `id`, `field`, `value` keys.
+  Update cells. `changes` is a list of change maps.
 
-  Cells on top-level rows OR nested children (addressed by `"id:child:idx"`)
-  are supported.
+  Two shapes:
+
+    * `%{id, field, value}` — set a cell on the top-level row with the given id.
+    * `%{id, child_key, field, value}` — set a cell on the nested child whose
+      natural key (per the schema's `child_key_fields`) matches `child_key`.
+      `child_key` is a map of `field => value`. The matched child must be
+      unique; ambiguous matches return `{:error, {:ambiguous_match, ...}}`.
+
+  String- and atom-keyed change maps are both accepted.
   """
   def update_cells(%__MODULE__{} = table, changes) when is_list(changes) do
     Enum.reduce_while(changes, {:ok, table}, fn change, {:ok, acc} ->
@@ -322,13 +329,14 @@ defmodule Rho.Stdlib.DataTable.Table do
     id = fetch_change(change, "id") |> to_string()
     field = fetch_change(change, "field")
     value = fetch_change(change, "value")
+    child_key = fetch_change(change, "child_key")
 
     cond do
       is_nil(field) ->
         {:halt, {:error, {:missing_change_field, change}}}
 
-      is_binary(field) and String.starts_with?(field, "child:") ->
-        apply_child_change(table, id, field, value)
+      not is_nil(child_key) ->
+        apply_child_change(table, id, child_key, field, value)
 
       true ->
         apply_row_change(table, id, field, value)
@@ -390,36 +398,141 @@ defmodule Rho.Stdlib.DataTable.Table do
 
   defp resolve_strict_field(field, schema), do: {:ok, field_to_atom(field, schema)}
 
-  defp apply_child_change(table, id, field_path, value) do
-    # Format: "child_field:child:idx" or "idx:child:field"
-    # We'll use format: "children_key:child:idx:field" — but the plan says "row_id:child:idx"
-    # Simplest supported: "child:<idx>:<field>"
-    case String.split(field_path, ":") do
-      ["child", idx_str, child_field] ->
-        with {idx, ""} <- Integer.parse(idx_str),
-             %{} = row <- Map.get(table.rows_by_id, id),
-             children_key when not is_nil(children_key) <- table.schema.children_key,
-             children when is_list(children) <- Map.get(row, children_key) do
-          update_child_at(table, id, row, children_key, children, idx, child_field, value)
-        else
-          _ -> {:cont, {:ok, table}}
-        end
+  defp apply_child_change(table, id, child_key, field, value) do
+    schema = table.schema
 
-      _ ->
-        {:cont, {:ok, table}}
+    with {:ok, children_key} <- fetch_children_key(schema, table.name),
+         {:ok, key_map} <- normalize_child_key(child_key, schema),
+         {:ok, resolved_field} <- resolve_child_field(field, schema),
+         {:ok, row} <- fetch_row(table, id),
+         children when is_list(children) <- Map.get(row, children_key) || [],
+         {:ok, idx} <- find_child_index(children, key_map) do
+      updated_children =
+        List.update_at(children, idx, fn child ->
+          Map.put(child || %{}, resolved_field, value)
+        end)
+
+      updated_row = Map.put(row, children_key, updated_children)
+      {:cont, {:ok, %{table | rows_by_id: Map.put(table.rows_by_id, id, updated_row)}}}
+    else
+      {:error, reason} -> {:halt, {:error, reason}}
+      _ -> {:halt, {:error, {:no_match, %{id: id, child_key: child_key}}}}
     end
   end
 
-  defp update_child_at(table, id, row, children_key, children, idx, child_field, value) do
-    child_field_atom = field_to_atom(child_field, nil)
+  defp fetch_children_key(%Schema{children_key: nil}, table_name),
+    do: {:error, {:no_children, table_name}}
 
-    updated_children =
-      List.update_at(children, idx, fn child ->
-        Map.put(child || %{}, child_field_atom, value)
-      end)
+  defp fetch_children_key(%Schema{children_key: key}, _table_name) when is_atom(key),
+    do: {:ok, key}
 
-    updated_row = Map.put(row, children_key, updated_children)
-    {:cont, {:ok, %{table | rows_by_id: Map.put(table.rows_by_id, id, updated_row)}}}
+  defp fetch_row(table, id) do
+    case Map.get(table.rows_by_id, id) do
+      nil -> {:error, {:no_match, %{id: id}}}
+      row -> {:ok, row}
+    end
+  end
+
+  # Coerce a child_key map into atom-keyed form, validating that every key is
+  # one of the schema's `child_key_fields`. Atoms not declared as key fields
+  # are rejected so an ambiguous "child_key: %{level_name: ...}" doesn't
+  # silently match the wrong child.
+  defp normalize_child_key(child_key, %Schema{child_key_fields: declared} = schema)
+       when is_map(child_key) do
+    declared_set = MapSet.new(declared)
+
+    Enum.reduce_while(child_key, {:ok, %{}}, fn {k, v}, {:ok, acc} ->
+      case resolve_child_key_field(k, declared_set, schema) do
+        {:ok, atom_key} -> {:cont, {:ok, Map.put(acc, atom_key, v)}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, m} when m == %{} -> {:error, {:empty_child_key, declared}}
+      ok_or_err -> ok_or_err
+    end
+  end
+
+  defp normalize_child_key(_, _), do: {:error, :invalid_child_key}
+
+  defp resolve_child_key_field(k, declared_set, _schema) when is_atom(k) do
+    if MapSet.member?(declared_set, k),
+      do: {:ok, k},
+      else: {:error, {:unknown_child_key_field, k, available: MapSet.to_list(declared_set)}}
+  end
+
+  defp resolve_child_key_field(k, declared_set, _schema) when is_binary(k) do
+    case Enum.find(declared_set, fn a -> Atom.to_string(a) == k end) do
+      nil ->
+        {:error,
+         {:unknown_child_key_field, k,
+          available: declared_set |> MapSet.to_list() |> Enum.map(&Atom.to_string/1)}}
+
+      atom ->
+        {:ok, atom}
+    end
+  end
+
+  defp resolve_child_key_field(k, _, _), do: {:error, {:unknown_child_key_field, k, []}}
+
+  defp resolve_child_field(field, %Schema{child_columns: cols}) do
+    known = Enum.map(cols || [], & &1.name)
+
+    cond do
+      is_atom(field) and field in known ->
+        {:ok, field}
+
+      is_binary(field) ->
+        case Enum.find(known, fn a -> Atom.to_string(a) == field end) do
+          nil ->
+            {:error, {:unknown_child_field, field, available: Enum.map(known, &Atom.to_string/1)}}
+
+          atom ->
+            {:ok, atom}
+        end
+
+      true ->
+        {:error, {:unknown_child_field, field, []}}
+    end
+  end
+
+  defp find_child_index(children, key_map) do
+    matches =
+      children
+      |> Enum.with_index()
+      |> Enum.filter(fn {child, _idx} -> child_matches?(child, key_map) end)
+
+    case matches do
+      [] ->
+        {:error, {:no_match, %{child_key: stringify_keys(key_map)}}}
+
+      [{_child, idx}] ->
+        {:ok, idx}
+
+      multiple ->
+        {:error,
+         {:ambiguous_match,
+          %{
+            child_key: stringify_keys(key_map),
+            count: length(multiple)
+          }}}
+    end
+  end
+
+  defp child_matches?(child, key_map) when is_map(child) do
+    Enum.all?(key_map, fn {key, expected} ->
+      values_match?(fetch_child_value(child, key), expected)
+    end)
+  end
+
+  defp child_matches?(_, _), do: false
+
+  defp fetch_child_value(child, key) when is_atom(key) do
+    Map.get(child, key, Map.get(child, Atom.to_string(key)))
+  end
+
+  defp stringify_keys(map) do
+    Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
 
   defp field_to_atom(field, _schema) when is_atom(field), do: field

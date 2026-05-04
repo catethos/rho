@@ -108,14 +108,25 @@ class SkillAction {
   name string
 }
 
+class QueryTableAction {
+  tool "query_table" @description("Read data table rows. Pass `ids_json` (a JSON array of row IDs copied from the prompt's Selected block) to fetch exactly those rows — preferred when acting on the user's selection. Otherwise use filter_field/filter_value for equality search, or no filter to read the whole table (subject to limit).")
+  table string?
+  ids_json string?
+  columns string?
+  filter_field string?
+  filter_value string?
+  limit string?
+  offset string?
+}
+
 class UpdateCellsAction {
-  tool "update_cells" @description("Update data table cells.")
+  tool "update_cells" @description("Update data table cells. Each change is a JSON object: {\"id\": \"<row_id>\", \"field\": \"<col>\", \"value\": <new>} for a top-level cell, or {\"id\": \"<row_id>\", \"child_key\": {\"<key>\": <val>}, \"field\": \"<child_col>\", \"value\": <new>} for a nested child (a row in the parent's children list, addressed by natural key — e.g. child_key={\"level\": 3}). Field names must match the schema; unknown fields error.")
   changes_json string
   table string?
 }
 
 class EditRowAction {
-  tool "edit_row" @description("Edit one row by a natural locator. Prefer the flat string params (match_field/match_value, set_field/set_value) — they avoid JSON encoding entirely. Use match_json/set_json only for multi-field locators or updates. Errors if 0 or >1 rows match.")
+  tool "edit_row" @description("Edit one row by a natural locator. Prefer the flat string params (match_field/match_value, set_field/set_value) — they avoid JSON encoding entirely. Use match_json/set_json only for multi-field locators or updates. To edit a nested child cell (e.g. one proficiency level), add child_match_field + child_match_value (or child_match_json); set_field/set_value then apply to that child. Errors if 0 or >1 rows or children match.")
   table string?
   match_field string?
   match_value string?
@@ -123,6 +134,9 @@ class EditRowAction {
   set_value string?
   match_json string?
   set_json string?
+  child_match_field string?
+  child_match_value string?
+  child_match_json string?
 }
 
 class AddRowsAction {
@@ -138,7 +152,7 @@ class DeleteRowsAction {
   table string?
 }
 
-function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | ManageRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | SkillAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
+function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | ManageRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
   client Openrouter
   prompt #"
     {{ messages }}

@@ -143,6 +143,9 @@ defmodule Rho.Stdlib.DataTable.Server do
       not match?(%Schema{}, schema) ->
         {:reply, {:error, :invalid_schema}, state}
 
+      match?({:error, _}, Schema.validate_definition(schema)) ->
+        {:reply, Schema.validate_definition(schema), state}
+
       true ->
         table = Table.new(name, schema)
 
@@ -163,46 +166,9 @@ defmodule Rho.Stdlib.DataTable.Server do
   end
 
   def handle_call({:ensure_table, name, schema}, from, state) do
-    case Map.fetch(state.tables, name) do
-      {:ok, %Table{schema: existing}} ->
-        if schemas_compatible?(existing, schema) do
-          Logger.debug(fn ->
-            "[DataTable.Server] ensure_table session=#{state.session_id} " <>
-              "table=#{inspect(name)} (already exists, compatible)"
-          end)
-
-          {:reply, :ok, state}
-        else
-          Logger.warning(fn ->
-            "[DataTable.Server] ensure_table SCHEMA_MISMATCH session=#{state.session_id} " <>
-              "table=#{inspect(name)} existing=#{inspect(existing.mode)}/#{inspect(Schema.column_names(existing))} " <>
-              "incoming=#{inspect(schema.mode)}/#{inspect(Schema.column_names(schema))}"
-          end)
-
-          {:reply, {:error, :schema_mismatch}, state}
-        end
-
-      :error ->
-        table = Table.new(name, schema)
-
-        new_state = %{
-          state
-          | tables: Map.put(state.tables, name, table),
-            table_order: state.table_order ++ [name]
-        }
-
-        Logger.debug(fn ->
-          "[DataTable.Server] ensure_table session=#{state.session_id} " <>
-            "table=#{inspect(name)} (created); existing_tables=#{inspect(state.table_order)}"
-        end)
-
-        publish(
-          state.session_id,
-          %{event: :table_created, table_name: name, version: table.version},
-          caller_source(from)
-        )
-
-        {:reply, :ok, new_state}
+    case Schema.validate_definition(schema) do
+      :ok -> ensure_table_after_validation(name, schema, from, state)
+      {:error, _} = err -> {:reply, err, state}
     end
   end
 
@@ -443,10 +409,55 @@ defmodule Rho.Stdlib.DataTable.Server do
     MapSet.filter(ids, &Map.has_key?(rows_by_id, &1))
   end
 
+  defp ensure_table_after_validation(name, schema, from, state) do
+    case Map.fetch(state.tables, name) do
+      {:ok, %Table{schema: existing}} ->
+        if schemas_compatible?(existing, schema) do
+          Logger.debug(fn ->
+            "[DataTable.Server] ensure_table session=#{state.session_id} " <>
+              "table=#{inspect(name)} (already exists, compatible)"
+          end)
+
+          {:reply, :ok, state}
+        else
+          Logger.warning(fn ->
+            "[DataTable.Server] ensure_table SCHEMA_MISMATCH session=#{state.session_id} " <>
+              "table=#{inspect(name)} existing=#{inspect(existing.mode)}/#{inspect(Schema.column_names(existing))} " <>
+              "incoming=#{inspect(schema.mode)}/#{inspect(Schema.column_names(schema))}"
+          end)
+
+          {:reply, {:error, :schema_mismatch}, state}
+        end
+
+      :error ->
+        table = Table.new(name, schema)
+
+        new_state = %{
+          state
+          | tables: Map.put(state.tables, name, table),
+            table_order: state.table_order ++ [name]
+        }
+
+        Logger.debug(fn ->
+          "[DataTable.Server] ensure_table session=#{state.session_id} " <>
+            "table=#{inspect(name)} (created); existing_tables=#{inspect(state.table_order)}"
+        end)
+
+        publish(
+          state.session_id,
+          %{event: :table_created, table_name: name, version: table.version},
+          caller_source(from)
+        )
+
+        {:reply, :ok, new_state}
+    end
+  end
+
   defp schemas_compatible?(%Schema{} = a, %Schema{} = b) do
     a.mode == b.mode and Schema.column_names(a) == Schema.column_names(b) and
       a.children_key == b.children_key and
-      Schema.child_column_names(a) == Schema.child_column_names(b)
+      Schema.child_column_names(a) == Schema.child_column_names(b) and
+      a.child_key_fields == b.child_key_fields
   end
 
   defp schemas_compatible?(_, _), do: false

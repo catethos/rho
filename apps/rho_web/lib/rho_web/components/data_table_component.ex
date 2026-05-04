@@ -474,15 +474,13 @@ defmodule RhoWeb.DataTableComponent do
 
     {parent_id, child_index} = parse_compound_id(id)
 
-    # Build the change list for the server. Child rows are addressed
-    # via the "child:<idx>:<field>" path on the parent row.
+    # Child rows are addressed by their natural key (per the schema's
+    # child_key_fields), not by list position. Look up the child at
+    # `child_index` from the rendered row and pull its key values to
+    # build a stable child_key map for the change.
     change =
       if child_index do
-        %{
-          "id" => parent_id,
-          "field" => "child:#{child_index}:#{field}",
-          "value" => value
-        }
+        build_child_change(socket.assigns, parent_id, child_index, field, value)
       else
         %{"id" => parent_id, "field" => field, "value" => value}
       end
@@ -2221,6 +2219,37 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   defp parse_compound_id(id), do: {to_string(id), nil}
+
+  # Build a child-cell change map keyed by the child's natural key fields
+  # (e.g. %{"level" => 3}). The child is located in the rendered row by
+  # array index, but the change sent to the server addresses it by key —
+  # this matches the post-redesign update_cells contract and stays stable
+  # across reorders.
+  defp build_child_change(assigns, parent_id, child_index, field, value) do
+    schema = assigns.schema
+    children_key = schema.children_key
+    key_fields = (schema && schema.child_key_fields) || []
+
+    row = find_row(assigns.rows, parent_id)
+    children = (row && Map.get(row, children_key)) || []
+    child = Enum.at(children, child_index) || %{}
+    child_key = build_child_key(child, key_fields)
+
+    %{
+      "id" => parent_id,
+      "child_key" => child_key,
+      "field" => field,
+      "value" => value
+    }
+  end
+
+  defp build_child_key(child, key_fields) when is_list(key_fields) and key_fields != [] do
+    Map.new(key_fields, fn f ->
+      {Atom.to_string(f), Map.get(child, f, Map.get(child, Atom.to_string(f)))}
+    end)
+  end
+
+  defp build_child_key(_, _), do: %{}
 
   # --- Optimistic edit overlay ---
 

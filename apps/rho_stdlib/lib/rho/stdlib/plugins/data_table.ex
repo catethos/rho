@@ -112,17 +112,38 @@ defmodule Rho.Stdlib.Plugins.DataTable do
   defp render_columns_line(_t, false), do: ""
 
   defp render_columns_line(%{schema: %Rho.Stdlib.DataTable.Schema{} = schema}, true) do
-    case Rho.Stdlib.DataTable.Schema.column_names(schema) do
+    base =
+      case Rho.Stdlib.DataTable.Schema.column_names(schema) do
+        [] -> ""
+        cols -> "\n  columns: " <> Enum.map_join(cols, ", ", &Atom.to_string/1)
+      end
+
+    base <> render_child_columns_line(schema)
+  end
+
+  defp render_columns_line(_, _), do: ""
+
+  defp render_child_columns_line(%Rho.Stdlib.DataTable.Schema{children_key: nil}), do: ""
+
+  defp render_child_columns_line(
+         %Rho.Stdlib.DataTable.Schema{
+           children_key: key,
+           child_key_fields: key_fields
+         } = schema
+       ) do
+    case Rho.Stdlib.DataTable.Schema.child_column_names(schema) do
       [] ->
         ""
 
       cols ->
-        names = Enum.map_join(cols, ", ", &Atom.to_string/1)
-        "\n  columns: " <> names
+        col_str = Enum.map_join(cols, ", ", &Atom.to_string/1)
+        key_str = Enum.map_join(key_fields, ", ", &Atom.to_string/1)
+
+        "\n  child columns (#{Atom.to_string(key)}[]): #{col_str}" <>
+          "\n  child key: #{key_str} — address one child via " <>
+          "child_key={\"#{List.first(key_fields)}\":<value>}"
     end
   end
-
-  defp render_columns_line(_, _), do: ""
 
   defp render_selection_block(_sid, nil, _ctx), do: ""
 
@@ -269,9 +290,21 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "query_table",
-          description: "Read data table rows with filtering.",
+          description:
+            "Read data table rows. Pass `ids_json` (a JSON array of row IDs " <>
+              "copied from the prompt's Selected block) to fetch exactly those " <>
+              "rows — preferred when acting on the user's selection. Otherwise " <>
+              "use filter_field/filter_value for equality search, or no filter " <>
+              "to read the whole table (subject to limit).",
           parameter_schema: [
             table: [type: :string, required: false, doc: "default: main"],
+            ids_json: [
+              type: :string,
+              required: false,
+              doc:
+                ~s(JSON array of row IDs, e.g. ["abc123","def456"]. ) <>
+                  "When set, filter_* are ignored."
+            ],
             columns: [type: :string, required: false, doc: "comma-separated names"],
             filter_field: [type: :string, required: false],
             filter_value: [type: :string, required: false],
@@ -288,8 +321,28 @@ defmodule Rho.Stdlib.Plugins.DataTable do
 
   defp execute_query_table(args, session_id) do
     table = args[:table] || @default_table
-    filter = parse_filter(args)
     columns = parse_columns(args)
+
+    schema =
+      case DataTable.get_schema(session_id, table) do
+        {:ok, s} -> s
+        _ -> nil
+      end
+
+    case parse_ids(args[:ids_json]) do
+      {:ok, ids} when ids != [] ->
+        execute_query_by_ids(session_id, table, ids, columns, schema)
+
+      {:error, msg} ->
+        {:error, "query_table failed: #{msg}"}
+
+      _ ->
+        execute_query_by_filter(args, session_id, table, columns, schema)
+    end
+  end
+
+  defp execute_query_by_filter(args, session_id, table, columns, schema) do
+    filter = parse_filter(args)
     limit = parse_positive_int(args[:limit], 50)
     offset = parse_non_neg_int(args[:offset], 0)
 
@@ -301,7 +354,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
            offset: offset
          ) do
       {:ok, result} ->
-        result = maybe_elide_complex_columns(result, columns)
+        result = maybe_elide_complex_columns(result, columns, schema)
         {:ok, Jason.encode!(result)}
 
       {:error, reason} ->
@@ -309,20 +362,100 @@ defmodule Rho.Stdlib.Plugins.DataTable do
     end
   end
 
-  # When no explicit column projection is requested, replace complex (list/map)
-  # cell values with a compact type descriptor like "<list<5>>". Callers that
-  # genuinely want those fields must ask for them in `columns`.
-  defp maybe_elide_complex_columns(%{rows: rows} = result, nil) do
-    %{result | rows: Enum.map(rows, &elide_complex_values/1)}
+  defp execute_query_by_ids(session_id, table, ids, columns, schema) do
+    case DataTable.get_rows_by_ids(session_id, ids, table: table) do
+      {:ok, rows_by_id} ->
+        # Preserve the order the agent supplied so it can correlate rows
+        # back to its input list.
+        rows = ids |> Enum.map(&Map.get(rows_by_id, &1)) |> Enum.reject(&is_nil/1)
+        rows = if columns, do: project_columns(rows, columns), else: rows
+
+        result = %{rows: rows, total: length(rows), offset: 0, limit: length(ids)}
+        result = maybe_elide_complex_columns(result, columns, schema)
+        {:ok, Jason.encode!(result)}
+
+      {:error, reason} ->
+        {:error, "query_table failed: #{inspect(reason)}"}
+    end
   end
 
-  defp maybe_elide_complex_columns(result, _columns), do: result
+  # Mirror Table.query_rows' projection so the ids_json path returns the
+  # same row shape (id + requested column keys only).
+  defp project_columns(rows, columns) do
+    Enum.map(rows, fn row ->
+      Map.new(columns, fn col ->
+        key = resolve_column_key(row, col)
+        {col, Map.get(row, key)}
+      end)
+      |> Map.put("id", Map.get(row, :id) || Map.get(row, "id"))
+    end)
+  end
 
-  defp elide_complex_values(row) when is_map(row) do
+  defp resolve_column_key(row, col) when is_binary(col) do
+    atom_key =
+      try do
+        String.to_existing_atom(col)
+      rescue
+        ArgumentError -> nil
+      end
+
+    cond do
+      atom_key && Map.has_key?(row, atom_key) -> atom_key
+      Map.has_key?(row, col) -> col
+      true -> col
+    end
+  end
+
+  defp parse_ids(nil), do: {:ok, []}
+  defp parse_ids(""), do: {:ok, []}
+
+  defp parse_ids(s) when is_binary(s) do
+    case Jason.decode(s) do
+      {:ok, list} when is_list(list) ->
+        if Enum.all?(list, &is_binary/1) do
+          {:ok, list}
+        else
+          {:error, "ids_json must contain only string ids"}
+        end
+
+      {:ok, _} ->
+        {:error, "ids_json must be a JSON array"}
+
+      {:error, e} ->
+        {:error, "ids_json is not valid JSON: #{Exception.message(e)}"}
+    end
+  end
+
+  defp parse_ids(_), do: {:ok, []}
+
+  # When no explicit column projection is requested, replace complex (list/map)
+  # cell values with a compact type descriptor like "<list<5>>". The
+  # `children_key` column is exempt — children are addressable by natural key
+  # via update_cells/edit_row, so the agent needs to see them to pick which
+  # child to edit. Callers that genuinely want other complex fields must
+  # ask for them in `columns`.
+  defp maybe_elide_complex_columns(%{rows: rows} = result, nil, schema) do
+    keep_keys = preserve_keys(schema)
+    %{result | rows: Enum.map(rows, &elide_complex_values(&1, keep_keys))}
+  end
+
+  defp maybe_elide_complex_columns(result, _columns, _schema), do: result
+
+  defp preserve_keys(%Rho.Stdlib.DataTable.Schema{children_key: key}) when is_atom(key) do
+    MapSet.new([key, Atom.to_string(key)])
+  end
+
+  defp preserve_keys(_), do: MapSet.new()
+
+  defp elide_complex_values(row, keep_keys) when is_map(row) do
     Map.new(row, fn
-      {k, v} when is_list(v) -> {k, "<list<#{length(v)}>>"}
-      {k, v} when is_map(v) -> {k, "<map<#{map_size(v)}>>"}
-      pair -> pair
+      {k, v} ->
+        cond do
+          MapSet.member?(keep_keys, k) -> {k, v}
+          is_list(v) -> {k, "<list<#{length(v)}>>"}
+          is_map(v) -> {k, "<map<#{map_size(v)}>>"}
+          true -> {k, v}
+        end
     end)
   end
 
@@ -396,9 +529,23 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       tool:
         ReqLLM.tool(
           name: "update_cells",
-          description: "Update data table cells.",
+          description:
+            "Update data table cells. Each change is a JSON object: " <>
+              ~s({"id": "<row_id>", "field": "<col>", "value": <new>}) <>
+              " for a top-level cell, or " <>
+              ~s({"id": "<row_id>", "child_key": {"<key>": <val>}, ) <>
+              ~s("field": "<child_col>", "value": <new>}) <>
+              " for a nested child (a row in the parent's children list, " <>
+              "addressed by natural key — e.g. child_key={\"level\": 3}). " <>
+              "Field names must match the schema; unknown fields error.",
           parameter_schema: [
-            changes_json: [type: :string, required: true, doc: "JSON array of {id, field, value}"],
+            changes_json: [
+              type: :string,
+              required: true,
+              doc:
+                ~s(JSON array of change objects, e.g. [{"id":"abc","field":"skill_name","value":"Python"}, ) <>
+                  ~s({"id":"abc","child_key":{"level":3},"field":"level_description","value":"..."}])
+            ],
             table: [type: :string, required: false, doc: "default: main"]
           ],
           callback: fn _args -> :ok end
@@ -433,7 +580,10 @@ defmodule Rho.Stdlib.Plugins.DataTable do
             "Edit one row by a natural locator. Prefer the flat string params " <>
               "(match_field/match_value, set_field/set_value) — they avoid JSON " <>
               "encoding entirely. Use match_json/set_json only for multi-field " <>
-              "locators or updates. Errors if 0 or >1 rows match.",
+              "locators or updates. To edit a nested child cell (e.g. one " <>
+              "proficiency level), add child_match_field + child_match_value " <>
+              "(or child_match_json); set_field/set_value then apply to that " <>
+              "child. Errors if 0 or >1 rows or children match.",
           parameter_schema: [
             table: [type: :string, required: false, doc: "default: main"],
             match_field: [
@@ -469,6 +619,25 @@ defmodule Rho.Stdlib.Plugins.DataTable do
               doc:
                 ~s(Multi-field update as JSON object. Used only when set_field is empty. ) <>
                   ~s(Must be valid JSON, e.g. {"description":"...", "level":3})
+            ],
+            child_match_field: [
+              type: :string,
+              required: false,
+              doc:
+                "Child key field, e.g. \"level\". Required (with child_match_value) " <>
+                  "to edit a nested child instead of the parent row."
+            ],
+            child_match_value: [
+              type: :string,
+              required: false,
+              doc: "Child key value, e.g. \"3\"."
+            ],
+            child_match_json: [
+              type: :string,
+              required: false,
+              doc:
+                ~s(Multi-field child locator as JSON object, e.g. {"level":3}. ) <>
+                  ~s(Used only when child_match_field is empty.)
             ]
           ],
           callback: fn _args -> :ok end
@@ -483,10 +652,11 @@ defmodule Rho.Stdlib.Plugins.DataTable do
     table = args[:table] || @default_table
 
     with {:ok, match} <- resolve_match(args),
+         {:ok, child_match} <- resolve_child_match(args),
          {:ok, set} <- resolve_set(args),
          {:ok, %{rows: rows}} <-
            DataTable.query_rows(session_id, table: table, filter: match, limit: 2) do
-      apply_edit_row(session_id, table, match, set, rows)
+      apply_edit_row(session_id, table, match, child_match, set, rows)
     end
   end
 
@@ -529,34 +699,66 @@ defmodule Rho.Stdlib.Plugins.DataTable do
     end
   end
 
+  # Returns {:ok, nil} when no child locator is provided (edits target the
+  # parent row). Returns {:ok, %{...}} when a child locator is present, or
+  # {:error, msg} when the locator is malformed.
+  defp resolve_child_match(args) do
+    flat_field = args[:child_match_field]
+    flat_value = args[:child_match_value]
+    json = args[:child_match_json]
+
+    cond do
+      is_binary(flat_field) and flat_field != "" and is_binary(flat_value) ->
+        {:ok, %{flat_field => flat_value}}
+
+      is_binary(json) and json != "" ->
+        case decode_object(json, "child_match_json") do
+          {:ok, m} -> validate_nonempty(m, "child_match_json") |> wrap_with(m)
+          err -> err
+        end
+
+      true ->
+        {:ok, nil}
+    end
+  end
+
   defp wrap_with(:ok, value), do: {:ok, value}
   defp wrap_with({:error, _} = err, _value), do: err
 
-  defp apply_edit_row(_sid, table, match, _set, []) do
+  defp apply_edit_row(_sid, table, match, _child_match, _set, []) do
     {:error, "edit_row: no rows in #{inspect(table)} match #{inspect(match)}"}
   end
 
-  defp apply_edit_row(_sid, _table, _match, _set, [_, _ | _] = rows) do
+  defp apply_edit_row(_sid, _table, _match, _child_match, _set, [_, _ | _] = rows) do
     {:error,
      "edit_row: locator is ambiguous — #{length(rows)} rows match. Use a more " <>
        "specific match, or call update_cells with explicit ids."}
   end
 
-  defp apply_edit_row(sid, table, _match, set, [row]) do
+  defp apply_edit_row(sid, table, _match, child_match, set, [row]) do
     id = row_id(row)
-
-    changes =
-      Enum.map(set, fn {field, value} ->
-        %{"id" => id, "field" => field, "value" => value}
-      end)
+    changes = build_edit_changes(id, child_match, set)
 
     case DataTable.update_cells(sid, changes, table: table) do
       :ok ->
-        {:ok, "Updated row #{id} in #{table}: #{Jason.encode!(set)}"}
+        target_label = if child_match, do: " child #{Jason.encode!(child_match)}", else: ""
+        {:ok, "Updated row #{id}#{target_label} in #{table}: #{Jason.encode!(set)}"}
 
       {:error, reason} ->
         {:error, "edit_row failed: #{inspect(reason)}"}
     end
+  end
+
+  defp build_edit_changes(id, nil, set) do
+    Enum.map(set, fn {field, value} ->
+      %{"id" => id, "field" => field, "value" => value}
+    end)
+  end
+
+  defp build_edit_changes(id, child_match, set) when is_map(child_match) do
+    Enum.map(set, fn {field, value} ->
+      %{"id" => id, "child_key" => child_match, "field" => field, "value" => value}
+    end)
   end
 
   defp row_id(%{id: id}) when is_binary(id), do: id

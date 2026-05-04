@@ -23,8 +23,10 @@ defmodule Rho.Stdlib.DataTableTest do
       children_key: :proficiency_levels,
       child_columns: [
         %Column{name: :level, type: :integer, required?: true},
-        %Column{name: :level_name, type: :string}
+        %Column{name: :level_name, type: :string},
+        %Column{name: :level_description, type: :string}
       ],
+      child_key_fields: [:level],
       key_fields: [:skill_name]
     }
   end
@@ -240,6 +242,225 @@ defmodule Rho.Stdlib.DataTableTest do
       assert {:ok, [_]} = DataTable.replace_all(sid, [%{"a" => 99}])
       assert [row] = DataTable.get_rows(sid)
       assert row["a"] == 99
+    end
+  end
+
+  describe "child cell editing via child_key" do
+    defp seed_python_with_levels(sid, levels) do
+      :ok = DataTable.ensure_table(sid, "library", library_schema())
+
+      {:ok, [row]} =
+        DataTable.add_rows(
+          sid,
+          [
+            %{
+              category: "Tech",
+              skill_name: "Python",
+              skill_description: "snake",
+              proficiency_levels: levels
+            }
+          ],
+          table: "library"
+        )
+
+      row
+    end
+
+    test "edits a child cell selected by natural key", %{session_id: sid} do
+      row =
+        seed_python_with_levels(sid, [
+          %{level: 1, level_name: "Novice"},
+          %{level: 3, level_name: "Practitioner"},
+          %{level: 5, level_name: "Master"}
+        ])
+
+      assert :ok =
+               DataTable.update_cells(
+                 sid,
+                 [
+                   %{
+                     "id" => row.id,
+                     "child_key" => %{"level" => 3},
+                     "field" => "level_description",
+                     "value" => "writes idiomatic code"
+                   }
+                 ],
+                 table: "library"
+               )
+
+      {:ok, %{rows: [updated]}} =
+        DataTable.query_rows(sid, table: "library", filter: %{"skill_name" => "Python"})
+
+      levels = updated[:proficiency_levels]
+
+      assert Enum.any?(
+               levels,
+               &(&1[:level] == 3 and &1[:level_description] == "writes idiomatic code")
+             )
+
+      # other levels untouched
+      refute Enum.any?(levels, &(&1[:level] == 1 and Map.has_key?(&1, :level_description)))
+    end
+
+    test "addresses children by key regardless of array position", %{session_id: sid} do
+      row =
+        seed_python_with_levels(sid, [
+          %{level: 3, level_name: "L3"},
+          %{level: 1, level_name: "L1"},
+          %{level: 2, level_name: "L2"},
+          %{level: 4, level_name: "L4"},
+          %{level: 5, level_name: "L5"}
+        ])
+
+      assert :ok =
+               DataTable.update_cells(
+                 sid,
+                 [
+                   %{
+                     "id" => row.id,
+                     "child_key" => %{"level" => 3},
+                     "field" => "level_description",
+                     "value" => "edited-3"
+                   }
+                 ],
+                 table: "library"
+               )
+
+      {:ok, %{rows: [updated]}} =
+        DataTable.query_rows(sid, table: "library", filter: %{"skill_name" => "Python"})
+
+      level_3 = Enum.find(updated[:proficiency_levels], &(&1[:level] == 3))
+      assert level_3[:level_description] == "edited-3"
+    end
+
+    test "errors with unknown_child_field on typo'd field", %{session_id: sid} do
+      row = seed_python_with_levels(sid, [%{level: 3, level_name: "L3"}])
+
+      assert {:error, {:unknown_child_field, "level_descrption", [available: cols]}} =
+               DataTable.update_cells(
+                 sid,
+                 [
+                   %{
+                     "id" => row.id,
+                     "child_key" => %{"level" => 3},
+                     "field" => "level_descrption",
+                     "value" => "..."
+                   }
+                 ],
+                 table: "library"
+               )
+
+      assert "level_description" in cols
+    end
+
+    test "errors with no_match when child_key matches nothing", %{session_id: sid} do
+      row = seed_python_with_levels(sid, [%{level: 3, level_name: "L3"}])
+
+      assert {:error, {:no_match, %{child_key: %{"level" => 99}}}} =
+               DataTable.update_cells(
+                 sid,
+                 [
+                   %{
+                     "id" => row.id,
+                     "child_key" => %{"level" => 99},
+                     "field" => "level_description",
+                     "value" => "..."
+                   }
+                 ],
+                 table: "library"
+               )
+    end
+
+    test "errors with ambiguous_match when two children share a key", %{session_id: sid} do
+      row =
+        seed_python_with_levels(sid, [
+          %{level: 3, level_name: "first"},
+          %{level: 3, level_name: "second"}
+        ])
+
+      assert {:error, {:ambiguous_match, %{count: 2}}} =
+               DataTable.update_cells(
+                 sid,
+                 [
+                   %{
+                     "id" => row.id,
+                     "child_key" => %{"level" => 3},
+                     "field" => "level_description",
+                     "value" => "..."
+                   }
+                 ],
+                 table: "library"
+               )
+    end
+
+    test "errors with no_children when schema declares none", %{session_id: sid} do
+      DataTable.ensure_started(sid)
+      {:ok, [row]} = DataTable.add_rows(sid, [%{"k" => "v"}])
+
+      assert {:error, {:no_children, "main"}} =
+               DataTable.update_cells(sid, [
+                 %{
+                   "id" => row.id,
+                   "child_key" => %{"level" => 3},
+                   "field" => "anything",
+                   "value" => "..."
+                 }
+               ])
+    end
+
+    test "rejects unknown child_key fields", %{session_id: sid} do
+      row = seed_python_with_levels(sid, [%{level: 3}])
+
+      assert {:error, {:unknown_child_key_field, "level_name", [available: ["level"]]}} =
+               DataTable.update_cells(
+                 sid,
+                 [
+                   %{
+                     "id" => row.id,
+                     "child_key" => %{"level_name" => "Practitioner"},
+                     "field" => "level_description",
+                     "value" => "..."
+                   }
+                 ],
+                 table: "library"
+               )
+    end
+  end
+
+  describe "schema validation" do
+    test "ensure_table rejects schema with children_key but no child_key_fields",
+         %{session_id: sid} do
+      DataTable.ensure_started(sid)
+
+      bad =
+        %Schema{
+          name: "broken",
+          mode: :strict,
+          columns: [%Column{name: :n, type: :string, required?: true}],
+          children_key: :kids,
+          child_columns: [%Column{name: :slot, type: :integer}]
+        }
+
+      assert {:error, {:missing_child_key_fields, :kids}} =
+               DataTable.ensure_table(sid, "broken", bad)
+    end
+
+    test "ensure_table rejects child_key_fields not declared as child columns",
+         %{session_id: sid} do
+      DataTable.ensure_started(sid)
+
+      bad =
+        %Schema{
+          name: "broken",
+          mode: :strict,
+          columns: [%Column{name: :n, type: :string, required?: true}],
+          children_key: :kids,
+          child_columns: [%Column{name: :slot, type: :integer}],
+          child_key_fields: [:level]
+        }
+
+      assert {:error, {:undeclared_child_key_fields, [:level]}} =
+               DataTable.ensure_table(sid, "broken", bad)
     end
   end
 
