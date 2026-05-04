@@ -609,18 +609,27 @@ defmodule RhoFrameworks.Library do
 
   defp bulk_upsert_skill_rows(_library_id, []), do: []
 
+  # Postgres caps bound parameters at 65_535. With ~17 columns per row, 1_000
+  # rows/chunk leaves comfortable headroom and matches the chunk size used by
+  # the ESCO loader.
+  @skill_insert_chunk 1_000
+
   defp bulk_upsert_skill_rows(library_id, attr_list) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     rows = Enum.map(attr_list, &build_insert_all_row(&1, library_id, now))
 
-    {_n, returned} =
-      Repo.insert_all(Skill, rows,
-        on_conflict: skill_on_conflict_query(),
-        conflict_target: [:library_id, :slug],
-        returning: true
-      )
+    rows
+    |> Stream.chunk_every(@skill_insert_chunk)
+    |> Enum.flat_map(fn chunk ->
+      {_n, returned} =
+        Repo.insert_all(Skill, chunk,
+          on_conflict: skill_on_conflict_query(),
+          conflict_target: [:library_id, :slug],
+          returning: true
+        )
 
-    returned
+      returned
+    end)
   end
 
   defp skill_on_conflict_query do
@@ -743,19 +752,38 @@ defmodule RhoFrameworks.Library do
 
   @doc "Load a library as structured skill maps (with nested proficiency_levels)."
   def load_library_rows(library_id, opts \\ []) do
-    list_skills(library_id, opts)
-    |> Enum.map(fn skill ->
-      %{
-        category: skill.category || "",
-        cluster: skill.cluster || "",
-        skill_name: skill.name,
-        skill_description: skill.description || "",
-        proficiency_levels: skill.proficiency_levels || []
+    category = Keyword.get(opts, :category)
+    categories = Keyword.get(opts, :categories)
+    status = Keyword.get(opts, :status)
+
+    from(s in Skill,
+      where: s.library_id == ^library_id,
+      order_by: [s.category, s.cluster, s.sort_order, s.name],
+      select: %{
+        category: coalesce(s.category, ""),
+        cluster: coalesce(s.cluster, ""),
+        skill_name: s.name,
+        skill_description: coalesce(s.description, ""),
+        proficiency_levels: s.proficiency_levels
       }
+    )
+    |> maybe_filter(:category, category)
+    |> maybe_filter(:categories, categories)
+    |> maybe_filter(:status, status)
+    |> Repo.all()
+    |> Enum.map(fn row ->
+      %{row | proficiency_levels: row.proficiency_levels || []}
     end)
   end
 
   # --- Browse Library ---
+
+  @doc "Total number of skills in a library. Cheap aggregate query."
+  def skill_count(library_id) when is_binary(library_id) do
+    from(s in Skill, where: s.library_id == ^library_id, select: count(s.id))
+    |> Repo.one()
+    |> Kernel.||(0)
+  end
 
   @doc """
   Returns one row per (category, cluster) with a skill count, ordered for UI rendering.
@@ -1468,16 +1496,67 @@ defmodule RhoFrameworks.Library do
       })
     end)
     |> Ecto.Multi.run(:skills, fn _repo, %{library: lib} ->
-      all_skills =
-        Enum.flat_map(sources, fn src ->
-          list_skills(src.id, skills_filter_opts(categories))
-        end)
-
-      {copied, _seen} = copy_skills_with_disambiguation(all_skills, lib.id)
-
-      {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
+      copy_sources_skills(sources, lib.id, categories)
     end)
     |> Repo.transaction()
+  end
+
+  # Single-source forks have no slug-collision risk (skills.library_id+slug is
+  # unique), so we can copy entirely inside Postgres with INSERT … SELECT —
+  # no data leaves the DB, embeddings are reused as-is, and bound params stay
+  # constant regardless of skill count. Multi-source forks keep the
+  # disambiguation path because the same slug can legitimately appear in two
+  # sources with different descriptions.
+  defp copy_sources_skills([single_source], target_lib_id, categories) do
+    count = copy_skills_via_sql(single_source.id, target_lib_id, categories)
+    {:ok, count}
+  end
+
+  defp copy_sources_skills(sources, target_lib_id, categories) do
+    all_skills =
+      Enum.flat_map(sources, fn src ->
+        list_skills(src.id, skills_filter_opts(categories))
+      end)
+
+    {copied, _seen} = copy_skills_with_disambiguation(all_skills, target_lib_id)
+    {:ok, length(copied)}
+  end
+
+  defp copy_skills_via_sql(source_lib_id, target_lib_id, categories) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    base =
+      from(s in Skill,
+        where: s.library_id == ^source_lib_id,
+        select: %{
+          id: fragment("gen_random_uuid()"),
+          library_id: type(^target_lib_id, :binary_id),
+          slug: s.slug,
+          name: s.name,
+          description: s.description,
+          category: s.category,
+          cluster: s.cluster,
+          status: s.status,
+          sort_order: s.sort_order,
+          metadata: s.metadata,
+          proficiency_levels: s.proficiency_levels,
+          source_skill_id: s.id,
+          embedding: s.embedding,
+          embedding_text_hash: s.embedding_text_hash,
+          embedded_at: s.embedded_at,
+          inserted_at: type(^now, :utc_datetime),
+          updated_at: type(^now, :utc_datetime)
+        }
+      )
+
+    query =
+      case categories do
+        list when is_list(list) -> from(s in base, where: s.category in ^list)
+        _ -> base
+      end
+
+    {n, _} = Repo.insert_all(Skill, query, [])
+    n
   end
 
   # --- Import Library ---

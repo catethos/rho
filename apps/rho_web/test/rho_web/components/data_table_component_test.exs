@@ -133,6 +133,9 @@ defmodule RhoWeb.DataTableComponentTest do
         }
       ]
 
+      # Pass `expand_groups` so the leaf group's stream is eagerly seeded —
+      # without this, lazy population leaves the streamed `<tbody>` empty
+      # until the user clicks to expand.
       html =
         render_component(DataTableComponent,
           id: "dt1",
@@ -147,7 +150,8 @@ defmodule RhoWeb.DataTableComponentTest do
           streaming: false,
           total_cost: 0.0,
           session_id: "s1",
-          class: ""
+          class: "",
+          expand_groups: [{"Software", "Languages"}]
         )
 
       assert html =~ "Elixir"
@@ -260,6 +264,44 @@ defmodule RhoWeb.DataTableComponentTest do
 
       refute software_section =~ "dt-collapsed"
       assert process_section =~ "dt-collapsed"
+    end
+
+    test "collapsed groups have empty streams (lazy population)" do
+      rows = [
+        %{
+          id: "r1",
+          category: "Software",
+          cluster: "Languages",
+          skill_name: "Elixir",
+          skill_description: "Functional language",
+          proficiency_levels: []
+        }
+      ]
+
+      # No expand_groups hint → all groups stay collapsed → row content
+      # never lands in the rendered HTML, but the streamed `<tbody>` is
+      # still present (empty) so the user can expand to populate.
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.skill_library(),
+          tables: [],
+          table_order: [],
+          active_table: "library",
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: ""
+        )
+
+      assert html =~ ~r/<tbody[^>]+phx-update="stream"/
+      refute html =~ "Elixir"
+      assert html =~ "Software"
+      assert html =~ "Languages"
     end
 
     test "hides Suggest button on a role_profile view" do

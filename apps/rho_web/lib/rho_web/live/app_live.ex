@@ -67,6 +67,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:debug_projections, %{})
       |> assign(:command_palette_open, false)
       |> assign(:chat_context, %{})
+      |> assign(:fork_pending?, false)
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 5,
@@ -247,6 +248,9 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
       |> assign_new(:skill_search_query, fn -> "" end)
+      |> assign_new(:chat_overlay_open, fn -> false end)
+      |> assign_new(:overlay_session_id, fn -> nil end)
+      |> maybe_open_chat_for_library(params["chat"])
       |> refresh_skill_search()
     else
       socket
@@ -266,6 +270,8 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
       |> assign_new(:skill_search_query, fn -> "" end)
+      |> assign_new(:chat_overlay_open, fn -> false end)
+      |> assign_new(:overlay_session_id, fn -> nil end)
     end
   end
 
@@ -354,6 +360,9 @@ defmodule RhoWeb.AppLive do
   defp maybe_scroll_to_skill(socket, skill_id) do
     push_event(socket, "scroll_to_skill", %{skill_id: skill_id})
   end
+
+  defp maybe_open_chat_for_library(socket, "1"), do: assign(socket, :chat_overlay_open, true)
+  defp maybe_open_chat_for_library(socket, _), do: socket
 
   # ── Page cleanup on navigation ─────────────────────────────────────
 
@@ -735,8 +744,9 @@ defmodule RhoWeb.AppLive do
                   phx-click="fork_and_edit"
                   phx-value-id={group.primary.id}
                   class="btn-secondary-sm"
+                  disabled={@fork_pending?}
                 >
-                  Fork
+                  <%= if @fork_pending?, do: "Forking…", else: "Fork" %>
                 </button>
                 <button
                   :if={group.primary.visibility != "public"}
@@ -794,8 +804,9 @@ defmodule RhoWeb.AppLive do
                     phx-click="fork_and_edit"
                     phx-value-id={lib.id}
                     class="btn-secondary-sm"
+                    disabled={@fork_pending?}
                   >
-                    Fork
+                    <%= if @fork_pending?, do: "Forking…", else: "Fork" %>
                   </button>
                   <button
                     :if={lib.visibility != "public"}
@@ -867,15 +878,26 @@ defmodule RhoWeb.AppLive do
           >
             Set as Default
           </button>
-          <button :if={@library.immutable} phx-click="open_fork_modal" class="btn-primary">
-            Fork Library
+          <button
+            :if={@library.immutable}
+            phx-click="open_fork_modal"
+            class="btn-primary"
+            disabled={@fork_pending?}
+          >
+            <%= if @fork_pending?, do: "Forking…", else: "Fork Library" %>
           </button>
           <button :if={@library.derived_from_id} phx-click={if @show_diff, do: "hide_diff", else: "show_diff"} class="btn-secondary">
             <%= if @show_diff, do: "Hide Diff", else: "Compare to Source" %>
           </button>
-          <.link patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"} class="btn-secondary">
-            Open in Chat
-          </.link>
+          <%= if @library.immutable do %>
+            <button phx-click="open_chat_overlay" class="btn-secondary">
+              Open in Chat
+            </button>
+          <% else %>
+            <.link patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"} class="btn-secondary">
+              Open in Chat
+            </.link>
+          <% end %>
         </:actions>
       </.page_header>
 
@@ -1050,8 +1072,26 @@ defmodule RhoWeb.AppLive do
           </div>
         <% end %>
       <% end %>
+
+      <.live_component
+        module={RhoWeb.ChatOverlayComponent}
+        id="chat-overlay"
+        open={@chat_overlay_open}
+        agent_name={:spreadsheet}
+        intent={library_chat_intent(@library)}
+        current_user={@current_user}
+        current_organization={@current_organization}
+      />
     </.page_shell>
     """
+  end
+
+  defp library_chat_intent(nil), do: nil
+
+  defp library_chat_intent(%{name: name, id: id}) do
+    "I'm browsing the \"#{name}\" library (id: #{id}). " <>
+      "Help me explore it. Use browse_library, find_skill, or find_similar_skills " <>
+      "with this library_id when you need to look things up."
   end
 
   defp skill_table(assigns) do
@@ -2221,6 +2261,48 @@ defmodule RhoWeb.AppLive do
     {:noreply, assign(socket, :role_search_pending?, false)}
   end
 
+  # ── Async — library fork (skills copy + HNSW index updates can take
+  # ~15s for ESCO-sized libraries; runs in a Task so the LV stays
+  # responsive and the user sees a "Forking…" flash immediately) ──────
+
+  def handle_async(:fork_library, {:ok, {:ok, %{mode: :edit} = meta}}, socket) do
+    %{source_name: source_name, org_slug: org_slug, forked_id: forked_id} = meta
+
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:info, "Forked \"#{source_name}\" → editing copy")
+     |> push_navigate(to: ~p"/orgs/#{org_slug}/flows/edit-framework?library_id=#{forked_id}")}
+  end
+
+  def handle_async(:fork_library, {:ok, {:ok, %{mode: :show} = meta}}, socket) do
+    %{source_name: source_name, org_slug: org_slug, forked_id: forked_id} = meta
+
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:info, "Forked \"#{source_name}\"")
+     |> push_patch(to: ~p"/orgs/#{org_slug}/libraries/#{forked_id}")}
+  end
+
+  def handle_async(:fork_library, {:ok, {:error, reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:error, "Fork failed: #{inspect(reason)}")}
+  end
+
+  def handle_async(:fork_library, {:exit, reason}, socket) do
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:error, "Fork failed: #{inspect(reason)}")}
+  end
+
   # ── Private event helpers ─────────────────────────────────────────
 
   # §3.5 Phase 9 — Routes the BAML classifier's result. High-confidence
@@ -2465,6 +2547,18 @@ defmodule RhoWeb.AppLive do
     {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
   end
 
+  def handle_info({:library_load_complete, table_name, lib_name, lib_version}, socket) do
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    if state.active_table == table_name do
+      version_label = if lib_version, do: " v#{lib_version}", else: " (draft)"
+      new_state = %{state | mode_label: "Skill Library — #{lib_name}#{version_label}"}
+      {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info({:data_table_save, table_name, new_name}, socket) do
     {:noreply, RhoWeb.SessionLive.DataTableHelpers.handle_save(socket, table_name, new_name)}
   end
@@ -2585,7 +2679,8 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns.session_id
 
     # Forward to page-specific components when applicable
-    if socket.assigns.active_page == :libraries && socket.assigns[:chat_overlay_open] do
+    if socket.assigns.active_page in [:libraries, :library_show] &&
+         socket.assigns[:chat_overlay_open] do
       send_update(RhoWeb.ChatOverlayComponent, id: "chat-overlay", signal: event)
     end
 
@@ -3505,36 +3600,67 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns[:session_id]
     org_id = get_in(socket.assigns, [:current_organization, Access.key(:id)])
 
-    with lib when not is_nil(lib) <-
-           RhoFrameworks.Library.get_library(org_id, library_id) ||
-             RhoFrameworks.Library.get_visible_library!(org_id, library_id),
-         rows when rows != [] <- RhoFrameworks.Library.load_library_rows(lib.id) do
-      table_name = "library:" <> lib.name
-      schema = RhoFrameworks.DataTableSchemas.library_schema()
+    lib =
+      RhoFrameworks.Library.get_library(org_id, library_id) ||
+        RhoFrameworks.Library.get_visible_library!(org_id, library_id)
 
-      _ = Rho.Stdlib.DataTable.ensure_started(sid)
-      :ok = Rho.Stdlib.DataTable.ensure_table(sid, table_name, schema)
-      Rho.Stdlib.DataTable.replace_all(sid, rows, table: table_name)
+    cond do
+      is_nil(lib) ->
+        socket
 
-      version_label = if lib.version, do: " v#{lib.version}", else: " (draft)"
+      # Immutable libraries (ESCO, public frameworks) can have ~14k rows;
+      # dumping them into the per-session DataTable freezes the browser
+      # tab and pins memory in the GenServer. Redirect to the existing
+      # browse view (lazy index/cluster), and open the chat overlay
+      # alongside via ?chat=1.
+      lib.immutable ->
+        slug = get_in(socket.assigns, [:current_organization, Access.key(:slug)])
+        push_navigate(socket, to: ~p"/orgs/#{slug}/libraries/#{lib.id}?chat=1")
 
-      state =
-        ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
-
-      new_state = %{
-        state
-        | active_table: table_name,
-          view_key: :skill_library,
-          mode_label: "Skill Library — #{lib.name}#{version_label}"
-      }
-
-      socket
-      |> open_data_table_workspace()
-      |> SignalRouter.write_ws_state(:data_table, new_state)
-      |> refresh_data_table_session()
-    else
-      _ -> socket
+      true ->
+        load_mutable_library_into_data_table(socket, sid, lib)
     end
+  rescue
+    _ -> socket
+  end
+
+  defp load_mutable_library_into_data_table(socket, sid, lib) do
+    table_name = "library:" <> lib.name
+    schema = RhoFrameworks.DataTableSchemas.library_schema()
+
+    _ = Rho.Stdlib.DataTable.ensure_started(sid)
+    :ok = Rho.Stdlib.DataTable.ensure_table(sid, table_name, schema)
+
+    # The heavy row load + replace_all can take several seconds for large
+    # libraries (e.g. ~14k-row ESCO copies). Run it in a Task so the chat
+    # workspace renders immediately. The DataTable.Server publishes
+    # :table_changed when replace_all lands, and the LV's existing event
+    # handler refreshes the snapshot then. We post :library_load_complete
+    # back so the mode label can drop "(loading…)".
+    parent = self()
+
+    Task.start(fn ->
+      rows = RhoFrameworks.Library.load_library_rows(lib.id)
+      if rows != [], do: Rho.Stdlib.DataTable.replace_all(sid, rows, table: table_name)
+      send(parent, {:library_load_complete, table_name, lib.name, lib.version})
+    end)
+
+    version_label = if lib.version, do: " v#{lib.version}", else: " (draft)"
+
+    state =
+      ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    new_state = %{
+      state
+      | active_table: table_name,
+        view_key: :skill_library,
+        mode_label: "Skill Library — #{lib.name}#{version_label} (loading…)"
+    }
+
+    socket
+    |> open_data_table_workspace()
+    |> SignalRouter.write_ws_state(:data_table, new_state)
+    |> refresh_data_table_session()
   rescue
     _ -> socket
   end
