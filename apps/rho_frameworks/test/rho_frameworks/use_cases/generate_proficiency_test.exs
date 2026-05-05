@@ -94,7 +94,21 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
 
   describe "run/2 — input handling" do
     test "missing table_name returns :missing_table_name", %{scope: scope} do
-      assert {:error, :missing_table_name} = GenerateProficiency.run(%{}, scope)
+      # `levels` must be supplied for the table_name check to be reached;
+      # otherwise the early-exit (`:no_levels_chosen`) short-circuits first.
+      # That early-exit is the contract that lets non-scratch paths in the
+      # create flow bypass proficiency generation entirely.
+      assert {:error, :missing_table_name} =
+               GenerateProficiency.run(%{levels: 3}, scope)
+    end
+
+    test "missing levels returns :no_levels_chosen (skip silently)", %{scope: scope} do
+      # New contract: when no `levels` are explicitly chosen, the UseCase
+      # is a no-op so non-scratch paths in the create flow don't accidentally
+      # overwrite existing proficiency at a default scale. The edit flow
+      # asks the user via `:choose_levels` before reaching this UseCase.
+      assert {:ok, %{skipped: true, reason: :no_levels_chosen}} =
+               GenerateProficiency.run(%{table_name: @table}, scope)
     end
 
     test "empty rows returns :empty_rows", %{scope: scope} do
@@ -330,7 +344,13 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
       assert input.skills =~ "1. Vim | Cluster: Tooling | Editor."
     end
 
-    test "defaults levels to 5 when not supplied", %{scope: scope, session_id: session_id} do
+    test "skips fan-out (no BAML calls) when levels not supplied", %{
+      scope: scope,
+      session_id: session_id
+    } do
+      # Old behavior was "default levels to 5 and run anyway". New
+      # contract is "skip silently — let the caller (e.g. edit flow's
+      # :choose_levels step) ask the user explicitly".
       seed_rows(session_id, [
         %{
           category: "Eng",
@@ -347,10 +367,10 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
         {:ok, %{skills: []}}
       end)
 
-      assert {:async, _} = GenerateProficiency.run(%{table_name: @table}, scope)
-      _ = wait_for_completed(1)
+      assert {:ok, %{skipped: true, reason: :no_levels_chosen}} =
+               GenerateProficiency.run(%{table_name: @table}, scope)
 
-      assert_received {:levels, 5}
+      refute_received {:levels, _}
     end
   end
 end

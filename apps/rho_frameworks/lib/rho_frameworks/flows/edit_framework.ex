@@ -47,13 +47,20 @@ defmodule RhoFrameworks.Flows.EditFramework do
 
   @behaviour RhoFrameworks.Flow
 
+  alias Rho.Stdlib.DataTable
   alias RhoFrameworks.Flows.FinalizeSkeleton
+  alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Scope
 
   alias RhoFrameworks.UseCases.{
     ListExistingLibraries,
     LoadExistingFramework
   }
+
+  # Default for the :choose_levels picker when the loaded library has no
+  # proficiency at all. The user always sees and can change the picker;
+  # this is just what the form starts at.
+  @no_proficiency_default 5
 
   @impl true
   def id, do: "edit-framework"
@@ -100,19 +107,8 @@ defmodule RhoFrameworks.Flows.EditFramework do
         id: :review,
         label: "Review Skills",
         type: :table_review,
-        next: [
-          %{
-            to: :save,
-            guard: :loaded_with_proficiency,
-            label: "Skills already have proficiency — save"
-          },
-          %{
-            to: :confirm,
-            guard: :loaded_without_proficiency,
-            label: "Generate proficiency levels"
-          }
-        ],
-        routing: :auto,
+        next: :confirm,
+        routing: :fixed,
         config: %{}
       }
     ] ++ Enum.drop(FinalizeSkeleton.steps(), 1)
@@ -150,4 +146,64 @@ defmodule RhoFrameworks.Flows.EditFramework do
   end
 
   def build_input(_, _state, _scope), do: %{}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Smart defaults
+  # ──────────────────────────────────────────────────────────────────────
+
+  @impl true
+  @doc """
+  Pre-populate `intake.levels` for the `:choose_levels` step using the
+  loaded library's modal proficiency-level count. Falls back to
+  `@no_proficiency_default` when no skill in the workbench has any
+  proficiency yet (a freshly loaded zero-proficiency library).
+
+  The LiveView merges these intake updates only for keys not already
+  present, so URL pre-fill and any prior user pick on this step take
+  precedence.
+  """
+  def populate_intake(:choose_levels, %{summaries: summaries}, %Scope{} = scope) do
+    table_name =
+      get_in(summaries, [:load_existing_library, :table_name]) ||
+        get_in(summaries, [:generate, :table_name])
+
+    cond do
+      is_nil(scope.session_id) or is_nil(table_name) ->
+        %{}
+
+      true ->
+        case modal_level_count(scope.session_id, table_name) do
+          nil -> %{levels: to_string(@no_proficiency_default)}
+          n when is_integer(n) -> %{levels: to_string(n)}
+        end
+    end
+  end
+
+  def populate_intake(_node_id, _state, _scope), do: %{}
+
+  defp modal_level_count(session_id, table_name) do
+    case DataTable.get_rows(session_id, table: table_name) do
+      rows when is_list(rows) ->
+        rows
+        |> Enum.map(&MapAccess.get(&1, :proficiency_levels))
+        |> Enum.flat_map(fn
+          list when is_list(list) and length(list) > 0 -> [length(list)]
+          _ -> []
+        end)
+        |> case do
+          [] -> nil
+          counts -> mode(counts)
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp mode(counts) do
+    counts
+    |> Enum.frequencies()
+    |> Enum.max_by(fn {_count, freq} -> freq end)
+    |> elem(0)
+  end
 end

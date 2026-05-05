@@ -69,10 +69,19 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
   @impl true
   def run(input, %Scope{} = scope) do
     table_name = Map.get(input, :table_name) || Map.get(input, "table_name")
-    levels = Map.get(input, :levels) || Map.get(input, "levels") || @default_levels
+    raw_levels = Map.get(input, :levels) || Map.get(input, "levels")
     parent_agent_id = Map.get(input, :agent_id) || Map.get(input, "agent_id")
 
     cond do
+      # Skip silently when no levels were explicitly chosen. This is the
+      # contract that lets non-scratch paths in the create flow bypass
+      # proficiency generation entirely — they save with empty
+      # `proficiency_levels` and the user fills them in later via the
+      # edit flow's `:choose_levels` step. Scratch sets levels in
+      # `intake_scratch`; edit sets it in `:choose_levels`.
+      is_nil(raw_levels) or raw_levels == "" ->
+        {:ok, %{skipped: true, reason: :no_levels_chosen}}
+
       is_nil(table_name) or table_name == "" ->
         {:error, :missing_table_name}
 
@@ -80,9 +89,24 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
         {:error, :missing_session_id}
 
       true ->
+        levels = parse_levels(raw_levels)
         start_fanout(table_name, levels, parent_agent_id, scope)
     end
   end
+
+  # Coerce a string/integer level count into an integer, falling back to
+  # the default if parsing fails. Mirrors finalize_skeleton's parse_levels
+  # so this UseCase is callable with either shape.
+  defp parse_levels(n) when is_integer(n), do: n
+
+  defp parse_levels(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, _} -> n
+      :error -> @default_levels
+    end
+  end
+
+  defp parse_levels(_), do: @default_levels
 
   # ──────────────────────────────────────────────────────────────────────
   # Fan-out
@@ -97,25 +121,45 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
         {:error, :empty_rows}
 
       rows when is_list(rows) ->
-        by_category = Enum.group_by(rows, &MapAccess.get(&1, :category))
+        # Per-skill scale check: skip rows whose existing proficiency_levels
+        # array length already matches the user's chosen scale. Rows with no
+        # proficiency get generated; rows at a different scale get
+        # regenerated. Implements the "stick with current = additive,
+        # change = regenerate" semantic without touching anything else.
+        rows_to_generate = Enum.reject(rows, &already_at_scale?(&1, levels))
 
-        if map_size(by_category) == 0 do
-          {:error, :empty_rows}
-        else
-          workers =
-            Enum.map(by_category, fn {category, cat_skills} ->
-              spawn_category_worker(
-                category,
-                cat_skills,
-                levels,
-                table_name,
-                parent_agent_id,
-                scope
-              )
-            end)
+        cond do
+          rows_to_generate == [] ->
+            {:ok, %{skipped: true, reason: :all_skills_already_at_scale}}
 
-          {:async, %{workers: workers}}
+          true ->
+            by_category = Enum.group_by(rows_to_generate, &MapAccess.get(&1, :category))
+
+            if map_size(by_category) == 0 do
+              {:error, :empty_rows}
+            else
+              workers =
+                Enum.map(by_category, fn {category, cat_skills} ->
+                  spawn_category_worker(
+                    category,
+                    cat_skills,
+                    levels,
+                    table_name,
+                    parent_agent_id,
+                    scope
+                  )
+                end)
+
+              {:async, %{workers: workers}}
+            end
         end
+    end
+  end
+
+  defp already_at_scale?(row, levels) do
+    case MapAccess.get(row, :proficiency_levels) do
+      list when is_list(list) -> length(list) == levels
+      _ -> false
     end
   end
 

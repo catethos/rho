@@ -809,8 +809,14 @@ defmodule RhoWeb.FlowLive do
         completed = [node.id | socket.assigns.completed_steps] |> Enum.uniq()
         last_decision = build_last_decision(node, next_id, decision)
 
+        new_runner =
+          runner
+          |> FlowRunner.advance(next_id)
+          |> apply_populate_intake(next_id, socket.assigns.scope)
+
         socket
-        |> assign(:runner, FlowRunner.advance(runner, next_id))
+        |> assign(:runner, new_runner)
+        |> assign(:form, new_runner.intake)
         |> assign(:completed_steps, completed)
         |> assign(:last_decision, last_decision)
         |> assign(:step_status, :idle)
@@ -824,6 +830,32 @@ defmodule RhoWeb.FlowLive do
         socket
         |> assign(:step_status, :failed)
         |> assign(:step_error, "routing failed: #{inspect(reason)}")
+    end
+  end
+
+  # Hook for flows to seed smart defaults on a node before its form
+  # renders. Flows opt in by implementing the optional `populate_intake/3`
+  # callback (see `RhoFrameworks.Flow`). Only keys not already present
+  # in `intake` are merged, so URL pre-fill and prior user input win.
+  defp apply_populate_intake(runner, _next_id, nil), do: runner
+
+  defp apply_populate_intake(runner, next_id, scope) do
+    if function_exported?(runner.flow_mod, :populate_intake, 3) do
+      defaults = runner.flow_mod.populate_intake(next_id, runner, scope)
+
+      if is_map(defaults) and map_size(defaults) > 0 do
+        new_only =
+          Enum.reject(defaults, fn {k, _v} -> Map.has_key?(runner.intake, k) end)
+          |> Map.new()
+
+        if map_size(new_only) > 0,
+          do: FlowRunner.merge_intake(runner, new_only),
+          else: runner
+      else
+        runner
+      end
+    else
+      runner
     end
   end
 

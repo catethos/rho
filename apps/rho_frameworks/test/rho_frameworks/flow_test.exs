@@ -11,13 +11,16 @@ defmodule RhoFrameworks.FlowTest do
 
       steps = CreateFramework.steps()
       assert is_list(steps)
-      assert length(steps) == 17
+      assert length(steps) == 21
 
       ids = Enum.map(steps, & &1.id)
 
       assert ids == [
-               :intake,
                :choose_starting_point,
+               :intake_scratch,
+               :intake_template,
+               :intake_extend,
+               :intake_merge,
                :research,
                :similar_roles,
                :pick_template,
@@ -31,6 +34,7 @@ defmodule RhoFrameworks.FlowTest do
                :generate,
                :review,
                :confirm,
+               :choose_levels,
                :proficiency,
                :save
              ]
@@ -64,41 +68,40 @@ defmodule RhoFrameworks.FlowTest do
       end
     end
 
-    test "next: intake→choose_starting_point single-edge, fork at choose_starting_point, similar_roles bounces on no matches" do
+    test "next: choose_starting_point forks to per-path intake nodes, intake_X advances to its path-specific work step, similar_roles bounces on no matches" do
       steps = CreateFramework.steps()
       next_map = Map.new(steps, fn s -> {s.id, s.next} end)
 
-      assert next_map[:intake] == :choose_starting_point
-
       assert is_list(next_map[:choose_starting_point])
-
-      ids_after_choose =
-        next_map[:choose_starting_point] |> Enum.map(& &1.to)
-
-      assert :similar_roles in ids_after_choose
-      assert :research in ids_after_choose
 
       from_template_edge =
         Enum.find(next_map[:choose_starting_point], &(&1.guard == :from_template_intent))
 
-      assert from_template_edge.to == :similar_roles
+      assert from_template_edge.to == :intake_template
 
       scratch_intent_edge =
         Enum.find(next_map[:choose_starting_point], &(&1.guard == :scratch_intent))
 
-      assert scratch_intent_edge.to == :research
+      assert scratch_intent_edge.to == :intake_scratch
 
       scratch_edge = Enum.find(next_map[:choose_starting_point], &(&1.guard == :scratch))
-      assert scratch_edge.to == :research
+      assert scratch_edge.to == :intake_scratch
 
-      default_edge = Enum.find(next_map[:choose_starting_point], &(&1.guard == nil))
-      assert default_edge.to == :similar_roles
+      # Per-path intake nodes funnel into their path-specific work steps.
+      assert next_map[:intake_scratch] == :research
+      assert next_map[:intake_template] == :similar_roles
+      assert next_map[:intake_extend] == :pick_existing_library
+      assert next_map[:intake_merge] == :pick_two_libraries
 
       assert next_map[:research] == :generate
       assert next_map[:pick_template] == :save
       assert next_map[:generate] == :review
       assert next_map[:review] == :confirm
-      assert next_map[:confirm] == :proficiency
+      # :confirm now routes to :choose_levels (the new shared form step
+      # in FinalizeSkeleton's tail) before proficiency. Always asks the
+      # user before any LLM regenerates proficiency on existing skills.
+      assert next_map[:confirm] == :choose_levels
+      assert next_map[:choose_levels] == :proficiency
       assert next_map[:proficiency] == :save
       assert next_map[:save] == :done
 
@@ -121,19 +124,37 @@ defmodule RhoFrameworks.FlowTest do
                RhoFrameworks.UseCases.ResearchDomain.table_name()
     end
 
-    test "intake step has form fields" do
-      intake = Enum.find(CreateFramework.steps(), &(&1.id == :intake))
-      assert intake.type == :form
-      assert is_list(intake.config.fields)
-      assert length(intake.config.fields) == 6
+    test "intake_scratch step has all 6 form fields; non-scratch intakes only ask name + description" do
+      steps = CreateFramework.steps()
 
-      field_names = Enum.map(intake.config.fields, & &1.name)
-      assert :name in field_names
-      assert :description in field_names
-      assert :domain in field_names
-      assert :target_roles in field_names
-      assert :skill_count in field_names
-      assert :levels in field_names
+      scratch = Enum.find(steps, &(&1.id == :intake_scratch))
+      assert scratch.type == :form
+      assert length(scratch.config.fields) == 6
+
+      scratch_field_names = Enum.map(scratch.config.fields, & &1.name)
+      assert :name in scratch_field_names
+      assert :description in scratch_field_names
+      assert :domain in scratch_field_names
+      assert :target_roles in scratch_field_names
+      assert :skill_count in scratch_field_names
+      assert :levels in scratch_field_names
+
+      for id <- [:intake_template, :intake_extend, :intake_merge] do
+        step = Enum.find(steps, &(&1.id == id))
+        assert step.type == :form, "#{id} should be :form"
+        assert length(step.config.fields) == 2, "#{id} should ask only name + description"
+
+        field_names = Enum.map(step.config.fields, & &1.name)
+        assert :name in field_names
+        assert :description in field_names
+
+        # Non-scratch paths intentionally omit domain/target_roles/skill_count/levels —
+        # those fields are dead-input on those paths today and would mislead users.
+        refute :domain in field_names
+        refute :target_roles in field_names
+        refute :skill_count in field_names
+        refute :levels in field_names
+      end
     end
 
     test "choose_starting_point is a form with a single :starting_point select field including extend_existing and merge" do
@@ -154,14 +175,15 @@ defmodule RhoFrameworks.FlowTest do
       assert "merge" in values
     end
 
-    test "Phase 10c merge edges: choose_starting_point→pick_two_libraries→diff→resolve→merge→save" do
+    test "Phase 10c merge edges: choose_starting_point→intake_merge→pick_two_libraries→diff→resolve→merge→save" do
       steps = CreateFramework.steps()
       next_map = Map.new(steps, fn s -> {s.id, s.next} end)
 
       merge_edge =
         Enum.find(next_map[:choose_starting_point], &(&1.guard == :merge_intent))
 
-      assert merge_edge.to == :pick_two_libraries
+      assert merge_edge.to == :intake_merge
+      assert next_map[:intake_merge] == :pick_two_libraries
 
       pick_two_edges = next_map[:pick_two_libraries]
       assert is_list(pick_two_edges)
@@ -202,14 +224,15 @@ defmodule RhoFrameworks.FlowTest do
       assert merge.use_case == RhoFrameworks.UseCases.MergeFrameworks
     end
 
-    test "Phase 10b extend_existing edges: choose_starting_point→pick_existing_library, bounce on no pick" do
+    test "Phase 10b extend_existing edges: choose_starting_point→intake_extend→pick_existing_library, bounce on no pick" do
       steps = CreateFramework.steps()
       next_map = Map.new(steps, fn s -> {s.id, s.next} end)
 
       extend_edge =
         Enum.find(next_map[:choose_starting_point], &(&1.guard == :extend_existing_intent))
 
-      assert extend_edge.to == :pick_existing_library
+      assert extend_edge.to == :intake_extend
+      assert next_map[:intake_extend] == :pick_existing_library
 
       pick_existing_edges = next_map[:pick_existing_library]
       assert is_list(pick_existing_edges)

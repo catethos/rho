@@ -17,43 +17,60 @@ defmodule RhoFrameworks.Flows.EditFrameworkTest do
   end
 
   describe "steps/0" do
-    test "returns 6 nodes: pick → load + 4-node FinalizeSkeleton tail" do
+    test "returns 7 nodes: pick → load → review + FinalizeSkeleton tail (which now owns :choose_levels)" do
       steps = EditFramework.steps()
-      assert length(steps) == 6
+      assert length(steps) == 7
 
       assert Enum.map(steps, & &1.id) == [
                :pick_existing_library,
                :load_existing_library,
                :review,
                :confirm,
+               :choose_levels,
                :proficiency,
                :save
              ]
     end
 
-    test ":confirm/:proficiency/:save tail is byte-identical to FinalizeSkeleton's tail" do
-      # EditFramework overrides FinalizeSkeleton's :review (multi-edge
-      # next that skips :confirm+:proficiency when the loaded library
-      # already has proficiency levels). The remaining 3-step tail
-      # (:confirm → :proficiency → :save) must remain spliced verbatim.
-      tail =
-        EditFramework.steps()
-        |> Enum.drop(3)
+    test "tail (everything after :review) is byte-identical to FinalizeSkeleton's confirm-onward tail" do
+      # FinalizeSkeleton now provides :choose_levels itself between
+      # :confirm and :proficiency, so EditFramework no longer needs the
+      # custom inject step that used to rewrite :confirm.next. Splicing
+      # FinalizeSkeleton's tail (sans :review since EditFramework
+      # provides its own) keeps everything in lock-step.
+      tail = Enum.drop(EditFramework.steps(), 3)
 
       assert tail == Enum.drop(FinalizeSkeleton.steps(), 1)
     end
 
-    test ":review forks on proficiency presence" do
+    test ":review advances unconditionally to :confirm (always asks for proficiency scale via :choose_levels)" do
       review = Enum.find(EditFramework.steps(), &(&1.id == :review))
 
       assert review.type == :table_review
-      assert review.routing == :auto
+      assert review.routing == :fixed
+      # No more conditional fork on :loaded_with_proficiency — even when
+      # the library already has proficiency, the user reaches :choose_levels
+      # and can keep the default (smart-defaulted to existing modal scale)
+      # or change it. The per-skill scale check inside GenerateProficiency
+      # is what protects existing rows from accidental regeneration.
+      assert review.next == :confirm
+    end
 
-      save_edge = Enum.find(review.next, &(&1.guard == :loaded_with_proficiency))
-      assert save_edge.to == :save
+    test ":choose_levels is a single-field form with no static default" do
+      step = Enum.find(EditFramework.steps(), &(&1.id == :choose_levels))
 
-      confirm_edge = Enum.find(review.next, &(&1.guard == :loaded_without_proficiency))
-      assert confirm_edge.to == :confirm
+      assert step.type == :form
+      assert step.routing == :fixed
+      assert step.next == :proficiency
+      assert length(step.config.fields) == 1
+
+      [field] = step.config.fields
+      assert field.name == :levels
+      assert field.type == :select
+      assert field[:required] == true
+      # No static default — the form value comes from `populate_intake/3`
+      # (smart default = library's modal scale, or 5 if no proficiency yet).
+      refute Map.has_key?(field, :default)
     end
 
     test "each step has required keys" do

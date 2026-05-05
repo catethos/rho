@@ -50,5 +50,23 @@ defmodule RhoFrameworks.Flow do
   @callback build_input(node_id :: atom(), state :: map(), scope :: RhoFrameworks.Scope.t()) ::
               map()
 
-  @optional_callbacks build_input: 3
+  @doc """
+  Optional. Compute intake-map updates to merge in *before* a node renders.
+
+  Called by `RhoWeb.FlowLive.advance_step/1` after the runner has advanced
+  to the new node but before the LiveView re-renders. Lets a flow seed
+  smart defaults for a form step based on prior summaries, the workbench,
+  or URL pre-fill values that point at a source library/role.
+
+  Return `%{}` to leave intake unchanged. Callers should only merge keys
+  that aren't already present in `state.intake`, so URL pre-fill and
+  prior form submissions always win over smart defaults.
+  """
+  @callback populate_intake(
+              node_id :: atom(),
+              state :: map(),
+              scope :: RhoFrameworks.Scope.t()
+            ) :: map()
+
+  @optional_callbacks build_input: 3, populate_intake: 3
 end
