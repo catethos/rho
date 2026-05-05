@@ -189,6 +189,25 @@ defmodule RhoWeb.InlineJS do
         }
       },
 
+      Autosize: {
+        mounted() {
+          var el = this.el;
+          el.focus();
+          var len = el.value ? el.value.length : 0;
+          if (el.setSelectionRange) el.setSelectionRange(len, len);
+          var resize = function() {
+            el.style.height = "auto";
+            el.style.height = el.scrollHeight + "px";
+          };
+          this._resize = resize;
+          el.addEventListener("input", resize);
+          resize();
+        },
+        destroyed() {
+          if (this._resize) this.el.removeEventListener("input", this._resize);
+        }
+      },
+
       ExportDownload: {
         mounted() {
           var self = this;

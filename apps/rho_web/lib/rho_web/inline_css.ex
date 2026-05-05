@@ -2604,6 +2604,14 @@ defmodule RhoWeb.InlineCSS do
       font: inherit;
       padding: 2px 6px;
     }
+    textarea.dt-inline-textarea {
+      width: 100%;
+      min-height: 3.5rem;
+      resize: none;
+      overflow: hidden;
+      line-height: 1.45;
+      box-sizing: border-box;
+    }
 
     /* === Group header editing === */
     .dt-group-edit-form {
