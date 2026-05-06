@@ -3117,7 +3117,35 @@ defmodule RhoWeb.AppLive do
       />
 
       <div class="chat-input-area">
+        <div :if={@uploads.files.entries != [] or @files_parsing != %{}} class="chat-attach-strip">
+          <%= for entry <- @uploads.files.entries do %>
+            <div class={["chat-attach-chip", entry.errors != [] && "is-error"]}>
+              <span class="chat-attach-icon"><%= file_icon(entry.client_type, entry.client_name) %></span>
+              <span class="chat-attach-name"><%= entry.client_name %></span>
+              <%= if entry.progress < 100 do %>
+                <span class="chat-attach-progress"><%= entry.progress %>%</span>
+              <% end %>
+              <%= for err <- entry.errors do %>
+                <span class="chat-attach-error"><%= upload_error_msg(err) %></span>
+              <% end %>
+              <button type="button" phx-click="cancel_file" phx-value-ref={entry.ref}
+                      class="chat-attach-remove" aria-label="Remove">×</button>
+            </div>
+          <% end %>
+          <%= for {_ref, %{filename: name}} <- @files_parsing do %>
+            <div class="chat-attach-chip is-parsing">
+              <span class="chat-attach-icon">⏳</span>
+              <span class="chat-attach-name"><%= name %></span>
+              <span class="chat-attach-progress">parsing…</span>
+              <%!-- v1: no cancel-during-parse. Phoenix can't cleanly pass a Reference back through phx-click. 15s timeout caps the worst case. --%>
+            </div>
+          <% end %>
+        </div>
         <form id="chat-input-form" phx-submit="send_message" class="chat-input-form">
+          <label class="chat-attach-button" title="Attach .xlsx / .csv">
+            📎
+            <.live_file_input upload={@uploads.files} class="sr-only" />
+          </label>
           <textarea
             name="content"
             id="chat-input"
@@ -4088,4 +4116,17 @@ defmodule RhoWeb.AppLive do
     count = length(added)
     "Added #{count} #{if count == 1, do: "skill", else: "skills"}"
   end
+
+  defp file_icon(_mime, name) do
+    case Path.extname(name) |> String.downcase() do
+      ".xlsx" -> "📊"
+      ".csv" -> "📄"
+      _ -> "📎"
+    end
+  end
+
+  defp upload_error_msg(:too_large), do: "File too large (max 10MB)"
+  defp upload_error_msg(:not_accepted), do: "Only .xlsx / .csv supported"
+  defp upload_error_msg(:too_many_files), do: "Too many files (max 5)"
+  defp upload_error_msg(other), do: "Upload error: #{inspect(other)}"
 end
