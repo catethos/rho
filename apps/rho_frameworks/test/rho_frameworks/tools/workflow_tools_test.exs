@@ -156,9 +156,13 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
       response = tool.execute.(%{upload_id: h.id}, ctx)
 
       assert %Rho.ToolResponse{text: text, effects: effects} = response
-      assert text =~ "Imported 'HR Manager'"
-      assert text =~ "5 skills"
-      assert Enum.any?(effects, &match?(%Rho.Effect.Table{schema_key: :skill_library}, &1))
+      assert text =~ "Imported 2 libraries"
+      assert text =~ "HR Manager (3 skills)"
+      assert text =~ "Finance Analyst (2 skills)"
+
+      # Should have N+1 effects: 1 OpenWorkspace + N Tables
+      table_effects = Enum.filter(effects, &match?(%Rho.Effect.Table{}, &1))
+      assert length(table_effects) == 2
       assert Enum.any?(effects, &match?(%Rho.Effect.OpenWorkspace{key: :data_table}, &1))
     end
   end

@@ -19,18 +19,37 @@ defmodule RhoFrameworks.UseCases.ImportFromUploadTest do
     {:ok, sid: sid, scope: scope}
   end
 
-  test "imports complete_framework_import as a single library", %{sid: sid, scope: scope} do
+  test "imports complete_framework_import as TWO libraries", %{sid: sid, scope: scope} do
     {:ok, _pid} = Uploads.ensure_started(sid)
     {:ok, h} = put_fixture(sid, fixture_path(@complete))
 
     {:ok, summary} = ImportFromUpload.run(%{upload_id: h.id}, scope)
 
-    assert summary.library_name == "HR Manager"
-    assert summary.table_name == "library:HR Manager"
-    # complete_framework_import.xlsx has 5 unique skills × 5 levels each = 25 data rows.
-    # skills_imported counts unique skill_name values, not rows.
-    assert summary.skills_imported == 5
+    assert length(summary.libraries) == 2
+    names = Enum.map(summary.libraries, & &1.library_name) |> Enum.sort()
+    assert names == ["Finance Analyst", "HR Manager"]
+
+    hr_lib = Enum.find(summary.libraries, &(&1.library_name == "HR Manager"))
+    assert hr_lib.skills_imported == 3
+    assert hr_lib.table_name == "library:HR Manager"
+
+    fin_lib = Enum.find(summary.libraries, &(&1.library_name == "Finance Analyst"))
+    assert fin_lib.skills_imported == 2
+    assert fin_lib.table_name == "library:Finance Analyst"
+
     assert summary.warnings == []
+  end
+
+  test "explicit library_name override forces single library", %{sid: sid, scope: scope} do
+    {:ok, _pid} = Uploads.ensure_started(sid)
+    {:ok, h} = put_fixture(sid, fixture_path(@complete))
+
+    {:ok, summary} = ImportFromUpload.run(%{upload_id: h.id, library_name: "All Skills"}, scope)
+
+    assert length(summary.libraries) == 1
+    assert hd(summary.libraries).library_name == "All Skills"
+    # All 5 unique skills from both libraries lumped together
+    assert hd(summary.libraries).skills_imported == 5
   end
 
   test "rejects roles_per_sheet with clean error", %{sid: sid, scope: scope} do

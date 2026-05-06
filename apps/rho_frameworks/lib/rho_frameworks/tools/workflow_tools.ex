@@ -368,21 +368,26 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       }
 
       case ImportFromUpload.run(input, scope) do
-        {:ok, summary} ->
-          %Rho.ToolResponse{
-            text:
-              "Imported '#{summary.library_name}' — #{summary.skills_imported} skills, table '#{summary.table_name}'.",
-            effects: [
-              %Rho.Effect.OpenWorkspace{key: :data_table},
-              %Rho.Effect.Table{
-                table_name: summary.table_name,
-                schema_key: :skill_library,
-                mode_label: "Skill Library — #{summary.library_name}",
-                rows: [],
-                skip_write?: true
-              }
-            ]
-          }
+        {:ok, %{libraries: libs, warnings: _warnings}} ->
+          text = build_multi_library_text(libs)
+
+          effects =
+            [%Rho.Effect.OpenWorkspace{key: :data_table}] ++
+              Enum.map(libs, fn lib ->
+                %Rho.Effect.Table{
+                  table_name: lib.table_name,
+                  schema_key: :skill_library,
+                  mode_label: "Skill Library — #{lib.library_name}",
+                  rows: [],
+                  skip_write?: true
+                }
+              end)
+
+          %Rho.ToolResponse{text: text, effects: effects}
+
+        {:error, {:partial_import, done, {failed_lib, reason}}} ->
+          {:error,
+           "Imported #{length(done)} libraries, then failed on '#{failed_lib}': #{inspect(reason)}. Already-imported libraries: #{Enum.map_join(done, ", ", & &1.library_name)}."}
 
         {:error, {:roles_per_sheet_unsupported_v1, sheets}} ->
           {:error,
@@ -401,6 +406,21 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
           {:error, "Import failed: #{inspect(reason)}"}
       end
     end)
+  end
+
+  defp build_multi_library_text([single]) do
+    "Imported '#{single.library_name}' — #{single.skills_imported} skills, table '#{single.table_name}'."
+  end
+
+  defp build_multi_library_text(libs) when length(libs) > 1 do
+    total = Enum.reduce(libs, 0, fn l, acc -> acc + l.skills_imported end)
+
+    per_lib =
+      Enum.map_join(libs, ", ", fn l ->
+        "#{l.library_name} (#{l.skills_imported} skills)"
+      end)
+
+    "Imported #{length(libs)} libraries with #{total} skills total: #{per_lib}."
   end
 
   # ── clarify ────────────────────────────────────────────────────────────

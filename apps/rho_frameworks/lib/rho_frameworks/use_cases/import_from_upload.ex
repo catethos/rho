@@ -3,6 +3,9 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
   Layer 3 — turns an `Uploads.Observation` into rows in `library:<name>`
   via `RhoFrameworks.Workbench.replace_rows/3`.
 
+  Supports files with multiple distinct library names in the
+  `Skill Library Name` column. Returns `{:ok, %{libraries: [...], warnings: []}}`.
+
   Spec §5.3.
   """
 
@@ -34,20 +37,19 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
     with {:ok, handle} <- fetch_handle(scope.session_id, upload_id),
          {:ok, obs} <- Observer.observe(scope.session_id, upload_id),
          :ok <- check_strategy(obs, input),
-         {:ok, library_name} <- resolve_library_name(handle, obs, input),
-         :ok <- check_no_collision(scope, library_name),
-         table_name <- Editor.table_name(library_name),
-         :ok <- ensure_table(scope.session_id, table_name),
-         {:ok, rows} <- build_rows(handle, obs, input),
-         {:ok, _} <- Workbench.replace_rows(scope, rows, table: table_name) do
-      {:ok,
-       %{
-         library_name: library_name,
-         table_name: table_name,
-         skills_imported: length(rows),
-         roles_imported: 0,
-         warnings: obs.warnings
-       }}
+         {:ok, raw_rows} <- read_all_rows(handle, obs) do
+      # If the user explicitly supplied a library_name, ignore the column
+      # and force all rows under that one name.
+      groups =
+        case input do
+          %{library_name: name} when is_binary(name) and name != "" ->
+            [{name, raw_rows}]
+
+          _ ->
+            group_by_library(handle, obs, raw_rows)
+        end
+
+      import_groups(groups, obs, handle, scope)
     end
   end
 
@@ -75,49 +77,101 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
 
   defp check_strategy(_obs, _input), do: {:error, :unsupported_observation_kind}
 
-  # --- Library name ---
+  # --- Read all rows once ---
 
-  defp resolve_library_name(_handle, _obs, %{library_name: name})
-       when is_binary(name) and name != "" do
-    {:ok, name}
-  end
+  defp read_all_rows(handle, obs) do
+    [%{name: sheet_name} | _] = obs.sheets
 
-  defp resolve_library_name(handle, obs, _input) do
-    case obs.hints[:library_name_column] do
-      nil -> {:ok, Path.basename(handle.filename, Path.extname(handle.filename))}
-      col -> resolve_from_column(handle, obs, col)
+    case Observer.read_sheet(handle.session_id, handle.id, sheet_name, offset: 0, limit: 1000) do
+      {:ok, %{rows: raw_rows}} -> {:ok, raw_rows}
+      err -> err
     end
   end
 
-  defp resolve_from_column(handle, obs, col) do
-    [%{name: sheet_name} | _] = obs.sheets
-    sid = handle.session_id
+  # --- Group rows by library name column ---
 
-    case Observer.read_sheet(sid, handle.id, sheet_name, offset: 0, limit: 1) do
-      {:ok, %{rows: [row | _]}} ->
-        case Map.get(row, col) do
-          nil -> {:ok, Path.basename(handle.filename, Path.extname(handle.filename))}
-          "" -> {:ok, Path.basename(handle.filename, Path.extname(handle.filename))}
-          v -> {:ok, to_string(v)}
+  defp group_by_library(handle, obs, raw_rows) do
+    case obs.hints[:library_name_column] do
+      nil ->
+        # No library name column — put all rows under the filename-derived name
+        fallback = Path.basename(handle.filename, Path.extname(handle.filename))
+        [{fallback, raw_rows}]
+
+      col ->
+        # Group by whatever value is in the library-name column; nil/"" rows
+        # fall back to the filename.
+        fallback = Path.basename(handle.filename, Path.extname(handle.filename))
+
+        raw_rows
+        |> Enum.group_by(fn row ->
+          case Map.get(row, col) do
+            nil -> fallback
+            "" -> fallback
+            v -> to_string(v)
+          end
+        end)
+        |> Enum.to_list()
+    end
+  end
+
+  # --- Import each group, aborting on first error ---
+
+  defp import_groups(groups, obs, handle, scope) do
+    {completed, result} =
+      Enum.reduce_while(groups, {[], :ok}, fn {library_name, group_rows}, {done, _} ->
+        case import_one(library_name, group_rows, obs, handle, scope) do
+          {:ok, summary} ->
+            {:cont, {done ++ [summary], :ok}}
+
+          {:error, reason} ->
+            {:halt, {done, {:error, {library_name, reason}}}}
         end
+      end)
 
-      _ ->
-        {:ok, Path.basename(handle.filename, Path.extname(handle.filename))}
+    case result do
+      :ok ->
+        # Collect warnings from the observation (shared for all groups)
+        {:ok, %{libraries: completed, warnings: obs.warnings}}
+
+      {:error, {failed_library, reason}} ->
+        if completed == [] do
+          {:error, reason}
+        else
+          {:error, {:partial_import, completed, {failed_library, reason}}}
+        end
+    end
+  end
+
+  defp import_one(library_name, group_rows, obs, handle, scope) do
+    with :ok <- check_no_collision(scope, library_name),
+         table_name <- Editor.table_name(library_name),
+         :ok <- ensure_table(scope.session_id, table_name),
+         {:ok, rows} <- build_rows(group_rows, obs.hints, handle, library_name),
+         {:ok, _} <- Workbench.replace_rows(scope, rows, table: table_name) do
+      {:ok,
+       %{
+         library_name: library_name,
+         table_name: table_name,
+         skills_imported: length(rows)
+       }}
     end
   end
 
   # --- Collision check ---
 
   defp check_no_collision(scope, name) do
-    # Library.resolve_library/3 returns nil when not found — does NOT raise.
-    # The organization_id must be a valid UUID (:binary_id); non-UUID org_ids
-    # (used in tests) cannot have any DB records so we short-circuit to :ok.
+    # Use get_library_by_name/2 directly — it does pure name-based lookup
+    # via Ecto query (no UUID cast). `resolve_library/3` has a fallback
+    # `by_name || get_library/2` and the second arm expects a binary_id,
+    # which blows up with Ecto.Query.CastError for non-UUID library names
+    # like "HR Manager".
     if valid_uuid?(scope.organization_id) do
-      case Library.resolve_library(scope.organization_id, name, nil) do
+      case Library.get_library_by_name(scope.organization_id, name) do
         nil -> :ok
         _existing -> {:error, {:library_exists, name}}
       end
     else
+      # Non-UUID org_ids (used in tests) can't have any DB records.
       :ok
     end
   end
@@ -138,29 +192,21 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
     DataTable.ensure_table(sid, table_name, DataTableSchemas.library_schema())
   end
 
-  # --- Row building ---
+  # --- Row building (takes pre-filtered rows for one library) ---
 
-  defp build_rows(handle, obs, _input) do
-    [%{name: sheet_name} | _] = obs.sheets
+  defp build_rows(rows_for_library, hints, handle, library_name) do
+    rows =
+      rows_for_library
+      |> Enum.group_by(&row_skill_key(&1, hints))
+      |> Enum.map(fn {_key, group} -> build_skill_row(group, hints, handle) end)
+      |> Enum.reject(&is_nil/1)
 
-    case Observer.read_sheet(handle.session_id, handle.id, sheet_name, offset: 0, limit: 1000) do
-      {:ok, %{rows: raw_rows}} ->
-        rows =
-          raw_rows
-          |> Enum.group_by(&row_skill_key(&1, obs.hints))
-          |> Enum.map(fn {_key, group} -> build_skill_row(group, obs.hints, handle) end)
-          |> Enum.reject(&is_nil/1)
-
-        # Refuse to silently import zero rows — a 'success' message
-        # claiming "Imported 'X' — 0 skills" is worse UX than a clear error.
-        if rows == [] do
-          {:error, {:no_data, sheet_name}}
-        else
-          {:ok, rows}
-        end
-
-      err ->
-        err
+    # Refuse to silently import zero rows — a 'success' message
+    # claiming "Imported 'X' — 0 skills" is worse UX than a clear error.
+    if rows == [] do
+      {:error, {:no_data, library_name}}
+    else
+      {:ok, rows}
     end
   end
 
