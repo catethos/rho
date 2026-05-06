@@ -105,6 +105,7 @@
          :add_proficiency_levels,
          :clarify
        ]},
+      :uploads,
       :doc_ingest,
       {:multi_agent, only: [:delegate_task, :await_task], visible_agents: [:data_extractor]}
     ],
