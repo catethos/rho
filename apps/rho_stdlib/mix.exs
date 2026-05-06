@@ -35,6 +35,7 @@ defmodule RhoStdlib.MixProject do
       {:erlang_python, "~> 2.3"},
       {:xlsxir, "~> 1.6"},
       {:live_render, "~> 0.5"},
+      {:nimble_csv, "~> 1.2"},
       {:yaml_elixir, "~> 2.11"},
       {:mimic, "~> 1.10", only: :test}
     ]
