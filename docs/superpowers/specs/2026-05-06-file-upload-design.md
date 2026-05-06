@@ -1,11 +1,13 @@
 # File Upload & Ingestion — Design Spec
 
-**Status:** Approved for implementation (post-review revision r1).
+**Status:** Approved for implementation (revision r2).
 **Date:** 2026-05-06.
 **Branch:** `rho_regina`.
 **Author:** Regina, with Claude as design pair.
 **Approach:** Approach B (balanced v1 — Excel/CSV in chat, DocIngest unification, PDF/image and library-page UI deferred to v2).
-**Review history:** Independent INTJ architecture review on 2026-05-06 surfaced 16 findings (3 CRITICAL, 5 HIGH, 4 MEDIUM, 4 LOW). All CRITICAL and HIGH findings resolved in this revision; MEDIUMs and select LOWs incorporated. Notable product call: v1 rejects `:roles_per_sheet` files with a clear error rather than silently importing skills without role mapping. See §3 and §5.3.
+**Review history:**
+- **r1**: Independent INTJ architecture review surfaced 16 findings (3 CRITICAL, 5 HIGH, 4 MEDIUM, 4 LOW). All CRITICAL and HIGH findings resolved. Notable product call: v1 rejects `:roles_per_sheet` files with a clear error rather than silently importing skills without role mapping (§3, §5.3).
+- **r2**: Post-merge verification against `origin/main` (6 commits + 6 shipped design docs). Every code reference re-validated; stale line numbers updated; multi_agent tool surface change (4→2 tools) acknowledged; new compatibility notes section added (§10.1) covering child-key redesign, prompt-caching split, active-view + selection events, and streams-based rendering. No architectural changes.
 
 ---
 
@@ -484,7 +486,7 @@ This tool is added to the spreadsheet agent via the existing `RhoFrameworks.Plug
 
 Confirmed via `apps/rho_stdlib/lib/rho/stdlib/plugins/multi_agent.ex:142-155` (`build_role_hint`) and `.rho.exs` lines 75-77:
 
-- **`spreadsheet` agent** already has `{:multi_agent, only: [:delegate_task, :delegate_task_lite, :await_task, :await_all], visible_agents: [:data_extractor]}`. It can spawn `data_extractor` today; no plumbing changes needed.
+- **`spreadsheet` agent** already has `{:multi_agent, only: [:delegate_task, :await_task], visible_agents: [:data_extractor]}` (`.rho.exs:109`). It can spawn `data_extractor` today; no plumbing changes needed. The `delegate_task_lite` / `await_all` variants were dropped during a recent main-branch refactor; our delegation flow (`delegate_task` → `await_task`) only uses the still-allowed pair, so the change is non-breaking for this spec.
 - **`data_extractor` agent** has `plugins: [:doc_ingest]` only. It cannot delegate further — leaf agent. Bounded by `@max_depth = 3` (currently unused since data_extractor has no multi_agent plugin).
 
 **v1 routing rule (added to `spreadsheet` system_prompt):**
@@ -530,7 +532,7 @@ Add a sibling `allow_upload(:files, ...)` next to the existing `:images`:
 
 ### 8.2 Render
 
-Above the existing chat input form (`apps/rho_web/lib/rho_web/live/app_live.ex:2775`), add a file-chip strip:
+Above the existing chat input form (`apps/rho_web/lib/rho_web/live/app_live.ex` — `<form id="chat-input-form" phx-submit="send_message">`, currently around line 3106 post-merge), add a file-chip strip:
 
 ```heex
 <div :if={@uploads.files.entries != [] or @files_parsing != %{}}
@@ -567,7 +569,7 @@ CSS additions live in `apps/rho_web/lib/rho_web/inline_css.ex` next to existing 
 
 ### 8.3 Submit handler
 
-Extend `handle_event("send_message", ...)` in `app_live.ex:1447`. The current handler consumes `:images` and builds multimodal content. The new handler also consumes `:files`:
+Extend `handle_event("send_message", ...)` in `app_live.ex` (currently around line 1609 post-merge — line numbers shift with main, so locate by event name not by number). The current handler consumes `:images` and builds multimodal content. The new handler also consumes `:files`:
 
 ```elixir
 def handle_event("send_message", %{"content" => content}, socket) do
@@ -695,6 +697,19 @@ Earlier drafts proposed adding a `:_source_upload_id` column to `RhoFrameworks.D
 - The provenance need is satisfied by the existing optional `_reason` column. We write `_reason: "imported from #{filename} (#{upload_id})"`. Querying by upload id becomes free-text grep instead of a structured filter — acceptable for v1, where provenance is a debugging aid, not a queryable feature.
 
 Database persistence (when `save_framework` runs) is unchanged. Skill records in the DB have no upload provenance. v2 may add a structured `source` JSONB column on the Skill table if/when this becomes a real query — that requires a migration and is explicitly out of scope.
+
+### 10.1 Compatibility with recently-merged main work (post-merge audit)
+
+A merge of `origin/main` on 2026-05-06 brought in 6 new design docs that all shipped: active-table-and-edit-row, proficiency-level-edit, proficiency-level-edit-redesign, prompt-caching-fix, role-search-ux, row-selection (and partial: data-table-streams, large-library-data-table). None of them invalidate this spec, but they each leave a fingerprint worth acknowledging:
+
+- **`library_schema` now declares `child_key_fields: [:level]`** (`data_table_schemas.ex:54`). Our import flow writes proficiency-level rows nested as `proficiency_levels: [%{level: N, level_name: ..., level_description: ...}]` keyed by integer `level`. Already aligned with the new child-key model — no spec change needed.
+- **Proficiency child-edit redesign** changed `update_cells` / `edit_row` to use `child_key: %{level: N}` maps instead of positional `child:0:level_name` strings. **This affects edits, not creates.** Our `import_library_from_upload` writes nested rows via `Workbench.replace_rows` (the create path), not via `update_cells`. The redesign is invisible to us.
+- **Stable/volatile prompt caching** (per `prompt-caching-fix-plan`). Our upload summary lands in the **user message** (see §8.3), not in `prompt_sections`. User-message content is naturally on the volatile/uncached side, which is correct — caching the user's literal upload-of-the-moment would be wrong anyway. No interaction with the new `system_prompt_stable` / `system_prompt_volatile` split.
+- **Active-view tracking + per-table selections** (from `active-table-and-edit-row-plan` + `row-selection-plan`). When `import_library_from_upload` returns `%Rho.Effect.Table{schema_key: :skill_library, mode_label: "Skill Library — <name>", table_name: "library:<name>"}`, the existing `EffectDispatcher` publishes the view-change signal that the `ActiveViewListener` consumes. The newly-imported table becomes the active table automatically — no extra wiring.
+- **Streams-based row rendering** (`data-table-streams-plan` Phases A-E). The data-table component now uses Phoenix streams; replacing all rows triggers a stream re-init. Our `Workbench.replace_rows` write path goes through the same code rendering uses, so the stream behavior is automatic.
+- **`spreadsheet` agent's multi_agent surface tightened** to `[:delegate_task, :await_task]` only (`.rho.exs:109`). Our delegation flow uses exactly this pair.
+
+In short: every relevant merge-time change either reinforces the spec's design or is irrelevant to the import path. No revisions to the architecture, only this acknowledgement so an implementer doesn't think they've found a contradiction.
 
 ---
 
