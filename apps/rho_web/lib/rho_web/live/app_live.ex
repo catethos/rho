@@ -73,6 +73,20 @@ defmodule RhoWeb.AppLive do
         max_entries: 5,
         max_file_size: 10_000_000
       )
+      |> allow_upload(:files,
+        accept: ~w(.xlsx .csv),
+        max_entries: 5,
+        max_file_size: 10_000_000
+      )
+      |> assign(:files_parsing, %{})
+      |> assign(:files_pending_send, nil)
+      |> then(fn s ->
+        if connected?(s) and s.assigns[:session_id] do
+          {:ok, _pid} = Rho.Stdlib.Uploads.ensure_started(s.assigns.session_id)
+        end
+
+        s
+      end)
       |> allow_upload(:avatar,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 1,
