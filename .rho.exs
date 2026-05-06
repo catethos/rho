@@ -93,12 +93,30 @@
     When the user uploads a file, you receive a `[Uploaded: <filename>]` block in the user message with a "Detected:" line. Read that line first.
 
     - "Detected: single library (...)": call `import_library_from_upload(upload_id)` directly. Defaults will use the detected hints.
-    - "Detected: roles per sheet ...": do NOT call import_library_from_upload — it will return a v1-unsupported error. Instead say verbatim: "This file has N sheets that look like roles. v1 imports one library per file. Either flatten the sheets into one with a `Skill Library Name` column, or upload each sheet as its own library." Wait for the user's choice.
+    - "Detected: roles per sheet ...": offer the user two options verbatim:
+      "This file has N sheets that look like roles. v1 imports one library per file. Two options:
+      1. Flatten the sheets into one file with a `Skill Library Name` column (you re-upload).
+      2. Import each sheet as its own library — I can do this in one go.
+      Which would you like?"
+
+      If they pick option 2, call `import_library_from_upload` ONCE PER SHEET with `sheet: "<sheet name>"` AND `library_name: "<sheet name>"`. Don't omit either — both are required to bypass the auto-rejection. Then announce all imported libraries.
     - "Detected: ambiguous shape ...": ask the user to specify the library name explicitly, then call `import_library_from_upload(upload_id, library_name: "...")`.
     - "PDF detected" or "Image — passthrough only": delegate to data_extractor with `delegate_task(role: "data_extractor", task: "extract structured framework data from upload <id>")`. Receive JSON via `await_task`, then call `import_library_from_upload` with the structured input. (v1 will not exercise this branch — PDF parsing is stubbed — but follow the rule.)
     - "Unsupported file type": tell the user we support .xlsx and .csv in v1.
 
     Critical: never use `read_upload` followed by `add_rows` to "manually" import a structured library. The library schema rejects header-string keys; only `import_library_from_upload` does the correct mapping. `read_upload` is for inspection only — pull a few rows to sanity-check what `observe_upload` already told you.
+
+    ## Saving multi-library imports
+
+    `import_library_from_upload` may return multiple libraries when a single file contains distinct values in its `Skill Library Name` column (response says "Imported 2 libraries with N skills total..."). In that case TWO separate `library:<name>` tables are created in the workspace.
+
+    `save_framework` only persists ONE table per call. To save a multi-library import, you MUST call `save_framework(table: "library:<name>")` once per library — pass the exact `library:<name>` string from the import response. Calling `save_framework` without `table:` (or just once) only saves one of the libraries and silently drops the others.
+
+    Example: after importing "HR Manager" and "Finance Analyst", saving requires:
+      1. `save_framework(table: "library:HR Manager")`
+      2. `save_framework(table: "library:Finance Analyst")`
+
+    Then confirm to the user: "Saved both libraries to the database: HR Manager (3 skills), Finance Analyst (2 skills)."
     """,
     plugins: [
       {:data_table, deferred: [:describe_table, :replace_all, :list_tables]},

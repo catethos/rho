@@ -64,6 +64,28 @@ defmodule RhoFrameworks.UseCases.ImportFromUploadTest do
     assert "CEO" in sheets
   end
 
+  test "imports a single sheet of a roles-per-sheet file with explicit override", %{
+    sid: sid,
+    scope: scope
+  } do
+    {:ok, _pid} = Uploads.ensure_started(sid)
+    {:ok, h} = put_fixture(sid, fixture_path(@rolesper))
+
+    input = %{
+      upload_id: h.id,
+      sheet: "Product Manager",
+      library_name: "Product Manager"
+    }
+
+    {:ok, summary} = ImportFromUpload.run(input, scope)
+
+    assert length(summary.libraries) == 1
+    lib = hd(summary.libraries)
+    assert lib.library_name == "Product Manager"
+    assert lib.table_name == "library:Product Manager"
+    assert lib.skills_imported == 6
+  end
+
   defp fixture_path(rel) do
     # The fixture lives in apps/rho_stdlib/test/fixtures/uploads/. From either the
     # umbrella root or apps/rho_frameworks/, we resolve relative to umbrella root.

@@ -37,7 +37,7 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
     with {:ok, handle} <- fetch_handle(scope.session_id, upload_id),
          {:ok, obs} <- Observer.observe(scope.session_id, upload_id),
          :ok <- check_strategy(obs, input),
-         {:ok, raw_rows} <- read_all_rows(handle, obs) do
+         {:ok, raw_rows} <- read_all_rows(handle, obs, input) do
       # If the user explicitly supplied a library_name, ignore the column
       # and force all rows under that one name.
       groups =
@@ -64,9 +64,13 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
 
   # --- Strategy gate ---
 
-  defp check_strategy(%{hints: %{sheet_strategy: :roles_per_sheet}} = obs, _input) do
-    sheet_names = Enum.map(obs.sheets, & &1.name)
-    {:error, {:roles_per_sheet_unsupported_v1, sheet_names}}
+  defp check_strategy(%{hints: %{sheet_strategy: :roles_per_sheet}} = obs, input) do
+    if explicit_sheet_override?(input) do
+      :ok
+    else
+      sheet_names = Enum.map(obs.sheets, & &1.name)
+      {:error, {:roles_per_sheet_unsupported_v1, sheet_names}}
+    end
   end
 
   defp check_strategy(%{hints: %{sheet_strategy: :ambiguous}} = obs, _input) do
@@ -77,14 +81,33 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
 
   defp check_strategy(_obs, _input), do: {:error, :unsupported_observation_kind}
 
+  defp explicit_sheet_override?(input) do
+    sheet = Map.get(input, :sheet) || Map.get(input, "sheet")
+    name = Map.get(input, :library_name) || Map.get(input, "library_name")
+    is_binary(sheet) and sheet != "" and is_binary(name) and name != ""
+  end
+
   # --- Read all rows once ---
 
-  defp read_all_rows(handle, obs) do
-    [%{name: sheet_name} | _] = obs.sheets
+  defp read_all_rows(handle, obs, input) do
+    sheet_name = pick_sheet(obs, input)
 
     case Observer.read_sheet(handle.session_id, handle.id, sheet_name, offset: 0, limit: 1000) do
       {:ok, %{rows: raw_rows}} -> {:ok, raw_rows}
       err -> err
+    end
+  end
+
+  defp pick_sheet(obs, input) do
+    explicit = Map.get(input, :sheet) || Map.get(input, "sheet")
+
+    cond do
+      is_binary(explicit) and explicit != "" ->
+        explicit
+
+      true ->
+        [%{name: name} | _] = obs.sheets
+        name
     end
   end
 

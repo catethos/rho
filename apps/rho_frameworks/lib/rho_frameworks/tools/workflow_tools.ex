@@ -350,7 +350,8 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   tool :import_library_from_upload,
        "Import an uploaded structured file (.xlsx/.csv) as a new skill library. " <>
          "Pass upload_id; library_name and column mapping default to the observation's detected hints. " <>
-         "v1 supports single-library files only — multi-sheet files where each sheet is a role return an error." do
+         "v1 supports single-library files only — multi-sheet files where each sheet is a role return an error " <>
+         "UNLESS you supply both `sheet` and `library_name`, which imports ONLY that sheet under that library name." do
     param(:upload_id, :string,
       doc: "Upload handle id from list_uploads / observe_upload (e.g. upl_a1b2c3d4)"
     )
@@ -359,12 +360,18 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       doc: "If omitted, uses the detected library-name column or the filename without extension."
     )
 
+    param(:sheet, :string,
+      doc:
+        "Excel sheet name to import. If omitted, the first sheet is used. Required (with library_name) for roles-per-sheet files."
+    )
+
     run(fn args, ctx ->
       scope = Scope.from_context(ctx)
 
       input = %{
         upload_id: args[:upload_id],
-        library_name: args[:library_name]
+        library_name: args[:library_name],
+        sheet: args[:sheet]
       }
 
       case ImportFromUpload.run(input, scope) do
