@@ -29,9 +29,11 @@ defmodule Rho.Stdlib.UploadsTest do
     assert [] = Uploads.list(sid)
   end
 
-  test "parse_one_off/1 returns {:error, :no_observer} until Phase 2", %{sid: _sid} do
+  test "parse_one_off/1 parses a CSV and returns an Observation", %{sid: _sid} do
     src = write_tmp("a,b\n1,2\n")
-    assert {:error, :no_observer} = Uploads.parse_one_off(src)
+
+    assert {:ok, %Rho.Stdlib.Uploads.Observation{kind: :structured_table}} =
+             Uploads.parse_one_off(src)
   end
 
   describe "SessionJanitor" do
