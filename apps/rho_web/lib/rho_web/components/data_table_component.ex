@@ -462,7 +462,14 @@ defmodule RhoWeb.DataTableComponent do
     col = find_column(socket.assigns.schema, field)
 
     if col && col.editable do
-      {:noreply, assign(socket, :editing, {id, field})}
+      {parent_id, child_index} = parse_compound_id(id)
+
+      socket =
+        socket
+        |> assign(:editing, {id, field})
+        |> optimistic_stream_update(parent_id, child_index)
+
+      {:noreply, socket}
     else
       {:noreply, socket}
     end
@@ -494,7 +501,7 @@ defmodule RhoWeb.DataTableComponent do
       socket
       |> assign(:optimistic_edits, optimistic)
       |> assign(:editing, nil)
-      |> optimistic_stream_update(parent_id)
+      |> optimistic_stream_update(parent_id, child_index)
 
     case DataTable.update_cells(session_id, [change], table: active_table) do
       :ok ->
@@ -536,7 +543,18 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   def handle_event("cancel_edit", _params, socket) do
-    {:noreply, assign(socket, :editing, nil)}
+    {parent_id, child_index} =
+      case socket.assigns.editing do
+        {id, _field} -> parse_compound_id(id)
+        _ -> {nil, nil}
+      end
+
+    socket = assign(socket, :editing, nil)
+
+    socket =
+      if parent_id, do: optimistic_stream_update(socket, parent_id, child_index), else: socket
+
+    {:noreply, socket}
   end
 
   def handle_event("toggle_group", %{"group" => group_id}, socket) do
@@ -864,7 +882,14 @@ defmodule RhoWeb.DataTableComponent do
   # so the optimistic overlay shows up before the server roundtrip.
   # `stream_insert/4` with the same dom_id replaces in place — the
   # whole group's stream isn't rebuilt.
-  defp optimistic_stream_update(socket, parent_id) do
+  #
+  # When `child_index` is non-nil, also re-inserts the proficiency panel
+  # stream item so child-cell edits (level name/description) re-render
+  # with the latest `editing` assign and optimistic value. The panel
+  # item is only re-inserted when the caller indicates a child edit —
+  # we don't want to introduce a panel item for a row whose panel
+  # wasn't already rendered (i.e. parent-cell edits on collapsed rows).
+  defp optimistic_stream_update(socket, parent_id, child_index \\ nil) do
     rows = socket.assigns[:rows] || []
 
     case find_row(rows, to_string(parent_id)) do
@@ -872,14 +897,23 @@ defmodule RhoWeb.DataTableComponent do
         socket
 
       row ->
-        updated =
-          row
-          |> apply_optimistic_row(to_string(parent_id), socket.assigns.optimistic_edits)
-          |> Map.put(:_kind, :parent)
+        updated_base =
+          apply_optimistic_row(row, to_string(parent_id), socket.assigns.optimistic_edits)
 
-        case stream_for_row(socket, updated) do
-          {:ok, stream_name} -> stream_insert(socket, stream_name, updated)
-          :none -> socket
+        updated_parent = Map.put(updated_base, :_kind, :parent)
+
+        case stream_for_row(socket, updated_parent) do
+          {:ok, stream_name} ->
+            socket = stream_insert(socket, stream_name, updated_parent)
+
+            if child_index != nil do
+              stream_insert(socket, stream_name, Map.put(updated_base, :_kind, :panel))
+            else
+              socket
+            end
+
+          :none ->
+            socket
         end
     end
   end
