@@ -23,6 +23,7 @@ defmodule Rho.Stdlib do
     doc_ingest: Rho.Stdlib.Plugins.DocIngest,
     tape: Rho.Stdlib.Plugins.Tape,
     journal: Rho.Stdlib.Plugins.Tape,
+    uploads: Rho.Stdlib.Plugins.Uploads,
     control: Rho.Stdlib.Plugins.Control
   }
 
