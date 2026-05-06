@@ -1801,6 +1801,10 @@ defmodule RhoWeb.AppLive do
     {:noreply, cancel_upload(socket, :images, ref)}
   end
 
+  def handle_event("cancel_file", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :files, ref)}
+  end
+
   # ── Workspace events ───────────────────────────────────────────────
 
   def handle_event("switch_workspace", %{"workspace" => ws}, socket) do
