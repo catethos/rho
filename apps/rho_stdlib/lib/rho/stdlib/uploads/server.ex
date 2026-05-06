@@ -46,29 +46,8 @@ defmodule Rho.Stdlib.Uploads.Server do
         :ok
 
       pid ->
-        try do
-          GenServer.stop(pid, :normal)
-        catch
-          # noproc: server already dead (Registry entry not yet GC'd)
-          :exit, {:noproc, _} ->
-            :ok
-
-          # Server already stopped normally before we got here
-          :exit, :normal ->
-            :ok
-
-          # Server exited with :shutdown (e.g. parent exited with :shutdown,
-          # which ExUnit does to test processes). GenServer.stop wraps the
-          # proc_lib exit as {{:shutdown, {:sys, :terminate, _}}, {GenServer, ...}}
-          :exit, {{:shutdown, _}, _} ->
-            :ok
-
-          :exit, :shutdown ->
-            :ok
-
-          :exit, {:shutdown, _} ->
-            :ok
-        end
+        _ = DynamicSupervisor.terminate_child(Rho.Stdlib.Uploads.Supervisor, pid)
+        :ok
     end
   end
 
