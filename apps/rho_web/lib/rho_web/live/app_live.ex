@@ -1632,10 +1632,12 @@ defmodule RhoWeb.AppLive do
 
     has_images = image_parts != []
     has_text = content != ""
+    has_pending_files = socket.assigns.uploads.files.entries != []
 
-    if not has_text and not has_images do
+    if not has_text and not has_images and not has_pending_files do
       {:noreply, socket}
     else
+      # Hoist session-ensure up so any upload-server start has a real session id.
       {sid, socket} =
         if socket.assigns.session_id do
           {socket.assigns.session_id, socket}
@@ -1646,12 +1648,33 @@ defmodule RhoWeb.AppLive do
           {new_sid, socket}
         end
 
-      _ = sid
+      # Make sure the upload server is up — mount may have skipped this if
+      # session_id was nil at connect-time.
+      {:ok, _pid} = Rho.Stdlib.Uploads.ensure_started(sid)
 
-      submit_content = build_submit_content(content, image_parts, has_text)
-      display_text = build_display_text(content, image_parts, has_text)
+      file_handles =
+        consume_uploaded_entries(socket, :files, fn %{path: tmp_path}, entry ->
+          case Rho.Stdlib.Uploads.put(sid, %{
+                 filename: entry.client_name,
+                 mime: entry.client_type || "application/octet-stream",
+                 tmp_path: tmp_path,
+                 size: entry.client_size
+               }) do
+            {:ok, handle} -> {:ok, handle}
+            {:error, reason} -> {:postpone, {:error, reason, entry.client_name}}
+          end
+        end)
 
-      SessionCore.send_message(socket, display_text, submit_content: submit_content)
+      cond do
+        file_handles == [] ->
+          # Existing path — no files, send immediately.
+          submit_to_session(socket, content, image_parts, has_text)
+
+        true ->
+          # Files present — defer submit until parses complete.
+          socket = arm_parse_tasks(socket, content, image_parts, has_text, file_handles)
+          {:noreply, socket}
+      end
     end
   end
 
@@ -2257,6 +2280,76 @@ defmodule RhoWeb.AppLive do
     RhoWeb.AppLive.MemberEvents.handle_event(event, params, socket)
   end
 
+  # ── File upload parse pipeline helpers ───────────────────────────
+
+  # Lifted from the original send_message body. Used both for the
+  # no-files fast path and the post-parse submit.
+  defp submit_to_session(socket, content, image_parts, has_text) do
+    submit_content = build_submit_content(content, image_parts, has_text)
+    display_text = build_display_text(content, image_parts, has_text)
+    SessionCore.send_message(socket, display_text, submit_content: submit_content)
+  end
+
+  defp arm_parse_tasks(socket, content, image_parts, has_text, file_handles) do
+    sid = socket.assigns.session_id
+
+    parsing =
+      file_handles
+      |> Enum.map(fn handle ->
+        task =
+          Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
+            result = Rho.Stdlib.Uploads.Observer.observe(sid, handle.id)
+            {handle, result}
+          end)
+
+        {task.ref, %{filename: handle.filename, handle_id: handle.id}}
+      end)
+      |> Map.new()
+
+    pending = %{
+      content: content,
+      image_parts: image_parts,
+      has_text: has_text,
+      file_handles: file_handles,
+      observations: %{}
+    }
+
+    socket
+    |> assign(:files_parsing, parsing)
+    |> assign(:files_pending_send, pending)
+  end
+
+  defp submit_with_uploads(socket) do
+    pending = socket.assigns.files_pending_send
+
+    enriched_text = build_enriched_message(pending.content, pending.observations)
+    enriched_has_text = enriched_text != ""
+
+    socket = assign(socket, :files_pending_send, nil)
+    submit_to_session(socket, enriched_text, pending.image_parts, enriched_has_text)
+  end
+
+  defp build_enriched_message(content, observations) do
+    blocks =
+      observations
+      |> Map.values()
+      |> Enum.map(fn
+        {handle, {:ok, obs}} ->
+          obs.summary_text <> "\n[upload_id: #{handle.id}]"
+
+        {handle, {:error, reason}} ->
+          "[Upload error: #{handle.filename}: #{format_parse_error(reason)}]"
+      end)
+      |> Enum.join("\n\n")
+
+    if content == "", do: blocks, else: content <> "\n\n" <> blocks
+  end
+
+  defp format_parse_error(:parse_timeout), do: "parsing exceeded 15s"
+  defp format_parse_error({:parse_crashed, reason}), do: "parser crashed (#{inspect(reason)})"
+  defp format_parse_error({:io_error, reason}), do: "I/O error (#{inspect(reason)})"
+  defp format_parse_error(other), do: inspect(other)
+
   # ── Async — semantic role search backfill ────────────────────────
 
   @impl true
@@ -2772,6 +2865,72 @@ defmodule RhoWeb.AppLive do
 
   def handle_info(:reconcile_agents, socket) do
     SessionCore.handle_reconciliation(socket)
+  end
+
+  # Upload parse task completed successfully.
+  # Process.demonitor/2 drains the :DOWN message so the crash-handler below
+  # is not triggered for normal task exit.
+  def handle_info({ref, {handle, parse_result}}, socket) when is_reference(ref) do
+    case socket.assigns.files_parsing do
+      %{^ref => _} ->
+        Process.demonitor(ref, [:flush])
+
+        parsing = Map.delete(socket.assigns.files_parsing, ref)
+
+        pending = socket.assigns.files_pending_send
+        observations = Map.put(pending.observations, handle.id, {handle, parse_result})
+
+        socket =
+          socket
+          |> assign(:files_parsing, parsing)
+          |> assign(:files_pending_send, %{pending | observations: observations})
+
+        if parsing == %{} do
+          submit_with_uploads(socket)
+        else
+          {:noreply, socket}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # Upload parse task crashed — synthesize an error observation so the
+  # message still goes through with an error note instead of being lost.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) when is_reference(ref) do
+    case Map.pop(socket.assigns.files_parsing, ref) do
+      {nil, _} ->
+        {:noreply, socket}
+
+      {%{handle_id: hid, filename: fname}, parsing} ->
+        require Logger
+        Logger.warning("Upload parse task crashed for #{fname}: #{inspect(reason)}")
+
+        pending = socket.assigns.files_pending_send
+
+        # Synthesize a crash result so the message still goes through.
+        crash_result = {:error, {:parse_crashed, reason}}
+
+        synth_handle = %Rho.Stdlib.Uploads.Handle{
+          id: hid,
+          filename: fname,
+          session_id: socket.assigns.session_id
+        }
+
+        observations = Map.put(pending.observations, hid, {synth_handle, crash_result})
+
+        socket =
+          socket
+          |> assign(:files_parsing, parsing)
+          |> assign(:files_pending_send, %{pending | observations: observations})
+
+        if parsing == %{} do
+          submit_with_uploads(socket)
+        else
+          {:noreply, socket}
+        end
+    end
   end
 
   def handle_info(_msg, socket) do
