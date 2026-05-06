@@ -48,8 +48,12 @@ defmodule Rho.TurnStrategy.TypedStructured do
     write_opts = [model: runtime.model]
     RhoBaml.SchemaWriter.write!(baml_path, runtime.tool_defs, write_opts)
 
-    # Serialize conversation messages for BAML prompt
-    messages_text = serialize_messages(messages)
+    # Serialize conversation messages for BAML prompt. The volatile
+    # portion of the system prompt is hoisted to the end of the text so
+    # the stable preamble + conversation tail can be a long byte-identical
+    # prefix across user turns — required for upstream automatic prefix
+    # caching (OpenAI / Anthropic-via-OpenRouter).
+    messages_text = serialize_messages(messages, runtime)
 
     collector = BamlElixir.Collector.new("turn_#{step || 0}")
 
@@ -176,8 +180,97 @@ defmodule Rho.TurnStrategy.TypedStructured do
           "[typed_structured] BAML stream failed in #{System.monotonic_time(:millisecond) - t0}ms: #{inspect(reason)}"
         )
 
-        {:error, reason}
+        # If the LLM emitted free-text that BAML couldn't fit into any
+        # action variant, recover the raw text from the collector and
+        # surface it as a `:respond` so the user sees the message instead
+        # of a parse-error stack trace.
+        recover_parse_failure(reason, collector)
     end
+  end
+
+  defp recover_parse_failure(reason, collector) do
+    if parse_failure?(reason) do
+      case extract_llm_text(collector) do
+        text when is_binary(text) and byte_size(text) > 0 ->
+          Logger.info(
+            "[typed_structured] BAML parse failed; recovering as :respond (#{byte_size(text)} chars)"
+          )
+
+          {:ok, %{"tool" => "respond", "message" => text}}
+
+        _ ->
+          {:error, reason}
+      end
+    else
+      {:error, reason}
+    end
+  end
+
+  defp parse_failure?(reason) when is_binary(reason) do
+    String.contains?(reason, "Failed to find any") or
+      String.contains?(reason, "Missing required field") or
+      String.contains?(reason, "Failed to coerce")
+  end
+
+  defp parse_failure?(_), do: false
+
+  # `BamlElixir.Collector.last_function_log/1` returns the raw LLM stream
+  # log. The exact shape is NIF-controlled and may vary by version, so
+  # walk the structure, skip known meta fields (function_name, model id,
+  # etc. — short identifiers we'd never want as the user-visible message),
+  # and pick the longest remaining string. LLM prose is long; identifiers
+  # are short, so longest-wins is a reliable heuristic across log shapes.
+  @meta_keys ~w(function_name name model client_name client_id provider tag id)a
+  @meta_key_strings Enum.map(@meta_keys, &Atom.to_string/1)
+
+  defp extract_llm_text(collector) do
+    log = BamlElixir.Collector.last_function_log(collector)
+
+    Logger.debug(fn ->
+      "[typed_structured] last_function_log shape=#{inspect(log, limit: 5, printable_limit: 200)}"
+    end)
+
+    case longest_string(log) do
+      text when is_binary(text) and byte_size(text) > 0 -> text
+      _ -> nil
+    end
+  rescue
+    e ->
+      Logger.warning("[typed_structured] extract_llm_text raised: #{inspect(e)}")
+      nil
+  end
+
+  defp longest_string(value), do: collect_strings(value, []) |> pick_longest()
+
+  defp collect_strings(value, acc) when is_binary(value) do
+    if value == "", do: acc, else: [value | acc]
+  end
+
+  defp collect_strings(%_{} = struct, acc) do
+    struct |> Map.from_struct() |> collect_strings(acc)
+  end
+
+  defp collect_strings(map, acc) when is_map(map) do
+    Enum.reduce(map, acc, fn {k, v}, acc ->
+      if meta_key?(k), do: acc, else: collect_strings(v, acc)
+    end)
+  end
+
+  defp collect_strings(list, acc) when is_list(list) do
+    Enum.reduce(list, acc, &collect_strings/2)
+  end
+
+  defp collect_strings({_, v}, acc), do: collect_strings(v, acc)
+  defp collect_strings(_, acc), do: acc
+
+  defp meta_key?(k) when is_atom(k), do: k in @meta_keys
+  defp meta_key?(k) when is_binary(k), do: k in @meta_key_strings
+  defp meta_key?(_), do: false
+
+  defp pick_longest([]), do: nil
+
+  defp pick_longest(strings) do
+    Enum.max_by(strings, &byte_size/1)
   end
 
   defp maybe_retry_baml(reason, baml_path, messages_text, emit, collector, attempt) do
@@ -199,18 +292,56 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
   # --- Message serialization ---
 
-  defp serialize_messages(messages) do
-    Enum.map_join(messages, "\n\n", &serialize_message/1)
+  # Public for testing — see Rho.TurnStrategy.TypedStructuredTest.
+  @doc false
+  def serialize_messages(messages, runtime) do
+    {system_msgs, tail} = Enum.split_with(messages, &system_role?/1)
+
+    stable_text = runtime.system_prompt_stable || ""
+    volatile_text = runtime.system_prompt_volatile || ""
+
+    # When the runtime didn't pre-split the prompt (e.g. test harness),
+    # fall back to whatever the system message carried so we don't lose
+    # context. In that case there's no volatile tail to hoist.
+    stable_text =
+      if stable_text == "",
+        do: extract_system_text(system_msgs),
+        else: stable_text
+
+    parts = [
+      prepend_role("system", stable_text),
+      Enum.map_join(tail, "\n\n", &serialize_message/1),
+      prepend_role("system", volatile_text)
+    ]
+
+    parts
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
   end
 
-  defp serialize_message(%{role: role, content: content}) when is_list(content) do
-    text =
-      content
-      |> Enum.filter(fn part -> part.type == :text end)
-      |> Enum.map_join("\n", fn part -> part.text end)
+  defp system_role?(%{role: :system}), do: true
+  defp system_role?(%{role: "system"}), do: true
+  defp system_role?(_), do: false
 
+  defp extract_system_text(system_msgs) do
+    system_msgs
+    |> Enum.map_join("\n\n", fn %{content: content} -> content_text(content) end)
+  end
+
+  defp content_text(content) when is_list(content) do
+    content
+    |> Enum.filter(fn part -> part.type == :text end)
+    |> Enum.map_join("\n", fn part -> part.text end)
+  end
+
+  defp content_text(content) when is_binary(content), do: content
+
+  defp prepend_role(_role, ""), do: ""
+  defp prepend_role(role, text), do: "#{String.capitalize(role)}: #{text}"
+
+  defp serialize_message(%{role: role, content: content}) when is_list(content) do
     role_label = role |> to_string() |> String.capitalize()
-    "#{role_label}: #{text}"
+    "#{role_label}: #{content_text(content)}"
   end
 
   defp serialize_message(%{role: role, content: content}) when is_binary(content) do

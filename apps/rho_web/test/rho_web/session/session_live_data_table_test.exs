@@ -182,5 +182,44 @@ defmodule RhoWeb.SessionLiveDataTableTest do
       assert state.active_table == "library"
       assert length(state.active_snapshot.rows) == 1
     end
+
+    test "publishes :view_focus when active_table changes", %{session_id: sid} do
+      {:ok, _} = DataTable.ensure_started(sid)
+      schema = Rho.Stdlib.DataTable.Schema.dynamic("library")
+      :ok = DataTable.ensure_table(sid, "library", schema)
+      {:ok, _} = DataTable.add_rows(sid, [%{"name" => "x"}, %{"name" => "y"}], table: "library")
+
+      Rho.Events.subscribe(sid)
+      socket = build_socket(sid)
+
+      {:noreply, _socket} =
+        RhoWeb.SessionLive.handle_info({:data_table_switch_tab, "library"}, socket)
+
+      assert_receive %Rho.Events.Event{
+                       kind: :view_focus,
+                       session_id: ^sid,
+                       data: %{table_name: "library", row_count: 2},
+                       source: :user
+                     },
+                     500
+    end
+
+    test "does not publish :view_focus when tab is unchanged", %{session_id: sid} do
+      {:ok, _} = DataTable.ensure_started(sid)
+
+      Rho.Events.subscribe(sid)
+      socket = build_socket(sid)
+      # ws_states default has active_table: "main", and we send "main" again.
+      socket =
+        update_in(
+          socket.assigns.ws_states[:data_table],
+          &Map.put(&1, :active_table, "main")
+        )
+
+      {:noreply, _socket} =
+        RhoWeb.SessionLive.handle_info({:data_table_switch_tab, "main"}, socket)
+
+      refute_receive %Rho.Events.Event{kind: :view_focus}, 100
+    end
   end
 end

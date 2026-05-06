@@ -29,7 +29,8 @@ defmodule RhoWeb.Projections.DataTableProjection do
       mode_label: nil,
       metadata: %{},
       error: nil,
-      flash_message: nil
+      flash_message: nil,
+      selections: %{}
     }
   end
 

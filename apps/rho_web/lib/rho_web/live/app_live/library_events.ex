@@ -52,11 +52,26 @@ defmodule RhoWeb.AppLive.LibraryEvents do
 
   def handle_event("filter_status", %{"status" => status}, socket) do
     status = if status == "", do: nil, else: status
+    library_id = socket.assigns.library.id
     opts = if status, do: [status: status], else: []
-    skills = RhoFrameworks.Library.browse_library(socket.assigns.library.id, opts)
+    index = RhoFrameworks.Library.list_skill_index(library_id, opts)
+    grouped_index = RhoWeb.AppLive.group_skill_index(index)
+    total = Enum.reduce(index, 0, fn row, acc -> acc + row.count end)
 
-    {:noreply,
-     assign(socket, skills: skills, grouped: group_skills(skills), status_filter: status)}
+    socket =
+      socket
+      |> assign(
+        skill_index: index,
+        grouped_index: grouped_index,
+        total_skill_count: total,
+        cluster_skills: %{},
+        open_clusters: MapSet.new(),
+        open_categories: MapSet.new(),
+        status_filter: status
+      )
+      |> RhoWeb.AppLive.refresh_skill_search()
+
+    {:noreply, socket}
   end
 
   def handle_event("open_fork_modal", _params, socket) do
@@ -73,46 +88,54 @@ defmodule RhoWeb.AppLive.LibraryEvents do
   end
 
   def handle_event("submit_fork", %{"fork_name" => name}, socket) do
-    org = socket.assigns.current_organization
+    org_id = socket.assigns.current_organization.id
+    org_slug = socket.assigns.current_organization.slug
     lib = socket.assigns.library
+    trimmed = String.trim(name)
 
-    try do
-      case RhoFrameworks.Library.fork_library(org.id, lib.id, String.trim(name)) do
-        {:ok, %{library: forked}} ->
-          {:noreply,
-           socket
-           |> assign(:show_fork_modal, false)
-           |> put_flash(:info, "Forked \"#{lib.name}\" → \"#{forked.name}\"")
-           |> push_patch(to: ~p"/orgs/#{org.slug}/libraries/#{forked.id}")}
+    socket =
+      socket
+      |> assign(:show_fork_modal, false)
+      |> assign(:fork_pending?, true)
+      |> put_flash(
+        :info,
+        "Forking \"#{lib.name}\"… large libraries (e.g. ESCO) can take ~15s."
+      )
+      |> Phoenix.LiveView.start_async(:fork_library, fn ->
+        run_fork(org_id, lib.id, trimmed, %{
+          mode: :show,
+          source_name: lib.name,
+          org_slug: org_slug
+        })
+      end)
 
-        {:error, _step, reason, _changes} ->
-          {:noreply, put_flash(socket, :error, "Fork failed: #{inspect(reason)}")}
-      end
-    rescue
-      Ecto.NoResultsError ->
-        {:noreply, put_flash(socket, :error, "Cannot fork: library not found or not accessible.")}
-    end
+    {:noreply, socket}
   end
 
   def handle_event("fork_and_edit", %{"id" => source_id}, socket) do
-    org = socket.assigns.current_organization
+    org_id = socket.assigns.current_organization.id
+    org_slug = socket.assigns.current_organization.slug
 
     try do
-      source = RhoFrameworks.Library.get_library!(org.id, source_id)
+      source = RhoFrameworks.Library.get_visible_library!(org_id, source_id)
       new_name = "#{source.name} (copy)"
 
-      case RhoFrameworks.Library.fork_library(org.id, source_id, new_name) do
-        {:ok, %{library: forked}} ->
-          {:noreply,
-           socket
-           |> put_flash(:info, "Forked \"#{source.name}\" → editing copy")
-           |> push_navigate(
-             to: ~p"/orgs/#{org.slug}/flows/edit-framework?library_id=#{forked.id}"
-           )}
+      socket =
+        socket
+        |> assign(:fork_pending?, true)
+        |> put_flash(
+          :info,
+          "Forking \"#{source.name}\"… large libraries (e.g. ESCO) can take ~15s."
+        )
+        |> Phoenix.LiveView.start_async(:fork_library, fn ->
+          run_fork(org_id, source_id, new_name, %{
+            mode: :edit,
+            source_name: source.name,
+            org_slug: org_slug
+          })
+        end)
 
-        {:error, _step, reason, _changes} ->
-          {:noreply, put_flash(socket, :error, "Fork failed: #{inspect(reason)}")}
-      end
+      {:noreply, socket}
     rescue
       Ecto.NoResultsError ->
         {:noreply, put_flash(socket, :error, "Cannot fork: library not found.")}
@@ -138,6 +161,13 @@ defmodule RhoWeb.AppLive.LibraryEvents do
 
   # Private helpers
 
+  defp run_fork(org_id, source_id, name, meta) do
+    case RhoFrameworks.Library.fork_library(org_id, source_id, name) do
+      {:ok, %{library: forked}} -> {:ok, Map.put(meta, :forked_id, forked.id)}
+      {:error, _step, reason, _changes} -> {:error, reason}
+    end
+  end
+
   defp group_libraries(libraries) do
     libraries
     |> Enum.group_by(& &1.name)
@@ -155,20 +185,5 @@ defmodule RhoWeb.AppLive.LibraryEvents do
       }
     end)
     |> Enum.sort_by(& &1.primary.updated_at, {:desc, DateTime})
-  end
-
-  defp group_skills(skills) do
-    skills
-    |> Enum.sort_by(fn s -> {s.category, s.cluster, s.name} end)
-    |> Enum.group_by(fn s -> s.category || "Other" end)
-    |> Enum.sort_by(fn {cat, _} -> cat end)
-    |> Enum.map(fn {category, cat_skills} ->
-      clusters =
-        cat_skills
-        |> Enum.group_by(fn s -> s.cluster || "General" end)
-        |> Enum.sort_by(fn {cluster, _} -> cluster end)
-
-      {category, clusters}
-    end)
   end
 end

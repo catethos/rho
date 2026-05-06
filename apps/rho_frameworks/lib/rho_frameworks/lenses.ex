@@ -30,20 +30,25 @@ defmodule RhoFrameworks.Lenses do
   end
 
   def create_variables(axis_id, var_attrs_list) do
-    results =
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    rows =
       Enum.map(var_attrs_list, fn attrs ->
-        %LensVariable{}
-        |> LensVariable.changeset(Map.put(attrs, :axis_id, axis_id))
-        |> Repo.insert()
+        %{
+          id: Ecto.UUID.generate(),
+          axis_id: axis_id,
+          key: attrs[:key] || attrs["key"],
+          name: attrs[:name] || attrs["name"],
+          weight: attrs[:weight] || attrs["weight"],
+          description: attrs[:description] || attrs["description"],
+          inverse: attrs[:inverse] || attrs["inverse"] || false,
+          inserted_at: now,
+          updated_at: now
+        }
       end)
 
-    errors = Enum.filter(results, &match?({:error, _}, &1))
-
-    if errors == [] do
-      {:ok, Enum.map(results, fn {:ok, v} -> v end)}
-    else
-      {:error, errors}
-    end
+    {_n, returned} = Repo.insert_all(LensVariable, rows, returning: true)
+    {:ok, returned}
   end
 
   def create_classification(lens_id, attrs) do
@@ -128,6 +133,7 @@ defmodule RhoFrameworks.Lenses do
   defp persist_score(lens, target, axis_results, classification) do
     target_attrs = target_to_attrs(target)
     next_version = next_score_version(lens.id, target)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     Ecto.Multi.new()
     |> Ecto.Multi.insert(
@@ -135,7 +141,7 @@ defmodule RhoFrameworks.Lenses do
       LensScore.changeset(
         %LensScore{},
         %{
-          scored_at: DateTime.utc_now() |> DateTime.truncate(:second),
+          scored_at: now,
           scoring_method: lens.scoring_method || "manual",
           classification: classification,
           version: next_version,
@@ -145,24 +151,51 @@ defmodule RhoFrameworks.Lenses do
       )
     )
     |> Ecto.Multi.run(:axis_scores, fn repo, %{lens_score: lens_score} ->
-      results =
-        Enum.map(axis_results, fn axis_result ->
-          {:ok, axis_score} =
-            repo.insert(
-              LensAxisScore.changeset(%LensAxisScore{}, %{
-                composite: axis_result.composite,
-                band: axis_result.band,
-                lens_score_id: lens_score.id,
-                axis_id: axis_result.axis_id
-              })
-            )
-
-          insert_variable_scores(repo, axis_score, axis_result.variable_scores)
-
-          axis_score
+      rows =
+        Enum.map(axis_results, fn ar ->
+          %{
+            id: Ecto.UUID.generate(),
+            composite: ar.composite,
+            band: ar.band,
+            lens_score_id: lens_score.id,
+            axis_id: ar.axis_id,
+            inserted_at: now,
+            updated_at: now
+          }
         end)
 
-      {:ok, results}
+      {_n, returned} = repo.insert_all(LensAxisScore, rows, returning: [:id, :axis_id])
+      {:ok, returned}
+    end)
+    |> Ecto.Multi.run(:variable_scores, fn repo, %{axis_scores: axis_scores} ->
+      axis_score_id_by_axis = Map.new(axis_scores, fn as -> {as.axis_id, as.id} end)
+
+      rows =
+        Enum.flat_map(axis_results, fn ar ->
+          axis_score_id = Map.fetch!(axis_score_id_by_axis, ar.axis_id)
+
+          Enum.map(ar.variable_scores, fn vs ->
+            %{
+              id: Ecto.UUID.generate(),
+              raw_score: vs.raw_score,
+              adjusted_score: vs.adjusted_score,
+              weighted_score: vs.weighted_score,
+              axis_score_id: axis_score_id,
+              variable_id: vs.variable_id,
+              inserted_at: now,
+              updated_at: now
+            }
+          end)
+        end)
+
+      case rows do
+        [] ->
+          {:ok, 0}
+
+        _ ->
+          {n, _} = repo.insert_all(LensVariableScore, rows)
+          {:ok, n}
+      end
     end)
     |> Repo.transaction()
     |> case do
@@ -172,20 +205,6 @@ defmodule RhoFrameworks.Lenses do
       {:error, _step, changeset, _changes} ->
         {:error, changeset}
     end
-  end
-
-  defp insert_variable_scores(repo, axis_score, variable_scores) do
-    Enum.each(variable_scores, fn vs ->
-      repo.insert!(
-        LensVariableScore.changeset(%LensVariableScore{}, %{
-          raw_score: vs.raw_score,
-          adjusted_score: vs.adjusted_score,
-          weighted_score: vs.weighted_score,
-          axis_score_id: axis_score.id,
-          variable_id: vs.variable_id
-        })
-      )
-    end)
   end
 
   defp target_to_attrs(%{skill_id: id}), do: %{skill_id: id}

@@ -67,6 +67,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:debug_projections, %{})
       |> assign(:command_palette_open, false)
       |> assign(:chat_context, %{})
+      |> assign(:fork_pending?, false)
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 5,
@@ -184,15 +185,60 @@ defmodule RhoWeb.AppLive do
 
     if connected?(socket) && id do
       org = socket.assigns.current_organization
+      t0 = System.monotonic_time(:microsecond)
       lib = RhoFrameworks.Library.get_visible_library!(org.id, id)
-      skills = RhoFrameworks.Library.browse_library(id)
-      grouped = group_skills(skills)
+      t_lib = System.monotonic_time(:microsecond)
+      index = RhoFrameworks.Library.list_skill_index(id)
+      t_index = System.monotonic_time(:microsecond)
+      grouped_index = group_skill_index(index)
+      t_group = System.monotonic_time(:microsecond)
       research_notes = RhoFrameworks.Library.list_research_notes(id)
+      t_notes = System.monotonic_time(:microsecond)
+
+      total_skills = Enum.reduce(index, 0, fn row, acc -> acc + row.count end)
+
+      Logger.info(
+        "[library_show timing] lib=#{div(t_lib - t0, 1000)}ms " <>
+          "index=#{div(t_index - t_lib, 1000)}ms (#{length(index)} cells, #{total_skills} skills) " <>
+          "group=#{div(t_group - t_index, 1000)}ms " <>
+          "notes=#{div(t_notes - t_group, 1000)}ms " <>
+          "total=#{div(t_notes - t0, 1000)}ms"
+      )
+
+      cluster_skills =
+        case params["skill"] do
+          nil ->
+            %{}
+
+          skill_id ->
+            case RhoFrameworks.Library.cluster_for_skill(id, skill_id) do
+              nil ->
+                %{}
+
+              {raw_cat, raw_cluster} ->
+                %{
+                  {raw_cat, raw_cluster} =>
+                    RhoFrameworks.Library.list_cluster_skills(id, raw_cat, raw_cluster)
+                }
+            end
+        end
+
+      open_clusters = cluster_skills |> Map.keys() |> MapSet.new()
+
+      open_categories =
+        for {raw_cat, _raw_cluster} <- Map.keys(cluster_skills),
+            into: MapSet.new(),
+            do: raw_cat
 
       socket
       |> assign(:library, lib)
-      |> assign(:skills, skills)
-      |> assign(:grouped, grouped)
+      |> assign(:skill_index, index)
+      |> assign(:grouped_index, grouped_index)
+      |> assign(:total_skill_count, total_skills)
+      |> assign(:cluster_skills, cluster_skills)
+      |> assign(:open_clusters, open_clusters)
+      |> assign(:open_categories, open_categories)
+      |> assign(:skill_search_results, nil)
       |> assign(:research_notes, research_notes)
       |> assign(:highlight_skill, params["skill"])
       |> maybe_scroll_to_skill(params["skill"])
@@ -202,11 +248,20 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
       |> assign_new(:skill_search_query, fn -> "" end)
+      |> assign_new(:chat_overlay_open, fn -> false end)
+      |> assign_new(:overlay_session_id, fn -> nil end)
+      |> maybe_open_chat_for_library(params["chat"])
+      |> refresh_skill_search()
     else
       socket
       |> assign(:library, nil)
-      |> assign(:skills, [])
-      |> assign(:grouped, [])
+      |> assign(:skill_index, [])
+      |> assign(:grouped_index, [])
+      |> assign(:total_skill_count, 0)
+      |> assign(:cluster_skills, %{})
+      |> assign(:open_clusters, MapSet.new())
+      |> assign(:open_categories, MapSet.new())
+      |> assign(:skill_search_results, nil)
       |> assign(:research_notes, [])
       |> assign(:highlight_skill, nil)
       |> assign_new(:status_filter, fn -> nil end)
@@ -215,6 +270,8 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
       |> assign_new(:skill_search_query, fn -> "" end)
+      |> assign_new(:chat_overlay_open, fn -> false end)
+      |> assign_new(:overlay_session_id, fn -> nil end)
     end
   end
 
@@ -228,14 +285,16 @@ defmodule RhoWeb.AppLive do
         profiles: profiles,
         role_grouped: grouped,
         role_search_query: "",
-        role_search_results: nil
+        role_search_results: nil,
+        role_search_pending?: false
       )
     else
       assign(socket,
         profiles: [],
         role_grouped: [],
         role_search_query: "",
-        role_search_results: nil
+        role_search_results: nil,
+        role_search_pending?: false
       )
     end
   end
@@ -302,6 +361,9 @@ defmodule RhoWeb.AppLive do
     push_event(socket, "scroll_to_skill", %{skill_id: skill_id})
   end
 
+  defp maybe_open_chat_for_library(socket, "1"), do: assign(socket, :chat_overlay_open, true)
+  defp maybe_open_chat_for_library(socket, _), do: socket
+
   # ── Page cleanup on navigation ─────────────────────────────────────
 
   defp cleanup_previous_page(socket, new_page) do
@@ -317,18 +379,25 @@ defmodule RhoWeb.AppLive do
         :library_show ->
           socket
           |> assign(:library, nil)
-          |> assign(:skills, nil)
-          |> assign(:grouped, nil)
+          |> assign(:skill_index, nil)
+          |> assign(:grouped_index, nil)
+          |> assign(:total_skill_count, 0)
+          |> assign(:cluster_skills, %{})
+          |> assign(:open_clusters, MapSet.new())
+          |> assign(:open_categories, MapSet.new())
+          |> assign(:skill_search_results, nil)
           |> assign(:show_diff, false)
           |> assign(:diff_result, nil)
           |> assign(:skill_search_query, "")
 
         :roles ->
           socket
+          |> Phoenix.LiveView.cancel_async(:semantic_search)
           |> assign(:profiles, nil)
           |> assign(:role_grouped, nil)
           |> assign(:role_search_query, "")
           |> assign(:role_search_results, nil)
+          |> assign(:role_search_pending?, false)
 
         :role_show ->
           socket
@@ -675,8 +744,9 @@ defmodule RhoWeb.AppLive do
                   phx-click="fork_and_edit"
                   phx-value-id={group.primary.id}
                   class="btn-secondary-sm"
+                  disabled={@fork_pending?}
                 >
-                  Fork
+                  <%= if @fork_pending?, do: "Forking…", else: "Fork" %>
                 </button>
                 <button
                   :if={group.primary.visibility != "public"}
@@ -734,8 +804,9 @@ defmodule RhoWeb.AppLive do
                     phx-click="fork_and_edit"
                     phx-value-id={lib.id}
                     class="btn-secondary-sm"
+                    disabled={@fork_pending?}
                   >
-                    Fork
+                    <%= if @fork_pending?, do: "Forking…", else: "Fork" %>
                   </button>
                   <button
                     :if={lib.visibility != "public"}
@@ -769,15 +840,21 @@ defmodule RhoWeb.AppLive do
   # ── Library Show page render ───────────────────────────────────────
 
   defp render_library_show(assigns) do
+    search_active? = String.trim(assigns[:skill_search_query] || "") != ""
+
     assigns =
       assigns
-      |> assign(:skill_search_active?, String.trim(assigns[:skill_search_query] || "") != "")
+      |> assign(:skill_search_active?, search_active?)
       |> assign(
-        :filtered_grouped,
-        filter_grouped_skills(assigns[:grouped] || [], assigns[:skill_search_query])
+        :search_grouped,
+        if(search_active?, do: group_skills(assigns[:skill_search_results] || []), else: [])
       )
       |> then(fn a ->
-        assign(a, :filtered_skill_count, filtered_skill_count(a.filtered_grouped))
+        assign(
+          a,
+          :filtered_skill_count,
+          if(search_active?, do: length(a[:skill_search_results] || []), else: 0)
+        )
       end)
 
     ~H"""
@@ -801,15 +878,26 @@ defmodule RhoWeb.AppLive do
           >
             Set as Default
           </button>
-          <button :if={@library.immutable} phx-click="open_fork_modal" class="btn-primary">
-            Fork Library
+          <button
+            :if={@library.immutable}
+            phx-click="open_fork_modal"
+            class="btn-primary"
+            disabled={@fork_pending?}
+          >
+            <%= if @fork_pending?, do: "Forking…", else: "Fork Library" %>
           </button>
           <button :if={@library.derived_from_id} phx-click={if @show_diff, do: "hide_diff", else: "show_diff"} class="btn-secondary">
             <%= if @show_diff, do: "Hide Diff", else: "Compare to Source" %>
           </button>
-          <.link patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"} class="btn-secondary">
-            Open in Chat
-          </.link>
+          <%= if @library.immutable do %>
+            <button phx-click="open_chat_overlay" class="btn-secondary">
+              Open in Chat
+            </button>
+          <% else %>
+            <.link patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"} class="btn-secondary">
+              Open in Chat
+            </.link>
+          <% end %>
         </:actions>
       </.page_header>
 
@@ -904,9 +992,9 @@ defmodule RhoWeb.AppLive do
         </form>
         <span class="filter-count">
           <%= if @skill_search_active? do %>
-            <%= @filtered_skill_count %> / <%= length(@skills) %> skills
+            <%= @filtered_skill_count %> / <%= @total_skill_count %> skills
           <% else %>
-            <%= length(@skills) %> skills
+            <%= @total_skill_count %> skills
           <% end %>
         </span>
       </div>
@@ -915,66 +1003,139 @@ defmodule RhoWeb.AppLive do
         No skills match "<%= @skill_search_query %>".
       </.empty_state>
 
-      <div :for={{category, clusters} <- @filtered_grouped} class="fw-collapse"
-        id={"cat-#{category}-#{String.length(@skill_search_query || "")}"} phx-update="ignore">
-        <details open={@skill_search_active?}>
-          <summary class="fw-collapse-summary">
-            <span class="fw-collapse-arrow"></span>
-            <span class="fw-cluster-title"><%= category %></span>
-            <span class="badge-muted"><%= Enum.sum(Enum.map(clusters, fn {_, s} -> length(s) end)) %> skills</span>
-          </summary>
+      <%= if @skill_search_active? do %>
+        <div :for={{category, clusters} <- @search_grouped} class="fw-collapse">
+          <details open>
+            <summary class="fw-collapse-summary">
+              <span class="fw-collapse-arrow"></span>
+              <span class="fw-cluster-title"><%= category %></span>
+              <span class="badge-muted"><%= Enum.sum(Enum.map(clusters, fn {_, s} -> length(s) end)) %> skills</span>
+            </summary>
 
-          <div class="fw-collapse-body">
-            <details :for={{cluster, cluster_skills} <- clusters} class="fw-collapse fw-collapse--nested" open={@skill_search_active?}>
-              <summary class="fw-collapse-summary">
-                <span class="fw-collapse-arrow"></span>
-                <span class="fw-category-title"><%= cluster %></span>
-                <span class="badge-muted"><%= length(cluster_skills) %></span>
-              </summary>
+            <div class="fw-collapse-body">
+              <details :for={{cluster, cluster_skills} <- clusters} class="fw-collapse fw-collapse--nested" open>
+                <summary class="fw-collapse-summary">
+                  <span class="fw-collapse-arrow"></span>
+                  <span class="fw-category-title"><%= cluster %></span>
+                  <span class="badge-muted"><%= length(cluster_skills) %></span>
+                </summary>
 
-              <div class="fw-collapse-body">
-                <table class="rho-table">
-                  <thead>
-                    <tr>
-                      <th>Skill</th>
-                      <th>Description</th>
-                      <th>Status</th>
-                      <th>Levels</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <%= for skill <- cluster_skills do %>
-                      <tr id={"skill-#{skill.id}"} class={"skill-row" <> if(@highlight_skill == skill.id, do: " skill-highlight", else: "")} onclick={"this.classList.toggle('skill-expanded');document.getElementById('prof-#{skill.id}').classList.toggle('proficiency-hidden')"} style="cursor: pointer;">
-                        <td><span class="skill-expand-arrow"></span><%= skill.name %></td>
-                        <td><%= skill.description %></td>
-                        <td>
-                          <span class={"badge-#{skill.status}"}><%= skill.status %></span>
-                        </td>
-                        <td><%= length(skill.proficiency_levels || []) %></td>
-                      </tr>
-                      <tr :if={(skill.proficiency_levels || []) != []}
-                        id={"prof-#{skill.id}"} class="proficiency-hidden">
-                        <td colspan="4" style="padding: 0;">
-                          <div class="proficiency-panel">
-                            <div class="proficiency-list">
-                              <div :for={level <- Enum.sort_by(skill.proficiency_levels, & &1["level"])} class="proficiency-item">
-                                <span class="proficiency-level">L<%= level["level"] %></span>
-                                <span class="proficiency-name"><%= level["level_name"] %></span>
-                                <span class="proficiency-desc"><%= level["level_description"] %></span>
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    <% end %>
-                  </tbody>
-                </table>
+                <div class="fw-collapse-body">
+                  <.skill_table skills={cluster_skills} highlight_skill={@highlight_skill} />
+                </div>
+              </details>
+            </div>
+          </details>
+        </div>
+      <% else %>
+        <% raw_cats = Enum.map(@grouped_index || [], fn {_label, [{_, raw_cat, _, _} | _]} -> raw_cat end) %>
+        <%= for {{category, clusters}, raw_cat} <- Enum.zip(@grouped_index || [], raw_cats) do %>
+          <div class={"fw-collapse" <> if(MapSet.member?(@open_categories, raw_cat), do: " is-open", else: "")}>
+            <button
+              type="button"
+              class="fw-collapse-summary"
+              phx-click="toggle_category"
+              phx-value-category={raw_cat || ""}
+            >
+              <span class="fw-collapse-arrow"></span>
+              <span class="fw-cluster-title"><%= category %></span>
+              <span class="badge-muted"><%= Enum.sum(Enum.map(clusters, fn {_, _, _, n} -> n end)) %> skills</span>
+            </button>
+
+            <div :if={MapSet.member?(@open_categories, raw_cat)} class="fw-collapse-body">
+              <div
+                :for={{cluster_label, raw_cat, raw_cluster, count} <- clusters}
+                class={"fw-collapse fw-collapse--nested" <> if(MapSet.member?(@open_clusters, {raw_cat, raw_cluster}), do: " is-open", else: "")}
+              >
+                <button
+                  type="button"
+                  class="fw-collapse-summary"
+                  phx-click="load_cluster"
+                  phx-value-category={raw_cat || ""}
+                  phx-value-cluster={raw_cluster || ""}
+                >
+                  <span class="fw-collapse-arrow"></span>
+                  <span class="fw-category-title"><%= cluster_label %></span>
+                  <span class="badge-muted"><%= count %></span>
+                </button>
+
+                <div :if={MapSet.member?(@open_clusters, {raw_cat, raw_cluster})} class="fw-collapse-body">
+                  <%= case Map.get(@cluster_skills, {raw_cat, raw_cluster}) do %>
+                    <% nil -> %>
+                      <p class="cluster-loading">Loading…</p>
+                    <% skills -> %>
+                      <.skill_table skills={skills} highlight_skill={@highlight_skill} />
+                  <% end %>
+                </div>
               </div>
-            </details>
+            </div>
           </div>
-        </details>
-      </div>
+        <% end %>
+      <% end %>
+
+      <.live_component
+        module={RhoWeb.ChatOverlayComponent}
+        id="chat-overlay"
+        open={@chat_overlay_open}
+        agent_name={:spreadsheet}
+        intent={library_chat_intent(@library)}
+        current_user={@current_user}
+        current_organization={@current_organization}
+      />
     </.page_shell>
+    """
+  end
+
+  defp library_chat_intent(nil), do: nil
+
+  defp library_chat_intent(%{name: name, id: id}) do
+    "I'm browsing the \"#{name}\" library (id: #{id}). " <>
+      "Help me explore it. Use browse_library, find_skill, or find_similar_skills " <>
+      "with this library_id when you need to look things up."
+  end
+
+  defp skill_table(assigns) do
+    ~H"""
+    <table class="rho-table">
+      <thead>
+        <tr>
+          <th>Skill</th>
+          <th>Description</th>
+          <th>Status</th>
+          <th>Levels</th>
+        </tr>
+      </thead>
+      <tbody>
+        <%= for skill <- @skills do %>
+          <tr
+            id={"skill-#{skill.id}"}
+            class={"skill-row" <> if(@highlight_skill == skill.id, do: " skill-highlight", else: "")}
+            onclick={"this.classList.toggle('skill-expanded');document.getElementById('prof-#{skill.id}').classList.toggle('proficiency-hidden')"}
+            style="cursor: pointer;"
+          >
+            <td><span class="skill-expand-arrow"></span><%= skill.name %></td>
+            <td><%= skill.description %></td>
+            <td>
+              <span class={"badge-#{skill.status}"}><%= skill.status %></span>
+            </td>
+            <td><%= length(skill.proficiency_levels || []) %></td>
+          </tr>
+          <tr :if={(skill.proficiency_levels || []) != []} id={"prof-#{skill.id}"} class="proficiency-hidden">
+            <td colspan="4" style="padding: 0;">
+              <div class="proficiency-panel">
+                <div class="proficiency-list">
+                  <div :for={level <- Enum.sort_by(skill.proficiency_levels, & &1["level"])} class="proficiency-item">
+                    <span class="proficiency-level">L<%= level["level"] %></span>
+                    <span class="proficiency-name"><%= level["level_name"] %></span>
+                    <span class="proficiency-desc"><%= level["level_description"] %></span>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
     """
   end
 
@@ -1001,6 +1162,7 @@ defmodule RhoWeb.AppLive do
           class="search-input"
           autocomplete="off"
         />
+        <span :if={@role_search_pending?} class="badge-muted">Refining…</span>
       </form>
 
       <%= if @role_search_results do %>
@@ -1979,29 +2141,92 @@ defmodule RhoWeb.AppLive do
   end
 
   def handle_event("search_skills", %{"q" => q}, socket) do
-    {:noreply, assign(socket, :skill_search_query, q)}
+    socket =
+      socket
+      |> assign(:skill_search_query, q)
+      |> refresh_skill_search()
+
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_category", %{"category" => cat}, socket) do
+    raw_cat = if cat == "", do: nil, else: cat
+    open = socket.assigns.open_categories
+
+    open =
+      if MapSet.member?(open, raw_cat),
+        do: MapSet.delete(open, raw_cat),
+        else: MapSet.put(open, raw_cat)
+
+    {:noreply, assign(socket, :open_categories, open)}
+  end
+
+  def handle_event("load_cluster", %{"category" => cat, "cluster" => cluster}, socket) do
+    library_id = socket.assigns.library.id
+    raw_cat = if cat == "", do: nil, else: cat
+    raw_cluster = if cluster == "", do: nil, else: cluster
+    key = {raw_cat, raw_cluster}
+    open = socket.assigns.open_clusters
+
+    if MapSet.member?(open, key) do
+      {:noreply, assign(socket, :open_clusters, MapSet.delete(open, key))}
+    else
+      cache =
+        case Map.fetch(socket.assigns.cluster_skills, key) do
+          {:ok, _} ->
+            socket.assigns.cluster_skills
+
+          :error ->
+            opts =
+              case socket.assigns[:status_filter] do
+                nil -> []
+                status -> [status: status]
+              end
+
+            skills =
+              RhoFrameworks.Library.list_cluster_skills(library_id, raw_cat, raw_cluster, opts)
+
+            Map.put(socket.assigns.cluster_skills, key, skills)
+        end
+
+      {:noreply,
+       socket
+       |> assign(:cluster_skills, cache)
+       |> assign(:open_clusters, MapSet.put(open, key))}
+    end
   end
 
   def handle_event("search_roles", %{"q" => q}, socket) do
     query = String.trim(q)
+    org_id = socket.assigns.current_organization.id
 
-    results =
-      case query do
-        "" ->
-          nil
+    case query do
+      "" ->
+        {:noreply,
+         socket
+         |> Phoenix.LiveView.cancel_async(:semantic_search)
+         |> assign(:role_search_query, q)
+         |> assign(:role_search_results, nil)
+         |> assign(:role_search_pending?, false)}
 
-        _ ->
-          RhoFrameworks.Roles.find_similar_roles(
-            socket.assigns.current_organization.id,
-            query,
-            limit: 50
-          )
-      end
+      _ ->
+        fast_results = RhoFrameworks.Roles.find_similar_roles_fast(org_id, query, limit: 50)
 
-    {:noreply,
-     socket
-     |> assign(:role_search_query, q)
-     |> assign(:role_search_results, results)}
+        socket =
+          socket
+          |> Phoenix.LiveView.cancel_async(:semantic_search)
+          |> assign(:role_search_query, q)
+          |> assign(:role_search_results, fast_results)
+          |> assign(:role_search_pending?, true)
+          |> Phoenix.LiveView.start_async(:semantic_search, fn ->
+            results =
+              RhoFrameworks.Roles.find_similar_roles_semantic(org_id, query, limit: 50)
+
+            %{query: query, results: results}
+          end)
+
+        {:noreply, socket}
+    end
   end
 
   @settings_events ~w(delete_role save_org save_profile delete_org)
@@ -2016,6 +2241,66 @@ defmodule RhoWeb.AppLive do
 
   def handle_event(event, params, socket) when event in @member_events do
     RhoWeb.AppLive.MemberEvents.handle_event(event, params, socket)
+  end
+
+  # ── Async — semantic role search backfill ────────────────────────
+
+  @impl true
+  def handle_async(:semantic_search, {:ok, %{query: q, results: results}}, socket) do
+    if socket.assigns.role_search_query == q do
+      {:noreply,
+       socket
+       |> assign(:role_search_results, results)
+       |> assign(:role_search_pending?, false)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_async(:semantic_search, {:exit, _reason}, socket) do
+    {:noreply, assign(socket, :role_search_pending?, false)}
+  end
+
+  # ── Async — library fork (skills copy + HNSW index updates can take
+  # ~15s for ESCO-sized libraries; runs in a Task so the LV stays
+  # responsive and the user sees a "Forking…" flash immediately) ──────
+
+  def handle_async(:fork_library, {:ok, {:ok, %{mode: :edit} = meta}}, socket) do
+    %{source_name: source_name, org_slug: org_slug, forked_id: forked_id} = meta
+
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:info, "Forked \"#{source_name}\" → editing copy")
+     |> push_navigate(to: ~p"/orgs/#{org_slug}/flows/edit-framework?library_id=#{forked_id}")}
+  end
+
+  def handle_async(:fork_library, {:ok, {:ok, %{mode: :show} = meta}}, socket) do
+    %{source_name: source_name, org_slug: org_slug, forked_id: forked_id} = meta
+
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:info, "Forked \"#{source_name}\"")
+     |> push_patch(to: ~p"/orgs/#{org_slug}/libraries/#{forked_id}")}
+  end
+
+  def handle_async(:fork_library, {:ok, {:error, reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:error, "Fork failed: #{inspect(reason)}")}
+  end
+
+  def handle_async(:fork_library, {:exit, reason}, socket) do
+    {:noreply,
+     socket
+     |> assign(:fork_pending?, false)
+     |> clear_flash()
+     |> put_flash(:error, "Fork failed: #{inspect(reason)}")}
   end
 
   # ── Private event helpers ─────────────────────────────────────────
@@ -2233,6 +2518,8 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns.session_id
     state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
 
+    if name != state.active_table, do: publish_view_focus(sid, name)
+
     new_state = %{state | active_table: name, view_key: nil, mode_label: nil}
 
     new_state =
@@ -2250,6 +2537,37 @@ defmodule RhoWeb.AppLive do
     {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
   end
 
+  def handle_info({:data_table_toggle_row, table, id}, socket) do
+    state = read_dt_state(socket)
+    current = Map.get(state.selections, table, MapSet.new())
+
+    new_set =
+      if MapSet.member?(current, id),
+        do: MapSet.delete(current, id),
+        else: MapSet.put(current, id)
+
+    {:noreply, update_selection(socket, state, table, new_set)}
+  end
+
+  def handle_info({:data_table_toggle_all, table, visible_ids}, socket) do
+    state = read_dt_state(socket)
+    current = Map.get(state.selections, table, MapSet.new())
+    visible = MapSet.new(visible_ids)
+    all_selected? = visible != MapSet.new() and MapSet.subset?(visible, current)
+
+    new_set =
+      if all_selected?,
+        do: MapSet.difference(current, visible),
+        else: MapSet.union(current, visible)
+
+    {:noreply, update_selection(socket, state, table, new_set)}
+  end
+
+  def handle_info({:data_table_clear_selection, table}, socket) do
+    state = read_dt_state(socket)
+    {:noreply, update_selection(socket, state, table, MapSet.new())}
+  end
+
   def handle_info({:data_table_view_change, view_key, mode_label}, socket) do
     state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
     new_state = %{state | view_key: view_key, mode_label: mode_label}
@@ -2260,6 +2578,18 @@ defmodule RhoWeb.AppLive do
     state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
     new_state = %{state | error: reason}
     {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+  end
+
+  def handle_info({:library_load_complete, table_name, lib_name, lib_version}, socket) do
+    state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    if state.active_table == table_name do
+      version_label = if lib_version, do: " v#{lib_version}", else: " (draft)"
+      new_state = %{state | mode_label: "Skill Library — #{lib_name}#{version_label}"}
+      {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:data_table_save, table_name, new_name}, socket) do
@@ -2382,7 +2712,8 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns.session_id
 
     # Forward to page-specific components when applicable
-    if socket.assigns.active_page == :libraries && socket.assigns[:chat_overlay_open] do
+    if socket.assigns.active_page in [:libraries, :library_show] &&
+         socket.assigns[:chat_overlay_open] do
       send_update(RhoWeb.ChatOverlayComponent, id: "chat-overlay", signal: event)
     end
 
@@ -3193,10 +3524,15 @@ defmodule RhoWeb.AppLive do
   defp refresh_dt_session_from_server(socket, sid, state) do
     case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
       %{tables: tables, table_order: order} ->
+        previous_active = state.active_table
+
         state =
           %{state | tables: tables, table_order: order, error: nil}
           |> maybe_adopt_default_active()
           |> fetch_active_snapshot(sid)
+
+        if state.active_table != previous_active,
+          do: publish_view_focus(sid, state.active_table)
 
         SignalRouter.write_ws_state(socket, :data_table, state)
 
@@ -3302,36 +3638,69 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns[:session_id]
     org_id = get_in(socket.assigns, [:current_organization, Access.key(:id)])
 
-    with lib when not is_nil(lib) <-
-           RhoFrameworks.Library.get_library(org_id, library_id) ||
-             RhoFrameworks.Library.get_visible_library!(org_id, library_id),
-         rows when rows != [] <- RhoFrameworks.Library.load_library_rows(lib.id) do
-      table_name = "library:" <> lib.name
-      schema = RhoFrameworks.DataTableSchemas.library_schema()
+    lib =
+      RhoFrameworks.Library.get_library(org_id, library_id) ||
+        RhoFrameworks.Library.get_visible_library!(org_id, library_id)
 
-      _ = Rho.Stdlib.DataTable.ensure_started(sid)
-      :ok = Rho.Stdlib.DataTable.ensure_table(sid, table_name, schema)
-      Rho.Stdlib.DataTable.replace_all(sid, rows, table: table_name)
+    cond do
+      is_nil(lib) ->
+        socket
 
-      version_label = if lib.version, do: " v#{lib.version}", else: " (draft)"
+      # Immutable libraries (ESCO, public frameworks) can have ~14k rows;
+      # dumping them into the per-session DataTable freezes the browser
+      # tab and pins memory in the GenServer. Redirect to the existing
+      # browse view (lazy index/cluster), and open the chat overlay
+      # alongside via ?chat=1.
+      lib.immutable ->
+        slug = get_in(socket.assigns, [:current_organization, Access.key(:slug)])
+        push_navigate(socket, to: ~p"/orgs/#{slug}/libraries/#{lib.id}?chat=1")
 
-      state =
-        ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
-
-      new_state = %{
-        state
-        | active_table: table_name,
-          view_key: :skill_library,
-          mode_label: "Skill Library — #{lib.name}#{version_label}"
-      }
-
-      socket
-      |> open_data_table_workspace()
-      |> SignalRouter.write_ws_state(:data_table, new_state)
-      |> refresh_data_table_session()
-    else
-      _ -> socket
+      true ->
+        load_mutable_library_into_data_table(socket, sid, lib)
     end
+  rescue
+    _ -> socket
+  end
+
+  defp load_mutable_library_into_data_table(socket, sid, lib) do
+    table_name = "library:" <> lib.name
+    schema = RhoFrameworks.DataTableSchemas.library_schema()
+
+    _ = Rho.Stdlib.DataTable.ensure_started(sid)
+    :ok = Rho.Stdlib.DataTable.ensure_table(sid, table_name, schema)
+
+    # The heavy row load + replace_all can take several seconds for large
+    # libraries (e.g. ~14k-row ESCO copies). Run it in a Task so the chat
+    # workspace renders immediately. The DataTable.Server publishes
+    # :table_changed when replace_all lands, and the LV's existing event
+    # handler refreshes the snapshot then. We post :library_load_complete
+    # back so the mode label can drop "(loading…)".
+    parent = self()
+
+    Task.start(fn ->
+      rows = RhoFrameworks.Library.load_library_rows(lib.id)
+      if rows != [], do: Rho.Stdlib.DataTable.replace_all(sid, rows, table: table_name)
+      send(parent, {:library_load_complete, table_name, lib.name, lib.version})
+    end)
+
+    version_label = if lib.version, do: " v#{lib.version}", else: " (draft)"
+
+    state =
+      ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
+
+    new_state = %{
+      state
+      | active_table: table_name,
+        view_key: :skill_library,
+        mode_label: "Skill Library — #{lib.name}#{version_label} (loading…)"
+    }
+
+    if state.active_table != table_name, do: publish_view_focus(sid, table_name)
+
+    socket
+    |> open_data_table_workspace()
+    |> SignalRouter.write_ws_state(:data_table, new_state)
+    |> refresh_data_table_session()
   rescue
     _ -> socket
   end
@@ -3380,6 +3749,65 @@ defmodule RhoWeb.AppLive do
       order != [] -> hd(order)
       true -> "main"
     end
+  end
+
+  defp publish_view_focus(nil, _table_name), do: :ok
+  defp publish_view_focus(_sid, nil), do: :ok
+
+  defp publish_view_focus(sid, table_name)
+       when is_binary(sid) and is_binary(table_name) do
+    row_count =
+      case Rho.Stdlib.DataTable.summarize_table(sid, table: table_name) do
+        {:ok, %{total_rows: n}} -> n
+        _ -> 0
+      end
+
+    event = %Rho.Events.Event{
+      kind: :view_focus,
+      session_id: sid,
+      agent_id: nil,
+      timestamp: System.monotonic_time(:millisecond),
+      data: %{table_name: table_name, row_count: row_count},
+      source: :user
+    }
+
+    Rho.Events.broadcast(sid, event)
+    :ok
+  end
+
+  defp update_selection(socket, state, table, %MapSet{} = new_set) do
+    sid = socket.assigns[:session_id]
+    ids = MapSet.to_list(new_set)
+
+    # Write directly to the server so the agent's `prompt_sections/2` sees
+    # the selection on the next turn. The PubSub broadcast + listener
+    # bridge has a race: the listener only subscribes between
+    # `:agent_started` and `:agent_stopped`, so clicks during the
+    # between-turn gap would otherwise be lost.
+    if is_binary(sid), do: Rho.Stdlib.DataTable.set_selection(sid, table, ids)
+
+    publish_row_selection(sid, table, ids)
+
+    new_state = %{state | selections: Map.put(state.selections, table, new_set)}
+    SignalRouter.write_ws_state(socket, :data_table, new_state)
+  end
+
+  defp publish_row_selection(nil, _table, _ids), do: :ok
+  defp publish_row_selection(_sid, nil, _ids), do: :ok
+
+  defp publish_row_selection(sid, table, ids)
+       when is_binary(sid) and is_binary(table) and is_list(ids) do
+    event = %Rho.Events.Event{
+      kind: :row_selection,
+      session_id: sid,
+      agent_id: nil,
+      timestamp: System.monotonic_time(:millisecond),
+      data: %{table_name: table, row_ids: ids},
+      source: :user
+    }
+
+    Rho.Events.broadcast(sid, event)
+    :ok
   end
 
   defp determine_workspaces(_live_action), do: %{}
@@ -3522,42 +3950,6 @@ defmodule RhoWeb.AppLive do
 
   defp filter_library_groups(groups, _), do: groups
 
-  defp filter_grouped_skills(grouped, query) when is_binary(query) do
-    case String.trim(query) do
-      "" ->
-        grouped
-
-      needle ->
-        needle = String.downcase(needle)
-
-        grouped
-        |> Enum.map(fn {category, clusters} ->
-          filtered_clusters =
-            clusters
-            |> Enum.map(fn {cluster, skills} ->
-              {cluster, Enum.filter(skills, &skill_matches?(&1, needle))}
-            end)
-            |> Enum.reject(fn {_, skills} -> skills == [] end)
-
-          {category, filtered_clusters}
-        end)
-        |> Enum.reject(fn {_, clusters} -> clusters == [] end)
-    end
-  end
-
-  defp filter_grouped_skills(grouped, _), do: grouped
-
-  defp skill_matches?(skill, needle) do
-    String.contains?(String.downcase(skill.name || ""), needle) or
-      String.contains?(String.downcase(skill.description || ""), needle)
-  end
-
-  defp filtered_skill_count(grouped) do
-    Enum.reduce(grouped, 0, fn {_, clusters}, acc ->
-      acc + Enum.reduce(clusters, 0, fn {_, skills}, sub -> sub + length(skills) end)
-    end)
-  end
-
   defp group_libraries(libraries) do
     libraries
     |> Enum.group_by(& &1.name)
@@ -3589,6 +3981,48 @@ defmodule RhoWeb.AppLive do
         |> Enum.sort_by(fn {cluster, _} -> cluster end)
 
       {category, clusters}
+    end)
+  end
+
+  @doc false
+  def refresh_skill_search(socket) do
+    library = socket.assigns[:library]
+    query = String.trim(socket.assigns[:skill_search_query] || "")
+
+    cond do
+      is_nil(library) ->
+        Phoenix.Component.assign(socket, :skill_search_results, nil)
+
+      query == "" ->
+        Phoenix.Component.assign(socket, :skill_search_results, nil)
+
+      true ->
+        opts =
+          case socket.assigns[:status_filter] do
+            nil -> []
+            status -> [status: status]
+          end
+
+        results = RhoFrameworks.Library.search_in_library(library.id, query, opts)
+        Phoenix.Component.assign(socket, :skill_search_results, results)
+    end
+  end
+
+  # Index rows are %{category, cluster, count} already sorted by [category, cluster].
+  # Returns [{category_label, [{cluster_label, raw_category, raw_cluster, count}]}]
+  # where the `raw_*` values preserve nil so on-demand loading can match the DB row exactly.
+  def group_skill_index(index) do
+    index
+    |> Enum.chunk_by(fn %{category: c} -> c end)
+    |> Enum.map(fn rows ->
+      raw_category = hd(rows).category
+
+      clusters =
+        Enum.map(rows, fn %{cluster: cl, count: n} ->
+          {cl || "General", raw_category, cl, n}
+        end)
+
+      {raw_category || "Other", clusters}
     end)
   end
 

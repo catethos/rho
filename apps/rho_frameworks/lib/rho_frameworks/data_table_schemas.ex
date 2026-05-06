@@ -22,8 +22,8 @@ defmodule RhoFrameworks.DataTableSchemas do
         %Column{
           name: :cluster,
           type: :string,
-          required?: true,
-          doc: "Sub-grouping within category"
+          required?: false,
+          doc: "Sub-grouping within category (optional — many real taxonomies are single-level)"
         },
         %Column{name: :skill_name, type: :string, required?: true, doc: "Skill name"},
         %Column{name: :skill_description, type: :string, required?: false},
@@ -51,6 +51,7 @@ defmodule RhoFrameworks.DataTableSchemas do
         %Column{name: :level_name, type: :string, required?: false},
         %Column{name: :level_description, type: :string, required?: false}
       ],
+      child_key_fields: [:level],
       key_fields: [:skill_name]
     }
   end

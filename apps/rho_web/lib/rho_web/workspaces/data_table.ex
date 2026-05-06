@@ -40,6 +40,11 @@ defmodule RhoWeb.Workspaces.DataTable do
 
     schema = Schemas.resolve(state.view_key, state.active_table)
 
+    selected_ids =
+      state
+      |> Map.get(:selections, %{})
+      |> Map.get(state.active_table, MapSet.new())
+
     %{
       rows: rows,
       schema: schema,
@@ -54,7 +59,8 @@ defmodule RhoWeb.Workspaces.DataTable do
       version: state.active_version,
       streaming: shared.streaming,
       total_cost: shared.total_cost,
-      session_id: shared.session_id
+      session_id: shared.session_id,
+      selected_ids: selected_ids
     }
   end
 

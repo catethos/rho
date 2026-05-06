@@ -24,6 +24,7 @@ defmodule RhoWeb.DataTable.Schema do
             columns: [],
             child_columns: [],
             children_key: nil,
+            child_key_fields: [],
             group_by: [],
             show_id: true,
             children_display: :rows
@@ -34,6 +35,7 @@ defmodule RhoWeb.DataTable.Schema do
           columns: [Column.t()],
           child_columns: [Column.t()],
           children_key: atom() | nil,
+          child_key_fields: [atom()],
           group_by: [atom()],
           show_id: boolean(),
           children_display: :rows | :panel

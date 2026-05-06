@@ -491,7 +491,10 @@ defmodule RhoFrameworks.RolesTest do
 
     test "returns roles in KNN order by cosine distance",
          %{org_id: org_id, rp_a: rp_a, rp_b: rp_b, rp_c: rp_c} do
-      results = RhoFrameworks.Roles.find_similar_roles(org_id, @query)
+      # Pass max_distance: 3.0 (above pgvector's max cosine distance of 2) so
+      # the threshold gate doesn't filter the synthetic far-vectors used to
+      # assert ordering.
+      results = RhoFrameworks.Roles.find_similar_roles(org_id, @query, max_distance: 3.0)
       ids = Enum.map(results, & &1.id)
 
       # vec_a is identical to the query → distance 0 (closest).
@@ -501,6 +504,27 @@ defmodule RhoFrameworks.RolesTest do
 
       assert Enum.find_index(ids, &(&1 == rp_b.id)) <
                Enum.find_index(ids, &(&1 == rp_c.id))
+    end
+
+    test "drops results above :max_distance threshold",
+         %{org_id: org_id, rp_a: rp_a} do
+      # Default threshold (0.6) keeps vec_a (dist 0) and drops vec_b/vec_c
+      # (dist 1 / 2). This is the "superman" guard — off-topic queries don't
+      # surface nearest-anything.
+      results = RhoFrameworks.Roles.find_similar_roles(org_id, @query)
+      assert Enum.map(results, & &1.id) == [rp_a.id]
+    end
+
+    test "returns [] (no LIKE fallback) when all KNN results exceed threshold",
+         %{org_id: org_id} do
+      # Pin the query to a vector orthogonal to all three seeds (dim-2 unit
+      # vector — seeds are along dim-0/1/-0). Distance to every seed is 1,
+      # which exceeds the default threshold of 0.6. The embedded rows exist,
+      # so the bootstrap LIKE fallback must NOT trigger — caller wants an
+      # honest "no semantic match".
+      far_vec = [0.0, 0.0, 1.0 | List.duplicate(0.0, 381)]
+      :ok = FakeEmbeddings.put_vector("superman", far_vec)
+      assert RhoFrameworks.Roles.find_similar_roles(org_id, "superman") == []
     end
 
     test "respects :limit option", %{org_id: org_id, rp_a: rp_a} do

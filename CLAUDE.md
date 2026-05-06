@@ -13,7 +13,7 @@ rho/
 │   ├── rho_stdlib/        # Built-in tools & plugins
 │   ├── rho_baml/          # BAML-driven structured-output helpers
 │   ├── rho_web/           # Phoenix endpoint, LiveViews
-│   └── rho_frameworks/    # Ecto/SQLite skill-assessment domain
+│   └── rho_frameworks/    # Ecto/Postgres (pgvector) skill-assessment domain
 ├── config/
 │   ├── config.exs
 │   └── runtime.exs
@@ -63,10 +63,11 @@ Module namespaces:
 - `Rho.Stdlib` — plugin module map and `resolve_plugin/1`
 - `Rho.Stdlib.Tools.*` — Bash, FsRead/FsWrite/FsEdit (in fs.ex), WebFetch, Python, Sandbox, PathUtils, Finish, EndTurn, Anchor/SearchHistory/RecallContext/ClearMemory (in tape_tools.ex)
 - `Rho.Stdlib.Plugins.*` — MultiAgent, StepBudget, LiveRender, PyAgent, Spreadsheet, DocIngest, Tape, Control, DataTable
-- `Rho.Stdlib.DataTable` — client API for the per-session data table server (synchronous row ops, named tables). Callers pass `table: "name"` in opts; default is `"main"`. Entry points: `ensure_started/1`, `ensure_table/4`, `add_rows/3`, `get_rows/2`, `update_cells/3`, `replace_all/3`, `delete_rows/3`, `delete_by_filter/3`, `get_table_snapshot/2`, `list_tables/1`, `summarize_table/2`.
-- `Rho.Stdlib.DataTable.Server` — per-session `GenServer` that owns table state and publishes coarse invalidation events via `Rho.Events`. Uses `restart: :temporary` — a crashed server stays down with `{:error, :not_running}` returned to callers rather than silently restarting empty.
+- `Rho.Stdlib.DataTable` — client API for the per-session data table server (synchronous row ops, named tables). Callers pass `table: "name"` in opts; default is `"main"`. Entry points: `ensure_started/1`, `ensure_table/4`, `add_rows/3`, `get_rows/2`, `update_cells/3`, `replace_all/3`, `delete_rows/3`, `delete_by_filter/3`, `query_rows/2`, `get_table_snapshot/2`, `list_tables/1`, `summarize_table/2`, `set_active_table/2`, `get_active_table/1`, `set_selection/3`, `get_selection/2`, `clear_selection/2`.
+- `Rho.Stdlib.DataTable.Server` — per-session `GenServer` that owns table state and publishes coarse invalidation events via `Rho.Events`. Uses `restart: :temporary` — a crashed server stays down with `{:error, :not_running}` returned to callers rather than silently restarting empty. Also tracks an `active_table` (user-visible focus) and per-table row `selections` (user's explicit checkbox picks, auto-pruned on row mutation) for `prompt_sections/2`.
 - `Rho.Stdlib.DataTable.Schema` / `Rho.Stdlib.DataTable.Schema.Column` / `Rho.Stdlib.DataTable.Table` — pure data structs
 - `Rho.Stdlib.DataTable.SessionJanitor` — listens for `rho.agent.stopped` and stops the matching server
+- `Rho.Stdlib.DataTable.ActiveViewListener` — bridges LiveView-emitted `:view_focus` and `:row_selection` events into `DataTable.set_active_table/2` and `DataTable.set_selection/3` so the DataTable plugin's `prompt_sections/2` knows which table the user is looking at and which rows the user has selected.
 - `Rho.Stdlib.Skill` / `Rho.Stdlib.Skill.Plugin` / `Rho.Stdlib.Skill.Loader`
 
 #### Named tables
@@ -113,9 +114,9 @@ Deps: `rho`, `rho_stdlib`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_l
 
 ### `apps/rho_frameworks/` — Skill Assessment Domain
 
-Deps: `rho`, `rho_stdlib` (in_umbrella), `ecto_sqlite3`, `phoenix_ecto`, `bcrypt_elixir`.
+Deps: `rho`, `rho_stdlib` (in_umbrella), `ecto_sql`, `postgrex`, `pgvector`, `phoenix_ecto`, `bcrypt_elixir`.
 
-- `RhoFrameworks.Repo` — Ecto SQLite repo
+- `RhoFrameworks.Repo` — Ecto Postgres repo (pgvector enabled)
 - `RhoFrameworks.Accounts` / `.Accounts.User` / `.Accounts.UserToken`
 - `RhoFrameworks.Frameworks` / `.Frameworks.Framework` / `.Frameworks.Skill`
 - `RhoFrameworks.Plugin` — tool plugin for framework persistence
@@ -232,7 +233,8 @@ Rho.Supervisor (one_for_one)
 ├── DynamicSupervisor (Python.Supervisor)
 ├── Registry (Rho.Stdlib.DataTable.Registry)
 ├── DynamicSupervisor (Rho.Stdlib.DataTable.Supervisor)
-└── Rho.Stdlib.DataTable.SessionJanitor
+├── Rho.Stdlib.DataTable.SessionJanitor
+└── Rho.Stdlib.DataTable.ActiveViewListener
 
 # apps/rho_web (RhoWeb.Application)
 ├── Phoenix.PubSub

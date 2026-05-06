@@ -50,9 +50,46 @@
 
     Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
     After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
+
+    Editing tables:
+      - The "Active data tables" section lists every table; the one marked
+        "currently open in panel" is what the user sees. When the user says
+        "this row" or "the table", assume that one and pass it as `table:`.
+      - Selected rows are explicit user picks. When the user says "these"
+        or "the highlighted rows", use those exact IDs (full length, copied
+        verbatim from the Selected list) — do not re-resolve via locator.
+      - READ BEFORE REWRITE. If the request mentions existing content
+        ("convert", "rewrite", "reformat", "shorten", "translate", "based
+        on the current X"), call `query_table` FIRST to fetch the current
+        values, then base your edits on what you read. Never invent prior
+        content from the schema or skill name alone — that is hallucination.
+        For the user's selection, pass the IDs straight through:
+        `query_table(table: <name>, ids_json: "[\"<id1>\",\"<id2>\"]")`.
+        For named lookup, use filter_field/filter_value. The result
+        includes nested children (e.g. proficiency_levels) verbatim, so
+        you can read level descriptions without a second query.
+      - One row, one field, by locator: `edit_row` with flat string params
+        (`match_field`, `match_value`, `set_field`, `set_value`). For a
+        nested child (e.g. one proficiency level), add `child_match_field`
+        + `child_match_value` (e.g. `child_match_field="level"`,
+        `child_match_value="3"`) — `set_field`/`set_value` then apply to
+        that child.
+      - Multiple rows / multiple fields / multiple children: `update_cells`.
+        `changes_json` is a string containing a JSON array. Each entry is
+        either {"id": <id>, "field": <col>, "value": <new>} for a top-level
+        cell, or {"id": <id>, "child_key": {<key>: <val>}, "field":
+        <child_col>, "value": <new>} for one nested child (addressed by
+        natural key — e.g. child_key={"level": 3}). Never use a row-patch
+        shape like {"id": ..., "skill_name": ...} — every entry must have
+        explicit `field` and `value`.
+      - Destructive replace of all rows: `replace_all`.
+      - After a successful edit, ALWAYS close the turn with a `respond`
+        action carrying a short confirmation message. Do not write the
+        confirmation as free-text — every user-facing reply must be a
+        `respond` action.
     """,
     plugins: [
-      {:data_table, deferred: [:describe_table, :query_table, :replace_all, :list_tables]},
+      {:data_table, deferred: [:describe_table, :replace_all, :list_tables]},
       :skills,
       {RhoFrameworks.Plugin,
        deferred: [
@@ -64,12 +101,12 @@
          :analyze_role,
          :org_view,
          :score_role,
-         :lens_dashboard
+         :lens_dashboard,
+         :add_proficiency_levels,
+         :clarify
        ]},
       :doc_ingest,
-      {:multi_agent,
-       only: [:delegate_task, :delegate_task_lite, :await_task, :await_all],
-       visible_agents: [:data_extractor]}
+      {:multi_agent, only: [:delegate_task, :await_task], visible_agents: [:data_extractor]}
     ],
     turn_strategy: :typed_structured,
     max_steps: 50

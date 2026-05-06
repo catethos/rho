@@ -64,6 +64,26 @@ defmodule Rho.Events.Event do
     * `:data_table` — `%{event: atom(), view_key: atom(), mode_label: String.t(), table_name: String.t()}`
     * `:workspace_open` — `%{key: atom(), surface: atom()}`
 
+  ## View / panel events
+
+    * `:view_focus` — `%{table_name: String.t(), row_count: non_neg_integer()}`.
+      Emitted by the LiveView whenever the user-visible active data table
+      changes (tab click, library load, default-adopted on mount, fallback
+      after a drop). Distinct from the agent-emitted `:data_table` /
+      `:view_change` payload because the source here is the user. Consumed
+      by `Rho.Stdlib.DataTable.ActiveViewListener` to keep
+      `Rho.Stdlib.DataTable.Server`'s `active_table` field in sync so the
+      DataTable plugin's `prompt_sections/2` can tell the agent which
+      table the user is currently looking at.
+
+    * `:row_selection` — `%{table_name: String.t(), row_ids: [String.t()]}`.
+      Emitted by the LiveView whenever the user changes which rows are
+      selected (checked) in a DataTable panel. Consumed by
+      `Rho.Stdlib.DataTable.ActiveViewListener` and forwarded into
+      `Rho.Stdlib.DataTable.set_selection/3` so the DataTable plugin's
+      `prompt_sections/2` can expose the user's explicit row picks to the
+      agent.
+
   ## Inter-agent messaging
 
     * `:message_sent` — `%{from: String.t(), to: String.t(), message: String.t()}`

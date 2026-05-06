@@ -22,6 +22,32 @@ defmodule RhoWeb.DataTableComponent do
 
   alias Rho.Stdlib.DataTable
 
+  # Compile-time pool of atoms used as Phoenix LiveView stream names.
+  # Stream names must be atoms (Phoenix LiveView API), but group ids are
+  # derived at runtime from user-controlled (category, cluster) strings,
+  # so we cannot mint atoms dynamically (atom-table DoS). At runtime we
+  # assign each unique group id a stable index and look the name up
+  # here in O(1).
+  @stream_pool_size 2048
+  @stream_pool for(i <- 0..(@stream_pool_size - 1), do: :"_dt_rows_#{i}")
+               |> List.to_tuple()
+
+  # Default page size for lazy stream population. The first expand of a
+  # group seeds at most this many rows; the rest stream in via
+  # `phx-viewport-bottom` (Phase C).
+  @default_stream_page_size 200
+
+  @impl true
+  def mount(socket) do
+    socket =
+      socket
+      |> assign(:_streams_configured, MapSet.new())
+      |> assign(:_streamed_groups, %{})
+      |> assign(:_group_to_stream, %{})
+
+    {:ok, socket}
+  end
+
   @impl true
   def update(assigns, socket) do
     socket =
@@ -39,6 +65,11 @@ defmodule RhoWeb.DataTableComponent do
       |> assign_new(:flash_message, fn -> nil end)
       |> assign_new(:action_dialog, fn -> nil end)
       |> assign_new(:export_menu_open, fn -> false end)
+      |> assign_new(:selected_ids, fn -> MapSet.new() end)
+      |> assign_new(:_streams_configured, fn -> MapSet.new() end)
+      |> assign_new(:_streamed_groups, fn -> %{} end)
+      |> assign_new(:_group_to_stream, fn -> %{} end)
+      |> assign_new(:stream_page_size, fn -> @default_stream_page_size end)
 
     rows = socket.assigns[:rows] || []
     schema = socket.assigns.schema
@@ -103,6 +134,8 @@ defmodule RhoWeb.DataTableComponent do
           {new_collapsed, assign(socket, :expand_groups, nil)}
       end
 
+    select_all_state = compute_select_all_state(effective_rows, socket.assigns[:selected_ids])
+
     socket =
       socket
       |> assign(:rows, effective_rows)
@@ -110,9 +143,181 @@ defmodule RhoWeb.DataTableComponent do
       |> assign(:optimistic_edits, optimistic)
       |> assign(:collapsed, collapsed)
       |> assign(:grouped, grouped)
+      |> assign(:select_all_state, select_all_state)
+
+    # Phase B/D: lazy + version-gated stream refresh.
+    #
+    # Eagerly seed only the groups that are *currently expanded* —
+    # collapsed groups contribute zero rows to the LV state and zero
+    # DOM nodes. Already-streamed groups are refreshed only when the
+    # snapshot version bumps (`version > last_version`), keeping
+    # repeat re-renders cheap.
+    rows_changed? = version != nil and (last_version == nil or version > last_version)
+
+    socket =
+      seed_visible_streams(
+        socket,
+        grouped,
+        schema,
+        collapsed,
+        expand_groups_hint(assigns),
+        rows_changed?
+      )
 
     {:ok, socket}
   end
+
+  # --- Stream seeding ---
+
+  # Returns the optional `expand_groups` hint as a list (or []) so we
+  # can eagerly seed groups the parent LV asked us to surface — e.g.
+  # after a Suggest run added rows the user needs to see immediately.
+  defp expand_groups_hint(assigns) do
+    case Map.get(assigns, :expand_groups) do
+      nil -> []
+      [] -> []
+      list when is_list(list) -> list
+    end
+  end
+
+  defp seed_visible_streams(socket, grouped, schema, collapsed, expand_hint, rows_changed?) do
+    panel_mode = Map.get(schema, :children_display, :rows) == :panel
+    streamed = socket.assigns[:_streamed_groups] || %{}
+    page_size = socket.assigns[:stream_page_size] || @default_stream_page_size
+    sort_key = {socket.assigns.sort_by, socket.assigns.sort_dir}
+
+    hinted = expand_hint_to_group_ids(expand_hint)
+
+    walk_leaf_groups(grouped, socket, fn group_id, rows, acc ->
+      cond do
+        Map.has_key?(streamed, group_id) and rows_changed? ->
+          # Already streamed and snapshot version bumped → refresh to
+          # first window in the current sort.
+          {acc, _meta} =
+            seed_group_stream(acc, group_id, rows, panel_mode, collapsed, page_size, sort_key)
+
+          acc
+
+        MapSet.member?(hinted, group_id) and not collapsed?(collapsed, group_id) ->
+          # Hinted-and-now-expanded → seed eagerly so the user sees the
+          # rows on first render after the hint fires.
+          {acc, _meta} =
+            seed_group_stream(acc, group_id, rows, panel_mode, collapsed, page_size, sort_key)
+
+          acc
+
+        true ->
+          acc
+      end
+    end)
+  end
+
+  defp expand_hint_to_group_ids(expand_hint) do
+    Enum.reduce(expand_hint, MapSet.new(), fn
+      {category, nil}, acc ->
+        MapSet.put(acc, group_id_for(category))
+
+      {category, cluster}, acc ->
+        acc
+        |> MapSet.put(group_id_for(category))
+        |> MapSet.put(group_id_for(category, cluster))
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  # Visits every leaf group, threading `socket` through `fun.(group_id,
+  # rows, socket)`. Returns the final socket.
+  defp walk_leaf_groups(grouped, socket, fun) do
+    Enum.reduce(grouped, socket, fn {label, children}, acc ->
+      case children do
+        {:rows, rows} ->
+          fun.(group_id_for(label), rows, acc)
+
+        {:nested, sub_groups} ->
+          Enum.reduce(sub_groups, acc, fn {sub_label, rows}, inner ->
+            fun.(group_id_for(label, sub_label), rows, inner)
+          end)
+      end
+    end)
+  end
+
+  # Seeds a single leaf group's stream with the first `page_size` rows
+  # in the current sort order. Updates `:_streamed_groups` metadata.
+  # Returns `{socket, meta}`.
+  defp seed_group_stream(socket, group_id, rows, panel_mode, collapsed, page_size, sort_key) do
+    {socket, stream_name} = stream_name_for_group(socket, group_id)
+    socket = ensure_stream_configured(socket, stream_name)
+
+    total = length(rows)
+    first_window = Enum.take(rows, page_size)
+    items = build_stream_items(first_window, panel_mode, collapsed)
+
+    socket = stream(socket, stream_name, items, reset: true)
+
+    meta = %{total: total, loaded: length(first_window), sort: sort_key}
+    streamed = Map.put(socket.assigns[:_streamed_groups] || %{}, group_id, meta)
+    socket = assign(socket, :_streamed_groups, streamed)
+
+    {socket, meta}
+  end
+
+  defp ensure_stream_configured(socket, stream_name) do
+    configured = socket.assigns[:_streams_configured] || MapSet.new()
+
+    if MapSet.member?(configured, stream_name) do
+      socket
+    else
+      socket
+      |> stream_configure(stream_name, dom_id: &row_dom_id/1)
+      |> assign(:_streams_configured, MapSet.put(configured, stream_name))
+    end
+  end
+
+  defp build_stream_items(rows, false, _collapsed) do
+    Enum.map(rows, fn row -> Map.put(row, :_kind, :parent) end)
+  end
+
+  defp build_stream_items(rows, true, collapsed) do
+    Enum.flat_map(rows, fn row ->
+      row_id_str = to_string(row_id(row))
+      parent = Map.put(row, :_kind, :parent)
+
+      if collapsed?(collapsed, "row-" <> row_id_str) do
+        [parent]
+      else
+        [parent, Map.put(row, :_kind, :panel)]
+      end
+    end)
+  end
+
+  # Resolves a group_id (a runtime string built from user data) to a
+  # stable stream-name atom drawn from the precompiled pool. Returns
+  # `{socket, atom}`; the socket carries the (possibly extended)
+  # group_id → atom mapping.
+  defp stream_name_for_group(socket, group_id) do
+    mapping = socket.assigns[:_group_to_stream] || %{}
+
+    case Map.get(mapping, group_id) do
+      nil ->
+        idx = map_size(mapping)
+
+        if idx >= @stream_pool_size do
+          raise "DataTableComponent stream pool exhausted (#{@stream_pool_size} groups). " <>
+                  "Either increase @stream_pool_size or split this view."
+        end
+
+        atom = elem(@stream_pool, idx)
+        {assign(socket, :_group_to_stream, Map.put(mapping, group_id, atom)), atom}
+
+      atom ->
+        {socket, atom}
+    end
+  end
+
+  defp row_dom_id(%{_kind: :panel} = row), do: "panel-" <> to_string(row_id(row))
+  defp row_dom_id(row), do: "row-" <> to_string(row_id(row))
 
   defp group_id_for(category) do
     "grp-" <> slug(to_string(category))
@@ -125,6 +330,25 @@ defmodule RhoWeb.DataTableComponent do
   @impl true
   def handle_event("select_tab", %{"table" => name}, socket) do
     send(self(), {:data_table_switch_tab, name})
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_row_selection", %{"row-id" => id}, socket) do
+    table = socket.assigns[:active_table] || "main"
+    send(self(), {:data_table_toggle_row, table, id})
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_all_selection", _params, socket) do
+    table = socket.assigns[:active_table] || "main"
+    visible_ids = current_visible_row_ids(socket)
+    send(self(), {:data_table_toggle_all, table, visible_ids})
+    {:noreply, socket}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    table = socket.assigns[:active_table] || "main"
+    send(self(), {:data_table_clear_selection, table})
     {:noreply, socket}
   end
 
@@ -238,7 +462,14 @@ defmodule RhoWeb.DataTableComponent do
     col = find_column(socket.assigns.schema, field)
 
     if col && col.editable do
-      {:noreply, assign(socket, :editing, {id, field})}
+      {parent_id, child_index} = parse_compound_id(id)
+
+      socket =
+        socket
+        |> assign(:editing, {id, field})
+        |> optimistic_stream_update(parent_id, child_index)
+
+      {:noreply, socket}
     else
       {:noreply, socket}
     end
@@ -250,15 +481,13 @@ defmodule RhoWeb.DataTableComponent do
 
     {parent_id, child_index} = parse_compound_id(id)
 
-    # Build the change list for the server. Child rows are addressed
-    # via the "child:<idx>:<field>" path on the parent row.
+    # Child rows are addressed by their natural key (per the schema's
+    # child_key_fields), not by list position. Look up the child at
+    # `child_index` from the rendered row and pull its key values to
+    # build a stable child_key map for the change.
     change =
       if child_index do
-        %{
-          "id" => parent_id,
-          "field" => "child:#{child_index}:#{field}",
-          "value" => value
-        }
+        build_child_change(socket.assigns, parent_id, child_index, field, value)
       else
         %{"id" => parent_id, "field" => field, "value" => value}
       end
@@ -272,6 +501,7 @@ defmodule RhoWeb.DataTableComponent do
       socket
       |> assign(:optimistic_edits, optimistic)
       |> assign(:editing, nil)
+      |> optimistic_stream_update(parent_id, child_index)
 
     case DataTable.update_cells(session_id, [change], table: active_table) do
       :ok ->
@@ -296,7 +526,10 @@ defmodule RhoWeb.DataTableComponent do
     optimistic =
       Map.put(socket.assigns.optimistic_edits, {id, nil, "resolution"}, resolution)
 
-    socket = assign(socket, :optimistic_edits, optimistic)
+    socket =
+      socket
+      |> assign(:optimistic_edits, optimistic)
+      |> optimistic_stream_update(id)
 
     case DataTable.update_cells(session_id, [change], table: active_table) do
       :ok ->
@@ -310,7 +543,18 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   def handle_event("cancel_edit", _params, socket) do
-    {:noreply, assign(socket, :editing, nil)}
+    {parent_id, child_index} =
+      case socket.assigns.editing do
+        {id, _field} -> parse_compound_id(id)
+        _ -> {nil, nil}
+      end
+
+    socket = assign(socket, :editing, nil)
+
+    socket =
+      if parent_id, do: optimistic_stream_update(socket, parent_id, child_index), else: socket
+
+    {:noreply, socket}
   end
 
   def handle_event("toggle_group", %{"group" => group_id}, socket) do
@@ -327,7 +571,76 @@ defmodule RhoWeb.DataTableComponent do
             else: MapSet.put(set, group_id)
       end
 
-    {:noreply, assign(socket, :collapsed, collapsed)}
+    was_collapsed? =
+      case socket.assigns.collapsed do
+        :all_collapsed -> true
+        set -> MapSet.member?(set, group_id)
+      end
+
+    becoming_visible? = was_collapsed? and not collapsed?(collapsed, group_id)
+
+    socket = assign(socket, :collapsed, collapsed)
+
+    # Row-level expansion (panel mode) toggles drive a stream
+    # insert/delete because the panel `<tr>` rides as its own stream
+    # item. Group-level toggles need to populate the stream lazily on
+    # first expand.
+    socket =
+      case parse_row_toggle(group_id, socket.assigns.rows) do
+        {:row, row, parent_group_id} ->
+          toggle_panel_in_stream(socket, row, parent_group_id, collapsed)
+
+        :group ->
+          if becoming_visible? do
+            populate_group_on_expand(socket, group_id, collapsed)
+          else
+            socket
+          end
+      end
+
+    {:noreply, socket}
+  end
+
+  # Phoenix LV fires `phx-viewport-bottom` once per scroll-to-end. We
+  # append the next window of rows to the existing stream (no reset) so
+  # only the new entries land in the diff.
+  def handle_event("load_more_in_group", %{"group" => group_id}, socket) do
+    streamed = socket.assigns[:_streamed_groups] || %{}
+
+    case Map.get(streamed, group_id) do
+      nil ->
+        # Stream wasn't seeded — ignore. The viewport handler can't fire
+        # before the first render anyway, but this guards against races.
+        {:noreply, socket}
+
+      %{loaded: loaded, total: total} when loaded >= total ->
+        {:noreply, socket}
+
+      %{loaded: loaded, total: _total} ->
+        page_size = socket.assigns[:stream_page_size] || @default_stream_page_size
+        schema = socket.assigns.schema
+        panel_mode = Map.get(schema, :children_display, :rows) == :panel
+        collapsed = socket.assigns.collapsed
+
+        rows = lookup_group_rows(socket.assigns.grouped, group_id)
+        next_window = rows |> Enum.drop(loaded) |> Enum.take(page_size)
+        items = build_stream_items(next_window, panel_mode, collapsed)
+
+        {socket, stream_name} = stream_name_for_group(socket, group_id)
+        socket = ensure_stream_configured(socket, stream_name)
+        socket = stream(socket, stream_name, items)
+
+        new_loaded = loaded + length(next_window)
+
+        meta = %{
+          total: length(rows),
+          loaded: new_loaded,
+          sort: {socket.assigns.sort_by, socket.assigns.sort_dir}
+        }
+
+        socket = assign(socket, :_streamed_groups, Map.put(streamed, group_id, meta))
+        {:noreply, socket}
+    end
   end
 
   # --- Group header editing (category/cluster) ---
@@ -433,8 +746,13 @@ defmodule RhoWeb.DataTableComponent do
 
     case DataTable.delete_rows(session_id, [id], table: active_table) do
       :ok ->
+        socket =
+          socket
+          |> optimistic_stream_delete(id)
+          |> assign(:confirm_delete, nil)
+
         send(self(), {:data_table_refresh, active_table})
-        {:noreply, assign(socket, :confirm_delete, nil)}
+        {:noreply, socket}
 
       {:error, reason} ->
         send(self(), {:data_table_error, reason})
@@ -516,14 +834,226 @@ defmodule RhoWeb.DataTableComponent do
 
     rows = socket.assigns.rows
     sorted = sort_rows(rows, new_sort_by, new_sort_dir)
+    grouped = group_rows(sorted, socket.assigns.schema.group_by)
 
     socket =
       socket
       |> assign(:sort_by, new_sort_by)
       |> assign(:sort_dir, new_sort_dir)
-      |> assign(:grouped, group_rows(sorted, socket.assigns.schema.group_by))
+      |> assign(:grouped, grouped)
+
+    # Reset every populated group's stream to the first window in the
+    # new order. Collapsed/un-streamed groups stay zero-cost.
+    socket = reset_populated_streams(socket, grouped)
 
     {:noreply, socket}
+  end
+
+  # Walks every group_id currently in `_streamed_groups` and re-seeds
+  # its stream from the freshly-sorted/grouped row list, preserving the
+  # streamed-ness but reverting `loaded` to the first page so
+  # `load_more_in_group` continues from a consistent offset.
+  defp reset_populated_streams(socket, grouped) do
+    streamed = socket.assigns[:_streamed_groups] || %{}
+    schema = socket.assigns.schema
+    panel_mode = Map.get(schema, :children_display, :rows) == :panel
+    page_size = socket.assigns[:stream_page_size] || @default_stream_page_size
+    collapsed = socket.assigns.collapsed
+    sort_key = {socket.assigns.sort_by, socket.assigns.sort_dir}
+
+    Enum.reduce(streamed, socket, fn {group_id, _meta}, acc ->
+      rows = lookup_group_rows(grouped, group_id)
+
+      {acc, _meta} =
+        seed_group_stream(acc, group_id, rows, panel_mode, collapsed, page_size, sort_key)
+
+      acc
+    end)
+  end
+
+  defp more_pages?(streamed, group_id) do
+    case streamed && Map.get(streamed, group_id) do
+      %{loaded: loaded, total: total} when loaded < total -> true
+      _ -> false
+    end
+  end
+
+  # Phase E: targeted stream_insert for the row currently being edited
+  # so the optimistic overlay shows up before the server roundtrip.
+  # `stream_insert/4` with the same dom_id replaces in place — the
+  # whole group's stream isn't rebuilt.
+  #
+  # When `child_index` is non-nil, also re-inserts the proficiency panel
+  # stream item so child-cell edits (level name/description) re-render
+  # with the latest `editing` assign and optimistic value. The panel
+  # item is only re-inserted when the caller indicates a child edit —
+  # we don't want to introduce a panel item for a row whose panel
+  # wasn't already rendered (i.e. parent-cell edits on collapsed rows).
+  defp optimistic_stream_update(socket, parent_id, child_index \\ nil) do
+    rows = socket.assigns[:rows] || []
+
+    case find_row(rows, to_string(parent_id)) do
+      nil ->
+        socket
+
+      row ->
+        updated_base =
+          apply_optimistic_row(row, to_string(parent_id), socket.assigns.optimistic_edits)
+
+        updated_parent = Map.put(updated_base, :_kind, :parent)
+
+        case stream_for_row(socket, updated_parent) do
+          {:ok, stream_name} ->
+            socket = stream_insert(socket, stream_name, updated_parent)
+
+            if child_index != nil do
+              stream_insert(socket, stream_name, Map.put(updated_base, :_kind, :panel))
+            else
+              socket
+            end
+
+          :none ->
+            socket
+        end
+    end
+  end
+
+  # Phase E: stream_delete the parent (and its panel item, if any) on
+  # row delete. The server-side invalidation will eventually re-seed
+  # the group, but this drops the row from the DOM immediately.
+  defp optimistic_stream_delete(socket, id) do
+    rows = socket.assigns[:rows] || []
+
+    case find_row(rows, to_string(id)) do
+      nil ->
+        socket
+
+      row ->
+        case stream_for_row(socket, row) do
+          {:ok, stream_name} ->
+            socket
+            |> stream_delete(stream_name, Map.put(row, :_kind, :parent))
+            |> stream_delete(stream_name, Map.put(row, :_kind, :panel))
+
+          :none ->
+            socket
+        end
+    end
+  end
+
+  defp stream_for_row(socket, row) do
+    cat = Map.get(row, :category) || Map.get(row, "category")
+    clu = Map.get(row, :cluster) || Map.get(row, "cluster")
+
+    group_id =
+      cond do
+        cat && clu -> group_id_for(cat, clu)
+        cat -> group_id_for(cat)
+        true -> nil
+      end
+
+    mapping = socket.assigns[:_group_to_stream] || %{}
+
+    case group_id && Map.get(mapping, group_id) do
+      nil -> :none
+      stream_name -> {:ok, stream_name}
+    end
+  end
+
+  # First-expand population: if this group hasn't been streamed yet,
+  # seed its first window from the current row list.
+  defp populate_group_on_expand(socket, group_id, collapsed) do
+    streamed = socket.assigns[:_streamed_groups] || %{}
+
+    if Map.has_key?(streamed, group_id) do
+      socket
+    else
+      schema = socket.assigns.schema
+      panel_mode = Map.get(schema, :children_display, :rows) == :panel
+      page_size = socket.assigns[:stream_page_size] || @default_stream_page_size
+      sort_key = {socket.assigns.sort_by, socket.assigns.sort_dir}
+      rows = lookup_group_rows(socket.assigns.grouped, group_id)
+
+      {socket, _meta} =
+        seed_group_stream(socket, group_id, rows, panel_mode, collapsed, page_size, sort_key)
+
+      socket
+    end
+  end
+
+  defp parse_row_toggle("row-" <> row_id_str, rows) when is_list(rows) do
+    case find_row(rows, row_id_str) do
+      nil ->
+        :group
+
+      row ->
+        cat = Map.get(row, :category) || Map.get(row, "category")
+        clu = Map.get(row, :cluster) || Map.get(row, "cluster")
+
+        parent_group_id =
+          cond do
+            cat && clu -> group_id_for(cat, clu)
+            cat -> group_id_for(cat)
+            true -> nil
+          end
+
+        if parent_group_id, do: {:row, row, parent_group_id}, else: :group
+    end
+  end
+
+  defp parse_row_toggle(_, _), do: :group
+
+  defp toggle_panel_in_stream(socket, _row, parent_group_id, collapsed) do
+    schema = socket.assigns.schema
+    panel_mode = Map.get(schema, :children_display, :rows) == :panel
+    streamed = socket.assigns[:_streamed_groups] || %{}
+
+    cond do
+      not panel_mode ->
+        socket
+
+      not Map.has_key?(streamed, parent_group_id) ->
+        # Parent group was never streamed → nothing to update; the
+        # parent row isn't in DOM yet anyway.
+        socket
+
+      true ->
+        # Re-seed the affected leaf group's stream so the panel item
+        # lands right after its parent. `stream_insert/4` only supports
+        # numeric/at positions, not "after dom_id X", so a full re-seed
+        # of this single group is the simplest way to keep parent +
+        # panel adjacent.
+        page_size = socket.assigns[:stream_page_size] || @default_stream_page_size
+        sort_key = {socket.assigns.sort_by, socket.assigns.sort_dir}
+        rows = lookup_group_rows(socket.assigns.grouped, parent_group_id)
+
+        {socket, _meta} =
+          seed_group_stream(
+            socket,
+            parent_group_id,
+            rows,
+            panel_mode,
+            collapsed,
+            page_size,
+            sort_key
+          )
+
+        socket
+    end
+  end
+
+  defp lookup_group_rows(grouped, target_group_id) do
+    Enum.find_value(grouped, [], fn {label, children} ->
+      case children do
+        {:rows, rows} ->
+          if group_id_for(label) == target_group_id, do: rows
+
+        {:nested, sub_groups} ->
+          Enum.find_value(sub_groups, fn {sub_label, rows} ->
+            if group_id_for(label, sub_label) == target_group_id, do: rows
+          end)
+      end
+    end) || []
   end
 
   @impl true
@@ -552,6 +1082,22 @@ defmodule RhoWeb.DataTableComponent do
               <span class="dt-tab-count"><%= count %></span>
             </button>
           <% end %>
+        </div>
+      <% end %>
+
+      <%= if MapSet.size(@selected_ids) > 0 do %>
+        <div class="dt-selection-bar">
+          <span class="dt-selection-count">
+            <%= MapSet.size(@selected_ids) %> <%= if MapSet.size(@selected_ids) == 1, do: "row", else: "rows" %> selected
+          </span>
+          <button
+            type="button"
+            class="dt-selection-clear"
+            phx-click="clear_selection"
+            phx-target={@myself}
+          >
+            Clear
+          </button>
         </div>
       <% end %>
 
@@ -712,13 +1258,29 @@ defmodule RhoWeb.DataTableComponent do
               </div>
               <div class={"dt-group-content" <> if(collapsed?(@collapsed, group_id), do: " dt-hidden", else: "")}>
                 <%= case children do %>
-                  <% {:rows, rows} -> %>
-                    <.data_table_rows rows={rows} schema={@schema} editing={@editing} myself={@myself} collapsed={@collapsed} metadata={@metadata} sort_by={@sort_by} sort_dir={@sort_dir} confirm_delete={@confirm_delete} />
+                  <% {:rows, _rows} -> %>
+                    <% stream_atom = Map.get(@_group_to_stream, group_id) %>
+                    <.data_table_rows
+                      stream={stream_atom && Map.get(@streams, stream_atom)}
+                      group_id={group_id}
+                      more_pages?={more_pages?(@_streamed_groups, group_id)}
+                      schema={@schema}
+                      editing={@editing}
+                      myself={@myself}
+                      collapsed={@collapsed}
+                      metadata={@metadata}
+                      sort_by={@sort_by}
+                      sort_dir={@sort_dir}
+                      confirm_delete={@confirm_delete}
+                      selected_ids={@selected_ids}
+                      select_all_state={@select_all_state}
+                    />
                     <.add_row_in_group myself={@myself} group_by={group_by} group_label={group_label} sub_label={nil} />
                   <% {:nested, sub_groups} -> %>
                     <% l2_field = Enum.at(group_by, 1) %>
                     <%= for {sub_label, rows} <- sub_groups do %>
                       <% sub_id = "grp-" <> slug(group_label) <> "-" <> slug(sub_label) %>
+                      <% sub_stream_atom = Map.get(@_group_to_stream, sub_id) %>
                       <div id={sub_id} class={"dt-group dt-group-l2" <> if(collapsed?(@collapsed, sub_id), do: " dt-collapsed", else: "")}>
                         <div class="dt-group-header dt-group-header-l2">
                           <span class="dt-chevron" phx-click="toggle_group" phx-target={@myself} phx-value-group={sub_id}></span>
@@ -735,7 +1297,21 @@ defmodule RhoWeb.DataTableComponent do
                             title={"Add skill to #{sub_label}"}>+</button>
                         </div>
                         <div class={"dt-group-content" <> if(collapsed?(@collapsed, sub_id), do: " dt-hidden", else: "")}>
-                          <.data_table_rows rows={rows} schema={@schema} editing={@editing} myself={@myself} collapsed={@collapsed} metadata={@metadata} sort_by={@sort_by} sort_dir={@sort_dir} confirm_delete={@confirm_delete} />
+                          <.data_table_rows
+                            stream={sub_stream_atom && Map.get(@streams, sub_stream_atom)}
+                            group_id={sub_id}
+                            more_pages?={more_pages?(@_streamed_groups, sub_id)}
+                            schema={@schema}
+                            editing={@editing}
+                            myself={@myself}
+                            collapsed={@collapsed}
+                            metadata={@metadata}
+                            sort_by={@sort_by}
+                            sort_dir={@sort_dir}
+                            confirm_delete={@confirm_delete}
+                            selected_ids={@selected_ids}
+                            select_all_state={@select_all_state}
+                          />
                           <.add_row_in_group myself={@myself} group_by={group_by} group_label={group_label} sub_label={sub_label} />
                         </div>
                       </div>
@@ -751,6 +1327,12 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   # --- Table rows sub-component ---
+  #
+  # Renders one leaf-group's table. The row body is backed by a Phoenix
+  # LiveView stream so the LV diff size stays bounded as the row count
+  # grows. Each stream item is tagged with `:_kind` (`:parent` or
+  # `:panel`); panel-mode expansion rows ride along as their own stream
+  # entries with dom_id `panel-<row_id>` (see `build_stream_items/3`).
 
   defp data_table_rows(assigns) do
     visible_columns =
@@ -769,13 +1351,25 @@ defmodule RhoWeb.DataTableComponent do
         child_columns: child_columns,
         children_key: children_key,
         show_id: show_id,
-        panel_mode: panel_mode
+        panel_mode: panel_mode,
+        panel_colspan: length(visible_columns) + 5
       )
 
     ~H"""
     <table class="dt-table">
       <thead>
         <tr>
+          <th class="dt-th dt-th-select">
+            <input
+              type="checkbox"
+              class="dt-row-checkbox dt-row-checkbox-header"
+              phx-click="toggle_all_selection"
+              phx-target={@myself}
+              checked={@select_all_state == :all}
+              data-indeterminate={@select_all_state == :some && "true"}
+              aria-label="Select all visible rows"
+            />
+          </th>
           <%= if @has_children do %>
             <th class="dt-th dt-th-expand"></th>
           <% end %>
@@ -796,87 +1390,169 @@ defmodule RhoWeb.DataTableComponent do
           <th class="dt-th dt-th-actions"></th>
         </tr>
       </thead>
-      <tbody>
-        <%= if @has_children do %>
-          <%= for row <- @rows do %>
-            <% row_id_str = to_string(row_id(row)) %>
-            <% expanded = not collapsed?(@collapsed, "row-" <> row_id_str) %>
-            <% children = Map.get(row, @children_key) || Map.get(row, to_string(@children_key)) || [] %>
-            <tr id={"row-#{row_id_str}"} class={"dt-row dt-parent-row" <> if(expanded && @panel_mode, do: " dt-skill-expanded", else: "")}>
-              <td class="dt-td dt-td-expand" phx-click="toggle_group" phx-target={@myself} phx-value-group={"row-" <> row_id_str}>
-                <span class={"dt-chevron" <> if(expanded, do: " dt-expanded", else: "")}></span>
-              </td>
-              <td :if={@show_id} class="dt-td dt-td-id"><%= row_id_str %></td>
-              <td class="dt-td dt-td-source">
-                <.provenance_badge source={get_cell(row, :_source)} />
-              </td>
-              <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={row_id_str} metadata={@metadata} />
-              <%= if !@panel_mode do %>
-                <td :for={_col <- @child_columns} class="dt-td dt-td-empty"></td>
-              <% else %>
-                <td class="dt-td dt-col-levels"><%= length(children) %></td>
-              <% end %>
-              <td class="dt-td dt-td-row-actions">
-                <.delete_button row_id={row_id_str} confirm_delete={@confirm_delete} myself={@myself} />
-              </td>
-            </tr>
-            <%= if expanded do %>
-              <%= if @panel_mode do %>
-                <tr class="dt-row dt-proficiency-row">
-                  <td colspan={length(@visible_columns) + 4} style="padding: 0;">
-                    <div :if={children != []} class="dt-proficiency-panel">
-                      <%= for {child, idx} <- children |> Enum.with_index() |> Enum.sort_by(fn {c, _} -> get_child_level(c) end) do %>
-                        <% child_id = row_id_str <> ":child:" <> to_string(idx) %>
-                        <div class="dt-proficiency-item">
-                          <span class="dt-proficiency-level">L<%= get_child_level(child) %></span>
-                          <.inline_editable_span id={child_id} field="level_name" value={get_cell(child, :level_name)} editing={@editing} myself={@myself} class="dt-proficiency-name" />
-                          <.inline_editable_span id={child_id} field="level_description" value={get_cell(child, :level_description)} editing={@editing} myself={@myself} class="dt-proficiency-desc" multiline?={true} />
-                          <button type="button" class="dt-child-delete-btn" phx-click="delete_child" phx-target={@myself} phx-value-parent-id={row_id_str} phx-value-index={idx} title="Remove level">
-                            &times;
-                          </button>
-                        </div>
-                      <% end %>
-                    </div>
-                    <div class="dt-proficiency-add">
-                      <button type="button" class="dt-add-child-btn" phx-click="add_child" phx-target={@myself} phx-value-parent-id={row_id_str}>
-                        + Add Level
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              <% else %>
-                <%= for {child, idx} <- Enum.with_index(children) do %>
-                  <% child_id = row_id_str <> ":child:" <> to_string(idx) %>
-                  <tr id={"row-#{child_id}"} class="dt-row dt-child-row">
-                    <td class="dt-td dt-td-expand"></td>
-                    <td :if={@show_id} class="dt-td dt-td-id dt-child-id"><%= idx + 1 %></td>
-                    <td class="dt-td dt-td-source"></td>
-                    <td :for={_col <- @visible_columns} class="dt-td dt-td-empty"></td>
-                    <.editable_cell :for={col <- @child_columns} row={child || %{}} col={col} editing={@editing} myself={@myself} row_id={child_id} metadata={@metadata} />
-                    <td class="dt-td dt-td-row-actions">
-                      <button type="button" class="dt-child-delete-btn" phx-click="delete_child" phx-target={@myself} phx-value-parent-id={row_id_str} phx-value-index={idx} title="Remove">
-                        &times;
-                      </button>
-                    </td>
-                  </tr>
-                <% end %>
-              <% end %>
-            <% end %>
+      <tbody
+        id={"rows-tbody-" <> @group_id}
+        phx-update="stream"
+        phx-viewport-bottom={if @more_pages?, do: "load_more_in_group", else: nil}
+        phx-target={@myself}
+        phx-value-group={@group_id}
+      >
+        <%= for {dom_id, row} <- @stream || [] do %>
+          <%= case Map.get(row, :_kind) do %>
+            <% :panel -> %>
+              <.proficiency_panel_row
+                dom_id={dom_id}
+                row={row}
+                children_key={@children_key}
+                editing={@editing}
+                myself={@myself}
+                panel_colspan={@panel_colspan}
+              />
+            <% _ -> %>
+              <.parent_row
+                dom_id={dom_id}
+                row={row}
+                schema={@schema}
+                visible_columns={@visible_columns}
+                child_columns={@child_columns}
+                children_key={@children_key}
+                show_id={@show_id}
+                has_children={@has_children}
+                panel_mode={@panel_mode}
+                editing={@editing}
+                myself={@myself}
+                collapsed={@collapsed}
+                metadata={@metadata}
+                confirm_delete={@confirm_delete}
+                selected_ids={@selected_ids}
+              />
           <% end %>
-        <% else %>
-          <tr :for={row <- @rows} id={"row-#{row_id(row)}"} class="dt-row">
-            <td :if={@show_id} class="dt-td dt-td-id"><%= row_id(row) %></td>
-            <td class="dt-td dt-td-source">
-              <.provenance_badge source={get_cell(row, :_source)} />
-            </td>
-            <.editable_cell :for={col <- @visible_columns} row={row} col={col} editing={@editing} myself={@myself} row_id={to_string(row_id(row))} metadata={@metadata} />
-            <td class="dt-td dt-td-row-actions">
-              <.delete_button row_id={to_string(row_id(row))} confirm_delete={@confirm_delete} myself={@myself} />
-            </td>
-          </tr>
         <% end %>
       </tbody>
     </table>
+    """
+  end
+
+  # Renders one parent row, branching on whether the schema has
+  # children (and panel mode) so the markup matches the pre-stream
+  # output cell-for-cell.
+  defp parent_row(assigns) do
+    row_id_str = to_string(row_id(assigns.row))
+
+    expanded? =
+      assigns.has_children and not collapsed?(assigns.collapsed, "row-" <> row_id_str)
+
+    children =
+      if assigns.has_children do
+        Map.get(assigns.row, assigns.children_key) ||
+          Map.get(assigns.row, to_string(assigns.children_key)) || []
+      else
+        []
+      end
+
+    selected? = MapSet.member?(assigns.selected_ids, row_id_str)
+
+    assigns =
+      assign(assigns,
+        row_id_str: row_id_str,
+        expanded?: expanded?,
+        children: children,
+        selected?: selected?
+      )
+
+    ~H"""
+    <%= if @has_children do %>
+      <tr id={@dom_id} class={[
+        "dt-row dt-parent-row",
+        @expanded? && @panel_mode && "dt-skill-expanded",
+        @selected? && "dt-row-selected"
+      ]}>
+        <.row_select_cell row_id={@row_id_str} selected?={@selected?} myself={@myself} />
+        <td class="dt-td dt-td-expand" phx-click="toggle_group" phx-target={@myself} phx-value-group={"row-" <> @row_id_str}>
+          <span class={"dt-chevron" <> if(@expanded?, do: " dt-expanded", else: "")}></span>
+        </td>
+        <td :if={@show_id} class="dt-td dt-td-id"><%= @row_id_str %></td>
+        <td class="dt-td dt-td-source">
+          <.provenance_badge source={get_cell(@row, :_source)} />
+        </td>
+        <.editable_cell :for={col <- @visible_columns} row={@row} col={col} editing={@editing} myself={@myself} row_id={@row_id_str} metadata={@metadata} />
+        <%= if !@panel_mode do %>
+          <td :for={_col <- @child_columns} class="dt-td dt-td-empty"></td>
+        <% else %>
+          <td class="dt-td dt-col-levels"><%= length(@children) %></td>
+        <% end %>
+        <td class="dt-td dt-td-row-actions">
+          <.delete_button row_id={@row_id_str} confirm_delete={@confirm_delete} myself={@myself} />
+        </td>
+      </tr>
+    <% else %>
+      <tr id={@dom_id} class={["dt-row", @selected? && "dt-row-selected"]}>
+        <.row_select_cell row_id={@row_id_str} selected?={@selected?} myself={@myself} />
+        <td :if={@show_id} class="dt-td dt-td-id"><%= @row_id_str %></td>
+        <td class="dt-td dt-td-source">
+          <.provenance_badge source={get_cell(@row, :_source)} />
+        </td>
+        <.editable_cell :for={col <- @visible_columns} row={@row} col={col} editing={@editing} myself={@myself} row_id={@row_id_str} metadata={@metadata} />
+        <td class="dt-td dt-td-row-actions">
+          <.delete_button row_id={@row_id_str} confirm_delete={@confirm_delete} myself={@myself} />
+        </td>
+      </tr>
+    <% end %>
+    """
+  end
+
+  # Per-row selection checkbox cell. Sticky left column. The `phx-click`
+  # only fires from the cell — clicking elsewhere on the row does not
+  # toggle (avoids accidental selections during scrolling/editing).
+  defp row_select_cell(assigns) do
+    ~H"""
+    <td class="dt-td dt-td-select" phx-click="toggle_row_selection" phx-target={@myself} phx-value-row-id={@row_id}>
+      <input
+        type="checkbox"
+        class="dt-row-checkbox"
+        checked={@selected?}
+        aria-label={"Select row " <> @row_id}
+        tabindex="-1"
+      />
+    </td>
+    """
+  end
+
+  # Renders the proficiency-levels panel as a single full-width row
+  # immediately following its parent. Only emitted as a stream item
+  # when the parent is expanded — see `build_stream_items/3`.
+  defp proficiency_panel_row(assigns) do
+    row_id_str = to_string(row_id(assigns.row))
+
+    children =
+      Map.get(assigns.row, assigns.children_key) ||
+        Map.get(assigns.row, to_string(assigns.children_key)) || []
+
+    assigns = assign(assigns, row_id_str: row_id_str, children: children)
+
+    ~H"""
+    <tr id={@dom_id} class="dt-row dt-proficiency-row">
+      <td colspan={@panel_colspan} style="padding: 0;">
+        <div :if={@children != []} class="dt-proficiency-panel">
+          <%= for {child, idx} <- @children |> Enum.with_index() |> Enum.sort_by(fn {c, _} -> get_child_level(c) end) do %>
+            <% child_id = @row_id_str <> ":child:" <> to_string(idx) %>
+            <div class="dt-proficiency-item">
+              <span class="dt-proficiency-level">L<%= get_child_level(child) %></span>
+              <.inline_editable_span id={child_id} field="level_name" value={get_cell(child, :level_name)} editing={@editing} myself={@myself} class="dt-proficiency-name" />
+              <.inline_editable_span id={child_id} field="level_description" value={get_cell(child, :level_description)} editing={@editing} myself={@myself} class="dt-proficiency-desc" multiline?={true} />
+              <button type="button" class="dt-child-delete-btn" phx-click="delete_child" phx-target={@myself} phx-value-parent-id={@row_id_str} phx-value-index={idx} title="Remove level">
+                &times;
+              </button>
+            </div>
+          <% end %>
+        </div>
+        <div class="dt-proficiency-add">
+          <button type="button" class="dt-add-child-btn" phx-click="add_child" phx-target={@myself} phx-value-parent-id={@row_id_str}>
+            + Add Level
+          </button>
+        </div>
+      </td>
+    </tr>
     """
   end
 
@@ -1308,6 +1984,35 @@ defmodule RhoWeb.DataTableComponent do
     Map.get(row, :id) || Map.get(row, "id")
   end
 
+  # Visible rows = the active table's rows (post-filter, post-sort) that the
+  # user can reach in the panel. The select-all checkbox toggles exactly
+  # this set against the current selection.
+  defp current_visible_row_ids(socket) do
+    visible_row_ids(socket.assigns[:rows])
+  end
+
+  defp visible_row_ids(rows) when is_list(rows) do
+    rows
+    |> Enum.map(&row_id/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+  end
+
+  defp visible_row_ids(_), do: []
+
+  defp compute_select_all_state(rows, %MapSet{} = selected) do
+    visible = MapSet.new(visible_row_ids(rows))
+
+    cond do
+      MapSet.size(visible) == 0 -> :none
+      MapSet.subset?(visible, selected) -> :all
+      MapSet.disjoint?(visible, selected) -> :none
+      true -> :some
+    end
+  end
+
+  defp compute_select_all_state(_rows, _), do: :none
+
   defp get_cell(row, key) when is_atom(key) do
     Map.get(row, key) || Map.get(row, Atom.to_string(key)) || ""
   end
@@ -1569,6 +2274,37 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   defp parse_compound_id(id), do: {to_string(id), nil}
+
+  # Build a child-cell change map keyed by the child's natural key fields
+  # (e.g. %{"level" => 3}). The child is located in the rendered row by
+  # array index, but the change sent to the server addresses it by key —
+  # this matches the post-redesign update_cells contract and stays stable
+  # across reorders.
+  defp build_child_change(assigns, parent_id, child_index, field, value) do
+    schema = assigns.schema
+    children_key = schema.children_key
+    key_fields = (schema && schema.child_key_fields) || []
+
+    row = find_row(assigns.rows, parent_id)
+    children = (row && Map.get(row, children_key)) || []
+    child = Enum.at(children, child_index) || %{}
+    child_key = build_child_key(child, key_fields)
+
+    %{
+      "id" => parent_id,
+      "child_key" => child_key,
+      "field" => field,
+      "value" => value
+    }
+  end
+
+  defp build_child_key(child, key_fields) when is_list(key_fields) and key_fields != [] do
+    Map.new(key_fields, fn f ->
+      {Atom.to_string(f), Map.get(child, f, Map.get(child, Atom.to_string(f)))}
+    end)
+  end
+
+  defp build_child_key(_, _), do: %{}
 
   # --- Optimistic edit overlay ---
 

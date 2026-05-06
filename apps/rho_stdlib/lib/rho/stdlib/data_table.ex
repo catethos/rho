@@ -144,6 +144,31 @@ defmodule Rho.Stdlib.DataTable do
     call(session_id, {:drop_table, name})
   end
 
+  @doc """
+  Mark `name` as the user-focused table for this session, or pass `nil` to
+  clear. Read by the DataTable plugin's `prompt_sections/2` so the agent
+  knows which table the user is currently looking at.
+
+  Setting a table that does not (yet) exist is allowed — the plugin only
+  marks it active if it appears in `list_tables/1`.
+  """
+  @spec set_active_table(session_id(), table_name() | nil) ::
+          :ok | {:error, :not_running}
+  def set_active_table(session_id, name)
+      when is_binary(session_id) and (is_binary(name) or is_nil(name)) do
+    call(session_id, {:set_active_table, name})
+  end
+
+  @doc """
+  Return the active (user-focused) table name for this session, or `nil`
+  if none has been set. Returns `{:error, :not_running}` if the server
+  has crashed or was never started.
+  """
+  @spec get_active_table(session_id()) :: table_name() | nil | {:error, :not_running}
+  def get_active_table(session_id) when is_binary(session_id) do
+    call(session_id, :get_active_table)
+  end
+
   # --- Snapshots ---
 
   @doc "Return a session-wide snapshot: list of tables plus their order."
@@ -197,6 +222,19 @@ defmodule Rho.Stdlib.DataTable do
     end
   end
 
+  @doc """
+  Look up rows by id. Returns a `%{id => row}` map containing only ids
+  that exist in the named table. Cheaper than `get_rows/2` + filtering
+  when the caller already has the ids in hand (e.g. rendering a row
+  selection preview).
+  """
+  @spec get_rows_by_ids(session_id(), [String.t()], opts()) ::
+          {:ok, %{String.t() => row()}} | {:error, term()}
+  def get_rows_by_ids(session_id, ids, opts \\ []) when is_list(ids) do
+    name = Keyword.get(opts, :table, @default_table)
+    call(session_id, {:get_rows_by_ids, name, ids})
+  end
+
   @doc "Apply cell changes to a table."
   @spec update_cells(session_id(), [map()], opts()) :: :ok | {:error, term()}
   def update_cells(session_id, changes, opts \\ []) when is_list(changes) do
@@ -240,6 +278,43 @@ defmodule Rho.Stdlib.DataTable do
     offset = Keyword.get(opts, :offset, 0)
 
     call(session_id, {:query_rows, name, filter, columns, limit, offset})
+  end
+
+  # --- Row selection ---
+
+  @doc """
+  Set the user's row selection for a named table to exactly `ids`. IDs that
+  do not refer to existing rows in the table are silently dropped.
+
+  Returns `{:error, :not_found}` if the table does not exist, or
+  `{:error, :not_running}` if the server has crashed.
+  """
+  @spec set_selection(session_id(), table_name(), [String.t()]) ::
+          :ok | {:error, term()}
+  def set_selection(session_id, name, ids)
+      when is_binary(session_id) and is_binary(name) and is_list(ids) do
+    call(session_id, {:set_selection, name, ids})
+  end
+
+  @doc """
+  Return the list of selected row IDs for a named table. Empty list if no
+  selection has been set or the table is unknown to the selection map.
+  """
+  @spec get_selection(session_id(), table_name()) ::
+          [String.t()] | {:error, :not_running}
+  def get_selection(session_id, name)
+      when is_binary(session_id) and is_binary(name) do
+    case call(session_id, {:get_selection, name}) do
+      list when is_list(list) -> list
+      other -> other
+    end
+  end
+
+  @doc "Clear the selection for a named table."
+  @spec clear_selection(session_id(), table_name()) :: :ok | {:error, :not_running}
+  def clear_selection(session_id, name)
+      when is_binary(session_id) and is_binary(name) do
+    call(session_id, {:clear_selection, name})
   end
 
   @doc "Replace all rows in a table. Returns `{:ok, inserted_rows}`."

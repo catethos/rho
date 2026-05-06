@@ -350,8 +350,7 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       fork_name = "My #{lib.name}"
 
       case RhoFrameworks.Library.fork_library(org_id, lib.id, fork_name) do
-        {:ok, %{library: forked, skills: skill_map}} ->
-          count = map_size(skill_map)
+        {:ok, %{library: forked, skills: count}} ->
           send(self(), {:data_table_flash, "Forked '#{forked.name}' — #{count} skills."})
           socket
 

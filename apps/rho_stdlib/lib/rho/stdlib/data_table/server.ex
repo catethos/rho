@@ -54,7 +54,9 @@ defmodule Rho.Stdlib.DataTable.Server do
     state = %{
       session_id: session_id,
       tables: %{"main" => main},
-      table_order: ["main"]
+      table_order: ["main"],
+      active_table: nil,
+      selections: %{}
     }
 
     Logger.debug(fn -> "[DataTable.Server] init session=#{session_id}" end)
@@ -141,6 +143,9 @@ defmodule Rho.Stdlib.DataTable.Server do
       not match?(%Schema{}, schema) ->
         {:reply, {:error, :invalid_schema}, state}
 
+      match?({:error, _}, Schema.validate_definition(schema)) ->
+        {:reply, Schema.validate_definition(schema), state}
+
       true ->
         table = Table.new(name, schema)
 
@@ -161,47 +166,19 @@ defmodule Rho.Stdlib.DataTable.Server do
   end
 
   def handle_call({:ensure_table, name, schema}, from, state) do
-    case Map.fetch(state.tables, name) do
-      {:ok, %Table{schema: existing}} ->
-        if schemas_compatible?(existing, schema) do
-          Logger.debug(fn ->
-            "[DataTable.Server] ensure_table session=#{state.session_id} " <>
-              "table=#{inspect(name)} (already exists, compatible)"
-          end)
-
-          {:reply, :ok, state}
-        else
-          Logger.warning(fn ->
-            "[DataTable.Server] ensure_table SCHEMA_MISMATCH session=#{state.session_id} " <>
-              "table=#{inspect(name)} existing=#{inspect(existing.mode)}/#{inspect(Schema.column_names(existing))} " <>
-              "incoming=#{inspect(schema.mode)}/#{inspect(Schema.column_names(schema))}"
-          end)
-
-          {:reply, {:error, :schema_mismatch}, state}
-        end
-
-      :error ->
-        table = Table.new(name, schema)
-
-        new_state = %{
-          state
-          | tables: Map.put(state.tables, name, table),
-            table_order: state.table_order ++ [name]
-        }
-
-        Logger.debug(fn ->
-          "[DataTable.Server] ensure_table session=#{state.session_id} " <>
-            "table=#{inspect(name)} (created); existing_tables=#{inspect(state.table_order)}"
-        end)
-
-        publish(
-          state.session_id,
-          %{event: :table_created, table_name: name, version: table.version},
-          caller_source(from)
-        )
-
-        {:reply, :ok, new_state}
+    case Schema.validate_definition(schema) do
+      :ok -> ensure_table_after_validation(name, schema, from, state)
+      {:error, _} = err -> {:reply, err, state}
     end
+  end
+
+  def handle_call({:set_active_table, name}, _from, state)
+      when is_binary(name) or is_nil(name) do
+    {:reply, :ok, %{state | active_table: name}}
+  end
+
+  def handle_call(:get_active_table, _from, state) do
+    {:reply, state.active_table, state}
   end
 
   def handle_call({:drop_table, name}, from, state) do
@@ -213,7 +190,8 @@ defmodule Rho.Stdlib.DataTable.Server do
         new_state = %{
           state
           | tables: Map.delete(state.tables, name),
-            table_order: List.delete(state.table_order, name)
+            table_order: List.delete(state.table_order, name),
+            selections: Map.delete(state.selections, name)
         }
 
         publish(
@@ -224,6 +202,37 @@ defmodule Rho.Stdlib.DataTable.Server do
 
         {:reply, :ok, new_state}
     end
+  end
+
+  # --- Row selection ---
+
+  def handle_call({:set_selection, name, ids}, _from, state)
+      when is_binary(name) and is_list(ids) do
+    case Map.fetch(state.tables, name) do
+      {:ok, table} ->
+        pruned = prune_selection(MapSet.new(ids, &to_string/1), table)
+        new_state = %{state | selections: Map.put(state.selections, name, pruned)}
+
+        publish(
+          state.session_id,
+          %{event: :selection_changed, table_name: name, count: MapSet.size(pruned)},
+          :user
+        )
+
+        {:reply, :ok, new_state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:get_selection, name}, _from, state) when is_binary(name) do
+    set = Map.get(state.selections, name, MapSet.new())
+    {:reply, MapSet.to_list(set), state}
+  end
+
+  def handle_call({:clear_selection, name}, _from, state) when is_binary(name) do
+    {:reply, :ok, %{state | selections: Map.delete(state.selections, name)}}
   end
 
   # --- Row operations ---
@@ -245,6 +254,13 @@ defmodule Rho.Stdlib.DataTable.Server do
   def handle_call({:get_rows, name, filter}, _from, state) do
     case Map.fetch(state.tables, name) do
       {:ok, table} -> {:reply, {:ok, Table.filter_rows(table, filter)}, state}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:get_rows_by_ids, name, ids}, _from, state) do
+    case Map.fetch(state.tables, name) do
+      {:ok, table} -> {:reply, {:ok, Table.rows_by_ids(table, ids)}, state}
       :error -> {:reply, {:error, :not_found}, state}
     end
   end
@@ -315,7 +331,8 @@ defmodule Rho.Stdlib.DataTable.Server do
         case fun.(table) do
           {:ok, updated_table, reply} ->
             new_tables = Map.put(state.tables, name, updated_table)
-            new_state = %{state | tables: new_tables}
+            new_selections = maybe_prune_selection(state.selections, name, updated_table)
+            new_state = %{state | tables: new_tables, selections: new_selections}
 
             publish(
               state.session_id,
@@ -381,10 +398,66 @@ defmodule Rho.Stdlib.DataTable.Server do
 
   defp caller_source(_), do: nil
 
+  defp maybe_prune_selection(selections, name, table) do
+    case Map.fetch(selections, name) do
+      :error -> selections
+      {:ok, ids} -> Map.put(selections, name, prune_selection(ids, table))
+    end
+  end
+
+  defp prune_selection(%MapSet{} = ids, %Table{rows_by_id: rows_by_id}) do
+    MapSet.filter(ids, &Map.has_key?(rows_by_id, &1))
+  end
+
+  defp ensure_table_after_validation(name, schema, from, state) do
+    case Map.fetch(state.tables, name) do
+      {:ok, %Table{schema: existing}} ->
+        if schemas_compatible?(existing, schema) do
+          Logger.debug(fn ->
+            "[DataTable.Server] ensure_table session=#{state.session_id} " <>
+              "table=#{inspect(name)} (already exists, compatible)"
+          end)
+
+          {:reply, :ok, state}
+        else
+          Logger.warning(fn ->
+            "[DataTable.Server] ensure_table SCHEMA_MISMATCH session=#{state.session_id} " <>
+              "table=#{inspect(name)} existing=#{inspect(existing.mode)}/#{inspect(Schema.column_names(existing))} " <>
+              "incoming=#{inspect(schema.mode)}/#{inspect(Schema.column_names(schema))}"
+          end)
+
+          {:reply, {:error, :schema_mismatch}, state}
+        end
+
+      :error ->
+        table = Table.new(name, schema)
+
+        new_state = %{
+          state
+          | tables: Map.put(state.tables, name, table),
+            table_order: state.table_order ++ [name]
+        }
+
+        Logger.debug(fn ->
+          "[DataTable.Server] ensure_table session=#{state.session_id} " <>
+            "table=#{inspect(name)} (created); existing_tables=#{inspect(state.table_order)}"
+        end)
+
+        publish(
+          state.session_id,
+          %{event: :table_created, table_name: name, version: table.version},
+          caller_source(from)
+        )
+
+        {:reply, :ok, new_state}
+    end
+  end
+
   defp schemas_compatible?(%Schema{} = a, %Schema{} = b) do
     a.mode == b.mode and Schema.column_names(a) == Schema.column_names(b) and
       a.children_key == b.children_key and
-      Schema.child_column_names(a) == Schema.child_column_names(b)
+      Schema.child_column_names(a) == Schema.child_column_names(b) and
+      a.child_key_fields == b.child_key_fields
   end
 
   defp schemas_compatible?(_, _), do: false

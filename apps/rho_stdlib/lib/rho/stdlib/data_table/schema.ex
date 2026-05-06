@@ -15,6 +15,11 @@ defmodule Rho.Stdlib.DataTable.Schema do
   Nested children: if `children_key` is set (e.g. `:proficiency_levels`), each
   row may carry a list of child maps under that key which are validated
   against `child_columns`. This matches the DB `{:array, :map}` embedded shape.
+
+  When `children_key` is set, `child_key_fields` MUST also be set — children
+  are addressed by natural key (e.g. `[:level]`), not by list position. This
+  is what lets `update_cells` / `edit_row` reach into a single child cell
+  without depending on the order of the children array.
   """
 
   alias Rho.Stdlib.DataTable.Schema.Column
@@ -24,7 +29,8 @@ defmodule Rho.Stdlib.DataTable.Schema do
             columns: [],
             key_fields: [],
             children_key: nil,
-            child_columns: []
+            child_columns: [],
+            child_key_fields: []
 
   @type t :: %__MODULE__{
           name: String.t() | nil,
@@ -32,7 +38,8 @@ defmodule Rho.Stdlib.DataTable.Schema do
           columns: [Column.t()],
           key_fields: [atom()],
           children_key: atom() | nil,
-          child_columns: [Column.t()]
+          child_columns: [Column.t()],
+          child_key_fields: [atom()]
         }
 
   @doc "Build a dynamic (schemaless) schema. All keys stored as strings; no validation."
@@ -45,6 +52,40 @@ defmodule Rho.Stdlib.DataTable.Schema do
 
   @doc "Declared child column name atoms for this schema."
   def child_column_names(%__MODULE__{child_columns: cols}), do: Enum.map(cols || [], & &1.name)
+
+  @doc """
+  Validate the shape of a schema definition.
+
+  Returns `:ok` or `{:error, reason}`. Currently enforces:
+
+    * If `children_key` is set, `child_key_fields` must be a non-empty list,
+      every element must be an atom, and every element must appear as a
+      declared `child_columns` field. This is what makes nested editing
+      addressable by natural key instead of list index.
+  """
+  def validate_definition(%__MODULE__{children_key: nil}), do: :ok
+
+  def validate_definition(%__MODULE__{children_key: key, child_key_fields: keys} = schema)
+      when is_atom(key) do
+    cond do
+      not is_list(keys) or keys == [] ->
+        {:error, {:missing_child_key_fields, key}}
+
+      not Enum.all?(keys, &is_atom/1) ->
+        {:error, {:invalid_child_key_fields, keys}}
+
+      true ->
+        declared = MapSet.new(child_column_names(schema))
+        missing = Enum.reject(keys, &MapSet.member?(declared, &1))
+
+        case missing do
+          [] -> :ok
+          fields -> {:error, {:undeclared_child_key_fields, fields}}
+        end
+    end
+  end
+
+  def validate_definition(_), do: {:error, :invalid_schema}
 
   @doc """
   Validate and normalize a row against this schema.

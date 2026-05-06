@@ -275,8 +275,8 @@ defmodule RhoFrameworks.Tools.LibraryTools do
              args[:new_name],
              opts
            ) do
-        {:ok, %{library: lib, skills: skill_map}} ->
-          {:ok, "Forked '#{lib.name}' — #{map_size(skill_map)} skills."}
+        {:ok, %{library: lib, skills: count}} ->
+          {:ok, "Forked '#{lib.name}' — #{count} skills."}
 
         {:error, _step, reason, _} ->
           {:error, "Fork failed: #{inspect(reason)}"}
@@ -309,8 +309,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
                 |> maybe_opt(:category, args[:category])
                 |> maybe_opt(:status, args[:status])
 
-              skills = Library.browse_library(lib.id, opts)
-              {:ok, format_browse_results(lib.name, skills)}
+              browse_library_or_index(lib, opts, args)
 
             {:error, reason} ->
               {:error, reason}
@@ -654,6 +653,52 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     end)
     |> Enum.join("\n")
     |> then(&"Found #{length(results)} results:\n#{&1}")
+  end
+
+  # Large libraries (e.g. ESCO with ~14k skills) blow the LLM context if
+  # we dump every row. When no category was specified and the library
+  # exceeds @browse_full_dump_max, return a category index instead and
+  # tell the agent to drill down.
+  @browse_full_dump_max 500
+
+  defp browse_library_or_index(lib, opts, args) do
+    has_category? = match?(c when is_binary(c) and c != "", args[:category])
+    count = Library.skill_count(lib.id)
+
+    if not has_category? and count > @browse_full_dump_max do
+      index = Library.list_skill_index(lib.id, opts)
+      {:ok, format_browse_index(lib.name, count, index)}
+    else
+      skills = Library.browse_library(lib.id, opts)
+      {:ok, format_browse_results(lib.name, skills)}
+    end
+  end
+
+  defp format_browse_index(lib_name, total, index) do
+    by_category =
+      index
+      |> Enum.group_by(& &1.category)
+      |> Enum.sort_by(&elem(&1, 0))
+
+    lines =
+      Enum.map(by_category, fn {category, rows} ->
+        cat_total = Enum.reduce(rows, 0, fn r, acc -> acc + r.count end)
+        clusters = rows |> Enum.map(& &1.cluster) |> Enum.reject(&is_nil/1)
+
+        cluster_hint =
+          if clusters == [], do: "", else: " — clusters: #{Enum.join(clusters, ", ")}"
+
+        "  - #{category} (#{cat_total} skills)#{cluster_hint}"
+      end)
+
+    """
+    "#{lib_name}" — #{total} skills across #{length(by_category)} categories. \
+    Too many to list. Call browse_library again with `category: "<name>"` to list \
+    a category, or use find_skill / find_similar_skills for keyword and semantic \
+    search.
+
+    #{Enum.join(lines, "\n")}
+    """
   end
 
   defp format_browse_results(lib_name, []), do: "Library '#{lib_name}' has no skills."

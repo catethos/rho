@@ -50,7 +50,8 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
       tool_defs: defs,
       req_tools: Enum.map(defs, & &1.tool),
       tool_map: Map.new(defs, fn t -> {t.tool.name, t} end),
-      system_prompt: "You are helpful.",
+      system_prompt_stable: "You are helpful.",
+      system_prompt_volatile: "",
       depth: 0,
       tape: %Rho.Runner.TapeConfig{
         name: nil,
@@ -256,6 +257,77 @@ defmodule Rho.TurnStrategy.TypedStructuredTest do
 
       assert step.type == :tool_step
       assert step.assistant_msg.content |> hd() |> Map.get(:text) =~ "think"
+    end
+  end
+
+  describe "serialize_messages/2 — volatile hoisting" do
+    test "hoists volatile system text to the end" do
+      runtime =
+        build_runtime()
+        |> Map.put(:system_prompt_stable, "STABLE BODY")
+        |> Map.put(:system_prompt_volatile, "VOLATILE BODY")
+
+      messages = [
+        ReqLLM.Context.system("ignored — runtime carries the truth"),
+        ReqLLM.Context.user("hello"),
+        ReqLLM.Context.assistant("hi back")
+      ]
+
+      out = TypedStructured.serialize_messages(messages, runtime)
+
+      stable_pos = :binary.match(out, "STABLE BODY") |> elem(0)
+      user_pos = :binary.match(out, "hello") |> elem(0)
+      assistant_pos = :binary.match(out, "hi back") |> elem(0)
+      volatile_pos = :binary.match(out, "VOLATILE BODY") |> elem(0)
+
+      assert stable_pos < user_pos
+      assert user_pos < assistant_pos
+      assert assistant_pos < volatile_pos
+    end
+
+    test "with empty volatile, output has no trailing volatile section" do
+      runtime =
+        build_runtime()
+        |> Map.put(:system_prompt_stable, "STABLE")
+        |> Map.put(:system_prompt_volatile, "")
+
+      messages = [
+        ReqLLM.Context.system("ignored"),
+        ReqLLM.Context.user("hi")
+      ]
+
+      out = TypedStructured.serialize_messages(messages, runtime)
+
+      assert out =~ "System: STABLE"
+      assert out =~ "User: hi"
+      # Only one System: prefix when volatile is empty
+      assert length(:binary.matches(out, "System:")) == 1
+    end
+
+    test "byte-identical preamble across turns when only volatile changes" do
+      stable = "STABLE PREAMBLE"
+      messages = [ReqLLM.Context.system("x"), ReqLLM.Context.user("hi")]
+
+      r1 =
+        build_runtime()
+        |> Map.put(:system_prompt_stable, stable)
+        |> Map.put(:system_prompt_volatile, "first volatile")
+
+      r2 =
+        build_runtime()
+        |> Map.put(:system_prompt_stable, stable)
+        |> Map.put(:system_prompt_volatile, "second volatile — different")
+
+      out1 = TypedStructured.serialize_messages(messages, r1)
+      out2 = TypedStructured.serialize_messages(messages, r2)
+
+      # Find the position of the volatile tail in each output
+      idx1 = :binary.match(out1, "first volatile") |> elem(0)
+      idx2 = :binary.match(out2, "second volatile") |> elem(0)
+
+      # Bytes before the volatile tail should be byte-identical
+      common = min(idx1, idx2)
+      assert binary_part(out1, 0, common) == binary_part(out2, 0, common)
     end
   end
 end

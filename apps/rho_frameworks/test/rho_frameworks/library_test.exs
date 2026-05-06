@@ -198,14 +198,14 @@ defmodule RhoFrameworks.LibraryTest do
         })
         |> Repo.insert()
 
-      {:ok, %{library: fork, skills: skill_map}} =
+      {:ok, %{library: fork, skills: count}} =
         RhoFrameworks.Library.fork_library(org_id, source.id, "My Fork", include_roles: false)
 
       assert fork.derived_from_id == source.id
       assert fork.immutable == false
-      assert map_size(skill_map) == 1
+      assert count == 1
 
-      forked_skill = skill_map[skill.id]
+      [forked_skill] = RhoFrameworks.Library.list_skills(fork.id)
       assert forked_skill.name == "SQL"
       assert forked_skill.source_skill_id == skill.id
       assert forked_skill.library_id == fork.id
@@ -488,15 +488,20 @@ defmodule RhoFrameworks.LibraryTest do
         |> Repo.insert()
 
       # Fork with only Data and Software Development categories
-      {:ok, %{library: fork, skills: skill_map}} =
+      {:ok, %{library: fork, skills: count}} =
         RhoFrameworks.Library.fork_library(org_id, source.id, "Filtered Fork",
           include_roles: false,
           categories: ["Data", "Software Development"]
         )
 
-      assert map_size(skill_map) == 2
+      assert count == 2
 
-      names = skill_map |> Map.values() |> Enum.map(& &1.name) |> Enum.sort()
+      names =
+        fork.id
+        |> RhoFrameworks.Library.list_skills()
+        |> Enum.map(& &1.name)
+        |> Enum.sort()
+
       assert names == ["Python", "SQL"]
       assert fork.derived_from_id == source.id
     end
@@ -530,13 +535,13 @@ defmodule RhoFrameworks.LibraryTest do
         RhoFrameworks.Library.load_template(org_id, "cat_filter", template_data)
 
       # Fork only "Data" category
-      {:ok, %{skills: skill_map}} =
+      {:ok, %{library: fork, skills: count}} =
         RhoFrameworks.Library.fork_library(org_id, source.id, "Data Only Fork",
           categories: ["Data"]
         )
 
-      assert map_size(skill_map) == 1
-      assert hd(Map.values(skill_map)).name == "SQL"
+      assert count == 1
+      assert [%{name: "SQL"}] = RhoFrameworks.Library.list_skills(fork.id)
     end
   end
 
@@ -567,11 +572,11 @@ defmodule RhoFrameworks.LibraryTest do
       {:ok, %{library: source}} =
         RhoFrameworks.Library.load_template(org_id, "fork_src", template_data)
 
-      {:ok, %{library: fork, skills: skill_map}} =
+      {:ok, %{library: fork, skills: count}} =
         RhoFrameworks.Library.fork_library(org_id, source.id, "My Fork")
 
       assert fork.immutable == false
-      assert map_size(skill_map) == 1
+      assert count == 1
 
       # Result should NOT contain role_profiles key
       {:ok, result} = RhoFrameworks.Library.fork_library(org_id, source.id, "My Fork 2")

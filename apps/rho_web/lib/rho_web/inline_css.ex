@@ -1831,6 +1831,66 @@ defmodule RhoWeb.InlineCSS do
       color: var(--accent, #e07a2f);
     }
 
+    /* === Row Selection (checkbox column + selection bar) === */
+    .dt-selection-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 20px;
+      background: color-mix(in srgb, var(--accent, #e07a2f) 8%, var(--bg-surface));
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .dt-selection-count {
+      color: var(--text);
+      font-weight: 500;
+    }
+    .dt-selection-clear {
+      padding: 3px 10px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: var(--bg-deep);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .dt-selection-clear:hover {
+      color: var(--text);
+      border-color: var(--accent, #e07a2f);
+      background: var(--bg-hover);
+    }
+
+    .dt-th-select,
+    .dt-td-select {
+      width: 32px;
+      padding: 0;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .dt-td-select {
+      cursor: pointer;
+    }
+    .dt-row-checkbox {
+      cursor: pointer;
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--accent, #e07a2f);
+    }
+    .dt-row-checkbox-header {
+      cursor: pointer;
+    }
+    .dt-row-selected {
+      background: color-mix(in srgb, var(--accent, #e07a2f) 6%, transparent);
+      box-shadow: inset 2px 0 0 var(--accent, #e07a2f);
+    }
+    .dt-row-selected:hover {
+      background: color-mix(in srgb, var(--accent, #e07a2f) 10%, transparent);
+    }
+
     /* === Data Table Proficiency Panel (children_display: :panel) === */
     .dt-proficiency-row td {
       background: var(--bg-deep);
@@ -3364,6 +3424,14 @@ defmodule RhoWeb.InlineCSS do
     }
     .fw-collapse-summary:hover { background: var(--bg-hover); }
     .fw-collapse-summary::-webkit-details-marker { display: none; }
+    button.fw-collapse-summary {
+      width: 100%;
+      background: transparent;
+      border: 0;
+      font: inherit;
+      color: inherit;
+      text-align: left;
+    }
 
     .fw-collapse-arrow {
       display: inline-block;
@@ -3374,7 +3442,8 @@ defmodule RhoWeb.InlineCSS do
       transition: transform 0.15s;
       flex-shrink: 0;
     }
-    details[open] > .fw-collapse-summary > .fw-collapse-arrow {
+    details[open] > .fw-collapse-summary > .fw-collapse-arrow,
+    .fw-collapse.is-open > .fw-collapse-summary > .fw-collapse-arrow {
       transform: rotate(90deg);
     }
 
