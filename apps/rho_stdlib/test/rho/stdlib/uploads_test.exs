@@ -34,6 +34,22 @@ defmodule Rho.Stdlib.UploadsTest do
     assert {:error, :no_observer} = Uploads.parse_one_off(src)
   end
 
+  describe "SessionJanitor" do
+    test "stops the upload server on :agent_stopped event", %{sid: sid} do
+      {:ok, _pid} = Uploads.ensure_started(sid)
+
+      # Real function name verified in apps/rho/lib/rho/events.ex:71.
+      # Use Rho.Events.event/2 so session_id is injected into data — matching
+      # how Worker.terminate/2 publishes :agent_stopped in production.
+      Rho.Events.broadcast_lifecycle(Rho.Events.event(:agent_stopped, sid))
+
+      # Janitor handles asynchronously — give the BEAM a tick.
+      Process.sleep(50)
+
+      assert is_nil(Rho.Stdlib.Uploads.Server.whereis(sid))
+    end
+  end
+
   defp write_tmp(content) do
     p = Path.join(System.tmp_dir!(), "upl_#{System.unique_integer([:positive])}.csv")
     File.write!(p, content)
