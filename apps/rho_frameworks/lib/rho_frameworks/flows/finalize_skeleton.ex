@@ -52,11 +52,29 @@ defmodule RhoFrameworks.Flows.FinalizeSkeleton do
         id: :confirm,
         label: "Confirm",
         type: :action,
-        next: :proficiency,
+        next: :choose_levels,
         routing: :fixed,
         config: %{
           manual: true,
           message: "Review complete. Generate proficiency levels for these skills?"
+        }
+      },
+      %{
+        id: :choose_levels,
+        label: "Proficiency Scale",
+        type: :form,
+        next: :proficiency,
+        routing: :fixed,
+        config: %{
+          fields: [
+            %{
+              name: :levels,
+              label: "How many proficiency levels per skill?",
+              type: :select,
+              required: true,
+              options: [{"3 levels", "3"}, {"4 levels", "4"}, {"5 levels", "5"}]
+            }
+          ]
         }
       },
       %{
@@ -89,9 +107,19 @@ defmodule RhoFrameworks.Flows.FinalizeSkeleton do
 
   def build_input(:proficiency, %{intake: intake, summaries: summaries}, %Scope{}) do
     table_name =
-      get_in(summaries, [:generate, :table_name]) || derive_table_name(intake)
+      get_in(summaries, [:generate, :table_name]) ||
+        get_in(summaries, [:load_existing_library, :table_name]) ||
+        get_in(summaries, [:pick_template, :table_name]) ||
+        get_in(summaries, [:merge_frameworks, :table_name]) ||
+        derive_table_name(intake)
 
-    %{table_name: table_name, levels: parse_levels(get(intake, :levels))}
+    # Pass `intake.levels` through verbatim (nil or string). Resist the
+    # urge to coerce nil → 5 here: that masked the "user never picked a
+    # scale" signal that GenerateProficiency.run uses to early-exit as a
+    # safety net. With :choose_levels in the shared FinalizeSkeleton tail
+    # this should never be nil in practice, but the no-coerce shape keeps
+    # the safety net actually safe.
+    %{table_name: table_name, levels: get(intake, :levels)}
   end
 
   def build_input(:save, %{intake: intake, summaries: summaries}, %Scope{} = scope) do
@@ -123,18 +151,6 @@ defmodule RhoFrameworks.Flows.FinalizeSkeleton do
   defp get(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
-
-  defp parse_levels(nil), do: 5
-  defp parse_levels(v) when is_integer(v), do: v
-
-  defp parse_levels(v) when is_binary(v) do
-    case Integer.parse(v) do
-      {n, _} -> n
-      :error -> 5
-    end
-  end
-
-  defp parse_levels(_), do: 5
 
   defp derive_table_name(intake) do
     name = get(intake, :name) || ""

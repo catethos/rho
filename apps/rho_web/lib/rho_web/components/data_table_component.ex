@@ -1505,7 +1505,7 @@ defmodule RhoWeb.DataTableComponent do
             <div class="dt-proficiency-item">
               <span class="dt-proficiency-level">L<%= get_child_level(child) %></span>
               <.inline_editable_span id={child_id} field="level_name" value={get_cell(child, :level_name)} editing={@editing} myself={@myself} class="dt-proficiency-name" />
-              <.inline_editable_span id={child_id} field="level_description" value={get_cell(child, :level_description)} editing={@editing} myself={@myself} class="dt-proficiency-desc" />
+              <.inline_editable_span id={child_id} field="level_description" value={get_cell(child, :level_description)} editing={@editing} myself={@myself} class="dt-proficiency-desc" multiline?={true} />
               <button type="button" class="dt-child-delete-btn" phx-click="delete_child" phx-target={@myself} phx-value-parent-id={@row_id_str} phx-value-index={idx} title="Remove level">
                 &times;
               </button>
@@ -1720,28 +1720,49 @@ defmodule RhoWeb.DataTableComponent do
 
   defp inline_editable_span(assigns) do
     editing? = assigns.editing == {assigns.id, assigns.field}
-    assigns = assign(assigns, :editing?, editing?)
+
+    assigns =
+      assigns
+      |> assign(:editing?, editing?)
+      |> assign_new(:multiline?, fn -> false end)
 
     ~H"""
     <%= if @editing? do %>
       <form phx-submit="save_edit" phx-target={@myself} class={@class}>
         <input type="hidden" name="row_id" value={@id} />
         <input type="hidden" name="field" value={@field} />
-        <input
-          type="text"
-          name="value"
-          value={@value}
-          class="dt-cell-input dt-inline-input"
-          phx-hook="AutoFocus"
-          id={"edit-#{@id}-#{@field}"}
-          phx-blur="save_edit"
-          phx-target={@myself}
-          phx-value-row_id={@id}
-          phx-value-field={@field}
-          phx-keydown="cancel_edit"
-          phx-target={@myself}
-          phx-key="Escape"
-        />
+        <%= if @multiline? do %>
+          <textarea
+            name="value"
+            class="dt-cell-input dt-inline-input dt-inline-textarea"
+            phx-hook="Autosize"
+            id={"edit-#{@id}-#{@field}"}
+            phx-blur="save_edit"
+            phx-target={@myself}
+            phx-value-row_id={@id}
+            phx-value-field={@field}
+            phx-keydown="cancel_edit"
+            phx-target={@myself}
+            phx-key="Escape"
+            rows="3"
+          ><%= @value %></textarea>
+        <% else %>
+          <input
+            type="text"
+            name="value"
+            value={@value}
+            class="dt-cell-input dt-inline-input"
+            phx-hook="AutoFocus"
+            id={"edit-#{@id}-#{@field}"}
+            phx-blur="save_edit"
+            phx-target={@myself}
+            phx-value-row_id={@id}
+            phx-value-field={@field}
+            phx-keydown="cancel_edit"
+            phx-target={@myself}
+            phx-key="Escape"
+          />
+        <% end %>
       </form>
     <% else %>
       <span

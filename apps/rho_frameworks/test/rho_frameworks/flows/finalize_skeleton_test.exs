@@ -5,11 +5,18 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
   alias RhoFrameworks.Scope
 
   describe "steps/0" do
-    test "returns 4 nodes in :review → :confirm → :proficiency → :save order" do
+    test "returns 5 nodes in :review → :confirm → :choose_levels → :proficiency → :save order" do
       steps = FinalizeSkeleton.steps()
 
-      assert length(steps) == 4
-      assert Enum.map(steps, & &1.id) == [:review, :confirm, :proficiency, :save]
+      assert length(steps) == 5
+
+      assert Enum.map(steps, & &1.id) == [
+               :review,
+               :confirm,
+               :choose_levels,
+               :proficiency,
+               :save
+             ]
     end
 
     test "each step has required keys" do
@@ -23,11 +30,12 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
       end
     end
 
-    test "edge shape: review→confirm→proficiency→save→done" do
+    test "edge shape: review→confirm→choose_levels→proficiency→save→done" do
       next_map = Map.new(FinalizeSkeleton.steps(), fn s -> {s.id, s.next} end)
 
       assert next_map[:review] == :confirm
-      assert next_map[:confirm] == :proficiency
+      assert next_map[:confirm] == :choose_levels
+      assert next_map[:choose_levels] == :proficiency
       assert next_map[:proficiency] == :save
       assert next_map[:save] == :done
     end
@@ -72,9 +80,13 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
                %{}
     end
 
-    test ":proficiency reads table_name from :generate summary, levels from intake", %{
+    test ":proficiency reads table_name from :generate summary, levels from intake verbatim", %{
       scope: scope
     } do
+      # `levels` now passes through unchanged — string in, string out.
+      # The downstream UseCase (`GenerateProficiency.run`) parses it to
+      # int. Coercing nil → 5 here would mask the "user never picked"
+      # signal the UseCase relies on for its early-exit safety net.
       state = %{
         intake: %{name: "Backend", levels: "5"},
         summaries: %{generate: %{table_name: "backend_skills"}}
@@ -82,7 +94,7 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
 
       assert FinalizeSkeleton.build_input(:proficiency, state, scope) == %{
                table_name: "backend_skills",
-               levels: 5
+               levels: "5"
              }
     end
 
@@ -95,6 +107,8 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
 
       assert is_binary(result.table_name)
       assert result.table_name != ""
+      # Integer levels still pass through verbatim — the UseCase handles
+      # int and string forms.
       assert result.levels == 3
     end
 
@@ -106,7 +120,21 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
 
       assert FinalizeSkeleton.build_input(:proficiency, state, scope) == %{
                table_name: "tn",
-               levels: 4
+               levels: "4"
+             }
+    end
+
+    test ":proficiency passes nil through when intake has no levels (early-exit signal)", %{
+      scope: scope
+    } do
+      # The :choose_levels step in the shared tail makes this state
+      # unreachable from the wizard, but the no-coerce shape preserves
+      # the early-exit signal for any caller that bypasses the wizard.
+      state = %{intake: %{name: "Backend"}, summaries: %{generate: %{table_name: "tn"}}}
+
+      assert FinalizeSkeleton.build_input(:proficiency, state, scope) == %{
+               table_name: "tn",
+               levels: nil
              }
     end
 

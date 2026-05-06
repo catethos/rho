@@ -15,6 +15,7 @@ defmodule RhoFrameworks.Import.Esco do
   |-----------------------------------------|------------------------------------|
   | `skills_en.csv`                         | Skill rows (filter `KnowledgeSkillCompetence`) |
   | `skillsHierarchy_en.csv`                | URI → L1/L2/L3 lookup for category/cluster |
+  | `broaderRelationsSkillPillar_en.csv`    | child→parent skill links (used to walk leaf skills up to a hierarchy node) |
   | `occupations_en.csv`                    | Role profile rows                  |
   | `ISCOGroups_en.csv`                     | ISCO code → label for role_family  |
   | `occupationSkillRelations_en.csv`       | Role↔skill links (essential/optional) |
@@ -28,11 +29,19 @@ defmodule RhoFrameworks.Import.Esco do
   ESCO skills that share `preferredLabel` distinct under the
   `(library_id, slug)` unique index.
 
-  ## Category fallback
+  ## Category / cluster fallback
 
   `skills.category` is `NOT NULL`. When the hierarchy join misses (orphan
   URI), we fall back to `reuseLevel` and finally to `"Uncategorized"` so the
   insert never blows up on the constraint.
+
+  `cluster` is nullable in the DB but the in-session `library_schema()`
+  treats it as required. Since actual ESCO leaf skills are never listed as
+  L0/L1/L2/L3 nodes in `skillsHierarchy_en.csv` (only category nodes are),
+  we walk up the `broaderRelationsSkillPillar_en.csv` chain from each leaf
+  to the first ancestor that *is* in the hierarchy and use its labels.
+  When the chain dead-ends before reaching the hierarchy (~4% orphans),
+  we fall back `cluster = category` so downstream code never sees nil.
 
   ## Relation dedup
 
@@ -98,11 +107,12 @@ defmodule RhoFrameworks.Import.Esco do
   @spec parse(Path.t()) :: %Parsed{}
   def parse(dir) when is_binary(dir) do
     hierarchy = parse_hierarchy(Path.join(dir, "skillsHierarchy_en.csv"))
+    broader = parse_broader_relations(Path.join(dir, "broaderRelationsSkillPillar_en.csv"))
     isco = parse_isco_groups(Path.join(dir, "ISCOGroups_en.csv"))
 
     skills =
       Path.join(dir, "skills_en.csv")
-      |> parse_skills(hierarchy)
+      |> parse_skills(hierarchy, broader)
 
     role_profiles =
       Path.join(dir, "occupations_en.csv")
@@ -178,6 +188,37 @@ defmodule RhoFrameworks.Import.Esco do
     end)
   end
 
+  # ── broaderRelationsSkillPillar_en.csv ──────────────────────────────────
+  #
+  # Bridges leaf skills to the L0/L1/L2/L3 nodes that live in the hierarchy
+  # CSV. Each row is `(conceptType, conceptUri, broaderType, broaderUri)`;
+  # we only need `conceptUri → [broaderUri]`. Returns an empty map if the
+  # file isn't present (older fixtures, dry-runs without the file).
+
+  @doc false
+  @spec parse_broader_relations(Path.t()) :: %{optional(String.t()) => [String.t()]}
+  def parse_broader_relations(path) do
+    if File.exists?(path) do
+      {headers, rows} = read_csv(path)
+      idx = column_indexes(headers)
+      child_idx = Map.get(idx, "concepturi")
+      parent_idx = Map.get(idx, "broaderuri")
+
+      Enum.reduce(rows, %{}, fn row, acc ->
+        c = at(row, child_idx)
+        p = at(row, parent_idx)
+
+        if blank?(c) or blank?(p) do
+          acc
+        else
+          Map.update(acc, c, [p], fn ps -> [p | ps] end)
+        end
+      end)
+    else
+      %{}
+    end
+  end
+
   # ── ISCOGroups_en.csv ───────────────────────────────────────────────────
 
   @doc false
@@ -197,13 +238,15 @@ defmodule RhoFrameworks.Import.Esco do
   # ── skills_en.csv ───────────────────────────────────────────────────────
   #
   # Filter to `conceptType == "KnowledgeSkillCompetence"` — drops the
-  # SkillGroup nodes that share the file. Join hierarchy to build
-  # `category` (L1) / `cluster` (L2). Fall back to `reuseLevel` /
-  # `"Uncategorized"` so the NOT NULL `category` constraint never trips.
+  # SkillGroup nodes that share the file. Resolve the hierarchy entry by
+  # walking the broader-relations chain up to the first ancestor present
+  # in `hierarchy`. Use that entry's L1 → `category` (with `reuseLevel` /
+  # `"Uncategorized"` fallback) and L2 → `cluster` (with `category`
+  # fallback for the small slice of orphans whose chain dead-ends).
 
   @doc false
-  @spec parse_skills(Path.t(), map()) :: [%Skill{}]
-  def parse_skills(path, hierarchy) do
+  @spec parse_skills(Path.t(), map(), map()) :: [%Skill{}]
+  def parse_skills(path, hierarchy, broader \\ %{}) do
     {headers, rows} = read_csv(path)
     idx = column_indexes(headers)
 
@@ -221,14 +264,14 @@ defmodule RhoFrameworks.Import.Esco do
       uri = at(row, uri_idx)
       name = at(row, label_idx)
       reuse = at(row, reuse_level_idx)
-      hierarchy_entry = Map.get(hierarchy, uri, %{})
+      hierarchy_entry = resolve_hierarchy_entry(uri, hierarchy, broader)
 
       category =
         Map.get(hierarchy_entry, :level_1) ||
           presence(reuse) ||
           "Uncategorized"
 
-      cluster = Map.get(hierarchy_entry, :level_2)
+      cluster = Map.get(hierarchy_entry, :level_2) || category
 
       metadata = %{
         "esco_uri" => uri,
@@ -372,6 +415,41 @@ defmodule RhoFrameworks.Import.Esco do
     |> String.split(~r/\r?\n/, trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
+  end
+
+  # Resolve a skill URI's hierarchy entry by direct lookup, then by walking
+  # the broader-relations chain breadth-first. Cap depth so a cycle (or a
+  # deep chain) can't burn time. Returns `%{}` when nothing reachable.
+  defp resolve_hierarchy_entry(uri, hierarchy, broader) do
+    case Map.fetch(hierarchy, uri) do
+      {:ok, entry} -> entry
+      :error -> walk_broader(broader, hierarchy, [uri], MapSet.new(), 15)
+    end
+  end
+
+  defp walk_broader(_broader, _hierarchy, [], _seen, _hops_left), do: %{}
+  defp walk_broader(_broader, _hierarchy, _frontier, _seen, 0), do: %{}
+
+  defp walk_broader(broader, hierarchy, frontier, seen, hops_left) do
+    {hit, next_frontier, next_seen} =
+      Enum.reduce_while(frontier, {nil, [], seen}, fn uri, {_hit, acc_frontier, acc_seen} ->
+        if MapSet.member?(acc_seen, uri) do
+          {:cont, {nil, acc_frontier, acc_seen}}
+        else
+          parents = Map.get(broader, uri, [])
+
+          case Enum.find(parents, &Map.has_key?(hierarchy, &1)) do
+            nil -> {:cont, {nil, parents ++ acc_frontier, MapSet.put(acc_seen, uri)}}
+            parent_uri -> {:halt, {Map.fetch!(hierarchy, parent_uri), [], acc_seen}}
+          end
+        end
+      end)
+
+    cond do
+      hit != nil -> hit
+      next_frontier == [] -> %{}
+      true -> walk_broader(broader, hierarchy, Enum.uniq(next_frontier), next_seen, hops_left - 1)
+    end
   end
 
   defp read_csv(path) do

@@ -2,37 +2,49 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   @moduledoc """
   Flow for creating a skill framework.
 
-  After intake the flow forks on `:choose_starting_point` (Phase 10a),
-  which asks the user (or the BAML router under `routing: :auto`) which
-  starting point to take:
+  Step 1 is `:choose_starting_point` — a single-field form that asks
+  which path to take. Its outgoing edges fan out to a path-specific
+  intake form so the user only sees the fields that path actually uses:
 
-    * **From a similar role** (`from_template_intent`) — load similar
-      roles from the org's library, let the user pick one, then
-      `pick_template (manual confirm) → save`. If no candidates exist
-      (or the user picks none), the flow bounces back to
-      `:choose_starting_point` so the user can switch to scratch.
-    * **Start from scratch** (`scratch`) — `research → generate → review
-      → confirm → proficiency → save`. The full LLM-driven path. Two
-      guards route here: `:scratch_intent` honors the explicit form
-      choice (`starting_point == "scratch"`) regardless of intake fields,
-      and the implicit `:scratch` guard catches the no-signal fallback
-      (blank domain + target_roles) for the chat-router path.
+    * **Start from scratch** (`scratch_intent` / `scratch`)
+      → `:intake_scratch` (name, description, domain, target_roles,
+      skill_count, levels) → `:research → :generate → :review → :confirm
+      → :proficiency → :save`. Full LLM-driven path.
+    * **From a similar role** (`from_template_intent`)
+      → `:intake_template` (name, description) → `:similar_roles → :pick_template
+      → :save`. If no candidates exist (or the user picks none), the
+      flow bounces back to `:choose_starting_point`.
+    * **Extend an existing framework** (`extend_existing_intent`)
+      → `:intake_extend` (name, description) → `:pick_existing_library
+      → :load_existing_library → :identify_gaps → :generate → ...`.
+    * **Merge two existing frameworks** (`merge_intent`)
+      → `:intake_merge` (name, description) → `:pick_two_libraries
+      → :diff_frameworks → :resolve_conflicts → :merge_frameworks → :save`.
 
-  `:intake` always advances to `:choose_starting_point` (no inline
-  guard); the `:scratch_intent` and `:scratch` guards live on
-  `:choose_starting_point`'s outgoing edges. The fork is `routing: :auto`
-  so the `Hybrid` policy can let the BAML router pick from chat, while
-  the wizard's `Deterministic` policy walks first-satisfied-guard.
+  The previous unified `:intake` step asked all six fields upfront then
+  only used a subset depending on the path; that caused dead-input bugs
+  (skill_count and levels silently ignored on non-scratch paths). The
+  per-path intake nodes here ask only what each path will honour.
+
+  Pre-fill from `?starting_point=...&name=...&...` URL params still
+  works because (a) the intake map is shared across steps and (b) the
+  same `@intake_param_atoms` whitelist drives `intake_from_params`.
+
+  `routing: :auto` on `:choose_starting_point` lets the `Hybrid` policy
+  use the BAML router from chat; the wizard's `Deterministic` policy
+  walks first-satisfied-guard. Each path-specific intake step uses
+  `routing: :fixed` (single outgoing edge).
 
   Each work-bearing step references a `RhoFrameworks.UseCase` module.
-  Inputs are built by `build_input/3` from the runner's `intake` map and
-  prior-node `summaries`. Anything table-shaped is read directly from
-  the Workbench inside the UseCases.
+  Inputs are built by `build_input/3` from the runner's `intake` map
+  and prior-node `summaries`. Anything table-shaped is read directly
+  from the Workbench inside the UseCases.
   """
 
   @behaviour RhoFrameworks.Flow
 
   alias Rho.Stdlib.DataTable
+  alias RhoFrameworks.MapAccess
   alias RhoFrameworks.Flows.FinalizeSkeleton
   alias RhoFrameworks.Scope
 
@@ -59,10 +71,65 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   def steps do
     [
       %{
-        id: :intake,
+        id: :choose_starting_point,
+        label: "Pick a Starting Point",
+        type: :form,
+        next: [
+          %{
+            to: :intake_extend,
+            guard: :extend_existing_intent,
+            label: "Extend an existing framework"
+          },
+          %{
+            to: :intake_merge,
+            guard: :merge_intent,
+            label: "Merge two existing frameworks"
+          },
+          %{
+            to: :intake_template,
+            guard: :from_template_intent,
+            label: "Use a similar role as a template"
+          },
+          %{
+            to: :intake_scratch,
+            guard: :scratch_intent,
+            label: "Start from scratch"
+          },
+          %{
+            to: :intake_scratch,
+            guard: :scratch,
+            label: "Start from scratch (no domain/target_roles signal)"
+          },
+          %{
+            to: :intake_scratch,
+            guard: nil,
+            label: "Start from scratch (final fallback)"
+          }
+        ],
+        routing: :auto,
+        config: %{
+          fields: [
+            %{
+              name: :starting_point,
+              label: "How would you like to start?",
+              type: :select,
+              required: true,
+              default: "from_template",
+              options: [
+                {"From a similar role", "from_template"},
+                {"Start from scratch", "scratch"},
+                {"Extend an existing framework", "extend_existing"},
+                {"Merge two existing frameworks", "merge"}
+              ]
+            }
+          ]
+        }
+      },
+      %{
+        id: :intake_scratch,
         label: "Define Framework",
         type: :form,
-        next: :choose_starting_point,
+        next: :research,
         routing: :fixed,
         config: %{
           fields: [
@@ -99,57 +166,41 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         }
       },
       %{
-        id: :choose_starting_point,
-        label: "Pick a Starting Point",
+        id: :intake_template,
+        label: "Name Your Framework",
         type: :form,
-        next: [
-          %{
-            to: :pick_existing_library,
-            guard: :extend_existing_intent,
-            label: "Extend an existing framework"
-          },
-          %{
-            to: :pick_two_libraries,
-            guard: :merge_intent,
-            label: "Merge two existing frameworks"
-          },
-          %{
-            to: :similar_roles,
-            guard: :from_template_intent,
-            label: "Look for similar existing roles to use as a template"
-          },
-          %{
-            to: :research,
-            guard: :scratch_intent,
-            label: "Start from scratch — research the domain"
-          },
-          %{
-            to: :research,
-            guard: :scratch,
-            label: "Research the domain (no seed roles supplied)"
-          },
-          %{
-            to: :similar_roles,
-            guard: nil,
-            label: "Look for similar existing roles"
-          }
-        ],
-        routing: :auto,
+        next: :similar_roles,
+        routing: :fixed,
         config: %{
           fields: [
-            %{
-              name: :starting_point,
-              label: "How would you like to start?",
-              type: :select,
-              required: true,
-              default: "from_template",
-              options: [
-                {"From a similar role", "from_template"},
-                {"Start from scratch", "scratch"},
-                {"Extend an existing framework", "extend_existing"},
-                {"Merge two existing frameworks", "merge"}
-              ]
-            }
+            %{name: :name, label: "Framework Name", type: :text, required: true},
+            %{name: :description, label: "Description", type: :textarea, required: true}
+          ]
+        }
+      },
+      %{
+        id: :intake_extend,
+        label: "Name Your Framework",
+        type: :form,
+        next: :pick_existing_library,
+        routing: :fixed,
+        config: %{
+          fields: [
+            %{name: :name, label: "Framework Name", type: :text, required: true},
+            %{name: :description, label: "Description", type: :textarea, required: true}
+          ]
+        }
+      },
+      %{
+        id: :intake_merge,
+        label: "Name Your Merged Framework",
+        type: :form,
+        next: :pick_two_libraries,
+        routing: :fixed,
+        config: %{
+          fields: [
+            %{name: :name, label: "Framework Name", type: :text, required: true},
+            %{name: :description, label: "Description", type: :textarea, required: true}
           ]
         }
       },
@@ -421,6 +472,71 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   end
 
   def build_input(_, _state, _scope), do: %{}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Smart defaults
+  # ──────────────────────────────────────────────────────────────────────
+
+  @no_proficiency_default 5
+
+  @impl true
+  @doc """
+  Pre-populate `intake.levels` for the shared `:choose_levels` step using
+  the loaded source library's modal proficiency-level count, when
+  reachable. Only kicks in for paths that have a source library (extend);
+  scratch already has the user's choice in `intake.levels` from
+  `intake_scratch`. Template/merge paths bypass `:proficiency` entirely
+  via direct `:save` edges, so they never reach `:choose_levels`.
+  """
+  def populate_intake(:choose_levels, %{intake: intake, summaries: summaries}, %Scope{} = scope) do
+    cond do
+      # Scratch path: user already picked in intake_scratch. Don't override.
+      not is_nil(get(intake, :levels)) ->
+        %{}
+
+      is_nil(scope.session_id) ->
+        %{}
+
+      true ->
+        table_name =
+          get_in(summaries, [:load_existing_library, :table_name]) ||
+            get_in(summaries, [:generate, :table_name])
+
+        case table_name && modal_level_count(scope.session_id, table_name) do
+          n when is_integer(n) -> %{levels: to_string(n)}
+          _ -> %{levels: to_string(@no_proficiency_default)}
+        end
+    end
+  end
+
+  def populate_intake(_node_id, _state, _scope), do: %{}
+
+  defp modal_level_count(session_id, table_name) do
+    case DataTable.get_rows(session_id, table: table_name) do
+      rows when is_list(rows) ->
+        rows
+        |> Enum.flat_map(fn row ->
+          case MapAccess.get(row, :proficiency_levels) do
+            list when is_list(list) and length(list) > 0 -> [length(list)]
+            _ -> []
+          end
+        end)
+        |> case do
+          [] -> nil
+          counts -> mode(counts)
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp mode(counts) do
+    counts
+    |> Enum.frequencies()
+    |> Enum.max_by(fn {_count, freq} -> freq end)
+    |> elem(0)
+  end
 
   # ──────────────────────────────────────────────────────────────────────
   # Helpers

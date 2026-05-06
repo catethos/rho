@@ -60,6 +60,9 @@ defmodule RhoFrameworks.Import.EscoTest do
 
     test "falls back to reuseLevel when the URI is missing from the hierarchy", %{parsed: parsed} do
       # `manage staff` (managea4f2c1) has no hierarchy entry but reuseLevel=occupation-specific.
+      # No broaderRelations fixture in this test bundle, so the walk returns nothing
+      # and `cluster` falls back to `category` (the orphan-safe default that lets
+      # downstream `library_schema()` row-validation accept the row).
       manage =
         Enum.find(
           parsed.skills,
@@ -67,7 +70,7 @@ defmodule RhoFrameworks.Import.EscoTest do
         )
 
       assert manage.category == "occupation-specific"
-      assert manage.cluster == nil
+      assert manage.cluster == "occupation-specific"
     end
 
     test "falls back to Uncategorized when neither hierarchy nor reuseLevel applies",

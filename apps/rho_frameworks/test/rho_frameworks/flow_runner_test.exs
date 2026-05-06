@@ -731,7 +731,7 @@ defmodule RhoFrameworks.FlowRunnerTest do
       _ = scope
     end
 
-    test "Deterministic routes :choose_starting_point→:similar_roles when starting_point is from_template",
+    test "Deterministic routes :choose_starting_point→:intake_template when starting_point is from_template",
          %{scope: scope} do
       state =
         FlowRunner.init(CreateFramework,
@@ -741,13 +741,13 @@ defmodule RhoFrameworks.FlowRunnerTest do
 
       node = FlowRunner.current_node(state)
 
-      assert {:ok, :similar_roles, _} =
+      assert {:ok, :intake_template, _} =
                FlowRunner.choose_next(CreateFramework, node, state, Deterministic)
 
       _ = scope
     end
 
-    test "Deterministic routes :choose_starting_point→:research when scratch guard fires",
+    test "Deterministic routes :choose_starting_point→:intake_scratch when scratch guard fires",
          %{scope: scope} do
       state =
         FlowRunner.init(CreateFramework,
@@ -757,13 +757,13 @@ defmodule RhoFrameworks.FlowRunnerTest do
 
       node = FlowRunner.current_node(state)
 
-      assert {:ok, :research, _} =
+      assert {:ok, :intake_scratch, _} =
                FlowRunner.choose_next(CreateFramework, node, state, Deterministic)
 
       _ = scope
     end
 
-    test "Deterministic routes :choose_starting_point→:research when scratch_intent fires even with populated intake",
+    test "Deterministic routes :choose_starting_point→:intake_scratch when scratch_intent fires even with populated intake",
          %{scope: scope} do
       state =
         FlowRunner.init(CreateFramework,
@@ -778,15 +778,16 @@ defmodule RhoFrameworks.FlowRunnerTest do
 
       node = FlowRunner.current_node(state)
 
-      # Explicit "scratch" form choice fires :scratch_intent → :research
-      # regardless of whether domain/target_roles are populated.
-      assert {:ok, :research, _} =
+      # Explicit "scratch" form choice fires :scratch_intent → :intake_scratch
+      # regardless of whether domain/target_roles are populated. The intake
+      # form then collects the path-relevant fields before :research runs.
+      assert {:ok, :intake_scratch, _} =
                FlowRunner.choose_next(CreateFramework, node, state, Deterministic)
 
       _ = scope
     end
 
-    test "Deterministic falls through to :similar_roles when no intent guard matches",
+    test "Deterministic falls through to :intake_scratch when no intent guard matches",
          %{scope: scope} do
       state =
         FlowRunner.init(CreateFramework,
@@ -802,8 +803,10 @@ defmodule RhoFrameworks.FlowRunnerTest do
       node = FlowRunner.current_node(state)
 
       # No starting_point + populated intake → no intent guard fires,
-      # implicit :scratch is also false → falls through to unguarded edge.
-      assert {:ok, :similar_roles, _} =
+      # implicit always-true :scratch wins → routes to :intake_scratch.
+      # (The unguarded fallback edge that used to point to :similar_roles
+      # was removed; the always-true :scratch guard is the catch-all now.)
+      assert {:ok, :intake_scratch, _} =
                FlowRunner.choose_next(CreateFramework, node, state, Deterministic)
 
       _ = scope
@@ -845,7 +848,7 @@ defmodule RhoFrameworks.FlowRunnerTest do
       assert input.table_name == "library:Eng"
     end
 
-    test "Deterministic routes :choose_starting_point→:pick_existing_library on extend_existing",
+    test "Deterministic routes :choose_starting_point→:intake_extend on extend_existing",
          %{scope: scope} do
       state =
         FlowRunner.init(CreateFramework,
@@ -855,7 +858,7 @@ defmodule RhoFrameworks.FlowRunnerTest do
 
       node = FlowRunner.current_node(state)
 
-      assert {:ok, :pick_existing_library, _} =
+      assert {:ok, :intake_extend, _} =
                FlowRunner.choose_next(CreateFramework, node, state, Deterministic)
 
       _ = scope
@@ -990,7 +993,7 @@ defmodule RhoFrameworks.FlowRunnerTest do
     # Phase 10c — merge_frameworks branch
     # ──────────────────────────────────────────────────────────────────
 
-    test "Deterministic routes :choose_starting_point→:pick_two_libraries on merge intent",
+    test "Deterministic routes :choose_starting_point→:intake_merge on merge intent",
          %{scope: scope} do
       state =
         FlowRunner.init(CreateFramework,
@@ -1000,7 +1003,7 @@ defmodule RhoFrameworks.FlowRunnerTest do
 
       node = FlowRunner.current_node(state)
 
-      assert {:ok, :pick_two_libraries, _} =
+      assert {:ok, :intake_merge, _} =
                FlowRunner.choose_next(CreateFramework, node, state, Deterministic)
 
       _ = scope
