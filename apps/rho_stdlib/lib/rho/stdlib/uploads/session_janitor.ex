@@ -7,7 +7,7 @@ defmodule Rho.Stdlib.Uploads.SessionJanitor do
   use GenServer
 
   alias Rho.Events.Event
-  alias Rho.Stdlib.Uploads.Server, as: Uploads
+  alias Rho.Stdlib.Uploads
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
