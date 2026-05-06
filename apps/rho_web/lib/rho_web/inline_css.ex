@@ -1034,6 +1034,56 @@ defmodule RhoWeb.InlineCSS do
     .btn-send:hover { background: var(--text-secondary); }
     .btn-send:disabled { opacity: 0.25; cursor: default; }
 
+    .chat-attach-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 4px 8px 0 8px;
+    }
+    .chat-attach-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: var(--bg-surface);
+      border: 1px solid #e0e0e0;
+      border-radius: 14px;
+      font-size: 12px;
+    }
+    .chat-attach-chip.is-error {
+      background: #fde0e0;
+      border-color: #c92a2a;
+    }
+    .chat-attach-chip.is-parsing {
+      background: #dceefb;
+      border-color: #1971c2;
+      animation: chat-attach-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes chat-attach-pulse {
+      0%, 100% { opacity: 0.85; }
+      50% { opacity: 1; }
+    }
+    .chat-attach-icon { font-size: 14px; }
+    .chat-attach-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chat-attach-progress { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .chat-attach-error { color: #c92a2a; }
+    .chat-attach-remove {
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0 2px;
+      color: var(--text-muted);
+    }
+    .chat-attach-remove:hover { color: var(--text); }
+    .chat-attach-button {
+      cursor: pointer;
+      padding: 0 8px;
+      display: inline-flex;
+      align-items: center;
+      font-size: 18px;
+    }
+
     /* Upload previews */
     .upload-previews {
       display: flex;
