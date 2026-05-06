@@ -24,6 +24,7 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   alias RhoFrameworks.UseCases.{
     GenerateFrameworkSkeletons,
     GenerateProficiency,
+    ImportFromUpload,
     LoadSimilarRoles,
     SaveFramework
   }
@@ -32,7 +33,8 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     LoadSimilarRoles => "load_similar_roles",
     GenerateFrameworkSkeletons => "generate_framework_skeletons",
     GenerateProficiency => "generate_proficiency",
-    SaveFramework => "save_framework"
+    SaveFramework => "save_framework",
+    ImportFromUpload => "import_library_from_upload"
   }
 
   @doc """
@@ -339,6 +341,64 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
 
         {:error, reason} ->
           {:error, "save_framework failed: #{inspect(reason)}"}
+      end
+    end)
+  end
+
+  # ── import_library_from_upload ─────────────────────────────────────────
+
+  tool :import_library_from_upload,
+       "Import an uploaded structured file (.xlsx/.csv) as a new skill library. " <>
+         "Pass upload_id; library_name and column mapping default to the observation's detected hints. " <>
+         "v1 supports single-library files only — multi-sheet files where each sheet is a role return an error." do
+    param(:upload_id, :string,
+      doc: "Upload handle id from list_uploads / observe_upload (e.g. upl_a1b2c3d4)"
+    )
+
+    param(:library_name, :string,
+      doc: "If omitted, uses the detected library-name column or the filename without extension."
+    )
+
+    run(fn args, ctx ->
+      scope = Scope.from_context(ctx)
+
+      input = %{
+        upload_id: args[:upload_id],
+        library_name: args[:library_name]
+      }
+
+      case ImportFromUpload.run(input, scope) do
+        {:ok, summary} ->
+          %Rho.ToolResponse{
+            text:
+              "Imported '#{summary.library_name}' — #{summary.skills_imported} skills, table '#{summary.table_name}'.",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: summary.table_name,
+                schema_key: :skill_library,
+                mode_label: "Skill Library — #{summary.library_name}",
+                rows: [],
+                skip_write?: true
+              }
+            ]
+          }
+
+        {:error, {:roles_per_sheet_unsupported_v1, sheets}} ->
+          {:error,
+           "This file has #{length(sheets)} sheets that look like roles (#{Enum.join(sheets, ", ")}). " <>
+             "v1 imports one library per file. Either flatten the sheets into one with a `Skill Library Name` column, " <>
+             "or upload each sheet as its own library."}
+
+        {:error, {:library_exists, name}} ->
+          {:error, "A library named '#{name}' already exists. Pick a different library_name."}
+
+        {:error, {:ambiguous_shape, _}} ->
+          {:error,
+           "I can't tell whether this is a single library or multiple. Please specify library_name and re-import."}
+
+        {:error, reason} ->
+          {:error, "Import failed: #{inspect(reason)}"}
       end
     end)
   end

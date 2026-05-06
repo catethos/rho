@@ -15,9 +15,12 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
 
   alias RhoFrameworks.Tools.WorkflowTools
 
+  alias Rho.Stdlib.Uploads
+
   alias RhoFrameworks.UseCases.{
     GenerateFrameworkSkeletons,
     GenerateProficiency,
+    ImportFromUpload,
     LoadSimilarRoles,
     PickTemplate,
     ResearchDomain,
@@ -107,5 +110,68 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
 
       refute_receive %LiveEvent{kind: :step_chat_clarify}, 50
     end
+  end
+
+  describe "tool_for_use_case/1 — import_library_from_upload" do
+    test "returns the tool def for ImportFromUpload" do
+      assert %{tool: %{name: "import_library_from_upload"}, execute: _} =
+               WorkflowTools.tool_for_use_case(ImportFromUpload)
+    end
+  end
+
+  describe "import_library_from_upload tool" do
+    @complete "test/fixtures/uploads/complete_framework_import.xlsx"
+
+    test "returns ToolResponse with table effect on happy path" do
+      sid = "wft_#{System.unique_integer([:positive])}"
+      # Use a non-UUID org_id to short-circuit the DB collision check in
+      # ImportFromUpload.check_no_collision/2 — same pattern as import_from_upload_test.exs.
+      org_id = "org_test_#{System.unique_integer([:positive])}"
+      on_exit(fn -> Uploads.stop(sid) end)
+
+      {:ok, _pid} = Uploads.ensure_started(sid)
+
+      src = fixture_path(@complete)
+
+      {:ok, h} =
+        Uploads.put(sid, %{
+          filename: "complete_framework_import.xlsx",
+          mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          tmp_path: src,
+          size: File.stat!(src).size
+        })
+
+      ctx = %Rho.Context{
+        agent_name: :test,
+        session_id: sid,
+        agent_id: "agent-test-1",
+        organization_id: org_id,
+        user_id: "u_test"
+      }
+
+      [tool] =
+        WorkflowTools.__tools__()
+        |> Enum.filter(&(&1.tool.name == "import_library_from_upload"))
+
+      response = tool.execute.(%{upload_id: h.id}, ctx)
+
+      assert %Rho.ToolResponse{text: text, effects: effects} = response
+      assert text =~ "Imported 'HR Manager'"
+      assert text =~ "5 skills"
+      assert Enum.any?(effects, &match?(%Rho.Effect.Table{schema_key: :skill_library}, &1))
+      assert Enum.any?(effects, &match?(%Rho.Effect.OpenWorkspace{key: :data_table}, &1))
+    end
+  end
+
+  defp fixture_path(rel) do
+    candidates = [
+      Path.expand(rel),
+      Path.expand("apps/rho_stdlib/" <> rel),
+      Path.expand("../rho_stdlib/" <> rel),
+      Path.join([__DIR__, "..", "..", "..", "..", "rho_stdlib", rel]) |> Path.expand()
+    ]
+
+    Enum.find(candidates, &File.exists?/1) ||
+      raise "Could not find fixture #{rel}; tried: #{Enum.join(candidates, ", ")}"
   end
 end
