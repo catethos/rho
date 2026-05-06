@@ -15,7 +15,8 @@ defmodule Rho.Stdlib.Application do
       {Registry, keys: :unique, name: Rho.Stdlib.DataTable.Registry},
       {DynamicSupervisor, name: Rho.Stdlib.DataTable.Supervisor, strategy: :one_for_one},
       Rho.Stdlib.DataTable.SessionJanitor,
-      Rho.Stdlib.DataTable.ActiveViewListener
+      Rho.Stdlib.DataTable.ActiveViewListener,
+      {Registry, keys: :unique, name: Rho.Stdlib.Uploads.Registry}
     ]
 
     opts = [strategy: :one_for_one, name: Rho.Stdlib.Supervisor]
