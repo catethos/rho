@@ -31,6 +31,23 @@ class IngestDocumentAction {
   format string?
 }
 
+class ListUploadsAction {
+  tool "list_uploads" @description("List files uploaded by the user in this session.")
+}
+
+class ObserveUploadAction {
+  tool "observe_upload" @description("Get a structured summary of an uploaded file: sheets, columns, sample rows, detected hints.")
+  upload_id string
+}
+
+class ReadUploadAction {
+  tool "read_upload" @description("Read rows from an uploaded structured file (Excel/CSV). Defaults: first 200 rows of first sheet.")
+  upload_id string
+  sheet string?
+  offset int?
+  limit int?
+}
+
 class ManageLibraryAction {
   tool "manage_library" @description("Skill library CRUD.")
   action string
@@ -54,6 +71,43 @@ class ForkLibraryAction {
   source_library_id string
   new_name string
   categories_json string?
+}
+
+class BrowseLibraryAction {
+  tool "browse_library" @description("Browse skills in a library or search across all libraries.")
+  library_id string?
+  library_name string?
+  query string?
+  category string?
+  status string?
+}
+
+class CombineLibrariesAction {
+  tool "combine_libraries" @description("Combine multiple libraries into one. Pass library UUIDs (NOT names) — look them up with manage_library(action: \"list\"). If a library is only in the workspace (library:<name> table) and not yet in the DB, save it first with save_framework(table: \"library:<name>\"). Without commit=true, returns a preview. With commit=true, creates the merged library.")
+  source_library_ids_json string
+  new_name string
+  description string?
+  commit bool?
+  resolutions_json string?
+}
+
+class DedupLibraryAction {
+  tool "dedup_library" @description("Deduplicate skills. Actions: scan (find dupes), merge (absorb source into target), dismiss (mark as intentionally different), report (full consolidation report).")
+  action string
+  library_id string?
+  depth string?
+  source_id string?
+  target_id string?
+  new_name string?
+  skill_a_id string?
+  skill_b_id string?
+}
+
+class LibraryVersionsAction {
+  tool "library_versions" @description("Manage library versions. Actions: list (all published versions), set_default.")
+  action string
+  library_name string?
+  library_id string?
 }
 
 class ManageRoleAction {
@@ -101,6 +155,13 @@ class SaveFrameworkAction {
   tool "save_framework" @description("Persist the framework currently in the session's library table to the database. If library_id is omitted, saves to (or creates) the org's default library.")
   library_id string?
   table string?
+}
+
+class ImportLibraryFromUploadAction {
+  tool "import_library_from_upload" @description("Import an uploaded structured file (.xlsx/.csv) as a new skill library. Pass upload_id; library_name and column mapping default to the observation's detected hints. v1 supports single-library files only — multi-sheet files where each sheet is a role return an error UNLESS you supply both `sheet` and `library_name`, which imports ONLY that sheet under that library name.")
+  upload_id string?
+  library_name string?
+  sheet string?
 }
 
 class SkillAction {
@@ -152,7 +213,7 @@ class DeleteRowsAction {
   table string?
 }
 
-function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | ManageRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
+function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ListUploadsAction | ObserveUploadAction | ReadUploadAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | BrowseLibraryAction | CombineLibrariesAction | DedupLibraryAction | LibraryVersionsAction | ManageRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ImportLibraryFromUploadAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
   client Openrouter
   prompt #"
     {{ messages }}

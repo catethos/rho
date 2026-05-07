@@ -25,6 +25,7 @@ defmodule RhoWeb.AppLive do
   alias RhoWeb.Session.SignalRouter
   alias RhoWeb.Session.Snapshot
   alias RhoWeb.Session.Threads
+  alias RhoWeb.Session.Welcome
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   # ── Mount ──────────────────────────────────────────────────────────
@@ -109,6 +110,7 @@ defmodule RhoWeb.AppLive do
 
         socket
         |> restore_from_snapshot()
+        |> Welcome.maybe_render()
         |> refresh_threads()
         |> refresh_data_table_session()
       else
@@ -1759,6 +1761,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:agents, Map.put(socket.assigns.agents, agent_id, agent_entry))
       |> assign(:agent_tab_order, socket.assigns.agent_tab_order ++ [agent_id])
       |> assign(:agent_messages, Map.put_new(socket.assigns.agent_messages, agent_id, []))
+      |> Welcome.render_for_new_agent(agent_id)
 
     {:noreply, socket}
   end

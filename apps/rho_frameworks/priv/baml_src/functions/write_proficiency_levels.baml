@@ -32,12 +32,8 @@ function WriteProficiencyLevels(category: string, levels: int, skills: string) -
     - Level 4 — Advanced: exercises judgment, mentors others.
     - Level 5 — Expert: innovates, recognized authority.
     
-    When asked for fewer than 5 levels, use these EXACT level_name values
-    (do not improvise; consistency across categories within one library
-    matters more than picking a "cleverer" name):
-    - 2 levels: Foundational, Advanced
-    - 3 levels: Foundational, Proficient, Expert
-    - 4 levels: Foundational, Proficient, Advanced, Expert
+    When asked for fewer than 5 levels, select a meaningful subset
+    (2 levels: Foundational + Advanced; 3: Foundational + Proficient + Expert).
     
     ## Quality rules
     - Each `level_description` MUST be observable — what would you literally

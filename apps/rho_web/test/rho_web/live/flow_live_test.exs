@@ -46,8 +46,8 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
 
       assert socket.assigns.flow_module == CreateFramework
-      assert length(socket.assigns.flow_steps) == 17
-      assert socket.assigns.runner.node_id == :intake
+      assert length(socket.assigns.flow_steps) == 21
+      assert socket.assigns.runner.node_id == :choose_starting_point
       assert socket.assigns.runner.intake == %{}
       assert socket.assigns.completed_steps == []
       assert socket.assigns.step_status == :idle
@@ -85,7 +85,7 @@ defmodule RhoWeb.FlowLiveTest do
   end
 
   describe "handle_event submit_form" do
-    test "intake submit advances to :choose_starting_point regardless of guards", %{
+    test "choose_starting_point submit advances to per-path intake then to next step", %{
       org: org,
       user: user
     } do
@@ -99,24 +99,33 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
       sid = socket.assigns.session_id
 
-      params = %{
-        "step_id" => "intake",
-        "name" => "Test Framework",
-        "description" => "A test description",
-        "domain" => "Software Engineering"
-      }
+      # Step 1: choose_starting_point → branches into per-path intake.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{"step_id" => "choose_starting_point", "starting_point" => "from_template"},
+          socket
+        )
 
-      {:noreply, socket} = RhoWeb.FlowLive.handle_event("submit_form", params, socket)
+      assert socket.assigns.runner.intake[:starting_point] == "from_template"
+      assert socket.assigns.runner.node_id == :intake_template
+      assert :choose_starting_point in socket.assigns.completed_steps
+
+      # Step 2: per-path intake (intake_template) captures name/description.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "intake_template",
+            "name" => "Test Framework",
+            "description" => "A test description"
+          },
+          socket
+        )
 
       assert socket.assigns.runner.intake[:name] == "Test Framework"
       assert socket.assigns.runner.intake[:description] == "A test description"
-      assert socket.assigns.runner.intake[:domain] == "Software Engineering"
-
-      # Phase 10a: intake → choose_starting_point unconditionally; the
-      # fork now lives one node downstream and waits for user input.
-      assert socket.assigns.runner.node_id == :choose_starting_point
-      assert :intake in socket.assigns.completed_steps
-      refute :similar_roles in socket.assigns.completed_steps
+      assert :intake_template in socket.assigns.completed_steps
 
       DataTable.stop(sid)
     end
@@ -135,18 +144,7 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
       sid = socket.assigns.session_id
 
-      {:noreply, socket} =
-        RhoWeb.FlowLive.handle_event(
-          "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Test Framework",
-            "description" => "A test description",
-            "domain" => "Software Engineering"
-          },
-          socket
-        )
-
+      # Step 1: choose_starting_point=from_template → :intake_template.
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
@@ -154,10 +152,21 @@ defmodule RhoWeb.FlowLiveTest do
           socket
         )
 
+      # Step 2: :intake_template captures name/description, then auto-runs
+      # :similar_roles via LoadSimilarRoles. With an empty test org it
+      # returns no matches and the runner bounces back to :choose_starting_point.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "intake_template",
+            "name" => "Test Framework",
+            "description" => "A test description"
+          },
+          socket
+        )
+
       assert socket.assigns.runner.intake[:starting_point] == "from_template"
-      # similar_roles auto-loads via LoadSimilarRoles; with an empty test
-      # org it returns no matches and the runner bounces back to
-      # :choose_starting_point.
       assert socket.assigns.runner.node_id == :choose_starting_point
       assert :similar_roles in socket.assigns.completed_steps
 
@@ -189,21 +198,7 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
       sid = socket.assigns.session_id
 
-      # Step 1: intake → choose_starting_point.
-      {:noreply, socket} =
-        RhoWeb.FlowLive.handle_event(
-          "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Mystery Framework",
-            "description" => "About something unfamiliar"
-          },
-          socket
-        )
-
-      assert socket.assigns.runner.node_id == :choose_starting_point
-
-      # Step 2: choose_starting_point=scratch + blank domain → :scratch fires.
+      # Step 1: choose_starting_point=scratch → :intake_scratch.
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
@@ -211,9 +206,23 @@ defmodule RhoWeb.FlowLiveTest do
           socket
         )
 
+      assert socket.assigns.runner.node_id == :intake_scratch
+
+      # Step 2: :intake_scratch submit → :research auto-runs.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "intake_scratch",
+            "name" => "Mystery Framework",
+            "description" => "About something unfamiliar"
+          },
+          socket
+        )
+
       assert socket.assigns.runner.node_id == :research
-      assert :intake in socket.assigns.completed_steps
       assert :choose_starting_point in socket.assigns.completed_steps
+      assert :intake_scratch in socket.assigns.completed_steps
       assert socket.assigns.research_agent_id != nil
       assert socket.assigns.step_status == :running
       assert_received {:research_spawn_called, _opts}
@@ -349,18 +358,7 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
       sid = socket.assigns.session_id
 
-      {:noreply, socket} =
-        RhoWeb.FlowLive.handle_event(
-          "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Backend PM Framework",
-            "description" => "PMs working backend",
-            "domain" => "Software"
-          },
-          socket
-        )
-
+      # Step 1: choose_starting_point=extend_existing → :intake_extend.
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
@@ -368,9 +366,21 @@ defmodule RhoWeb.FlowLiveTest do
           socket
         )
 
+      # Step 2: :intake_extend → :pick_existing_library auto-runs
+      # ListExistingLibraries; with an empty org it returns no matches and
+      # the runner bounces back to :choose_starting_point.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "intake_extend",
+            "name" => "Backend PM Framework",
+            "description" => "PMs working backend"
+          },
+          socket
+        )
+
       assert socket.assigns.runner.intake[:starting_point] == "extend_existing"
-      # ListExistingLibraries returns no matches for an empty org → wizard
-      # bounces back to :choose_starting_point.
       assert socket.assigns.runner.node_id == :choose_starting_point
       assert :pick_existing_library in socket.assigns.completed_steps
 
@@ -405,22 +415,24 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
       sid = socket.assigns.session_id
 
-      {:noreply, socket} =
-        RhoWeb.FlowLive.handle_event(
-          "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Backend PM Framework",
-            "description" => "PMs working backend",
-            "domain" => "Software"
-          },
-          socket
-        )
-
+      # Step 1: choose_starting_point=extend_existing → :intake_extend.
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
           %{"step_id" => "choose_starting_point", "starting_point" => "extend_existing"},
+          socket
+        )
+
+      # Step 2: :intake_extend → :pick_existing_library; org has a lib so
+      # the picker stays put and waits for user selection.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "intake_extend",
+            "name" => "Backend PM Framework",
+            "description" => "PMs working backend"
+          },
           socket
         )
 
@@ -532,16 +544,15 @@ defmodule RhoWeb.FlowLiveTest do
       sid = socket.assigns.session_id
 
       # Simulate that the auto router routed choose_starting_point →
-      # research, and we're now sitting at :research with the chip
-      # showing the decision.
+      # intake_extend (because intake.starting_point="extend_existing"
+      # satisfies :extend_existing_intent), and we're now sitting at
+      # :intake_extend with the chip showing the decision. The user
+      # overrides to :intake_scratch — a valid edge via the nil fallback
+      # since domain/target_roles are blank (:scratch guard fires too).
       runner =
         FlowRunner.init(CreateFramework,
-          start: :research,
-          intake: %{
-            name: "Mystery",
-            description: "Unfamiliar domain",
-            starting_point: "scratch"
-          }
+          start: :intake_extend,
+          intake: %{starting_point: "extend_existing"}
         )
 
       [csp_step] =
@@ -549,8 +560,8 @@ defmodule RhoWeb.FlowLiveTest do
 
       decision = %{
         node_id: :choose_starting_point,
-        target: :research,
-        reason: "router picked research",
+        target: :intake_extend,
+        reason: "router picked intake_extend",
         confidence: 0.9,
         allowed: csp_step.next
       }
@@ -559,7 +570,7 @@ defmodule RhoWeb.FlowLiveTest do
         Phoenix.Component.assign(socket, %{
           runner: runner,
           last_decision: decision,
-          completed_steps: [:intake, :choose_starting_point],
+          completed_steps: [:choose_starting_point],
           step_status: :idle,
           chip_expanded?: true
         })
@@ -567,15 +578,15 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "override_edge",
-          %{"node" => "choose_starting_point", "edge" => "similar_roles"},
+          %{"node" => "choose_starting_point", "edge" => "intake_scratch"},
           socket
         )
 
       # The override is recorded on the runner. Hybrid honored it during
       # the re-advance (the runner walked back to :choose_starting_point,
       # then forward via the user-chosen edge).
-      assert socket.assigns.runner.user_override[:choose_starting_point] == :similar_roles
-      assert socket.assigns.runner.node_id != :research
+      assert socket.assigns.runner.user_override[:choose_starting_point] == :intake_scratch
+      assert socket.assigns.runner.node_id != :intake_extend
       assert socket.assigns.chip_expanded? == false
 
       DataTable.stop(sid)
@@ -781,23 +792,22 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(params, %{}, socket)
       sid = socket.assigns.session_id
 
-      # walk: intake → choose_starting_point → pick_existing_library
+      # walk: choose_starting_point → intake_extend → pick_existing_library
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Extending",
-            "description" => "test",
-            "domain" => "Software"
-          },
+          %{"step_id" => "choose_starting_point", "starting_point" => "extend_existing"},
           socket
         )
 
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "choose_starting_point", "starting_point" => "extend_existing"},
+          %{
+            "step_id" => "intake_extend",
+            "name" => "Extending",
+            "description" => "test"
+          },
           socket
         )
 
@@ -835,19 +845,18 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Extending",
-            "description" => "test",
-            "domain" => "Software"
-          },
+          %{"step_id" => "choose_starting_point", "starting_point" => "extend_existing"},
           socket
         )
 
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "choose_starting_point", "starting_point" => "extend_existing"},
+          %{
+            "step_id" => "intake_extend",
+            "name" => "Extending",
+            "description" => "test"
+          },
           socket
         )
 
@@ -894,19 +903,18 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Merging",
-            "description" => "test",
-            "domain" => "Software"
-          },
+          %{"step_id" => "choose_starting_point", "starting_point" => "merge"},
           socket
         )
 
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "choose_starting_point", "starting_point" => "merge"},
+          %{
+            "step_id" => "intake_merge",
+            "name" => "Merging",
+            "description" => "test"
+          },
           socket
         )
 
@@ -945,19 +953,18 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{
-            "step_id" => "intake",
-            "name" => "Merging",
-            "description" => "test",
-            "domain" => "Software"
-          },
+          %{"step_id" => "choose_starting_point", "starting_point" => "merge"},
           socket
         )
 
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "choose_starting_point", "starting_point" => "merge"},
+          %{
+            "step_id" => "intake_merge",
+            "name" => "Merging",
+            "description" => "test"
+          },
           socket
         )
 

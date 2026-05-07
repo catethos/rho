@@ -1,15 +1,14 @@
 ---
 name: manage-frameworks
-description: Workflow for working with EXISTING saved libraries — first-turn welcome on an empty workspace, loading a library to edit, publishing a draft as a new version, and setting which version is the default
+description: Workflow for working with EXISTING saved libraries — loading a library to edit, publishing a draft as a new version, and setting which version is the default
 uses: [manage_library, load_library, save_framework, library_versions]
 ---
 
 ## Manage Frameworks Workflow
 
 This skill covers the lifecycle of libraries that already exist in the
-database: greeting the user with what they have, loading a saved library
-to edit it, publishing a draft as a new version (v2), and setting which
-version is the default.
+database: loading a saved library to edit it, publishing a draft as a
+new version (v2), and setting which version is the default.
 
 For BUILDING a new framework, use `create-framework`.
 For LOADING a built-in template (sfia_v8) or a document file, use
@@ -27,24 +26,6 @@ Three explicit user-driven beats:
 3. **Set default** — `library_versions(action: "set_default", library_id: <published-uuid>)` flips which version is returned by default. Only published versions can be default; drafts cannot.
 
 The agent NEVER calls publish or set_default automatically — both are explicit user requests.
-
-## Welcome flow (first turn, empty workspace)
-
-If the workspace has no `library:<name>` tables AND the user has not
-stated a specific task, your first action is to surface what already
-exists so the conversation has context.
-
-1. **List** — `manage_library(action: "list")`. Output looks like:
-   ```
-   - ESCO (5f7f5ad0-...) — 13939 skills, v1, immutable
-   - HR Manager (3213b761-...) — 7 skills, draft
-   ```
-2. **Summarize** — present briefly: "You have N saved libraries: <names with skill counts and version state>. I can load one to edit, build a new framework, import from a file, combine libraries, or use a template (sfia_v8). What would you like to do?"
-3. **Wait** — do not auto-load anything.
-
-Skip Welcome if the user has already stated explicit intent in their
-first message ("create a framework for X", "import this file", "set HR
-Manager v2 as default") and route to the appropriate skill or action.
 
 ## Path: Load → Edit → Save (S3)
 
@@ -102,5 +83,4 @@ Common mistakes:
 - ❌ Calling `manage_library(action: "create_draft")` before edits. `save_framework` already creates drafts automatically when needed. Manual `create_draft` only matters if the user wants to FORK the latest published version into a fresh draft without saving over an existing draft — rare in chat.
 - ❌ Calling `manage_library(action: "publish")` without explicit user request. Publishing is irreversible (the version is frozen) — always wait for the user to say "publish" / "save as v2" / "lock this in".
 - ❌ Calling `library_versions(action: "set_default")` with a library name instead of a version UUID. Look up via `library_versions(action: "list")` first.
-- ❌ On a fresh empty workspace, jumping straight to a tool call without first surfacing what the user already has via the Welcome flow.
 - ❌ Using `load_library` to load a just-generated skeleton — the skeleton rows are already in the workspace; `load_library` reads from the DB.
