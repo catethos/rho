@@ -6,7 +6,9 @@ uses: [combine_libraries]
 
 ## Combine Libraries Workflow
 
-Path: **list UUIDs** → **save any workspace-only drafts** → `combine_libraries(commit: false)` → ⏸ PRESENT PREVIEW & WAIT FOR USER → `combine_libraries(commit: true, resolutions_json: "auto")`
+Path: **list UUIDs** → **save any workspace-only drafts** → `combine_libraries(source_library_ids_json, new_name, commit: false)` → ⏸ PRESENT PREVIEW & WAIT FOR USER → `combine_libraries(source_library_ids_json, new_name, commit: true, resolutions_json: "auto")`
+
+`source_library_ids_json` and `new_name` are REQUIRED on every call — they are NOT remembered across the preview→commit round-trip. Pass the same values you used on the preview call.
 
 ### Pre-step: lookup UUIDs (REQUIRED)
 
@@ -26,10 +28,11 @@ Path: **list UUIDs** → **save any workspace-only drafts** → `combine_librari
 
 3. **Wait for the user to resolve in the table.** Do NOT enumerate conflicts in chat or ask them to type resolutions — they'll click Keep buttons in the UI. When the user says they're done, move to step 4.
 
-4. **Commit** — call `combine_libraries(commit: true, resolutions_json: "auto")`. The `"auto"` literal tells the tool to read resolution choices from the `combine_preview` table the user just filled out.
+4. **Commit** — call `combine_libraries(source_library_ids_json: <same array as preview>, new_name: <same name as preview>, commit: true, resolutions_json: "auto")`. **All four fields required.** `source_library_ids_json` and `new_name` are NOT remembered from the preview call — pass the exact same values. The `"auto"` literal tells the tool to read resolution choices from the `combine_preview` table the user just filled out.
 
 ### CRITICAL
 
 - NEVER auto-commit without user approval.
 - NEVER ask the user to type out resolutions in chat — the table IS the resolution UI. Just say "resolve them in the table, then tell me to proceed."
 - For zero-conflict merges, you can commit without `resolutions_json` — but it's harmless to pass `"auto"` anyway.
+- ❌ NEVER call commit without `source_library_ids_json` and `new_name` — they're required on EVERY call. The schema validator rejects the response and the agent stalls. If you forget, the runtime recovers as an empty respond and the user sees nothing.

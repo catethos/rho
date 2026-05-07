@@ -35,28 +35,60 @@
     system_prompt: """
     Skill framework editor.
 
-    For ANY framework request, FIRST call `skill(name: ...)` before any
-    other tool. Pick the right skill — each is the source of truth for
-    its workflow:
+    ## First turn — Welcome on an empty workspace
 
-      - `create-framework` — building a new framework from scratch / template / extension
-      - `import-framework` — importing from an uploaded file
+    If this is the first turn AND no `library:<name>` tables are open AND
+    the user has not stated a specific framework task (e.g. they said
+    "hi", "hey", "hello", "what can you do", or anything similarly
+    vague), do NOT respond with a generic greeting. Instead:
+
+    1. FIRST call `skill(name: "manage-frameworks")` — its body documents
+       the Welcome flow.
+    2. THEN call `manage_library(action: "list")` to see what saved
+       libraries the user already has.
+    3. THEN respond with a short summary of their saved libraries plus
+       the capability list and ask what they want to do.
+
+    Never write a generic "What would you like to do?" response without
+    first surfacing what's already in the user's org — that wastes the
+    user's first impression.
+
+    ## Skill picker
+
+    For ANY specific framework request, FIRST call `skill(name: ...)`
+    before any other tool. Pick the right skill — each is the source of
+    truth for its workflow:
+
+      - `create-framework` — building a NEW framework (from scratch, seeded by similar role profiles, or inspired by an existing library as reference)
+      - `import-framework` — LOADING a built-in template (sfia_v8) or a PDF/Word document into the workspace as your starting library
+      - `manage-frameworks` — working with already-saved libraries: first-turn welcome on empty workspace, load to edit, publish a draft as a new version, set default version
       - `consolidate-framework` — deduplicating skills WITHIN one library
-      - `combine-libraries` — merging TWO OR MORE separate libraries into one new library
-      - `role-profiles` — managing role-skill mappings with required levels
+      - `combine-libraries` — merging TWO OR MORE separate saved libraries into one new library (UUIDs only)
+      - `role-profiles` — managing role-skill mappings with required levels (uses an existing library)
 
     The distinction matters: `consolidate-framework` operates on a single
     library's internal duplicates. `combine-libraries` is for taking two
     or more existing libraries and producing one merged library.
+    `import-framework` LOADS data; `create-framework` Path C uses an
+    existing library as REFERENCE without loading.
 
-    Library lifecycle:
+    Library lifecycle (draft → publish → default):
       - `library:<name>` table = live working state during creation/editing
-      - DB library record = persisted on `save_framework` (auto-creates by name)
-      - `load_library` reads from DB — only use to load an EXISTING saved library
+      - `save_framework` always writes to a DRAFT (creates one if missing,
+        or auto-creates a new draft if only published versions exist).
+        Published versions are FROZEN and never modified by save.
+      - `manage_library(action: "publish", library_id: <draft-uuid>)`
+        freezes a draft as the next version (v2, v3, ...). Explicit user
+        request only.
+      - `library_versions(action: "set_default", library_id: <published-uuid>)`
+        sets which version is returned by default. Only published versions
+        can be default. Explicit user request only.
+      - `load_library` resolves: draft if exists, else default published,
+        else latest published. Only use to load an EXISTING saved library.
 
     Never call `load_library` or `manage_library(action: "create")` to verify
     or set up just-generated skeletons. The table is already populated;
-    `save_framework` creates the library record on save.
+    `save_framework` creates the library record (as a draft) on save.
 
     Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
     After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
@@ -158,22 +190,23 @@
     plugins: [
       {:data_table, deferred: [:describe_table, :replace_all, :list_tables]},
       :skills,
-      {RhoFrameworks.Plugin,
-       deferred: [
-         :browse_library,
-         :diff_library,
-         # combine_libraries + dedup_library MUST be visible — skills
-         # reference them but typed_structured strips deferred tools
-         # from the BAML schema, making them uncallable. See
-         # rho_baml/schema_writer.ex:76.
-         :library_versions,
-         :analyze_role,
-         :org_view,
-         :score_role,
-         :lens_dashboard,
-         :add_proficiency_levels,
-         :clarify
-       ]},
+      {
+        RhoFrameworks.Plugin,
+        # Tools listed here are stripped from the BAML schema by
+        # typed_structured (see rho_baml/schema_writer.ex:76) and
+        # CANNOT be called by the agent. Keep this list minimal —
+        # tools the chat agent needs (combine_libraries, dedup_library,
+        # browse_library, library_versions) MUST be visible.
+        deferred: [
+          :diff_library,
+          :analyze_role,
+          :org_view,
+          :score_role,
+          :lens_dashboard,
+          :add_proficiency_levels,
+          :clarify
+        ]
+      },
       :uploads,
       :doc_ingest,
       {:multi_agent, only: [:delegate_task, :await_task], visible_agents: [:data_extractor]}

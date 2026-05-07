@@ -466,11 +466,13 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     lines =
       Enum.map(matches, fn r ->
         name = Map.get(r, :name) || Map.get(r, "name")
+        id = Map.get(r, :id) || Map.get(r, "id")
         family = Map.get(r, :role_family) || Map.get(r, "role_family") || "?"
         count = Map.get(r, :skill_count) || Map.get(r, "skill_count") || 0
-        "- #{name} (#{family}, #{count} skills)"
+        "- #{name} (#{id}) — #{family}, #{count} skills"
       end)
 
-    "Found #{length(matches)} similar role(s):\n" <> Enum.join(lines, "\n")
+    "Found #{length(matches)} similar role(s). Pass the UUID in parens to manage_role(action: \"view\", role_profile_id: ...) to read each role's skills.\n" <>
+      Enum.join(lines, "\n")
   end
 end
