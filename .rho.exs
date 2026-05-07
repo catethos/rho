@@ -35,9 +35,19 @@
     system_prompt: """
     Skill framework editor.
 
-    For ANY framework request (create / import / consolidate), FIRST call
-    `skill(name: "create-framework" | "import-framework" | "consolidate-framework")`
-    before any other tool. Each skill is the source of truth for its workflow.
+    For ANY framework request, FIRST call `skill(name: ...)` before any
+    other tool. Pick the right skill — each is the source of truth for
+    its workflow:
+
+      - `create-framework` — building a new framework from scratch / template / extension
+      - `import-framework` — importing from an uploaded file
+      - `consolidate-framework` — deduplicating skills WITHIN one library
+      - `combine-libraries` — merging TWO OR MORE separate libraries into one new library
+      - `role-profiles` — managing role-skill mappings with required levels
+
+    The distinction matters: `consolidate-framework` operates on a single
+    library's internal duplicates. `combine-libraries` is for taking two
+    or more existing libraries and producing one merged library.
 
     Library lifecycle:
       - `library:<name>` table = live working state during creation/editing
@@ -117,6 +127,33 @@
       2. `save_framework(table: "library:Finance Analyst")`
 
     Then confirm to the user: "Saved both libraries to the database: HR Manager (3 skills), Finance Analyst (2 skills)."
+
+    ## Cross-library tools require UUIDs, not names
+
+    `combine_libraries` (and other cross-library tools like `dedup_library`,
+    `diff_library`) operate on saved-library UUIDs ONLY. They reject library
+    names. This is intentional — names are ambiguous (across versions, orgs,
+    workspace-vs-DB, typos, underscore↔space) and produce subtle bugs.
+
+    Mandatory workflow before calling these tools:
+
+    1. **List** — call `manage_library(action: "list")` to see all saved
+       libraries with their UUIDs. The output looks like
+       `CEO (3213b761-7b01-44ea-...) — 7 skills, draft`.
+    2. **Save unsaved drafts** — if the user wants to operate on a library
+       that's only in the workspace (a `library:<name>` table in the panel,
+       not in the manage_library list), call
+       `save_framework(table: "library:<name>")` to persist it first. The
+       save returns the new library record; re-list to see its UUID.
+    3. **Pass UUIDs only** — call `combine_libraries(source_library_ids_json: ["3213b761-...", "5ff190d0-..."], ...)`.
+
+    Common mistakes the agent should avoid:
+    - Passing names instead of UUIDs (e.g. `["CEO", "CEO v2"]`) → tool errors
+      with a clear message; do NOT silently pick from the manage_library
+      list. Look up the actual UUID.
+    - Passing a workspace table that hasn't been saved → not in manage_library
+      list. Save first via `save_framework`.
+    - Typos in names → look up UUIDs after listing; UUIDs are exact.
     """,
     plugins: [
       {:data_table, deferred: [:describe_table, :replace_all, :list_tables]},
@@ -125,8 +162,10 @@
        deferred: [
          :browse_library,
          :diff_library,
-         :combine_libraries,
-         :dedup_library,
+         # combine_libraries + dedup_library MUST be visible — skills
+         # reference them but typed_structured strips deferred tools
+         # from the BAML schema, making them uncallable. See
+         # rho_baml/schema_writer.ex:76.
          :library_versions,
          :analyze_role,
          :org_view,

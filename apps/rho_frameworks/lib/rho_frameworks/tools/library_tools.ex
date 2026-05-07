@@ -352,11 +352,15 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   # ── combine_libraries ──────────────────────────────────────────────────
 
   tool :combine_libraries,
-       "Combine multiple libraries. Without commit=true, returns a preview. " <>
-         "With commit=true, creates the merged library (requires resolved conflicts)." do
+       "Combine multiple libraries into one. Pass library UUIDs (NOT names) — " <>
+         "look them up with manage_library(action: \"list\"). If a library is only " <>
+         "in the workspace (library:<name> table) and not yet in the DB, save it " <>
+         "first with save_framework(table: \"library:<name>\"). " <>
+         "Without commit=true, returns a preview. With commit=true, creates the merged library." do
     param(:source_library_ids_json, :string,
       required: true,
-      doc: ~s(JSON array of library IDs)
+      doc:
+        ~s(JSON array of library UUIDs. Look up via manage_library. NOT names — names are rejected.)
     )
 
     param(:new_name, :string, required: true, doc: "Name for the combined library")
@@ -367,18 +371,41 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     run(fn args, ctx ->
       raw = args[:source_library_ids_json] || "[]"
 
-      case Jason.decode(raw) do
-        {:ok, ids} when is_list(ids) and ids != [] ->
-          if args[:commit] do
-            do_combine_commit(ids, args, ctx)
-          else
-            do_combine_preview(ids, args, ctx)
-          end
+      with {:ok, refs} when is_list(refs) and refs != [] <- Jason.decode(raw),
+           {:ok, ids} <- validate_uuids(refs) do
+        if args[:commit] do
+          do_combine_commit(ids, args, ctx)
+        else
+          do_combine_preview(ids, args, ctx)
+        end
+      else
+        {:error, {:not_uuids, bad}} ->
+          {:error,
+           "These are not UUIDs: #{Enum.join(bad, ", ")}. " <>
+             "combine_libraries requires saved-library UUIDs, not names. " <>
+             "Run manage_library(action: \"list\") to see UUIDs of saved libraries. " <>
+             "If a library is only in the workspace (e.g. \"library:CEO\" table) " <>
+             "and not yet saved, call save_framework(table: \"library:<name>\") first."}
 
         _ ->
-          {:error, "Provide a JSON array of at least 1 library ID."}
+          {:error, "Provide a JSON array of at least 1 library UUID."}
       end
     end)
+  end
+
+  # Strict UUID validation. Returns {:ok, [uuid]} or {:error, {:not_uuids, [bad]}}.
+  # No name fallback — names are ambiguous (across orgs, versions, workspace-vs-DB)
+  # and lead to subtle bugs (typos, underscore↔space, template misroute).
+  defp validate_uuids(refs) do
+    {valid, invalid} =
+      Enum.split_with(refs, fn ref ->
+        is_binary(ref) and match?({:ok, _}, Ecto.UUID.cast(ref))
+      end)
+
+    case invalid do
+      [] -> {:ok, valid}
+      _ -> {:error, {:not_uuids, invalid}}
+    end
   end
 
   defp do_combine_preview(ids, args, ctx) do
@@ -815,7 +842,17 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   end
 
   defp template_key?(nil), do: false
-  defp template_key?(name), do: String.contains?(name, "_") and not String.contains?(name, " ")
+
+  defp template_key?(name) when is_binary(name) do
+    # Only treat as a template key if a matching template file actually exists.
+    # Earlier heuristic (underscore + no space) misclassified user-named
+    # libraries like "CEO_Merged", "CEO_v2", routing them to the template
+    # loader and erroring with "Template 'X' not found".
+    templates_dir = Application.app_dir(:rho_frameworks, "priv/templates")
+    File.exists?(Path.join(templates_dir, "#{name}.json"))
+  end
+
+  defp template_key?(_), do: false
 
   defp maybe_opt(opts, _key, nil), do: opts
   defp maybe_opt(opts, _key, ""), do: opts

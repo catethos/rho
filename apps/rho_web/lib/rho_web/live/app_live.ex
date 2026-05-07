@@ -569,6 +569,7 @@ defmodule RhoWeb.AppLive do
           connected={@connected}
           threads={@threads}
           active_thread_id={@active_thread_id}
+          files_parsing={@files_parsing}
         />
 
         <.debug_panel
@@ -3240,6 +3241,7 @@ defmodule RhoWeb.AppLive do
   attr(:connected, :boolean, default: true)
   attr(:threads, :list, default: [])
   attr(:active_thread_id, :string, default: nil)
+  attr(:files_parsing, :map, default: %{})
 
   defp chat_side_panel(assigns) do
     panel_class =
@@ -3282,13 +3284,14 @@ defmodule RhoWeb.AppLive do
       <div class="chat-input-area">
         <div :if={@uploads.files.entries != [] or @files_parsing != %{}} class="chat-attach-strip">
           <%= for entry <- @uploads.files.entries do %>
-            <div class={["chat-attach-chip", entry.errors != [] && "is-error"]}>
+            <% entry_errors = upload_errors(@uploads.files, entry) %>
+            <div class={["chat-attach-chip", entry_errors != [] && "is-error"]}>
               <span class="chat-attach-icon"><%= file_icon(entry.client_type, entry.client_name) %></span>
               <span class="chat-attach-name"><%= entry.client_name %></span>
               <%= if entry.progress < 100 do %>
                 <span class="chat-attach-progress"><%= entry.progress %>%</span>
               <% end %>
-              <%= for err <- entry.errors do %>
+              <%= for err <- entry_errors do %>
                 <span class="chat-attach-error"><%= upload_error_msg(err) %></span>
               <% end %>
               <button type="button" phx-click="cancel_file" phx-value-ref={entry.ref}
@@ -3304,7 +3307,7 @@ defmodule RhoWeb.AppLive do
             </div>
           <% end %>
         </div>
-        <form id="chat-input-form" phx-submit="send_message" class="chat-input-form">
+        <form id="chat-input-form" phx-submit="send_message" phx-change="validate_upload" class="chat-input-form">
           <label class="chat-attach-button" title="Attach .xlsx / .csv">
             📎
             <.live_file_input upload={@uploads.files} class="sr-only" />

@@ -19,9 +19,16 @@ defmodule Rho.Stdlib.Uploads.Observer.Hints do
     ],
     category_column: ["category", "domain", "area", "group"],
     cluster_column: ["cluster", "sub-category", "sub-domain", "subgroup"],
-    level_column: ["level", "proficiency level", "tier"],
-    level_name_column: ["level name", "tier name"],
-    level_description_column: ["level description", "tier description", "indicator"]
+    level_column: ["level", "lvl", "lv", "proficiency level", "proficiency", "tier", "rank"],
+    level_name_column: ["level name", "lvl name", "tier name", "rank name", "proficiency name"],
+    level_description_column: [
+      "level description",
+      "lvl description",
+      "tier description",
+      "indicator",
+      "behavior",
+      "behaviour"
+    ]
   }
 
   @doc """

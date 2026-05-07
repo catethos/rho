@@ -104,7 +104,21 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
   defp framework_name(input, scope) do
     explicit = Map.get(input, :name) || Map.get(input, "name")
 
-    if blank?(explicit), do: meta_field(scope, :name), else: explicit
+    cond do
+      not blank?(explicit) ->
+        explicit
+
+      # If the caller passed a `library:<name>` table (the convention used by
+      # load_library + import_library_from_upload), derive the name from the
+      # table. Otherwise multi-library imports get collapsed under whatever's
+      # in `meta`, falling back to the org's default library — that's the bug
+      # the file-upload pipeline kept hitting.
+      true ->
+        case Map.get(input, :table_name) || Map.get(input, "table_name") do
+          "library:" <> name when name != "" -> name
+          _ -> meta_field(scope, :name)
+        end
+    end
   end
 
   defp framework_description(input, scope) do

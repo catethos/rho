@@ -139,6 +139,20 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   defp format_incoming_message(message, _from), do: message
 
+  # Some delegated/spawned agents have multi_agent in their plugin set
+  # (which already provides Finish via tools/2), but the spawn paths
+  # historically appended Finish unconditionally — producing a duplicate.
+  # Only add Finish when it isn't already present in the collected tools.
+  defp ensure_finish_tool(tools) do
+    finish_def = Rho.Stdlib.Tools.Finish.tool_def()
+
+    if Enum.any?(tools, &(&1.tool.name == finish_def.tool.name)) do
+      tools
+    else
+      tools ++ [finish_def]
+    end
+  end
+
   defp build_role_hint(mount_opts, self_name) do
     visible = Keyword.get(mount_opts, :visible_agents)
 
@@ -735,7 +749,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     if task_prompt do
       # Resolve tools once from context — lite workers reuse them directly
       tools = Rho.PluginRegistry.collect_tools(ctx)
-      tools = tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
+      tools = ensure_finish_tool(tools)
 
       agent_id = Primary.new_agent_id(parent_agent_id)
       parent_worker_pid = Worker.whereis(parent_agent_id)
@@ -1271,7 +1285,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
       }
 
       mount_tools = Rho.PluginRegistry.collect_tools(tool_context)
-      all_tools = mount_tools ++ [Rho.Stdlib.Tools.Finish.tool_def()]
+      all_tools = ensure_finish_tool(mount_tools)
 
       {:ok,
        %{
