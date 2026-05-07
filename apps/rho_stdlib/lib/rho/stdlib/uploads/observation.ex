@@ -17,7 +17,6 @@ defmodule Rho.Stdlib.Uploads.Observation do
 
   @type hints :: %{
           library_name_column: String.t() | nil,
-          role_column: String.t() | nil,
           skill_name_column: String.t() | nil,
           skill_description_column: String.t() | nil,
           category_column: String.t() | nil,

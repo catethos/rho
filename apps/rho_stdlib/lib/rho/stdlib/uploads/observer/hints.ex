@@ -7,7 +7,9 @@ defmodule Rho.Stdlib.Uploads.Observer.Hints do
 
   @aliases %{
     library_name_column: ["skill library name", "library name", "library", "framework name"],
-    role_column: ["role", "role name", "job role", "position"],
+    # role_column removed in v1 — detection without write-through to
+    # role_profile_schema is silent demotion. Restore in v1.5 alongside
+    # Shape A multi-target import (library:<name> + role_profile:<role>).
     skill_name_column: ["skill name", "skill", "competency", "competence"],
     skill_description_column: [
       "skill description",
