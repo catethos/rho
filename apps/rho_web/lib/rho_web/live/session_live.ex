@@ -316,7 +316,7 @@ defmodule RhoWeb.SessionLive do
             {:ok, {File.read!(path), entry.client_type || "image/png"}}
           end)
 
-        SessionCore.save_avatar(binary, media_type)
+        SessionCore.save_user_avatar(socket, binary, media_type)
         data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
         assign(socket, :user_avatar, data_uri)
       else
@@ -748,6 +748,24 @@ defmodule RhoWeb.SessionLive do
 
   def handle_info({:data_table_refresh, table_name}, socket) do
     {:noreply, refresh_data_table_active(socket, table_name)}
+  end
+
+  # User clicked "Done — Seed Framework" in the role_candidates table.
+  # Mirror app_live: synthesize a user message that triggers the agent
+  # to call seed_framework_from_roles(from_selected_candidates: "true").
+  def handle_info({:role_candidates_done}, socket) do
+    sid = socket.assigns[:session_id]
+
+    if is_binary(sid) do
+      content =
+        "I've finished selecting role candidates in the role_candidates tab. " <>
+          "Combine them into a new framework using `seed_framework_from_roles` " <>
+          "with `from_selected_candidates: \"true\"`. Pick a sensible name based on the picks."
+
+      SessionCore.send_message(socket, content)
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:data_table_switch_tab, name}, socket) do

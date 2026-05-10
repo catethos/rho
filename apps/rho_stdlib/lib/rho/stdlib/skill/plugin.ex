@@ -4,9 +4,18 @@ defmodule Rho.Stdlib.Skill.Plugin do
 
   Skill names are inlined into the tool's parameter `@desc` in the BAML
   schema (following the GenBaml pattern), so no separate prompt section is
-  needed. The LLM sees available skills directly in the schema line:
+  needed for the menu. The LLM sees available skills directly in the
+  schema line:
 
       | skill(name: string @desc(create-framework, import-framework, ...))
+
+  ## Preloading
+
+  Pass `preload: ["<skill-name>", ...]` in plugin opts to render those
+  skills' bodies into the system prompt up-front. This skips the LLM
+  round-trip of `skill(name: "...")` for the most common workflow.
+  Preloaded skills are removed from the `skill` tool's `@desc` menu so
+  the LLM doesn't redundantly call it.
 
   Skill discovery and parsing live on `Rho.Stdlib.Skill.Loader` / `Rho.Skill`.
   """
@@ -16,20 +25,60 @@ defmodule Rho.Stdlib.Skill.Plugin do
   alias Rho.Stdlib.Skill.Loader
 
   @impl Rho.Plugin
-  def tools(_opts, %{workspace: workspace} = _context) when is_binary(workspace) do
+  def tools(opts, %{workspace: workspace} = _context) when is_binary(workspace) do
+    preload = preload_names(opts)
     skills = Loader.discover(workspace)
-    if skills == [], do: [], else: [skill_tool(workspace, skills)]
+    callable = Enum.reject(skills, &(String.downcase(&1.name) in preload))
+
+    cond do
+      skills == [] -> []
+      callable == [] -> []
+      true -> [skill_tool(workspace, skills, callable)]
+    end
   end
 
   def tools(_opts, _context), do: []
 
-  # No prompt_sections — skill names are inlined into the tool's
-  # parameter @desc via the BAML schema, following the GenBaml pattern.
+  @impl Rho.Plugin
+  def prompt_sections(opts, %{workspace: workspace} = _ctx) when is_binary(workspace) do
+    preload = preload_names(opts)
+
+    if preload == [] do
+      []
+    else
+      workspace
+      |> Loader.discover()
+      |> Enum.filter(&(String.downcase(&1.name) in preload))
+      |> Enum.map(&preloaded_section/1)
+    end
+  end
+
+  def prompt_sections(_opts, _context), do: []
+
+  defp preload_names(opts) do
+    opts
+    |> Keyword.get(:preload, [])
+    |> Enum.map(&String.downcase/1)
+  end
+
+  defp preloaded_section(skill) do
+    body =
+      "Preloaded — do NOT call `skill(name: \"#{skill.name}\")` for this; the workflow is below.\n\n" <>
+        skill.body
+
+    %Rho.PromptSection{
+      key: :"skill_#{skill.name}",
+      heading: "Skill: #{skill.name}",
+      body: body,
+      kind: :reference,
+      priority: :normal
+    }
+  end
 
   # --- Tool definition ---
 
-  defp skill_tool(workspace, skills) do
-    skill_names = Enum.map_join(skills, ", ", & &1.name)
+  defp skill_tool(workspace, all_skills, callable_skills) do
+    skill_names = Enum.map_join(callable_skills, ", ", & &1.name)
 
     %{
       tool:
@@ -45,7 +94,7 @@ defmodule Rho.Stdlib.Skill.Plugin do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args, ctx -> execute_skill_expand(args, workspace, skills, ctx) end
+      execute: fn args, ctx -> execute_skill_expand(args, workspace, all_skills, ctx) end
     }
   end
 

@@ -20,7 +20,7 @@ defmodule RhoFrameworks.LLM.SuggestSkills do
   non-empty) before persisting.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [existing: :string, intake: :string, n: :int]
 
   @schema Zoi.struct(__MODULE__, %{

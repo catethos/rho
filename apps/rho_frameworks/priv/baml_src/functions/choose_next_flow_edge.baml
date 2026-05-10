@@ -1,11 +1,11 @@
 class ChooseNextFlowEdgeOutput {
-  confidence float @description("Confidence in the choice, 0.0 (low) to 1.0 (high)")
-  next_edge string @description("The id of the chosen edge — must exactly match one of the allowed edge ids")
   reasoning string @description("One-sentence justification for the choice")
+  next_edge string @description("The id of the chosen edge — must exactly match one of the allowed edge ids")
+  confidence float @description("Confidence in the choice, 0.0 (low) to 1.0 (high)")
 }
 
 function ChooseNextFlowEdge(current_label: string, allowed: string, summary: string) -> ChooseNextFlowEdgeOutput {
-  client OpenRouter
+  client OpenRouterHaiku
   prompt #"
     {{ _.role("system") }}
     You are a flow router. A user is moving through a multi-step workflow,

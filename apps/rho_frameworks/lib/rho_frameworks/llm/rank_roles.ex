@@ -8,7 +8,7 @@ defmodule RhoFrameworks.LLM.RankRoles do
   Replaces the `ReqLLM.generate_object` call in `RhoFrameworks.Roles.rank_similar_via_llm/3`.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [query: :string, role_list: :string, limit: :int]
 
   @schema Zoi.struct(__MODULE__, %{

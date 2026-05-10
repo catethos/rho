@@ -49,7 +49,7 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
             group_by_library(handle, obs, raw_rows)
         end
 
-      import_groups(groups, obs, handle, scope)
+      import_groups(groups, obs, scope)
     end
   end
 
@@ -139,10 +139,10 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
 
   # --- Import each group, aborting on first error ---
 
-  defp import_groups(groups, obs, handle, scope) do
+  defp import_groups(groups, obs, scope) do
     {completed, result} =
       Enum.reduce_while(groups, {[], :ok}, fn {library_name, group_rows}, {done, _} ->
-        case import_one(library_name, group_rows, obs, handle, scope) do
+        case import_one(library_name, group_rows, obs, scope) do
           {:ok, summary} ->
             {:cont, {done ++ [summary], :ok}}
 
@@ -165,11 +165,11 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
     end
   end
 
-  defp import_one(library_name, group_rows, obs, handle, scope) do
+  defp import_one(library_name, group_rows, obs, scope) do
     with :ok <- check_no_collision(scope, library_name),
          table_name <- Editor.table_name(library_name),
          :ok <- ensure_table(scope.session_id, table_name),
-         {:ok, rows} <- build_rows(group_rows, obs.hints, handle, library_name),
+         {:ok, rows} <- build_rows(group_rows, obs.hints, library_name),
          {:ok, _} <- Workbench.replace_rows(scope, rows, table: table_name) do
       {:ok,
        %{
@@ -217,11 +217,11 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
 
   # --- Row building (takes pre-filtered rows for one library) ---
 
-  defp build_rows(rows_for_library, hints, handle, library_name) do
+  defp build_rows(rows_for_library, hints, library_name) do
     rows =
       rows_for_library
       |> Enum.group_by(&row_skill_key(&1, hints))
-      |> Enum.map(fn {_key, group} -> build_skill_row(group, hints, handle) end)
+      |> Enum.map(fn {_key, group} -> build_skill_row(group, hints) end)
       |> Enum.reject(&is_nil/1)
 
     # Refuse to silently import zero rows — a 'success' message
@@ -237,14 +237,14 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
     Map.get(raw, hints.skill_name_column)
   end
 
-  defp build_skill_row(group, hints, handle) do
+  defp build_skill_row(group, hints) do
     first = hd(group)
 
     skill_name = Map.get(first, hints.skill_name_column)
-    if skill_name in [nil, ""], do: nil, else: do_build(group, hints, handle, skill_name, first)
+    if skill_name in [nil, ""], do: nil, else: do_build(group, hints, skill_name, first)
   end
 
-  defp do_build(group, hints, handle, skill_name, first) do
+  defp do_build(group, hints, skill_name, first) do
     category = pick(first, hints.category_column, "Uncategorized")
     cluster = pick(first, hints.cluster_column, category)
     description = pick(first, hints.skill_description_column, "")
@@ -276,8 +276,7 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
       skill_name: skill_name,
       skill_description: description,
       proficiency_levels: proficiency_levels,
-      _source: "upload",
-      _reason: "imported from #{handle.filename} (#{handle.id})"
+      _source: "upload"
     }
   end
 

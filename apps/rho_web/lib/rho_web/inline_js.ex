@@ -149,6 +149,156 @@ defmodule RhoWeb.InlineJS do
         }
       },
 
+      WelcomeTypewriter: {
+        mounted() {
+          window.__rhoWelcomeShown = window.__rhoWelcomeShown || {};
+          var key = this.el.id;
+          var raw = this.el.getAttribute("data-md") || "";
+          var html;
+          if (window.marked) {
+            html = window.marked.parse(raw, { breaks: true });
+            html = window.DOMPurify ? DOMPurify.sanitize(html) : html;
+          } else {
+            html = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          }
+
+          // Already played in this tab — render finished state and bail.
+          if (window.__rhoWelcomeShown[key]) {
+            this.el.innerHTML = html;
+            var card0 = this.el.closest(".welcome-card");
+            if (card0) card0.classList.add("welcome-already-shown");
+            return;
+          }
+
+          var src = document.createElement("div");
+          src.innerHTML = html;
+
+          this._timer = null;
+          this.el.innerHTML = "";
+
+          // Build an action queue. Element opens are queued but not emitted
+          // until the first character inside them is reached, so list bullets
+          // (and any other element-rendered chrome) appear in sync with their
+          // first letter rather than popping in upfront as empty shells.
+          var actions = [];
+          var pending = [];
+
+          function attrsOf(el) {
+            var out = [];
+            for (var i = 0; i < el.attributes.length; i++) {
+              out.push([el.attributes[i].name, el.attributes[i].value]);
+            }
+            return out;
+          }
+
+          (function walk(srcNode) {
+            for (var i = 0; i < srcNode.childNodes.length; i++) {
+              var s = srcNode.childNodes[i];
+              if (s.nodeType === 3) {
+                var text = s.textContent;
+                if (!text || !/\S/.test(text)) continue;
+                while (pending.length) {
+                  var p = pending.shift();
+                  p.emitted = true;
+                  actions.push(p);
+                }
+                var textRef = { node: null };
+                actions.push({ kind: "text-init", ref: textRef });
+                for (var j = 0; j < text.length; j++) {
+                  actions.push({ kind: "char", ref: textRef, ch: text[j] });
+                }
+              } else if (s.nodeType === 1) {
+                var openAction = {
+                  kind: "open",
+                  tag: s.nodeName,
+                  attrs: attrsOf(s),
+                  emitted: false
+                };
+                pending.push(openAction);
+                walk(s);
+                var stillPending = pending.indexOf(openAction);
+                if (stillPending !== -1) {
+                  pending.splice(stillPending, 1);
+                } else if (openAction.emitted) {
+                  actions.push({ kind: "close" });
+                }
+              }
+            }
+          })(src);
+
+          this._actions = actions;
+          this._idx = 0;
+          this._stack = [this.el];
+
+          this._caret = document.createElement("span");
+          this._caret.className = "welcome-caret";
+          this.el.appendChild(this._caret);
+
+          this._tick();
+        },
+        _consume(a) {
+          var top = this._stack[this._stack.length - 1];
+          if (a.kind === "open") {
+            var el = document.createElement(a.tag);
+            for (var i = 0; i < a.attrs.length; i++) {
+              el.setAttribute(a.attrs[i][0], a.attrs[i][1]);
+            }
+            // Insert before caret so caret stays at the visible tail
+            if (this._caret && this._caret.parentNode === top) {
+              top.insertBefore(el, this._caret);
+            } else {
+              top.appendChild(el);
+            }
+            this._stack.push(el);
+          } else if (a.kind === "close") {
+            this._stack.pop();
+            // Move caret back up into the now-current parent
+            var parent = this._stack[this._stack.length - 1];
+            if (this._caret && parent) parent.appendChild(this._caret);
+          } else if (a.kind === "text-init") {
+            var t = document.createTextNode("");
+            if (this._caret && this._caret.parentNode === top) {
+              top.insertBefore(t, this._caret);
+            } else {
+              top.appendChild(t);
+            }
+            a.ref.node = t;
+          }
+        },
+        _tick() {
+          var self = this;
+          while (this._idx < this._actions.length && this._actions[this._idx].kind !== "char") {
+            this._consume(this._actions[this._idx++]);
+          }
+          if (this._idx >= this._actions.length) {
+            if (this._caret && this._caret.parentNode) {
+              this._caret.parentNode.removeChild(this._caret);
+            }
+            var card = this.el.closest(".welcome-card");
+            if (card) card.classList.add("welcome-typed");
+            window.__rhoWelcomeShown = window.__rhoWelcomeShown || {};
+            window.__rhoWelcomeShown[this.el.id] = true;
+            return;
+          }
+          var entry = this._actions[this._idx++];
+          var node = entry.ref.node;
+          if (node.appendData) node.appendData(entry.ch);
+          else node.textContent += entry.ch;
+          var feed = this.el.closest(".chat-feed");
+          if (feed) feed.scrollTop = feed.scrollHeight;
+          var ch = entry.ch;
+          var delay;
+          if (ch === " ") delay = 2;
+          else if (ch === "\n") delay = 20;
+          else if (".,;:!?".indexOf(ch) >= 0) delay = 30;
+          else delay = 3 + Math.random() * 5;
+          this._timer = setTimeout(function() { self._tick(); }, delay);
+        },
+        destroyed() {
+          if (this._timer) clearTimeout(this._timer);
+        }
+      },
+
       JsonPretty: {
         mounted() {
           this.render();

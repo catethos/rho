@@ -1,7 +1,7 @@
 ---
 name: create-framework
-description: Workflow for creating a NEW skill framework — from scratch with intake, seeded by similar role profiles, or inspired by an existing library
-uses: [manage_role, load_similar_roles, generate_framework_skeletons, generate_proficiency, save_framework, browse_library, manage_library]
+description: Workflow for creating a NEW skill framework — from scratch with intake, seeded by similar role profiles, inspired by an existing library, or composed by unioning skills from named roles in a library
+uses: [manage_role, analyze_role, load_similar_roles, generate_framework_skeletons, generate_proficiency, save_framework, seed_framework_from_roles, browse_library, manage_library]
 ---
 
 ## Create Skill Framework Workflow
@@ -20,13 +20,18 @@ first or comes after the user has seen candidate options.
 - **Path A — From scratch** (no existing inspiration). Signals: user names
   a role/domain but not any inspiration source ("build a framework for
   Risk Analyst", "create a PM framework").
-- **Path B — Seeded by similar role profiles**. Signals: user names a
-  role/domain AND points at existing role profiles, an org library, ESCO,
-  O*NET, or "similar roles in our org" ("Risk Analyst using ESCO",
-  "framework for PM using our existing libraries").
+- **Path B — Seeded by similar role profiles**. Signals: user wants the
+  LLM to *generate* a framework using picked role profiles as inspiration
+  ("build a Risk Analyst framework, use similar roles as inspiration").
+  The picks are seed text; the LLM expands on them.
 - **Path C — Inspired by an existing library**. Signals: user names a
   specific library as REFERENCE only ("based on SFIA", "like our Backend
   Engineering framework but for PMs", "inspired by AICB").
+- **Path D — Compose from named roles in a library**. Signals: user
+  names ≥1 specific roles AND a specific library to draw from, and wants
+  the *exact* skills those roles use ("combine Risk Analyst and Compliance
+  Officer from ESCO", "build a framework from these two ESCO occupations").
+  Direct clone — no LLM generation.
 
 Multi-framework variant (user names multiple roles like "Risk Analyst,
 Data Scientist, Data Engineer"): each role becomes its OWN library.
@@ -110,6 +115,21 @@ first and then call the tool. Pick the tool action directly.
 2. Ask any minimal clarifications AFTER you've shown the user the
    reference patterns and they've agreed with your approach.
 
+### For Path D (compose from named roles in a library)
+
+No intake interrogation. The user has already named the roles and the
+library — that's all you need to start. The first action is to resolve
+the library UUID, then run the per-role searches. Pick `manage_library`
+or `analyze_role` directly as the first action, not a `respond` ask.
+
+**Critical: one action per turn.** The typed_structured strategy emits
+ONE action per turn. `respond` ENDS the turn — emit a `respond` to
+acknowledge ("Let me search for those roles first") and the turn closes
+before the next tool fires; the user sees a stalled chat. To narrate,
+use `think` (which does NOT end the turn) and follow with the tool on
+the next turn. To skip narration entirely, just emit the tool action
+directly — the user will see the tool call render in the chat.
+
 ## Phase 3 — Execute the path
 
 The step-by-step for each path. For Path B and C, you've already
@@ -157,6 +177,74 @@ Phase 2 already gave a brief confirmation. Continue from there:
 5. **Generate skeleton with seed** — `generate_framework_skeletons(name, description, similar_role_skills: <formatted block summarizing the reference patterns and any specific skill names you want carried over>)`.
 6. Continue with steps 2–4 of Path A (review → generate proficiency → save).
 
+### Path D — Compose from named roles in a library
+
+When the user names specific role(s) AND a specific library to draw from
+("combine Risk Analyst and Compliance Officer from ESCO into one
+framework"), bypass LLM generation and use the literal-clone path. The
+result is a new library populated with the deduplicated union of those
+roles' skills, with full descriptions and proficiency_levels carried
+over verbatim.
+
+1. **Resolve the library UUID** — call `manage_library(action: "list")`
+   if you don't already have it. The user named a library by name (e.g.
+   "ESCO"); the library_id parameter on the next step requires its UUID.
+2. **Find all roles in ONE call** — call
+   `analyze_role(action: "find_similar", queries_json: "[\"<role-1>\", \"<role-2>\", ...]", library_id: "<library-uuid>")`.
+   The `queries_json` param accepts a JSON array of role names and runs
+   one library-scoped search per name. **Results are written to the
+   `role_candidates` data-table tab, NOT enumerated in chat.** The tool
+   response carries only the per-query counts. The user reviews the
+   full candidate list (grouped by query) in the UI and checks the rows
+   they want to use. ALWAYS prefer one multi-query call over multiple
+   single-query calls — one tool call eliminates the inter-call stall
+   window where the agent might narrate via `respond` and accidentally
+   end the turn.
+3. **Wait for the user's selection.** Tell them how many candidates
+   landed per query and ask them to check the rows they want in the
+   `role_candidates` tab, then click the **"✓ Done — Seed Framework"**
+   button on the table toolbar (or reply with "seed" in chat). The
+   button click synthesizes a user message that brings you back into
+   the loop, so you do not need to keep polling. Do NOT enumerate
+   candidates in chat — the table is the source of truth and the
+   picker UI. If the user names roles directly without checking ("use
+   the Risk Analyst one"), you can pre-fill via explicit UUIDs in step
+   4 instead of waiting. After a successful seed the `role_candidates`
+   tab is dropped automatically, so the workspace stops showing a
+   stale picker.
+4. **Seed the new framework** — call
+   `seed_framework_from_roles(name: "<framework-name>",
+   from_selected_candidates: "true", description: "<optional>")`. The
+   tool reads the user's checked rows from the `role_candidates` table
+   and unions those roles' skills with **exact-id dedup**: when the
+   same skill is referenced by multiple picked roles, it lands once.
+   The response lists the actual skills that overlapped (or "all
+   distinct" if none did). No semantic dedup runs here — for a curated
+   source like ESCO, every distinct ESCO skill is intentionally
+   distinct, so cosine/heuristic detection adds noise rather than
+   signal.
+
+   Alternative: pass `role_profile_ids_json: "[\"<A>\", \"<B>\"]"`
+   directly when the user has named specific UUIDs, e.g. they said "use
+   #1 from each query without checking the boxes."
+5. **Confirm and offer next steps.** Relay the merge count to the user.
+   Then offer two follow-ups depending on what they want:
+   - **Save now** — call `save_framework(table: "library:<name>")` to
+     persist any further edits. (The seed tool already persisted the
+     unioned skills, so this is a no-op when the user hasn't edited.)
+   - **Semantic review** — only if the user wants it, call
+     `dedup_library(library_id: "<id>")` to open a duplicate-review
+     tab with cosine-similarity candidates and a cluster summary. They
+     edit `resolution` cells in the table; `save_framework` then
+     applies the picks and persists. Don't volunteer this for
+     ESCO-sourced libraries — it's almost always noise there.
+
+Path D vs Path B in one line: Path D copies the actual skills literally;
+Path B uses LLM generation seeded by the picks (more skills, possibly
+restructured, but creative output). Use D when the user says "exactly
+these roles' skills" or "combine"; use B when they say "based on" or
+"inspired by" with intent to expand.
+
 ## Rules
 
 - 8–12 skills per framework, 3–6 MECE categories, 1–3 clusters each.
@@ -177,3 +265,8 @@ Phase 2 already gave a brief confirmation. Continue from there:
 - ❌ `await_all` after `generate_proficiency` — the chat-side `generate_proficiency` already blocks until every category writer completes. Calling `await_all` afterward sends an empty `agent_ids` list and errors.
 - ❌ Using `query_table` / `describe_table` to "verify" what was just generated — the user sees the table directly. Trust the tool's row-count response.
 - ❌ For Path B: saving each picked role profile as its own library before comparing. Role profiles are READ via `manage_role(view)` and curated in chat; the comparison is the agent's reasoning, not a tool call.
+- ❌ Misrouting Path D as Path B. When the user names ≥1 specific roles AND a specific library to draw from ("combine A and B from ESCO", "Risk Analyst and Compliance Officer in ESCO"), use Path D (`analyze_role` with `library_id` then `seed_framework_from_roles`). Path B's `load_similar_roles` is org-wide (no library scope) and ends in LLM generation, not a literal skill clone — wrong tool for this intent.
+- ❌ For Path D: omitting `library_id` on `analyze_role(find_similar)`. Without it the search is org-wide and may return roles with skills from other libraries, polluting the union. Always pass `library_id: "<uuid>"` when the user named a library.
+- ❌ For Path D: passing role NAMES to `seed_framework_from_roles`. The tool requires UUIDs (in `role_profile_ids_json`) — or use `from_selected_candidates: "true"` to read the user's checkbox picks from the `role_candidates` table.
+- ❌ For Path D: calling `analyze_role(find_similar)` once per role name in sequence (`query: "Risk Analyst"` then `query: "Compliance Officer"`). That introduces a turn boundary between each call where the agent often narrates via `respond` and accidentally ends the turn. Use `queries_json: "[\"Risk Analyst\", \"Compliance Officer\"]"` to do all the searches in one call.
+- ❌ For Path D: enumerating the role candidates in chat after `analyze_role(find_similar)`. The candidates already landed in the `role_candidates` data-table tab where the user can sort, scan, and check rows. Listing them in chat is redundant and (when there are 10+ matches per query) overwhelming. Just announce the counts ("5 matches for Risk Analyst, 3 for Compliance Officer — pick the rows you want") and wait.

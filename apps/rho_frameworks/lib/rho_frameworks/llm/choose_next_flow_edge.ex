@@ -14,7 +14,7 @@ defmodule RhoFrameworks.LLM.ChooseNextFlowEdge do
   and converting via `String.to_existing_atom/1`.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [current_label: :string, allowed: :string, summary: :string]
 
   @schema Zoi.struct(__MODULE__, %{

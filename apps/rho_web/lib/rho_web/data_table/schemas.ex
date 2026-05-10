@@ -42,6 +42,12 @@ defmodule RhoWeb.DataTable.Schemas do
   def resolve(view_key, _table_name) when view_key in [:combine_conflicts, "combine_conflicts"],
     do: combine_conflicts()
 
+  def resolve(view_key, _table_name) when view_key in [:dedup_preview, "dedup_preview"],
+    do: dedup_preview()
+
+  def resolve(view_key, _table_name) when view_key in [:role_candidates, "role_candidates"],
+    do: role_candidates()
+
   def resolve(nil, table_name) when is_binary(table_name) do
     by_table_name(table_name)
   end
@@ -56,6 +62,8 @@ defmodule RhoWeb.DataTable.Schemas do
   defp by_table_name("library"), do: skill_library()
   defp by_table_name("role_profile"), do: role_profile()
   defp by_table_name("combine_preview"), do: combine_conflicts()
+  defp by_table_name("dedup_preview"), do: dedup_preview()
+  defp by_table_name("role_candidates"), do: role_candidates()
   defp by_table_name(_), do: generic()
 
   @doc "Skill library editing: structured skills with nested proficiency levels."
@@ -163,6 +171,104 @@ defmodule RhoWeb.DataTable.Schemas do
           editable: false,
           type: :action,
           css_class: "dt-col-action"
+        }
+      ]
+    }
+  end
+
+  @doc """
+  Within-library duplicate review: cluster + side-by-side skill pairs
+  + resolution column. Mirrors `combine_conflicts` shape; the extra
+  `cluster` column carries the LLM-summarized theme label so users can
+  group rows by topic before reviewing.
+  """
+  def dedup_preview do
+    %Schema{
+      title: "Review Duplicates",
+      empty_message: "No duplicate candidates — your library is clean",
+      group_by: [:cluster],
+      show_id: false,
+      columns: [
+        %Column{
+          key: :cluster,
+          label: "Cluster",
+          editable: false,
+          css_class: "dt-col-cluster"
+        },
+        %Column{
+          key: :confidence,
+          label: "Match",
+          editable: false,
+          css_class: "dt-col-confidence"
+        },
+        %Column{
+          key: :skill_a_name,
+          label: "Skill A",
+          editable: false,
+          css_class: "dt-col-skill-a"
+        },
+        %Column{
+          key: :skill_a_description,
+          label: "Desc A",
+          editable: false,
+          css_class: "dt-col-desc-a"
+        },
+        %Column{
+          key: :skill_b_name,
+          label: "Skill B",
+          editable: false,
+          css_class: "dt-col-skill-b"
+        },
+        %Column{
+          key: :skill_b_description,
+          label: "Desc B",
+          editable: false,
+          css_class: "dt-col-desc-b"
+        },
+        %Column{
+          key: :resolution,
+          label: "Action",
+          editable: false,
+          type: :action,
+          css_class: "dt-col-action"
+        }
+      ]
+    }
+  end
+
+  @doc """
+  Candidate-role picker: search results from `analyze_role(find_similar)`,
+  grouped by query. The user checks rows via the existing checkbox column;
+  downstream tools (`seed_framework_from_roles(from_selected_candidates: true)`,
+  `manage_role(action: "clone")`) read the selection and act on the picked
+  role_ids.
+  """
+  def role_candidates do
+    %Schema{
+      title: "Candidate Roles",
+      empty_message: "No candidate roles — try a broader query",
+      group_by: [:query],
+      show_id: false,
+      columns: [
+        %Column{key: :rank, label: "#", editable: false, css_class: "dt-col-rank"},
+        %Column{key: :role_name, label: "Role", editable: false, css_class: "dt-col-role"},
+        %Column{
+          key: :role_family,
+          label: "Family",
+          editable: false,
+          css_class: "dt-col-family"
+        },
+        %Column{
+          key: :seniority_label,
+          label: "Level",
+          editable: false,
+          css_class: "dt-col-level"
+        },
+        %Column{
+          key: :skill_count,
+          label: "Skills",
+          editable: false,
+          css_class: "dt-col-skill-count"
         }
       ]
     }

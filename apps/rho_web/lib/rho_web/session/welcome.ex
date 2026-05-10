@@ -96,7 +96,7 @@ defmodule RhoWeb.Session.Welcome do
     msg = %{
       id: "welcome_#{System.unique_integer([:positive])}",
       role: :assistant,
-      type: :text,
+      type: :welcome,
       content: render_text(libraries),
       agent_id: agent_id
     }

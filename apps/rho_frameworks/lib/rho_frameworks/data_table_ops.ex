@@ -7,8 +7,8 @@ defmodule RhoFrameworks.DataTableOps do
        `Rho.Stdlib.DataTable.Server` can stamp the coarse `:data_table`
        invalidation event.
     2. Calls the underlying `Rho.Stdlib.DataTable` mutation.
-    3. Stamps `_source` (and optional `_reason`) onto inserted rows so
-       the renderer can show provenance icons without a side channel.
+    3. Stamps `_source` onto inserted rows so the renderer can show
+       provenance icons without a side channel.
     4. Emits a richer `:framework_mutation` event carrying `op`,
        `table`, `payload`, plus `source`/`reason` from the scope.
   """
@@ -50,12 +50,10 @@ defmodule RhoFrameworks.DataTableOps do
     end
   end
 
-  @doc "Stamp `_source` (and optional `_reason`) onto a row map."
+  @doc "Stamp `_source` onto a row map."
   @spec stamp(map(), Scope.t()) :: map()
-  def stamp(row, %Scope{source: source, reason: reason}) when is_map(row) do
-    row
-    |> put_if_absent(:_source, source_to_string(source))
-    |> put_if_absent(:_reason, reason)
+  def stamp(row, %Scope{source: source}) when is_map(row) do
+    put_if_absent(row, :_source, source_to_string(source))
   end
 
   @doc "Stamp every row in a list."

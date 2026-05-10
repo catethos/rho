@@ -3,7 +3,7 @@ class SemanticDuplicatesOutput {
 }
 
 function SemanticDuplicates(focal: string, candidates: string) -> SemanticDuplicatesOutput {
-  client OpenRouter
+  client OpenRouterHaiku
   prompt #"
     {{ _.role("system") }}
     You are a competency framework expert. You judge whether two skill

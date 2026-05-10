@@ -10,7 +10,7 @@ defmodule RhoFrameworks.LLM.IdentifyGaps do
   output stays small.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [
       framework_name: :string,
       framework_description: :string,

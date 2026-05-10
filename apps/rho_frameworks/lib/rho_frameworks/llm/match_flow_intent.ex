@@ -57,7 +57,7 @@ defmodule RhoFrameworks.LLM.MatchFlowIntent do
   policy.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [message: :string, known_flows: :string]
 
   @schema Zoi.struct(__MODULE__, %{

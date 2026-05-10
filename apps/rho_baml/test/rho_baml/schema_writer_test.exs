@@ -133,7 +133,7 @@ defmodule RhoBaml.SchemaWriterTest do
       assert baml =~ ~s|  tool "respond" @description("Reply directly to the user.|
 
       assert baml =~
-               ~s|  tool "think" @description("Record an internal reasoning step without external action.")|
+               ~s|  tool "think" @description("Narrate progress or reason about the next step|
 
       assert baml =~ ~s|  tool "bash" @description("Run a shell command")|
     end

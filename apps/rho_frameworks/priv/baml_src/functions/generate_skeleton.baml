@@ -14,7 +14,7 @@ class GenerateSkeletonOutput {
 }
 
 function GenerateSkeleton(name: string, description: string, target_roles: string, seeds: string, research: string, existing_skills: string, gaps: string, skill_count: string) -> GenerateSkeletonOutput {
-  client OpenRouter
+  client OpenRouterHaiku
   prompt #"
     {{ _.role("system") }}
     You are a competency framework architect. Given an intake and any

@@ -554,18 +554,18 @@ defmodule Rho.Stdlib.Plugins.DataTable do
         table = args[:table] || @default_table
         changes_raw = args[:changes_json] || "[]"
 
-        changes =
-          case Jason.decode(changes_raw) do
-            {:ok, list} when is_list(list) -> list
-            _ -> []
-          end
+        case Jason.decode(changes_raw) do
+          {:ok, changes} when is_list(changes) ->
+            case DataTable.update_cells(session_id, changes, table: table) do
+              :ok -> {:ok, "Updated #{length(changes)} cell(s)"}
+              {:error, reason} -> {:error, "update_cells failed: #{inspect(reason)}"}
+            end
 
-        case DataTable.update_cells(session_id, changes, table: table) do
-          :ok ->
-            {:ok, "Updated #{length(changes)} cell(s)"}
+          {:ok, _other} ->
+            {:error, "changes_json must be a JSON array of change objects"}
 
-          {:error, reason} ->
-            {:error, "update_cells failed: #{inspect(reason)}"}
+          {:error, %Jason.DecodeError{} = err} ->
+            {:error, "changes_json is not valid JSON: #{Exception.message(err)}"}
         end
       end
     }
@@ -797,22 +797,21 @@ defmodule Rho.Stdlib.Plugins.DataTable do
         table = args[:table] || @default_table
         rows_raw = args[:rows_json] || "[]"
 
-        rows =
-          case Jason.decode(rows_raw) do
-            {:ok, list} when is_list(list) -> list
-            _ -> []
-          end
+        case Jason.decode(rows_raw) do
+          {:ok, []} ->
+            {:error, "rows_json was an empty array — nothing to add"}
 
-        if rows == [] do
-          {:error, "No valid rows to add. Ensure rows_json is a valid JSON array."}
-        else
-          case DataTable.add_rows(session_id, rows, table: table) do
-            {:ok, inserted} ->
-              {:ok, "Added #{length(inserted)} row(s)"}
+          {:ok, rows} when is_list(rows) ->
+            case DataTable.add_rows(session_id, rows, table: table) do
+              {:ok, inserted} -> {:ok, "Added #{length(inserted)} row(s)"}
+              {:error, reason} -> {:error, "add_rows failed: #{inspect(reason)}"}
+            end
 
-            {:error, reason} ->
-              {:error, "add_rows failed: #{inspect(reason)}"}
-          end
+          {:ok, _other} ->
+            {:error, "rows_json must be a JSON array of row objects"}
+
+          {:error, %Jason.DecodeError{} = err} ->
+            {:error, "rows_json is not valid JSON: #{Exception.message(err)}"}
         end
       end
     }
@@ -896,18 +895,18 @@ defmodule Rho.Stdlib.Plugins.DataTable do
         table = args[:table] || @default_table
         rows_raw = args[:rows_json] || "[]"
 
-        rows =
-          case Jason.decode(rows_raw) do
-            {:ok, list} when is_list(list) -> list
-            _ -> []
-          end
+        case Jason.decode(rows_raw) do
+          {:ok, rows} when is_list(rows) ->
+            case DataTable.replace_all(session_id, rows, table: table) do
+              {:ok, inserted} -> {:ok, "Replaced table with #{length(inserted)} row(s)"}
+              {:error, reason} -> {:error, "replace_all failed: #{inspect(reason)}"}
+            end
 
-        case DataTable.replace_all(session_id, rows, table: table) do
-          {:ok, inserted} ->
-            {:ok, "Replaced table with #{length(inserted)} row(s)"}
+          {:ok, _other} ->
+            {:error, "rows_json must be a JSON array of row objects"}
 
-          {:error, reason} ->
-            {:error, "replace_all failed: #{inspect(reason)}"}
+          {:error, %Jason.DecodeError{} = err} ->
+            {:error, "rows_json is not valid JSON: #{Exception.message(err)}"}
         end
       end
     }

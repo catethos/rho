@@ -32,12 +32,6 @@ defmodule RhoFrameworks.DataTableSchemas do
           type: :string,
           required?: false,
           doc: "Provenance: user/flow/agent"
-        },
-        %Column{
-          name: :_reason,
-          type: :string,
-          required?: false,
-          doc: "Optional mutation rationale"
         }
       ],
       children_key: :proficiency_levels,
@@ -87,15 +81,94 @@ defmodule RhoFrameworks.DataTableSchemas do
           type: :string,
           required?: false,
           doc: "Provenance: user/flow/agent"
-        },
-        %Column{
-          name: :_reason,
-          type: :string,
-          required?: false,
-          doc: "Optional mutation rationale"
         }
       ],
       key_fields: [:skill_a_id, :skill_b_id]
+    }
+  end
+
+  @doc """
+  Schema for the `"dedup_preview"` table: candidate duplicate pairs WITHIN
+  a single library, surfaced for human review. Mirrors `combine_preview`
+  shape (same `resolution` semantics, same UI rendering) plus a `cluster`
+  column that an LLM-based summarizer fills with theme labels so users
+  can navigate large pair sets by topic.
+  """
+  def dedup_preview_schema do
+    %Schema{
+      name: "dedup_preview",
+      mode: :strict,
+      columns: [
+        %Column{
+          name: :cluster,
+          type: :string,
+          required?: false,
+          doc: "Theme label assigned by the cluster summarizer (e.g. 'risk concepts')"
+        },
+        %Column{name: :category, type: :string, required?: false, doc: "Shared category"},
+        %Column{name: :confidence, type: :string, required?: true, doc: "high/medium/low"},
+        %Column{
+          name: :cosine_distance,
+          type: :string,
+          required?: false,
+          doc: "Embedding cosine distance, 0.0 = identical"
+        },
+        %Column{name: :skill_a_id, type: :string, required?: true},
+        %Column{name: :skill_a_name, type: :string, required?: true},
+        %Column{name: :skill_a_description, type: :string, required?: false},
+        %Column{name: :skill_b_id, type: :string, required?: true},
+        %Column{name: :skill_b_name, type: :string, required?: true},
+        %Column{name: :skill_b_description, type: :string, required?: false},
+        %Column{
+          name: :resolution,
+          type: :string,
+          required?: false,
+          doc: "merge_a/merge_b/keep_both/unresolved"
+        },
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        }
+      ],
+      key_fields: [:skill_a_id, :skill_b_id]
+    }
+  end
+
+  @doc """
+  Schema for the `"role_candidates"` table: search-result candidates from
+  `analyze_role(find_similar)`. Each row is one candidate role profile,
+  grouped by the query that produced it. Users select rows via the
+  data-table UI's checkbox column; downstream tools (e.g.
+  `seed_framework_from_roles(from_selected_candidates: true)`) read the
+  selection and act on the picked role_ids.
+  """
+  def role_candidates_schema do
+    %Schema{
+      name: "role_candidates",
+      mode: :strict,
+      columns: [
+        %Column{
+          name: :query,
+          type: :string,
+          required?: true,
+          doc: "The find_similar query this candidate matched"
+        },
+        %Column{name: :rank, type: :integer, required?: true, doc: "1-based rank within query"},
+        %Column{name: :role_id, type: :string, required?: true, doc: "Role profile UUID"},
+        %Column{name: :role_name, type: :string, required?: true},
+        %Column{name: :role_family, type: :string, required?: false},
+        %Column{name: :seniority_label, type: :string, required?: false},
+        %Column{name: :skill_count, type: :integer, required?: false},
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        }
+      ],
+      key_fields: [:query, :role_id]
     }
   end
 
@@ -145,12 +218,6 @@ defmodule RhoFrameworks.DataTableSchemas do
           type: :string,
           required?: false,
           doc: "Provenance: user/flow/agent"
-        },
-        %Column{
-          name: :_reason,
-          type: :string,
-          required?: false,
-          doc: "Optional mutation rationale"
         }
       ],
       key_fields: [:skill_name]
@@ -191,12 +258,6 @@ defmodule RhoFrameworks.DataTableSchemas do
           type: :string,
           required?: false,
           doc: "Provenance: user/flow/agent"
-        },
-        %Column{
-          name: :_reason,
-          type: :string,
-          required?: false,
-          doc: "Optional mutation rationale"
         }
       ],
       key_fields: [:source, :fact]
@@ -227,12 +288,6 @@ defmodule RhoFrameworks.DataTableSchemas do
           type: :string,
           required?: false,
           doc: "Provenance: user/flow/agent"
-        },
-        %Column{
-          name: :_reason,
-          type: :string,
-          required?: false,
-          doc: "Optional mutation rationale"
         }
       ],
       key_fields: [:name]

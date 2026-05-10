@@ -16,7 +16,7 @@ defmodule RhoFrameworks.LLM.GenerateSkeleton do
   model leaves it empty when no research is supplied.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [
       name: :string,
       description: :string,

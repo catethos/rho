@@ -30,6 +30,8 @@ defmodule RhoFrameworks.Workbench do
   @role_profile_table "role_profile"
   @research_notes_table "research_notes"
   @combine_preview_table "combine_preview"
+  @dedup_preview_table "dedup_preview"
+  @role_candidates_table "role_candidates"
 
   @max_proficiency_level 5
   @min_proficiency_level 0
@@ -254,6 +256,189 @@ defmodule RhoFrameworks.Workbench do
       nil -> {:error, {:library_not_found, library_id}}
     end
   end
+
+  # --- Within-library dedup preview ------------------------------------
+
+  @doc """
+  Detect duplicate-skill candidates within a single library and write
+  them to the session's `dedup_preview` named table for review.
+
+  Mirrors `diff_frameworks/3` for the in-library case. The user resolves
+  rows via the `resolution` cell in the LV data-table UI; the resolutions
+  are applied on `save_framework` (see `RhoFrameworks.UseCases.SaveFramework`).
+
+  Options:
+    * `:depth` — `:standard` (default) or `:deep` (engages BAML semantic
+      verifier — currently unused in production per the 2026-04-29 eval).
+    * `:summarize` — bool, default `true`. When `true` and pairs are
+      found, calls `RhoFrameworks.LLM.SummarizeDuplicates` for cluster
+      labels + a summary digest. LLM failure is non-fatal — the table
+      still gets written without `cluster` labels and `summary` is `nil`.
+
+  Returns `{:ok, %{table_name, pair_count, summary, clusters}}`. When
+  `pair_count` is 0, the table is still ensured (empty) so downstream
+  reads don't crash; `summary` is `nil`.
+  """
+  @spec write_dedup_preview(Scope.t(), String.t(), keyword()) ::
+          {:ok,
+           %{
+             table_name: String.t(),
+             pair_count: non_neg_integer(),
+             summary: String.t() | nil,
+             clusters: list()
+           }}
+          | {:error, term()}
+  def write_dedup_preview(%Scope{} = scope, library_id, opts \\ [])
+      when is_binary(library_id) do
+    with :ok <- ensure_library_exists(scope.organization_id, library_id) do
+      depth = Keyword.get(opts, :depth, :standard)
+      summarize? = Keyword.get(opts, :summarize, true)
+
+      candidates = LibraryCtx.find_duplicates(library_id, depth: depth)
+
+      with :ok <-
+             DataTable.ensure_table(
+               scope.session_id,
+               @dedup_preview_table,
+               DataTableSchemas.dedup_preview_schema()
+             ) do
+        case candidates do
+          [] ->
+            with {:ok, _} <- replace_rows(scope, [], table: @dedup_preview_table) do
+              {:ok,
+               %{
+                 table_name: @dedup_preview_table,
+                 pair_count: 0,
+                 summary: nil,
+                 clusters: []
+               }}
+            end
+
+          pairs ->
+            descriptions = library_descriptions_map(library_id)
+            indexed_rows = Enum.with_index(pairs, 1)
+
+            {clusters, summary} =
+              if summarize? do
+                summarize_pairs(indexed_rows, library_id)
+              else
+                {[], nil}
+              end
+
+            cluster_lookup = build_cluster_lookup(clusters)
+
+            rows =
+              Enum.map(indexed_rows, fn {pair, idx} ->
+                dedup_pair_to_row(pair, descriptions, Map.get(cluster_lookup, idx))
+              end)
+
+            with {:ok, _} <- replace_rows(scope, rows, table: @dedup_preview_table) do
+              {:ok,
+               %{
+                 table_name: @dedup_preview_table,
+                 pair_count: length(pairs),
+                 summary: summary,
+                 clusters: clusters
+               }}
+            end
+        end
+      end
+    end
+  end
+
+  defp library_descriptions_map(library_id) do
+    LibraryCtx.list_skills(library_id)
+    |> Map.new(fn skill -> {skill.id, skill.description || ""} end)
+  end
+
+  defp dedup_pair_to_row(candidate, descriptions, cluster_label) do
+    %{
+      cluster: cluster_label || "",
+      category: candidate.skill_a.category || candidate.skill_b.category || "",
+      confidence: Atom.to_string(candidate.confidence),
+      cosine_distance:
+        case Map.get(candidate, :cosine_distance) do
+          nil -> ""
+          d when is_float(d) -> Float.to_string(Float.round(d, 4))
+          other -> to_string(other)
+        end,
+      skill_a_id: candidate.skill_a.id,
+      skill_a_name: candidate.skill_a.name,
+      skill_a_description: Map.get(descriptions, candidate.skill_a.id, ""),
+      skill_b_id: candidate.skill_b.id,
+      skill_b_name: candidate.skill_b.name,
+      skill_b_description: Map.get(descriptions, candidate.skill_b.id, ""),
+      resolution: "unresolved"
+    }
+  end
+
+  defp build_cluster_lookup(clusters) do
+    Enum.reduce(clusters, %{}, fn cluster, acc ->
+      label = Map.get(cluster, :label) || Map.get(cluster, "label") || ""
+      indices = Map.get(cluster, :pair_indices) || Map.get(cluster, "pair_indices") || []
+
+      Enum.reduce(indices, acc, fn idx, inner ->
+        Map.put(inner, idx, label)
+      end)
+    end)
+  end
+
+  # Format the indexed pair list for the LLM and call the summarizer.
+  # Catches every failure — LLM is best-effort; without it we still have
+  # a usable review table, just without cluster labels.
+  defp summarize_pairs(indexed_pairs, library_id) do
+    pairs_text =
+      Enum.map_join(indexed_pairs, "\n", fn {p, idx} ->
+        "#{idx}. [#{p.confidence}] #{p.skill_a.name} ↔ #{p.skill_b.name}" <>
+          maybe_cat(p.skill_a.category)
+      end)
+
+    # Look up name without requiring org_id — the caller has already
+    # validated org access via ensure_library_exists/2.
+    library = Repo.get(RhoFrameworks.Frameworks.Library, library_id)
+
+    library_context =
+      case library do
+        %{name: name} -> "Library: #{name}"
+        _ -> "Library: #{library_id}"
+      end
+
+    try do
+      case RhoFrameworks.LLM.SummarizeDuplicates.call(%{
+             pairs: pairs_text,
+             library_context: library_context
+           }) do
+        {:ok, %{clusters: clusters, summary_text: summary}} ->
+          {clusters_to_maps(clusters), summary}
+
+        {:ok, %{"clusters" => clusters, "summary_text" => summary}} ->
+          {clusters_to_maps(clusters), summary}
+
+        _ ->
+          {[], nil}
+      end
+    rescue
+      _ -> {[], nil}
+    catch
+      _, _ -> {[], nil}
+    end
+  end
+
+  defp maybe_cat(nil), do: ""
+  defp maybe_cat(""), do: ""
+  defp maybe_cat(cat), do: " (#{cat})"
+
+  defp clusters_to_maps(clusters) when is_list(clusters) do
+    Enum.map(clusters, fn c ->
+      %{
+        label: Map.get(c, :label) || Map.get(c, "label") || "",
+        pair_indices: Map.get(c, :pair_indices) || Map.get(c, "pair_indices") || [],
+        strategy: Map.get(c, :strategy) || Map.get(c, "strategy") || ""
+      }
+    end)
+  end
+
+  defp clusters_to_maps(_), do: []
 
   @doc """
   Persist a merged library composed from two source libraries with the
@@ -507,4 +692,115 @@ defmodule RhoFrameworks.Workbench do
 
   @doc false
   def combine_preview_table, do: @combine_preview_table
+
+  @doc false
+  def role_candidates_table, do: @role_candidates_table
+
+  # --- Role-candidate picker -------------------------------------------
+
+  @doc """
+  Write `analyze_role(find_similar)` results into the session's
+  `role_candidates` table for UI-driven selection. The user checks rows
+  via the existing data-table checkbox column; downstream tools
+  (`seed_framework_from_roles(from_selected_candidates: true)`,
+  `manage_role(action: "clone")`) read those selections to act on the
+  picked role_ids.
+
+  `groups` is a keyword-style list `[{query, [candidate_map, ...]}, ...]`,
+  ordered as the agent ran the searches. Each candidate carries `:id`,
+  `:name`, `:role_family`, `:seniority_label`, `:skill_count` (the shape
+  `Roles.find_similar_roles/3` already returns).
+
+  Returns `{:ok, %{table_name, total, per_query}}`.
+  """
+  @spec write_role_candidates(Scope.t(), [{String.t(), [map()]}]) ::
+          {:ok, %{table_name: String.t(), total: non_neg_integer(), per_query: [map()]}}
+          | {:error, term()}
+  def write_role_candidates(%Scope{} = scope, groups) when is_list(groups) do
+    rows =
+      Enum.flat_map(groups, fn {query, candidates} ->
+        candidates
+        |> Enum.with_index(1)
+        |> Enum.map(fn {c, i} ->
+          %{
+            query: query,
+            rank: i,
+            role_id: Map.get(c, :id),
+            role_name: Map.get(c, :name),
+            role_family: Map.get(c, :role_family) || "",
+            seniority_label: Map.get(c, :seniority_label) || "",
+            skill_count: Map.get(c, :skill_count) || 0
+          }
+        end)
+      end)
+
+    per_query =
+      Enum.map(groups, fn {query, candidates} ->
+        %{query: query, count: length(candidates)}
+      end)
+
+    with :ok <-
+           DataTable.ensure_table(
+             scope.session_id,
+             @role_candidates_table,
+             DataTableSchemas.role_candidates_schema()
+           ),
+         {:ok, _} <- replace_rows(scope, rows, table: @role_candidates_table) do
+      {:ok,
+       %{
+         table_name: @role_candidates_table,
+         total: length(rows),
+         per_query: per_query
+       }}
+    end
+  end
+
+  @doc """
+  Read the user's currently-selected rows in the `role_candidates` table
+  and extract their `role_id` values, preserving selection order.
+  Returns `[]` when nothing is selected, the table doesn't exist, or
+  the data-table server isn't running for this session.
+  """
+  @spec read_selected_candidate_role_ids(Scope.t()) :: [String.t()]
+  def read_selected_candidate_role_ids(%Scope{session_id: sid}) when is_binary(sid) do
+    case DataTable.get_selection(sid, @role_candidates_table) do
+      selected_ids when is_list(selected_ids) and selected_ids != [] ->
+        case DataTable.get_rows_by_ids(sid, selected_ids, table: @role_candidates_table) do
+          {:ok, rows_map} ->
+            selected_ids
+            |> Enum.map(fn row_id ->
+              case Map.get(rows_map, row_id) do
+                %{} = row -> Map.get(row, :role_id) || Map.get(row, "role_id")
+                _ -> nil
+              end
+            end)
+            |> Enum.reject(&(&1 in [nil, ""]))
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  def read_selected_candidate_role_ids(_), do: []
+
+  @doc """
+  Drop the session's `role_candidates` table. Called after the user has
+  acted on the picker (seed or clone) so the tab disappears and the
+  workspace stops showing a stale picker. No-op when the table doesn't
+  exist for this session.
+  """
+  @spec drop_role_candidates(Scope.t()) :: :ok
+  def drop_role_candidates(%Scope{session_id: sid}) when is_binary(sid) do
+    case DataTable.drop_table(sid, @role_candidates_table) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+      _ -> :ok
+    end
+  end
+
+  def drop_role_candidates(_), do: :ok
 end

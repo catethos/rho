@@ -1726,15 +1726,16 @@ defmodule RhoWeb.AppLive do
         ArgumentError -> :worker
       end
 
+    workspace = user_workspace(socket)
     memory_mod = Rho.Config.tape_module()
-    agent_ref = memory_mod.memory_ref(agent_id, File.cwd!())
+    agent_ref = memory_mod.memory_ref(agent_id, workspace)
     memory_mod.bootstrap(agent_ref)
 
     {:ok, _pid} =
       Rho.Agent.Supervisor.start_worker(
         agent_id: agent_id,
         session_id: sid,
-        workspace: File.cwd!(),
+        workspace: workspace,
         agent_name: role_atom,
         role: role_atom,
         tape_ref: agent_ref,
@@ -1932,7 +1933,7 @@ defmodule RhoWeb.AppLive do
 
   def handle_event("switch_thread", %{"thread_id" => thread_id}, socket) do
     sid = socket.assigns.session_id
-    workspace = File.cwd!()
+    workspace = user_workspace(socket)
 
     current_thread = Threads.active(sid, workspace)
 
@@ -1967,7 +1968,7 @@ defmodule RhoWeb.AppLive do
 
   def handle_event("fork_from_here", %{"message_index" => idx_str}, socket) do
     sid = socket.assigns.session_id
-    workspace = File.cwd!()
+    workspace = user_workspace(socket)
     tape_module = Rho.Config.tape_module()
 
     primary_id = Rho.Agent.Primary.agent_id(sid)
@@ -2028,7 +2029,7 @@ defmodule RhoWeb.AppLive do
 
   def handle_event("new_blank_thread", _params, socket) do
     sid = socket.assigns.session_id
-    workspace = File.cwd!()
+    workspace = user_workspace(socket)
     tape_module = Rho.Config.tape_module()
 
     tape_name = "#{sid}_thread_#{:erlang.unique_integer([:positive])}"
@@ -2058,7 +2059,7 @@ defmodule RhoWeb.AppLive do
 
   def handle_event("close_thread", %{"thread_id" => thread_id}, socket) do
     sid = socket.assigns.session_id
-    workspace = File.cwd!()
+    workspace = user_workspace(socket)
 
     is_active = socket.assigns.active_thread_id == thread_id
 
@@ -2554,7 +2555,7 @@ defmodule RhoWeb.AppLive do
           {:ok, {File.read!(path), entry.client_type || "image/png"}}
         end)
 
-      SessionCore.save_avatar(binary, media_type)
+      SessionCore.save_user_avatar(socket, binary, media_type)
       data_uri = "data:#{media_type};base64,#{Base.encode64(binary)}"
       assign(socket, :user_avatar, data_uri)
     else
@@ -2627,6 +2628,24 @@ defmodule RhoWeb.AppLive do
   def handle_info({:navigate_to_library, library_id}, socket) do
     org = socket.assigns.current_organization
     {:noreply, push_patch(socket, to: ~p"/orgs/#{org.slug}/libraries/#{library_id}")}
+  end
+
+  # User clicked "Done — Seed Framework" in the role_candidates table.
+  # Synthesize a user message that triggers the agent to call
+  # seed_framework_from_roles(from_selected_candidates: "true").
+  def handle_info({:role_candidates_done}, socket) do
+    sid = socket.assigns[:session_id]
+
+    if is_binary(sid) do
+      content =
+        "I've finished selecting role candidates in the role_candidates tab. " <>
+          "Combine them into a new framework using `seed_framework_from_roles` " <>
+          "with `from_selected_candidates: \"true\"`. Pick a sensible name based on the picks."
+
+      SessionCore.send_message(socket, content)
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:data_table_switch_tab, name}, socket) do
@@ -2954,7 +2973,7 @@ defmodule RhoWeb.AppLive do
 
     if sid = socket.assigns[:session_id] do
       snapshot = Snapshot.build_snapshot(socket)
-      Snapshot.save(sid, File.cwd!(), snapshot)
+      Snapshot.save(sid, user_workspace(socket), snapshot)
     end
 
     :ok
@@ -3534,7 +3553,7 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns[:session_id]
 
     if sid do
-      case Snapshot.load(sid, File.cwd!()) do
+      case Snapshot.load(sid, user_workspace(socket)) do
         {:ok, snapshot} ->
           socket
           |> Snapshot.apply_snapshot(snapshot)
@@ -4099,6 +4118,23 @@ defmodule RhoWeb.AppLive do
   defp session_ensure_opts(:chatroom), do: [id_prefix: "chat"]
   defp session_ensure_opts(_), do: []
 
+  # Per-user, per-session workspace path. Tools (Bash/FsWrite/Python),
+  # tape JSONLs, and thread/snapshot files all live under here. Two
+  # users running the LV concurrently must never share one — that's
+  # what isolates their on-disk state from each other.
+  #
+  # Falls back to cwd only when there's no logged-in user (test/dev),
+  # so a forgotten current_user assign doesn't silently leak into
+  # someone else's directory.
+  defp user_workspace(socket) do
+    sid = socket.assigns[:session_id]
+
+    case {socket.assigns[:current_user], sid} do
+      {%{id: user_id}, sid} when is_binary(sid) -> Rho.Paths.user_workspace(user_id, sid)
+      _ -> File.cwd!()
+    end
+  end
+
   defp extract_chat_context(params) do
     %{}
     |> maybe_put("library_id", params["library_id"])
@@ -4114,8 +4150,9 @@ defmodule RhoWeb.AppLive do
     sid = socket.assigns[:session_id]
 
     if sid do
-      threads = Threads.list(sid, File.cwd!())
-      active = Threads.active(sid, File.cwd!())
+      workspace = user_workspace(socket)
+      threads = Threads.list(sid, workspace)
+      active = Threads.active(sid, workspace)
 
       socket
       |> assign(:threads, threads)

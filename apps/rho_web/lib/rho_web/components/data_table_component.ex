@@ -357,6 +357,11 @@ defmodule RhoWeb.DataTableComponent do
     {:noreply, socket}
   end
 
+  def handle_event("candidates_done", _params, socket) do
+    send(self(), {:role_candidates_done})
+    {:noreply, socket}
+  end
+
   def handle_event("open_save_dialog", _params, socket) do
     name = library_name_from_table(socket.assigns[:active_table])
     {:noreply, assign(socket, action_dialog: {:save, name})}
@@ -1125,6 +1130,16 @@ defmodule RhoWeb.DataTableComponent do
           >&times;</button>
         </span>
         <div class="dt-toolbar-actions">
+          <button
+            :if={candidates_view?(@view_key, @active_table)}
+            type="button"
+            class="dt-action-btn dt-candidates-done-btn"
+            phx-click="candidates_done"
+            phx-target={@myself}
+            title="Use the checked rows to seed a new framework"
+          >
+            ✓ Done — Seed Framework
+          </button>
           <button
             :if={library_view?(@view_key, @active_table)}
             type="button"
@@ -2056,6 +2071,10 @@ defmodule RhoWeb.DataTableComponent do
   defp library_view?(view_key, active_table) do
     view_key in [:skill_library, "skill_library"] or
       (is_binary(active_table) and String.starts_with?(active_table, "library:"))
+  end
+
+  defp candidates_view?(view_key, active_table) do
+    view_key in [:role_candidates, "role_candidates"] or active_table == "role_candidates"
   end
 
   defp clamp_suggest_n(value) when is_binary(value) do

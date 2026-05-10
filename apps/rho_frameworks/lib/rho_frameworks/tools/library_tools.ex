@@ -492,66 +492,137 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   # ── dedup_library ──────────────────────────────────────────────────────
 
   tool :dedup_library,
-       "Deduplicate skills. Actions: scan (find dupes), merge (absorb source into target), " <>
-         "dismiss (mark as intentionally different), report (full consolidation report)." do
-    param(:action, :string, required: true, doc: "scan | merge | dismiss | report")
-    param(:library_id, :string, doc: "Library ID (scan, dismiss, report)")
-    param(:depth, :string, doc: "Detection depth: standard (default) or deep (scan)")
-    param(:source_id, :string, doc: "Skill to absorb — will be deleted (merge)")
-    param(:target_id, :string, doc: "Skill to keep (merge)")
-    param(:new_name, :string, doc: "Rename surviving skill (merge)")
-    param(:skill_a_id, :string, doc: "First skill ID (dismiss)")
-    param(:skill_b_id, :string, doc: "Second skill ID (dismiss)")
+       "Open the duplicate-review panel for a saved library. Detects candidate-duplicate " <>
+         "skill pairs (cosine similarity + slug/word heuristics), optionally clusters them " <>
+         "by theme via an LLM digest, and writes them to the session's `dedup_preview` table. " <>
+         "The user reviews each row in the data-table UI by setting `resolution` to merge_a, " <>
+         "merge_b, or keep_both, then calls save_framework — which applies the picks and " <>
+         "persists the cleaned library. Per-pair merge/dismiss are UI cell edits, not separate " <>
+         "tool calls." do
+    param(:library_id, :string,
+      doc: "Library UUID or name. Omit to use the currently-active library tab."
+    )
 
-    run(fn args, ctx ->
-      case args[:action] do
-        "scan" -> do_find_duplicates(args, ctx)
-        "merge" -> do_merge_skills(args)
-        "dismiss" -> do_dismiss_duplicate(args)
-        "report" -> do_consolidation_report(args, ctx)
-        other -> {:error, "Unknown action: #{other}. Use: scan, merge, dismiss, report"}
-      end
-    end)
+    param(:depth, :string,
+      doc:
+        "Detection depth: deep (default) — slug+word+cosine embedding; standard — slug+word only (faster, misses paraphrases)"
+    )
+
+    param(:summarize, :string,
+      doc:
+        "true (default) to add LLM cluster summary, false to skip and just emit raw cosine pairs"
+    )
+
+    run(fn args, ctx -> do_dedup_review(args, ctx) end)
   end
 
-  defp do_find_duplicates(args, ctx) do
-    case Library.get_library(ctx.organization_id, args[:library_id]) do
-      nil ->
-        {:error, "Library not found"}
+  defp do_dedup_review(args, ctx) do
+    case resolve_dedup_library(args, ctx) do
+      {:ok, lib} ->
+        depth = if args[:depth] == "standard", do: :standard, else: :deep
+        summarize? = args[:summarize] != "false"
+        scope = Scope.from_context(ctx)
 
-      _lib ->
-        depth = if args[:depth] == "deep", do: :deep, else: :standard
-        dupes = Library.find_duplicates(args[:library_id], depth: depth)
-        {:ok, format_duplicates(dupes)}
+        case Workbench.write_dedup_preview(scope, lib.id,
+               depth: depth,
+               summarize: summarize?
+             ) do
+          {:ok, %{pair_count: 0, table_name: tbl}} ->
+            %Rho.ToolResponse{
+              text:
+                "No duplicate candidates found in '#{lib.name}'. (Empty `#{tbl}` table opened.)",
+              effects: build_dedup_effects(lib.name, tbl, false)
+            }
+
+          {:ok, %{pair_count: n, table_name: tbl, summary: summary}} ->
+            text =
+              "Loaded #{n} duplicate candidate(s) into the '#{tbl}' tab for '#{lib.name}'. " <>
+                "Set each row's `resolution` (merge_a / merge_b / keep_both), then call " <>
+                "save_framework to apply the picks and persist." <>
+                if(is_binary(summary) and summary != "", do: "\n\n" <> summary, else: "")
+
+            %Rho.ToolResponse{
+              text: text,
+              effects: build_dedup_effects(lib.name, tbl, true)
+            }
+
+          {:error, reason} ->
+            {:error, "dedup_library failed: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp do_merge_skills(args) do
-    opts = maybe_opt([], :new_name, args[:new_name])
-
-    case Library.merge_skills(args[:source_id], args[:target_id], opts) do
-      {:ok, _multi} -> {:ok, "Merged. Source deleted."}
-      {:error, :immutable_library, msg} -> {:error, msg}
-      {:error, _step, reason, _} -> {:error, "Merge failed: #{inspect(reason)}"}
+  defp resolve_dedup_library(args, ctx) do
+    case args[:library_id] do
+      nil -> resolve_active_library(ctx)
+      "" -> resolve_active_library(ctx)
+      value when is_binary(value) -> resolve_library_input(value, ctx.organization_id)
+      _ -> {:error, "library_id must be a string (UUID or library name)."}
     end
   end
 
-  defp do_dismiss_duplicate(args) do
-    case Library.dismiss_duplicate(args[:library_id], args[:skill_a_id], args[:skill_b_id]) do
-      {:ok, _} -> {:ok, "Dismissed."}
-      {:error, changeset} -> {:error, "Failed: #{inspect(changeset.errors)}"}
+  defp resolve_library_input("library:" <> name, org_id),
+    do: resolve_library_input(name, org_id)
+
+  defp resolve_library_input(value, org_id) do
+    cond do
+      uuid?(value) ->
+        case Library.get_library(org_id, value) do
+          nil -> {:error, "Library not found: #{value}"}
+          lib -> {:ok, lib}
+        end
+
+      true ->
+        case Library.resolve_library(org_id, value) do
+          nil -> {:error, "Library not found: '#{value}'. Pass a UUID or exact saved name."}
+          lib -> {:ok, lib}
+        end
     end
   end
 
-  defp do_consolidation_report(args, ctx) do
-    case Library.get_library(ctx.organization_id, args[:library_id]) do
-      nil ->
-        {:error, "Library not found"}
+  defp resolve_active_library(%{session_id: sid, organization_id: org_id})
+       when is_binary(sid) do
+    case DataTable.get_active_table(sid) do
+      "library:" <> name ->
+        case Library.resolve_library(org_id, name) do
+          nil ->
+            {:error,
+             "Active library '#{name}' isn't saved yet. Call save_framework first, then dedup_library."}
 
-      _lib ->
-        report = Library.consolidation_report(args[:library_id])
-        {:ok, format_consolidation_report(report)}
+          lib ->
+            {:ok, lib}
+        end
+
+      _ ->
+        {:error,
+         "No active library tab. Pass library_id (UUID or saved name) or load a library first."}
     end
+  end
+
+  defp resolve_active_library(_),
+    do: {:error, "No session context — pass library_id explicitly."}
+
+  defp uuid?(s) when is_binary(s) do
+    Regex.match?(
+      ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      s
+    )
+  end
+
+  defp build_dedup_effects(lib_name, table_name, _has_pairs?) do
+    [
+      %Rho.Effect.OpenWorkspace{key: :data_table},
+      %Rho.Effect.Table{
+        table_name: table_name,
+        schema_key: :dedup_preview,
+        mode_label: "Duplicate review — #{lib_name}",
+        rows: [],
+        skip_write?: true
+      }
+    ]
   end
 
   # ── library_versions ───────────────────────────────────────────────────
@@ -769,51 +840,6 @@ defmodule RhoFrameworks.Tools.LibraryTools do
       end)
 
     "#{length(libraries)} libraries:\n#{Enum.join(lines, "\n")}"
-  end
-
-  defp format_duplicates([]), do: "No duplicates found."
-
-  defp format_duplicates(dupes) do
-    lines =
-      Enum.with_index(dupes, 1)
-      |> Enum.map(fn {d, i} ->
-        a = MapAccess.get(d, :skill_a, %{})
-        b = MapAccess.get(d, :skill_b, %{})
-        conf = MapAccess.get(d, :confidence, "?")
-        conflict = if MapAccess.get(d, :level_conflict), do: ", level conflict", else: ""
-
-        "#{i}. [#{conf}] \"#{MapAccess.get(a, :name)}\" vs \"#{MapAccess.get(b, :name)}\" (#{MapAccess.get(a, :category)})#{conflict}\n   IDs: #{MapAccess.get(a, :id)} / #{MapAccess.get(b, :id)}"
-      end)
-
-    "#{length(dupes)} duplicate pair(s):\n\n#{Enum.join(lines, "\n")}"
-  end
-
-  defp format_consolidation_report(report) do
-    total = MapAccess.get(report, :total_skills, 0)
-    dupes = MapAccess.get(report, :duplicate_pairs, [])
-    drafts = MapAccess.get(report, :drafts, [])
-    orphans = MapAccess.get(report, :orphans, [])
-
-    lines = ["Consolidation Report — #{total} skills total"]
-    lines = lines ++ ["Duplicate pairs: #{length(dupes)}"]
-
-    lines =
-      if drafts != [] do
-        names = Enum.map_join(Enum.take(drafts, 5), ", ", &MapAccess.get(&1, :name, "?"))
-        lines ++ ["Draft skills: #{length(drafts)} (e.g. #{names})"]
-      else
-        lines ++ ["Draft skills: 0"]
-      end
-
-    lines =
-      if orphans != [] do
-        names = Enum.map_join(Enum.take(orphans, 5), ", ", &MapAccess.get(&1, :name, "?"))
-        lines ++ ["Orphan skills (no roles): #{length(orphans)} (e.g. #{names})"]
-      else
-        lines ++ ["Orphan skills: 0"]
-      end
-
-    Enum.join(lines, "\n")
   end
 
   # ── Helpers ────────────────────────────────────────────────────────────

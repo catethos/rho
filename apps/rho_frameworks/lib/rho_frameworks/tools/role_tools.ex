@@ -270,10 +270,22 @@ defmodule RhoFrameworks.Tools.RoleTools do
       doc: "find_similar | gap_analysis | career_ladder"
     )
 
-    param(:query, :string, doc: "Search term (find_similar)")
+    param(:query, :string, doc: "Search term (find_similar) — single role name")
+
+    param(:queries_json, :string,
+      doc:
+        "JSON array of role names for find_similar — preferred when looking for several roles at once " <>
+          "(e.g. [\"Risk Analyst\", \"Compliance Officer\"]). Returns results grouped per query so one " <>
+          "call covers a whole multi-role search instead of a sequence of `query`-only calls."
+    )
+
     param(:role_profile_id, :string, doc: "Role profile ID (gap_analysis)")
     param(:snapshot_json, :string, doc: "JSON skill snapshot (gap_analysis)")
     param(:role_family, :string, doc: "e.g. Engineering (career_ladder)")
+
+    param(:library_id, :string,
+      doc: "Library UUID — restrict find_similar to roles with skills from this library"
+    )
 
     run(fn args, ctx ->
       case args[:action] do
@@ -293,22 +305,124 @@ defmodule RhoFrameworks.Tools.RoleTools do
   end
 
   defp do_find_similar(args, ctx) do
-    results = Roles.find_similar_roles(ctx.organization_id, args[:query] || "")
+    opts = build_find_similar_opts(args)
 
-    if results == [] do
-      {:ok, "No similar roles found."}
-    else
-      lines =
-        Enum.with_index(results, 1)
-        |> Enum.map(fn {r, i} ->
-          family = if r.role_family, do: " [#{r.role_family}]", else: ""
-          label = if r.seniority_label, do: " #{r.seniority_label}", else: ""
-          "#{i}. #{r.name}#{family}#{label} — #{r.skill_count} skills (#{r.id})"
-        end)
+    case parse_find_similar_queries(args) do
+      {:ok, queries} ->
+        groups =
+          Enum.map(queries, fn q ->
+            {q, Roles.find_similar_roles(ctx.organization_id, q, opts)}
+          end)
 
-      {:ok, "Similar role profiles (use manage_role to load):\n#{Enum.join(lines, "\n")}"}
+        emit_role_candidates(groups, ctx)
+
+      {:error, msg} ->
+        {:error, msg}
     end
   end
+
+  # Write candidates to the `role_candidates` table for UI selection,
+  # then return a short text summary + Effect.Table to open the tab.
+  # User checks the rows they want and the next tool call (e.g.
+  # `seed_framework_from_roles(from_selected_candidates: true)` or
+  # `manage_role(action: "clone")`) reads the picks.
+  defp emit_role_candidates(groups, ctx) do
+    scope = Scope.from_context(ctx)
+    nonempty? = Enum.any?(groups, fn {_q, rs} -> rs != [] end)
+
+    case Workbench.write_role_candidates(scope, groups) do
+      {:ok, %{table_name: tbl, total: total, per_query: per_query}} when nonempty? ->
+        text =
+          "Loaded #{total} candidate role(s) into the '#{tbl}' tab:\n" <>
+            Enum.map_join(per_query, "\n", fn %{query: q, count: n} ->
+              "- '#{q}': #{n} match(es)"
+            end) <>
+            "\n\nReview the rows and check the ones you want. Then say 'seed' " <>
+            "(to combine into a new framework) or 'clone' (to start a new role profile)."
+
+        %Rho.ToolResponse{
+          text: text,
+          effects: [
+            %Rho.Effect.OpenWorkspace{key: :data_table},
+            %Rho.Effect.Table{
+              table_name: tbl,
+              schema_key: :role_candidates,
+              mode_label: "Candidate Roles",
+              rows: [],
+              skip_write?: true
+            }
+          ]
+        }
+
+      {:ok, _} ->
+        # All queries returned zero matches.
+        per_query =
+          Enum.map_join(groups, "\n", fn {q, _rs} -> "- '#{q}': 0 matches" end)
+
+        {:ok,
+         "No similar role profiles found:\n#{per_query}\n\nTry a broader query, or remove the library_id filter to search org-wide."}
+
+      {:error, reason} ->
+        {:error, "find_similar failed to populate the candidates table: #{inspect(reason)}"}
+    end
+  end
+
+  defp build_find_similar_opts(args) do
+    case args[:library_id] do
+      id when is_binary(id) and id != "" -> [library_id: id]
+      _ -> []
+    end
+  end
+
+  # Multi-query (queries_json) wins when both are provided — multi-query is
+  # what the agent should reach for in framework-composition flows.
+  defp parse_find_similar_queries(args) do
+    case decode_queries_json(args[:queries_json]) do
+      {:ok, _} = ok -> ok
+      :no_input -> single_query_or_error(args[:query])
+      {:error, _} = err -> err
+    end
+  end
+
+  defp decode_queries_json(nil), do: :no_input
+  defp decode_queries_json(""), do: :no_input
+
+  defp decode_queries_json(raw) when is_binary(raw) do
+    case Jason.decode(raw) do
+      {:ok, list} when is_list(list) and list != [] ->
+        cleaned = Enum.map(list, &maybe_trim/1)
+
+        if Enum.all?(cleaned, &(is_binary(&1) and &1 != "")) do
+          {:ok, cleaned}
+        else
+          {:error, "queries_json entries must all be non-empty role-name strings."}
+        end
+
+      {:ok, []} ->
+        {:error, "queries_json must be a non-empty JSON array."}
+
+      {:ok, _} ->
+        {:error, "queries_json must be a JSON array of strings."}
+
+      {:error, _} ->
+        {:error, "queries_json is not valid JSON."}
+    end
+  end
+
+  defp decode_queries_json(_), do: :no_input
+
+  defp single_query_or_error(q) when is_binary(q) do
+    case String.trim(q) do
+      "" -> {:error, "Provide a `query` string or a `queries_json` array."}
+      trimmed -> {:ok, [trimmed]}
+    end
+  end
+
+  defp single_query_or_error(_),
+    do: {:error, "Provide a `query` string or a `queries_json` array."}
+
+  defp maybe_trim(s) when is_binary(s), do: String.trim(s)
+  defp maybe_trim(other), do: other
 
   defp do_gap_analysis(args) do
     raw = args[:snapshot_json] || "{}"

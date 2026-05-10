@@ -10,7 +10,7 @@ class SuggestSkillsOutput {
 }
 
 function SuggestSkills(existing: string, intake: string, n: int) -> SuggestSkillsOutput {
-  client OpenRouter
+  client OpenRouterHaiku
   prompt #"
     {{ _.role("system") }}
     You extend an existing skill library. Given the current rows and a

@@ -105,8 +105,11 @@ defmodule Rho.Session do
     if Process.alive?(pid), do: pid, else: Primary.whereis(session_id)
   end
 
+  # Crypto-random so an attacker can't enumerate or guess another user's
+  # session by incrementing a counter. 12 bytes of url-safe base64 is
+  # 16 chars — same bit-strength budget as a typical session cookie.
   defp generate_session_id do
-    "ses_#{System.unique_integer([:positive])}"
+    "ses_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
   end
 
   defp build_run_spec(agent_name, opts) do

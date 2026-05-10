@@ -9,7 +9,7 @@ class IdentifyGapsOutput {
 }
 
 function IdentifyGaps(framework_name: string, framework_description: string, domain: string, target_roles: string, existing_skills: string) -> IdentifyGapsOutput {
-  client OpenRouter
+  client OpenRouterHaiku
   prompt #"
     {{ _.role("system") }}
     You are a competency framework architect. Given an existing framework's

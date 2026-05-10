@@ -28,6 +28,24 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     Rho.Config.agent_names() |> Enum.map(&Atom.to_string/1)
   end
 
+  # Validate an explicitly-supplied role string. "worker" is the documented
+  # generic-default sentinel and is always allowed. Otherwise the role must
+  # be a configured agent name. Unknown roles error loudly so a hallucinated
+  # role doesn't silently degrade to a generic worker.
+  defp resolve_role(role_str) when is_binary(role_str) do
+    cond do
+      role_str == "worker" ->
+        {:ok, :worker}
+
+      role_str in known_roles_cache() ->
+        {:ok, String.to_existing_atom(role_str)}
+
+      true ->
+        available = Enum.join(["worker" | known_roles_cache()], ", ")
+        {:error, "unknown role #{inspect(role_str)}; available: #{available}"}
+    end
+  end
+
   # --- Plugin callbacks ---
 
   @impl Rho.Plugin
@@ -528,25 +546,26 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
         result
 
       :not_routed ->
-        role_atom =
-          if params.role_str in known_roles_cache(),
-            do: String.to_existing_atom(params.role_str),
-            else: :worker
+        case resolve_role(params.role_str) do
+          {:ok, role_atom} ->
+            do_delegate(task_prompt, %{
+              session_id: params.session_id,
+              parent_agent_id: params.parent_agent_id,
+              workspace: params.workspace,
+              parent_depth: params.parent_depth,
+              tape_module: params.tape_module,
+              parent_emit: params.parent_emit,
+              role: role_atom,
+              context_summary: params.context_summary,
+              inherit_context: params.inherit_context,
+              max_steps: params.max_steps,
+              user_id: params[:user_id],
+              organization_id: params[:organization_id]
+            })
 
-        do_delegate(task_prompt, %{
-          session_id: params.session_id,
-          parent_agent_id: params.parent_agent_id,
-          workspace: params.workspace,
-          parent_depth: params.parent_depth,
-          tape_module: params.tape_module,
-          parent_emit: params.parent_emit,
-          role: role_atom,
-          context_summary: params.context_summary,
-          inherit_context: params.inherit_context,
-          max_steps: params.max_steps,
-          user_id: params[:user_id],
-          organization_id: params[:organization_id]
-        })
+          {:error, _} = err ->
+            err
+        end
     end
   end
 
@@ -734,18 +753,37 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     task_prompt = arg(args, :task)
     role_str = arg(args, :role) || "worker"
 
-    agent_name =
-      if role_str in known_roles_cache(),
-        do: String.to_existing_atom(role_str),
-        else: :worker
+    with {:ok, agent_name} <- resolve_role(role_str) do
+      role_config =
+        if agent_name in Rho.Config.agent_names(),
+          do: Rho.Config.agent_config(agent_name),
+          else: %{}
 
-    role_config =
-      if agent_name in Rho.Config.agent_names(),
-        do: Rho.Config.agent_config(agent_name),
-        else: %{}
+      max_steps = arg(args, :max_steps) || Map.get(role_config, :max_steps, 5)
 
-    max_steps = arg(args, :max_steps) || Map.get(role_config, :max_steps, 5)
+      do_execute_delegate_lite(
+        task_prompt,
+        role_str,
+        agent_name,
+        role_config,
+        max_steps,
+        session_id,
+        parent_agent_id,
+        ctx
+      )
+    end
+  end
 
+  defp do_execute_delegate_lite(
+         task_prompt,
+         role_str,
+         agent_name,
+         role_config,
+         max_steps,
+         session_id,
+         parent_agent_id,
+         %Rho.Context{} = ctx
+       ) do
     if task_prompt do
       # Resolve tools once from context — lite workers reuse them directly
       tools = Rho.PluginRegistry.collect_tools(ctx)
@@ -1249,55 +1287,59 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
     if agent_count >= @max_agents_per_session do
       {:error, "agent limit reached (#{@max_agents_per_session} per session)."}
     else
-      role_atom =
-        if role_str in known_roles_cache(), do: String.to_existing_atom(role_str), else: :worker
-
-      agent_name = if role_atom in Rho.Config.agent_names(), do: role_atom, else: :default
-      config = Rho.Config.agent_config(agent_name)
-      child_depth = params.parent_depth + 1
-      agent_id = Rho.Agent.Primary.new_agent_id(params.parent_agent_id)
-      memory_mod = params.tape_module
-
-      tape_name =
-        with true <- params[:inherit_context],
-             true <- function_exported?(memory_mod, :fork, 2),
-             %{tape_ref: ref} when is_binary(ref) <-
-               Registry.get(Rho.Agent.Primary.agent_id(session_id)),
-             {:ok, fork_ref} <- memory_mod.fork(ref, []) do
-          fork_ref
-        else
-          _ ->
-            memory_mod.bootstrap(agent_id)
-            agent_id
-        end
-
-      tool_context = %{
-        tape_name: tape_name,
-        workspace: params.workspace,
-        tape_module: memory_mod,
-        agent_name: agent_name,
-        agent_id: agent_id,
-        session_id: session_id,
-        depth: child_depth,
-        sandbox: nil,
-        user_id: params[:user_id],
-        organization_id: params[:organization_id]
-      }
-
-      mount_tools = Rho.PluginRegistry.collect_tools(tool_context)
-      all_tools = ensure_finish_tool(mount_tools)
-
-      {:ok,
-       %{
-         agent_id: agent_id,
-         agent_name: agent_name,
-         role_atom: role_atom,
-         config: config,
-         child_depth: child_depth,
-         tape_name: tape_name,
-         tools: all_tools
-       }}
+      with {:ok, role_atom} <- resolve_role(role_str) do
+        prepare_child_agent_resolved(role_atom, agent_count, params)
+      end
     end
+  end
+
+  defp prepare_child_agent_resolved(role_atom, _agent_count, params) do
+    session_id = params.session_id
+    agent_name = if role_atom in Rho.Config.agent_names(), do: role_atom, else: :default
+    config = Rho.Config.agent_config(agent_name)
+    child_depth = params.parent_depth + 1
+    agent_id = Rho.Agent.Primary.new_agent_id(params.parent_agent_id)
+    memory_mod = params.tape_module
+
+    tape_name =
+      with true <- params[:inherit_context],
+           true <- function_exported?(memory_mod, :fork, 2),
+           %{tape_ref: ref} when is_binary(ref) <-
+             Registry.get(Rho.Agent.Primary.agent_id(session_id)),
+           {:ok, fork_ref} <- memory_mod.fork(ref, []) do
+        fork_ref
+      else
+        _ ->
+          memory_mod.bootstrap(agent_id)
+          agent_id
+      end
+
+    tool_context = %{
+      tape_name: tape_name,
+      workspace: params.workspace,
+      tape_module: memory_mod,
+      agent_name: agent_name,
+      agent_id: agent_id,
+      session_id: session_id,
+      depth: child_depth,
+      sandbox: nil,
+      user_id: params[:user_id],
+      organization_id: params[:organization_id]
+    }
+
+    mount_tools = Rho.PluginRegistry.collect_tools(tool_context)
+    all_tools = ensure_finish_tool(mount_tools)
+
+    {:ok,
+     %{
+       agent_id: agent_id,
+       agent_name: agent_name,
+       role_atom: role_atom,
+       config: config,
+       child_depth: child_depth,
+       tape_name: tape_name,
+       tools: all_tools
+     }}
   end
 
   # --- Helpers ---

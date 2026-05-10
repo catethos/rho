@@ -3,7 +3,7 @@ class RankRolesOutput {
 }
 
 function RankRoles(query: string, role_list: string, limit: int) -> RankRolesOutput {
-  client OpenRouter
+  client OpenRouterHaiku
   prompt #"
     {{ _.role("system") }}
     You are a role matching assistant. Given a query and a numbered list of existing role profiles,

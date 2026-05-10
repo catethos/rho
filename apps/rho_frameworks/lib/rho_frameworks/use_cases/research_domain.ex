@@ -121,6 +121,9 @@ defmodule RhoFrameworks.UseCases.ResearchDomain do
     downstream generator can produce a high-quality framework.
 
     Rules:
+    - Use `web_search` first to find candidate sources. Pick the most
+      relevant 1–3 URLs from the results and `web_fetch` them for full
+      content — don't fetch every result.
     - Each useful fact is a separate `save_finding` call. Keep facts atomic
       (one trend, one tool, one role characteristic per row).
     - Always include a `source`: a URL when you `web_fetch`-ed something,
@@ -147,10 +150,13 @@ defmodule RhoFrameworks.UseCases.ResearchDomain do
     Target roles: #{target_roles}
 
     Plan:
-    1. Identify 2–3 high-signal sources (job listings, established
-       frameworks like SFIA, role guides) and `web_fetch` them.
-    2. For each useful fact extracted, call `save_finding`.
-    3. When you have enough, call `finish` with a one-line summary.
+    1. Run `web_search` with focused queries (e.g. "<role> competency
+       framework", "<domain> required skills 2025", established sources
+       like SFIA / role guides / job listings).
+    2. From the search results, pick 1–3 high-signal URLs and `web_fetch`
+       them for full content.
+    3. For each useful fact extracted, call `save_finding`.
+    4. When you have enough, call `finish` with a one-line summary.
     """
   end
 
@@ -159,9 +165,12 @@ defmodule RhoFrameworks.UseCases.ResearchDomain do
   # ──────────────────────────────────────────────────────────────────────
 
   defp research_tools(%Scope{} = _scope) do
-    web_fetch = hd(Rho.Stdlib.Tools.WebFetch.tools(%{}, %Rho.Context{agent_name: :researcher}))
+    ctx = %Rho.Context{agent_name: :researcher}
+    web_search = hd(Rho.Stdlib.Tools.WebSearch.tools(%{}, ctx))
+    web_fetch = hd(Rho.Stdlib.Tools.WebFetch.tools(%{}, ctx))
 
     [
+      web_search,
       web_fetch,
       save_finding_tool_def(),
       Rho.Stdlib.Tools.Finish.tool_def()

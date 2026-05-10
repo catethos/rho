@@ -116,6 +116,8 @@ defmodule RhoWeb.ChatComponents do
             </div>
           <% :ui -> %>
             <.ui_block message={@message} />
+          <% :welcome -> %>
+            <.welcome_card content={@message.content} msg_id={@message.id} />
           <% :error -> %>
             <div class="message-error">
               <span class="error-icon">!</span>
@@ -248,6 +250,28 @@ defmodule RhoWeb.ChatComponents do
           </div>
         </details>
     <% end %>
+    """
+  end
+
+  attr(:content, :string, required: true)
+  attr(:msg_id, :string, required: true)
+
+  def welcome_card(assigns) do
+    ~H"""
+    <div class="welcome-card" id={"welcome-#{@msg_id}"} tabindex="0">
+      <div class="welcome-pill">
+        <span class="welcome-pill-dot"></span>
+        <span class="welcome-pill-label">Welcome</span>
+      </div>
+      <div
+        class="welcome-body markdown-body"
+        id={"welcome-md-#{@msg_id}"}
+        phx-hook="WelcomeTypewriter"
+        phx-update="ignore"
+        data-md={@content}
+      ></div>
+      <span class="welcome-watermark" aria-hidden="true">&#961;</span>
+    </div>
     """
   end
 

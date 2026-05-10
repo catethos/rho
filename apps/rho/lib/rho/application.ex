@@ -49,6 +49,7 @@ defmodule Rho.Application do
         {Task.Supervisor, name: Rho.TaskSupervisor},
         Rho.PluginRegistry,
         Rho.TransformerRegistry,
+        Rho.SessionOwners,
         # Caps total concurrent LLM streams below the Finch pool size so
         # pool exhaustion becomes the exceptional path, not the norm.
         {Rho.LLM.Admission, capacity: admission_capacity()}

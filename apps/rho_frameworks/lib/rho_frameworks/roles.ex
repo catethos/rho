@@ -436,29 +436,37 @@ defmodule RhoFrameworks.Roles do
   LIKE-only synchronous search. Returns the same map shape as the semantic
   branch. Intended for the instant-render tier in LiveView, before the
   semantic backfill arrives.
+
+  Pass `:library_id` to restrict candidates to role profiles that
+  reference at least one skill from that library.
   """
   def find_similar_roles_fast(org_id, query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
-    find_similar_roles_fallback(org_id, query, limit)
+    library_id = Keyword.get(opts, :library_id)
+    find_similar_roles_fallback(org_id, query, limit, library_id)
   end
 
   @doc """
   Embedding-KNN search with a process-wide query→vector cache. Falls back
   to LIKE on empty query, embed failure, or no embedded rows visible to
   the org.
+
+  Pass `:library_id` to restrict candidates to role profiles that
+  reference at least one skill from that library.
   """
   def find_similar_roles_semantic(org_id, query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 10)
     k = Keyword.get(opts, :k, 25)
     max_distance = Keyword.get(opts, :max_distance, @default_max_distance)
+    library_id = Keyword.get(opts, :library_id)
 
     case maybe_embed_query(query) do
       {:ok, query_vec} ->
-        find_similar_roles_via_knn(org_id, query_vec, k, limit, max_distance) ||
-          find_similar_roles_fallback(org_id, query, limit)
+        find_similar_roles_via_knn(org_id, query_vec, k, limit, max_distance, library_id) ||
+          find_similar_roles_fallback(org_id, query, limit, library_id)
 
       :unavailable ->
-        find_similar_roles_fallback(org_id, query, limit)
+        find_similar_roles_fallback(org_id, query, limit, library_id)
     end
   end
 
@@ -499,7 +507,7 @@ defmodule RhoFrameworks.Roles do
   # back to LIKE. Returns `[]` when embeddings exist but no row clears the
   # distance threshold (off-topic query like "superman") — caller does NOT
   # fall back, so the UI shows "no matches" instead of nearest-anything.
-  defp find_similar_roles_via_knn(org_id, query_vec, k, limit, max_distance) do
+  defp find_similar_roles_via_knn(org_id, query_vec, k, limit, max_distance, library_id) do
     has_embedded? =
       from(rp in RoleProfile,
         where: rp.organization_id == ^org_id or rp.visibility == "public",
@@ -507,6 +515,7 @@ defmodule RhoFrameworks.Roles do
         select: 1,
         limit: 1
       )
+      |> maybe_filter_library(library_id)
       |> Repo.one()
       |> Kernel.==(1)
 
@@ -524,6 +533,7 @@ defmodule RhoFrameworks.Roles do
           limit: ^k,
           select: rp.id
         )
+        |> maybe_filter_library(library_id)
         |> Repo.all()
 
       knn_results(candidate_ids, limit)
@@ -556,7 +566,7 @@ defmodule RhoFrameworks.Roles do
     |> Enum.take(limit)
   end
 
-  defp find_similar_roles_fallback(org_id, query, limit) do
+  defp find_similar_roles_fallback(org_id, query, limit, library_id) do
     pattern = "%#{sanitize_query(query)}%"
 
     from(rp in RoleProfile,
@@ -578,7 +588,27 @@ defmodule RhoFrameworks.Roles do
         organization_id: rp.organization_id
       }
     )
+    |> maybe_filter_library(library_id)
     |> Repo.all()
+  end
+
+  # Restrict candidates to role profiles with at least one skill from the
+  # given library. No-op when library_id is nil.
+  defp maybe_filter_library(query, nil), do: query
+
+  defp maybe_filter_library(query, library_id) when is_binary(library_id) do
+    profile_ids_in_library =
+      from(rs in RoleSkill,
+        join: s in Skill,
+        on: s.id == rs.skill_id,
+        where: s.library_id == ^library_id,
+        select: rs.role_profile_id,
+        distinct: true
+      )
+
+    from(rp in query,
+      where: rp.id in subquery(profile_ids_in_library)
+    )
   end
 
   # --- Clone ---
@@ -624,6 +654,72 @@ defmodule RhoFrameworks.Roles do
     end)
     |> Map.values()
     |> Enum.sort_by(&{&1.category, &1.cluster, &1.skill_name})
+  end
+
+  @doc """
+  Total count of role-skill rows across the given role profiles, before
+  any cross-role union. Pair with `clone_skills_for_library/2` row count
+  to compute how many duplicates were collapsed at union time
+  (`merged = total_role_skills - unique_skills_in_library`).
+  """
+  @spec count_role_skills_for_profiles(String.t(), [String.t()]) :: non_neg_integer()
+  def count_role_skills_for_profiles(org_id, role_profile_ids)
+      when is_binary(org_id) and is_list(role_profile_ids) do
+    case role_profile_ids do
+      [] ->
+        0
+
+      ids ->
+        from(rs in RoleSkill,
+          join: rp in RoleProfile,
+          on: rs.role_profile_id == rp.id,
+          where:
+            (rp.organization_id == ^org_id or rp.visibility == "public") and
+              rp.id in ^ids,
+          select: count(rs.id)
+        )
+        |> Repo.one()
+    end
+  end
+
+  @doc """
+  Returns the skills that are referenced by ≥2 of the given role
+  profiles — i.e. the exact-id duplicates that `clone_skills_for_library/2`
+  collapses at union time. Each entry includes the role names that
+  contained that skill so callers can show the user *which* skills
+  overlapped, not just how many.
+
+  Sorted by skill_name. Returns `[]` for an empty input list.
+  """
+  @spec list_cross_role_duplicates(String.t(), [String.t()]) :: [
+          %{skill_id: String.t(), skill_name: String.t(), role_names: [String.t()]}
+        ]
+  def list_cross_role_duplicates(org_id, role_profile_ids)
+      when is_binary(org_id) and is_list(role_profile_ids) do
+    case role_profile_ids do
+      [] ->
+        []
+
+      ids ->
+        from(rs in RoleSkill,
+          join: rp in RoleProfile,
+          on: rs.role_profile_id == rp.id,
+          join: s in Skill,
+          on: rs.skill_id == s.id,
+          where:
+            (rp.organization_id == ^org_id or rp.visibility == "public") and
+              rp.id in ^ids,
+          group_by: [s.id, s.name],
+          having: count(fragment("DISTINCT ?", rp.id)) > 1,
+          select: %{
+            skill_id: s.id,
+            skill_name: s.name,
+            role_names: fragment("array_agg(DISTINCT ?)", rp.name)
+          },
+          order_by: s.name
+        )
+        |> Repo.all()
+    end
   end
 
   @doc """

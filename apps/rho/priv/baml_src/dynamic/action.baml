@@ -1,11 +1,11 @@
 class RespondAction {
-  tool "respond" @description("Reply directly to the user. The ONLY way to send text to the user — use it for answers, summaries, follow-up questions, error reports, and clarification requests. When you are missing information, blocked, or uncertain, ALWAYS use respond (set kind to question, error, or clarification) instead of free-text — never write user-facing prose outside this action.")
+  tool "respond" @description("Reply directly to the user. CALLING THIS ENDS THE TURN — the agent cannot continue with tool calls after `respond` until the user replies. Use only for: a final answer after a workflow finishes, a completion confirmation, or a genuine clarifying question you need an answer to before you can proceed. Set `kind` to question / error / clarification when applicable. DO NOT use `respond` for progress narration ('let me search', 'I'll check', 'searching now') — that ends the turn before the next tool fires and the agent stalls waiting for user input. To narrate intent without ending the turn, use `think` instead, then call the tool action on the next turn.")
   message string
   kind string?
 }
 
 class ThinkAction {
-  tool "think" @description("Record an internal reasoning step without external action.")
+  tool "think" @description("Narrate progress or reason about the next step WITHOUT ending the turn. The user sees this rendered as a thinking-style message in the chat. Use this for any 'let me…' / 'I'll now…' / 'first I'll search, then…' narration when you intend to call a tool on the next turn. Prefer `think` over `respond` whenever you plan to keep working — `think` continues the loop, `respond` halts it.")
   thought string
 }
 
@@ -92,15 +92,10 @@ class CombineLibrariesAction {
 }
 
 class DedupLibraryAction {
-  tool "dedup_library" @description("Deduplicate skills. Actions: scan (find dupes), merge (absorb source into target), dismiss (mark as intentionally different), report (full consolidation report).")
-  action string
+  tool "dedup_library" @description("Open the duplicate-review panel for a saved library. Detects candidate-duplicate skill pairs (cosine similarity + slug/word heuristics), optionally clusters them by theme via an LLM digest, and writes them to the session's `dedup_preview` table. The user reviews each row in the data-table UI by setting `resolution` to merge_a, merge_b, or keep_both, then calls save_framework — which applies the picks and persists the cleaned library. Per-pair merge/dismiss are UI cell edits, not separate tool calls.")
   library_id string?
   depth string?
-  source_id string?
-  target_id string?
-  new_name string?
-  skill_a_id string?
-  skill_b_id string?
+  summarize string?
 }
 
 class LibraryVersionsAction {
@@ -123,6 +118,17 @@ class ManageRoleAction {
   resolve_library_id string?
   role_profile_ids_json string?
   mode_label string?
+}
+
+class AnalyzeRoleAction {
+  tool "analyze_role" @description("Role analysis. Actions: find_similar, gap_analysis, check_currency, career_ladder.")
+  action string
+  query string?
+  queries_json string?
+  role_profile_id string?
+  snapshot_json string?
+  role_family string?
+  library_id string?
 }
 
 class LoadSimilarRolesAction {
@@ -162,6 +168,14 @@ class ImportLibraryFromUploadAction {
   upload_id string?
   library_name string?
   sheet string?
+}
+
+class SeedFrameworkFromRolesAction {
+  tool "seed_framework_from_roles" @description("Create a new skill library by unioning the skills from one or more existing role profiles. Use after `analyze_role(action: \"find_similar\")` to combine ESCO occupations (or any saved roles) into a fresh framework. Two ways to specify roles: (a) pass UUIDs in role_profile_ids_json, or (b) set from_selected_candidates: \"true\" to read the user's checked rows from the `role_candidates` table (the typical chat path — agent calls find_similar to populate the picker, user checks rows in the UI, then this tool reads the picks). The new library is created as a draft with skills deduplicated by exact skill ID; the tool surfaces the actual skills that appeared in multiple picked roles. No semantic dedup runs — call `dedup_library(library_id: ...)` explicitly if you want a review tab. Call `save_framework` afterwards to persist further edits.")
+  name string
+  role_profile_ids_json string?
+  from_selected_candidates string?
+  description string?
 }
 
 class SkillAction {
@@ -213,7 +227,7 @@ class DeleteRowsAction {
   table string?
 }
 
-function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ListUploadsAction | ObserveUploadAction | ReadUploadAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | BrowseLibraryAction | CombineLibrariesAction | DedupLibraryAction | LibraryVersionsAction | ManageRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ImportLibraryFromUploadAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
+function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ListUploadsAction | ObserveUploadAction | ReadUploadAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | BrowseLibraryAction | CombineLibrariesAction | DedupLibraryAction | LibraryVersionsAction | ManageRoleAction | AnalyzeRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ImportLibraryFromUploadAction | SeedFrameworkFromRolesAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
   client Openrouter
   prompt #"
     {{ messages }}

@@ -14,7 +14,9 @@ defmodule RhoWeb.Session.SessionCore do
 
   import Phoenix.Component, only: [assign: 3]
 
-  @avatar_dir Path.expand("~/.rho")
+  # Where the agent (system-wide) avatar lives. User avatars are
+  # per-user under `Rho.Paths.user_avatar_dir/1`.
+  defp shared_avatar_dir, do: Rho.Paths.data_dir()
 
   # -------------------------------------------------------------------
   # Session ID validation
@@ -63,7 +65,7 @@ defmodule RhoWeb.Session.SessionCore do
     |> assign(:debug_projections, %{})
     |> assign(:next_id, 1)
     |> assign(:connected, Phoenix.LiveView.connected?(socket))
-    |> assign(:user_avatar, load_avatar("avatar"))
+    |> assign(:user_avatar, load_user_avatar(socket))
     |> assign(:agent_avatar, load_agent_avatar())
   end
 
@@ -80,10 +82,22 @@ defmodule RhoWeb.Session.SessionCore do
   Options are forwarded to `Rho.Agent.Primary.ensure_started/2`.
   """
   def subscribe_and_hydrate(socket, session_id, opts \\ []) do
-    {:ok, _pid} = Rho.Agent.Primary.ensure_started(session_id, opts)
+    user_id = current_user_id(socket)
+    opts = Keyword.put_new(opts, :user_id, user_id)
 
-    Rho.Events.subscribe(session_id)
+    case Rho.Agent.Primary.ensure_started(session_id, opts) do
+      {:ok, _pid} ->
+        :ok = Rho.Events.subscribe(session_id, user_id)
+        do_hydrate(socket, session_id)
 
+      {:error, :forbidden} ->
+        socket
+        |> Phoenix.LiveView.put_flash(:error, "You don't have access to this session.")
+        |> Phoenix.LiveView.push_navigate(to: "/")
+    end
+  end
+
+  defp do_hydrate(socket, session_id) do
     agents =
       Rho.Agent.Registry.list_all(session_id)
       |> Enum.map(fn info ->
@@ -151,22 +165,36 @@ defmodule RhoWeb.Session.SessionCore do
   def ensure_session(socket, session_id, opts \\ []) do
     agent_name = Keyword.get(opts, :agent_name)
     id_prefix = Keyword.get(opts, :id_prefix, "lv")
-    workspace = Keyword.get(opts, :workspace, File.cwd!())
+    user_id = current_user_id(socket)
 
     session_start_opts =
       session_opts(socket)
       |> then(fn o -> if agent_name, do: Keyword.put(o, :agent, agent_name), else: o end)
 
+    sid =
+      session_id ||
+        "#{id_prefix}_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+
+    workspace = Keyword.get(opts, :workspace, user_workspace_for(user_id, sid))
+
+    {:ok, _handle} =
+      Rho.Session.start([session_id: sid, workspace: workspace] ++ session_start_opts)
+
+    init_threads(sid, workspace)
+
     if session_id do
-      {:ok, _handle} = Rho.Session.start([session_id: session_id] ++ session_start_opts)
-      init_threads(session_id, workspace)
-      {session_id, socket}
+      {sid, socket}
     else
-      new_sid = "#{id_prefix}_#{System.unique_integer([:positive])}"
-      {:ok, _handle} = Rho.Session.start([session_id: new_sid] ++ session_start_opts)
-      init_threads(new_sid, workspace)
-      {new_sid, assign(socket, :session_id, new_sid)}
+      {sid, assign(socket, :session_id, sid)}
     end
+  end
+
+  # Per-user workspace path (or cwd fallback for anonymous/system code).
+  defp user_workspace_for(nil, _sid), do: File.cwd!()
+  defp user_workspace_for(user_id, sid), do: Rho.Paths.user_workspace(user_id, sid)
+
+  defp current_user_id(socket) do
+    get_in(socket.assigns, [:current_user, Access.key(:id)])
   end
 
   # -------------------------------------------------------------------
@@ -379,10 +407,41 @@ defmodule RhoWeb.Session.SessionCore do
   # Avatar helpers
   # -------------------------------------------------------------------
 
-  @doc "Load a user or agent avatar from ~/.rho by filename prefix."
-  def load_avatar(prefix) do
+  @doc """
+  Load the current user's avatar from their per-user directory.
+
+  Falls back to the legacy shared `~/.rho/avatar.*` path when no user
+  is authenticated (CLI / local dev) so existing single-user setups
+  keep working.
+  """
+  def load_user_avatar(socket) do
+    case current_user_id(socket) do
+      nil -> load_avatar_from(shared_avatar_dir(), "avatar")
+      user_id -> load_avatar_from(Rho.Paths.user_avatar_dir(user_id), "avatar")
+    end
+  end
+
+  @doc "Load the agent avatar from the shared data dir."
+  def load_agent_avatar do
+    load_avatar_from(shared_avatar_dir(), "agent_avatar")
+  end
+
+  @doc """
+  Save the current user's uploaded avatar into their per-user dir.
+  """
+  def save_user_avatar(socket, binary, media_type) do
+    dir =
+      case current_user_id(socket) do
+        nil -> shared_avatar_dir()
+        user_id -> Rho.Paths.user_avatar_dir(user_id)
+      end
+
+    save_avatar_to(dir, binary, media_type)
+  end
+
+  defp load_avatar_from(dir, prefix) do
     path =
-      Path.wildcard(Path.join(@avatar_dir, "#{prefix}.*"))
+      Path.wildcard(Path.join(dir, "#{prefix}.*"))
       |> Enum.find(&(Path.extname(&1) in ~w(.png .jpg .jpeg .gif .webp)))
 
     case path do
@@ -399,17 +458,11 @@ defmodule RhoWeb.Session.SessionCore do
     _ -> nil
   end
 
-  @doc "Load the agent avatar, checking CLI config first."
-  def load_agent_avatar do
-    load_avatar("agent_avatar")
-  end
-
-  @doc "Save a user avatar to ~/.rho."
-  def save_avatar(binary, media_type) do
-    File.mkdir_p!(@avatar_dir)
-    for old <- Path.wildcard(Path.join(@avatar_dir, "avatar.*")), do: File.rm(old)
+  defp save_avatar_to(dir, binary, media_type) do
+    File.mkdir_p!(dir)
+    for old <- Path.wildcard(Path.join(dir, "avatar.*")), do: File.rm(old)
     ext = media_type_to_ext(media_type)
-    File.write!(Path.join(@avatar_dir, "avatar.#{ext}"), binary)
+    File.write!(Path.join(dir, "avatar.#{ext}"), binary)
   end
 
   def media_type_to_ext("image/jpeg"), do: "jpg"

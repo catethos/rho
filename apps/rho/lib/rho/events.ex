@@ -38,10 +38,31 @@ defmodule Rho.Events do
   # Session-scoped subscriptions
   # -------------------------------------------------------------------
 
-  @doc "Subscribe the current process to all events for the given session."
+  @doc """
+  Subscribe the current process to all events for the given session.
+
+  System / internal callers only. LiveViews and other user-facing
+  callers must use `subscribe/2` so ownership is enforced — otherwise
+  user A can subscribe to user B's session events by guessing the id.
+  """
   @spec subscribe(String.t()) :: :ok
   def subscribe(session_id) when is_binary(session_id) do
     Phoenix.PubSub.subscribe(@pubsub, topic(session_id))
+  end
+
+  @doc """
+  Subscribe with ownership check. `user_id` must match the registered
+  owner of `session_id` (or the session must be unowned, in which case
+  this caller becomes the owner).
+
+  Returns `:ok` or `{:error, :forbidden}`. Pass `nil` for system code.
+  """
+  @spec subscribe(String.t(), Rho.Paths.user_id()) :: :ok | {:error, :forbidden}
+  def subscribe(session_id, user_id) when is_binary(session_id) do
+    case Rho.SessionOwners.authorize(session_id, user_id) do
+      :ok -> Phoenix.PubSub.subscribe(@pubsub, topic(session_id))
+      {:error, _} = err -> err
+    end
   end
 
   @doc "Unsubscribe the current process from a session's events."

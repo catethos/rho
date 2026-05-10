@@ -12,6 +12,7 @@ defmodule Rho.Stdlib do
     fs_write: Rho.Stdlib.Tools.FsWrite,
     fs_edit: Rho.Stdlib.Tools.FsEdit,
     web_fetch: Rho.Stdlib.Tools.WebFetch,
+    web_search: Rho.Stdlib.Tools.WebSearch,
     python: Rho.Stdlib.Tools.Python,
     skills: Rho.Stdlib.Skill.Plugin,
     multi_agent: Rho.Stdlib.Plugins.MultiAgent,

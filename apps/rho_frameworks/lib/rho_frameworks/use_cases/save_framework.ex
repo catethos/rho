@@ -42,6 +42,12 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
         table -> [table: table]
       end
 
+    # Apply any pending dedup resolutions BEFORE persisting the table.
+    # The dedup_preview table is session-scoped; if there are no rows
+    # (or no resolved rows), this is a no-op.
+    library_table = Keyword.get(opts, :table) || default_library_table(scope, library_id)
+    dedup_outcome = apply_dedup_resolutions(scope, library_id, library_table)
+
     case Workbench.save_framework(scope, library_id, opts) do
       {:ok, %{library: lib, saved_count: count} = result} ->
         {:ok,
@@ -50,12 +56,105 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
            library_name: lib.name,
            saved_count: count,
            draft_library_id: Map.get(result, :draft_library_id),
-           research_notes_saved: Map.get(result, :research_notes_saved, 0)
+           research_notes_saved: Map.get(result, :research_notes_saved, 0),
+           dedup_applied: dedup_outcome
          }}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Dedup-resolution application
+  # ──────────────────────────────────────────────────────────────────────
+
+  defp apply_dedup_resolutions(%Scope{session_id: sid}, library_id, library_table)
+       when is_binary(sid) and is_binary(library_id) do
+    case DataTable.get_rows(sid, table: "dedup_preview") do
+      rows when is_list(rows) and rows != [] ->
+        outcome = do_apply_resolutions(sid, library_id, library_table, rows)
+        # Clear the preview so a follow-up save_framework doesn't replay
+        # already-applied (and now stale) merges. We only clear when there
+        # was at least one row to apply — leaves the table alone otherwise.
+        DataTable.replace_all(sid, [], table: "dedup_preview")
+        outcome
+
+      _ ->
+        %{merged: 0, dismissed: 0, skipped: 0, errors: []}
+    end
+  end
+
+  defp apply_dedup_resolutions(_, _, _),
+    do: %{merged: 0, dismissed: 0, skipped: 0, errors: []}
+
+  defp do_apply_resolutions(sid, library_id, library_table, rows) do
+    initial = %{merged: 0, dismissed: 0, skipped: 0, errors: []}
+
+    Enum.reduce(rows, initial, fn row, acc ->
+      a_id = field(row, :skill_a_id)
+      b_id = field(row, :skill_b_id)
+      a_name = field(row, :skill_a_name)
+      b_name = field(row, :skill_b_name)
+      resolution = field(row, :resolution)
+
+      case {resolution, a_id, b_id} do
+        {res, a, b} when is_binary(a) and is_binary(b) and res in ["merge_a", "merge_b"] ->
+          {keep, absorb, absorbed_name} =
+            if res == "merge_a", do: {a, b, b_name}, else: {b, a, a_name}
+
+          case Library.merge_skills(absorb, keep) do
+            {:ok, _} ->
+              # Drop the absorbed row from the in-memory library table so
+              # the bulk_upsert that follows doesn't re-insert it under a
+              # new UUID, undoing the merge.
+              drop_absorbed_row(sid, library_table, absorbed_name)
+              %{acc | merged: acc.merged + 1}
+
+            {:error, reason} ->
+              %{acc | errors: [{a, b, reason} | acc.errors]}
+          end
+
+        {"keep_both", a, b} when is_binary(a) and is_binary(b) ->
+          case Library.dismiss_duplicate(library_id, a, b) do
+            {:ok, _} ->
+              %{acc | dismissed: acc.dismissed + 1}
+
+            {:error, reason} ->
+              %{acc | errors: [{a, b, reason} | acc.errors]}
+          end
+
+        _ ->
+          %{acc | skipped: acc.skipped + 1}
+      end
+    end)
+  end
+
+  defp drop_absorbed_row(_sid, nil, _name), do: :ok
+  defp drop_absorbed_row(_sid, _table, name) when not is_binary(name) or name == "", do: :ok
+
+  defp drop_absorbed_row(sid, table, name) do
+    DataTable.delete_by_filter(sid, %{skill_name: name}, table: table)
+    :ok
+  end
+
+  defp default_library_table(_, nil), do: nil
+
+  defp default_library_table(%Scope{organization_id: org_id}, library_id)
+       when is_binary(org_id) and is_binary(library_id) do
+    # Workbench.save_framework derives the same default. Mirroring it here
+    # lets us drop absorbed rows from the right table when the caller
+    # didn't pass an explicit table_name.
+    case Library.get_library(org_id, library_id) do
+      %{name: name} when is_binary(name) -> "library:" <> name
+      _ -> nil
+    end
+  end
+
+  defp default_library_table(_, _), do: nil
+
+  defp field(row, key) when is_atom(key) do
+    Map.get(row, key) || Map.get(row, Atom.to_string(key))
   end
 
   # ──────────────────────────────────────────────────────────────────────

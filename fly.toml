@@ -1,6 +1,12 @@
 # Fly.io deployment config for the Rho umbrella.
 #
-# Database: external Neon Postgres (no volume needed).
+# Database: external Neon Postgres.
+# Volume: a single 1 GB volume (`rho_data`, mounted at /data) holds
+# per-user agent state — tapes, workspaces, avatars, and the
+# session_owners.jsonl ownership log. Without it, all that state is
+# wiped on every deploy. The single-volume design also pins the app to
+# one machine per region; revisit if you need horizontal scaling.
+#
 # Required secrets (set via `just set-secrets`):
 #   - NEON_URL (or DATABASE_URL)
 #   - SECRET_KEY_BASE
@@ -8,6 +14,7 @@
 #
 # First-time setup:
 #   fly apps create rho
+#   fly volumes create rho_data --region sin --size 1
 #   just set-secrets
 #   just deploy
 #   just migrate
@@ -22,15 +29,23 @@ primary_region = "sin"
   PORT = "8080"
   # Fly's internal proxy → app hop is IPv6-only; runtime.exs binds to ::.
   ELIXIR_ERL_OPTIONS = "+fnu"
+  # Where Rho.Paths persists per-user state. Must match the mount below.
+  RHO_DATA_DIR = "/data"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  # Scale-to-zero is safe with Neon — no local state on the machine.
+  # Suspend keeps the rootfs and the mounted volume intact, so resuming
+  # picks up agent state where it left off.
   auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
   processes = ["app"]
+
+[[mounts]]
+  source = "rho_data"
+  destination = "/data"
+  initial_size = "1gb"
 
 [[vm]]
   cpu_kind = "shared"

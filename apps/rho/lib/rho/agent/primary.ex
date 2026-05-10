@@ -127,16 +127,24 @@ defmodule Rho.Agent.Primary do
   @doc """
   Find or start the primary agent for `session_id`. Also ensures the
   session EventLog GenServer is running. Returns `{:ok, pid}`.
+
+  When `:user_id` is supplied, enforces session ownership via
+  `Rho.SessionOwners` — a session can only be resumed by the user who
+  first created it. Pass `nil` (or omit) for system contexts (CLI, mix
+  tasks, internal background work).
   """
-  @spec ensure_started(String.t(), keyword()) :: {:ok, pid()} | {:error, :invalid_session_id}
+  @spec ensure_started(String.t(), keyword()) ::
+          {:ok, pid()} | {:error, :invalid_session_id | :forbidden}
   def ensure_started(session_id, opts \\ []) do
-    with :ok <- validate_session_id(session_id) do
+    with :ok <- validate_session_id(session_id),
+         :ok <- Rho.SessionOwners.authorize(session_id, opts[:user_id]) do
       do_ensure_started(session_id, opts)
     end
   end
 
   defp do_ensure_started(session_id, opts) do
-    workspace = opts[:workspace] || File.cwd!()
+    workspace = opts[:workspace] || default_workspace(opts[:user_id], session_id)
+    File.mkdir_p!(workspace)
     result = find_or_start_worker(session_id, workspace, opts)
 
     case result do
@@ -148,6 +156,12 @@ defmodule Rho.Agent.Primary do
         error
     end
   end
+
+  # When user_id is known, isolate per-user filesystem state under
+  # `<data_dir>/users/u<id>/workspaces/<sid>`. Falls back to cwd for
+  # CLI / mix tasks where there's no logged-in user.
+  defp default_workspace(nil, _session_id), do: File.cwd!()
+  defp default_workspace(user_id, session_id), do: Rho.Paths.user_workspace(user_id, session_id)
 
   defp find_or_start_worker(session_id, workspace, opts) do
     case whereis(session_id) do

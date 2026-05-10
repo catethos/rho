@@ -407,19 +407,16 @@ defmodule RhoFrameworks.Library do
   def resolve_library(org_id, library_name, version \\ nil)
 
   def resolve_library(org_id, library_name, nil) do
-    by_name =
-      from(l in Library,
-        where: l.organization_id == ^org_id and l.name == ^library_name,
-        order_by: [
-          desc: is_nil(l.version),
-          desc: l.is_default,
-          desc: l.published_at
-        ],
-        limit: 1
-      )
-      |> Repo.one()
-
-    by_name || get_library(org_id, library_name)
+    from(l in Library,
+      where: l.organization_id == ^org_id and l.name == ^library_name,
+      order_by: [
+        desc: is_nil(l.version),
+        desc: l.is_default,
+        desc: l.published_at
+      ],
+      limit: 1
+    )
+    |> Repo.one()
   end
 
   def resolve_library(org_id, library_name, version) do
@@ -616,7 +613,16 @@ defmodule RhoFrameworks.Library do
 
   defp bulk_upsert_skill_rows(library_id, attr_list) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
-    rows = Enum.map(attr_list, &build_insert_all_row(&1, library_id, now))
+
+    # Postgres rejects an INSERT ... ON CONFLICT batch when two rows
+    # share the conflict-target keys (cardinality_violation). Collapse
+    # by slug here — last write wins, matching how a sequential upsert
+    # would behave — so that "P&L Ownership" appearing twice in an
+    # imported sheet doesn't blow up the whole save.
+    rows =
+      attr_list
+      |> Enum.map(&build_insert_all_row(&1, library_id, now))
+      |> dedupe_rows_by_slug()
 
     rows
     |> Stream.chunk_every(@skill_insert_chunk)
@@ -630,6 +636,12 @@ defmodule RhoFrameworks.Library do
 
       returned
     end)
+  end
+
+  defp dedupe_rows_by_slug(rows) do
+    rows
+    |> Enum.reduce(%{}, fn row, acc -> Map.put(acc, row.slug, row) end)
+    |> Map.values()
   end
 
   defp skill_on_conflict_query do
@@ -1671,8 +1683,21 @@ defmodule RhoFrameworks.Library do
   end
 
   def merge_skills(source_id, target_id, opts \\ []) do
-    source = Repo.get!(Skill, source_id) |> Repo.preload(:library)
-    target = Repo.get!(Skill, target_id) |> Repo.preload(:library)
+    case {Repo.get(Skill, source_id), Repo.get(Skill, target_id)} do
+      {nil, _} ->
+        {:error, :source_not_found}
+
+      {_, nil} ->
+        {:error, :target_not_found}
+
+      {source, target} ->
+        do_merge_skills(Repo.preload(source, :library), Repo.preload(target, :library), opts)
+    end
+  end
+
+  defp do_merge_skills(source, target, opts) do
+    source_id = source.id
+    target_id = target.id
 
     with :ok <- ensure_mutable!(source.library),
          :ok <- ensure_mutable!(target.library) do

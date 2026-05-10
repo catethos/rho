@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Rho.Trace do
 
   @shortdoc "Analyze tape traces for sessions"
 
-  @tapes_dir Path.expand("~/.rho/tapes")
+  defp tapes_dir, do: Rho.Paths.tapes_dir()
 
   @impl Mix.Task
   def run(args) do
@@ -363,7 +363,7 @@ defmodule Mix.Tasks.Rho.Trace do
   end
 
   defp list_all_tapes do
-    case File.ls(@tapes_dir) do
+    case File.ls(tapes_dir()) do
       {:ok, files} ->
         files
         |> Enum.filter(&String.ends_with?(&1, ".jsonl"))

@@ -768,6 +768,132 @@ defmodule RhoWeb.InlineCSS do
       animation: blink 0.8s step-end infinite;
     }
 
+    /* Welcome card — entrance, shimmer, typewriter caret, auto-dim, watermark */
+    .welcome-card {
+      position: relative;
+      border-radius: 12px;
+      padding: 0.85rem 1.1rem 0.95rem;
+      background:
+        linear-gradient(135deg,
+          color-mix(in srgb, var(--teal) 7%, transparent) 0%,
+          color-mix(in srgb, var(--teal) 2%, transparent) 60%,
+          transparent 100%);
+      border: 1px solid color-mix(in srgb, var(--teal) 22%, var(--border));
+      overflow: hidden;
+      outline: none;
+      animation: welcome-enter 420ms cubic-bezier(.2,.8,.2,1) both;
+      transition: opacity .35s ease, transform .15s ease, box-shadow .15s ease;
+    }
+    .welcome-card.welcome-typed {
+      animation: welcome-dim 1.6s ease-out 8s forwards;
+    }
+    .welcome-card.welcome-already-shown,
+    .welcome-card.welcome-already-shown::before,
+    .welcome-card.welcome-already-shown .welcome-pill-dot {
+      animation: none !important;
+    }
+    .welcome-card.welcome-already-shown {
+      opacity: 0.55;
+    }
+    .welcome-card:hover,
+    .welcome-card:focus-within {
+      opacity: 1 !important;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 18px rgba(0,0,0,.07);
+    }
+    .welcome-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        120deg,
+        transparent 30%,
+        color-mix(in srgb, var(--teal) 18%, transparent) 50%,
+        transparent 70%);
+      transform: translateX(-100%);
+      pointer-events: none;
+      animation: welcome-shimmer 1.4s ease-out .15s 1 both;
+    }
+    .welcome-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      font-size: .62rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--teal);
+      padding: .15rem .55rem;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--teal) 12%, transparent);
+      margin-bottom: .55rem;
+      position: relative;
+      z-index: 1;
+    }
+    .welcome-pill-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--teal) 60%, transparent);
+      animation: welcome-pulse 1.6s ease-out 3 both;
+    }
+    .welcome-body {
+      position: relative;
+      z-index: 1;
+    }
+    .welcome-body p:first-child { margin-top: 0; }
+    .welcome-body p:last-child  { margin-bottom: 0; }
+    .welcome-watermark {
+      position: absolute;
+      bottom: -1.1rem;
+      right: 0.15rem;
+      font-size: 5rem;
+      line-height: 1;
+      font-weight: 700;
+      color: var(--teal);
+      opacity: .045;
+      pointer-events: none;
+      user-select: none;
+    }
+    .welcome-caret {
+      display: inline-block;
+      width: 6px;
+      height: 0.95em;
+      background: var(--teal);
+      vertical-align: text-bottom;
+      margin-left: 1px;
+      animation: welcome-blink .8s step-end infinite;
+    }
+
+    @keyframes welcome-enter {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes welcome-dim {
+      to { opacity: 0.55; }
+    }
+    @keyframes welcome-shimmer {
+      to { transform: translateX(100%); }
+    }
+    @keyframes welcome-pulse {
+      0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--teal) 60%, transparent); }
+      70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--teal) 0%,  transparent); }
+      100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--teal) 0%,  transparent); }
+    }
+    @keyframes welcome-blink {
+      50% { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .welcome-card,
+      .welcome-card.welcome-typed,
+      .welcome-card::before,
+      .welcome-pill-dot,
+      .welcome-caret {
+        animation: none !important;
+      }
+    }
+
     .btn-fork-from-here {
       display: inline-flex;
       align-items: center;

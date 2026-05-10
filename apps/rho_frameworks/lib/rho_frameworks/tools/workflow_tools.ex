@@ -19,6 +19,7 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   alias Rho.Stdlib.EffectDispatcher
   alias RhoFrameworks.DataTableSchemas
   alias RhoFrameworks.Library.Editor
+  alias RhoFrameworks.Roles
   alias RhoFrameworks.Scope
 
   alias RhoFrameworks.UseCases.{
@@ -26,6 +27,7 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     GenerateProficiency,
     ImportFromUpload,
     LoadSimilarRoles,
+    PickTemplate,
     SaveFramework
   }
 
@@ -323,9 +325,11 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       input = %{library_id: args[:library_id], table_name: args[:table]}
 
       case SaveFramework.run(input, scope) do
-        {:ok, %{saved_count: count, library_name: name, draft_library_id: draft_id}} ->
+        {:ok, %{saved_count: count, library_name: name, draft_library_id: draft_id} = result} ->
           msg = "Saved #{count} skill(s) to '#{name}'."
-          if draft_id, do: {:ok, msg <> " Draft created (#{draft_id})."}, else: {:ok, msg}
+          msg = if draft_id, do: msg <> " Draft created (#{draft_id}).", else: msg
+          msg = msg <> dedup_suffix(Map.get(result, :dedup_applied))
+          {:ok, msg}
 
         {:error, :not_found} ->
           {:error, "Library not found."}
@@ -344,6 +348,26 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       end
     end)
   end
+
+  defp dedup_suffix(nil), do: ""
+
+  defp dedup_suffix(%{merged: 0, dismissed: 0, errors: []}), do: ""
+
+  defp dedup_suffix(%{merged: m, dismissed: d, errors: errors}) do
+    parts = []
+    parts = if m > 0, do: ["merged #{m} pair(s)" | parts], else: parts
+    parts = if d > 0, do: ["dismissed #{d} pair(s)" | parts], else: parts
+
+    parts =
+      case errors do
+        [] -> parts
+        _ -> ["skipped #{length(errors)} (skill not found in target library)" | parts]
+      end
+
+    " Dedup: " <> Enum.join(Enum.reverse(parts), ", ") <> "."
+  end
+
+  defp dedup_suffix(_), do: ""
 
   # ── import_library_from_upload ─────────────────────────────────────────
 
@@ -428,6 +452,225 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       end)
 
     "Imported #{length(libs)} libraries with #{total} skills total: #{per_lib}."
+  end
+
+  # ── seed_framework_from_roles ─────────────────────────────────────────
+
+  tool :seed_framework_from_roles,
+       "Create a new skill library by unioning the skills from one or more existing role profiles. " <>
+         "Use after `analyze_role(action: \"find_similar\")` to combine ESCO occupations (or any saved roles) " <>
+         "into a fresh framework. Two ways to specify roles: (a) pass UUIDs in role_profile_ids_json, or " <>
+         "(b) set from_selected_candidates: \"true\" to read the user's checked rows from the " <>
+         "`role_candidates` table (the typical chat path — agent calls find_similar to populate the picker, " <>
+         "user checks rows in the UI, then this tool reads the picks). The new library is created as a " <>
+         "draft with skills deduplicated by exact skill ID; the tool surfaces the actual skills that " <>
+         "appeared in multiple picked roles. No semantic dedup runs — call `dedup_library(library_id: ...)` " <>
+         "explicitly if you want a review tab. Call `save_framework` afterwards to persist further edits." do
+    param(:name, :string, required: true, doc: "Name for the new framework")
+
+    param(:role_profile_ids_json, :string,
+      doc:
+        "Optional JSON array of role profile UUIDs to union, e.g. [\"<uuid-A>\", \"<uuid-B>\"]. " <>
+          "Required unless from_selected_candidates is true."
+    )
+
+    param(:from_selected_candidates, :string,
+      doc:
+        "Set to \"true\" to read role_ids from the user's selection in the `role_candidates` table " <>
+          "(populated by `analyze_role(find_similar)`). When true, role_profile_ids_json is ignored."
+    )
+
+    param(:description, :string, doc: "Optional description for the new library")
+
+    run(fn args, ctx ->
+      scope = Scope.from_context(ctx)
+
+      case resolve_seed_role_ids(args, scope) do
+        {:ok, ids} ->
+          input = %{
+            intake: %{
+              name: args[:name],
+              description: args[:description] || ""
+            },
+            template_role_ids: ids
+          }
+
+          case PickTemplate.run(input, scope) do
+            {:ok, %{library_id: library_id, table_name: tbl, row_count: n}} ->
+              # Persist the seeded skills to the DB so a follow-up
+              # `dedup_library(library_id)` (if the user calls it) has rows
+              # to detect against. The library is a draft; further edits
+              # in the workspace flow through `save_framework` as usual.
+              _ =
+                RhoFrameworks.Workbench.save_framework(scope, library_id,
+                  table: tbl,
+                  archive_research: false
+                )
+
+              # The picker has served its purpose. Drop the role_candidates
+              # tab so the workspace doesn't show a stale picker. No-op when
+              # the table doesn't exist (explicit-IDs path).
+              _ = RhoFrameworks.Workbench.drop_role_candidates(scope)
+
+              total_role_skills =
+                Roles.count_role_skills_for_profiles(scope.organization_id, ids)
+
+              duplicates =
+                Roles.list_cross_role_duplicates(scope.organization_id, ids)
+
+              build_seed_response(
+                args[:name],
+                tbl,
+                n,
+                ids,
+                total_role_skills,
+                duplicates
+              )
+
+            {:error, :no_template_selected} ->
+              {:error, "role_profile_ids_json must include at least one UUID."}
+
+            {:error, :missing_framework_name} ->
+              {:error, "name is required."}
+
+            {:error, reason} ->
+              {:error, "seed_framework_from_roles failed: #{inspect(reason)}"}
+          end
+
+        {:error, msg} ->
+          {:error, msg}
+      end
+    end)
+  end
+
+  defp parse_role_ids(raw) when is_binary(raw) do
+    case Jason.decode(raw) do
+      {:ok, ids} when is_list(ids) and ids != [] ->
+        if Enum.all?(ids, &(is_binary(&1) and &1 != "")) do
+          {:ok, ids}
+        else
+          {:error, "role_profile_ids_json entries must all be non-empty UUID strings."}
+        end
+
+      {:ok, []} ->
+        {:error, "role_profile_ids_json must be a non-empty JSON array."}
+
+      {:ok, _} ->
+        {:error, "role_profile_ids_json must be a JSON array, not a scalar or object."}
+
+      {:error, _} ->
+        {:error, "role_profile_ids_json is not valid JSON."}
+    end
+  end
+
+  defp parse_role_ids(_), do: {:error, "role_profile_ids_json is required."}
+
+  # Resolve role_ids from either the explicit JSON or the user's selection
+  # in the role_candidates table. Selection wins when from_selected_candidates
+  # is "true" — the chat-side path users are walked through.
+  defp resolve_seed_role_ids(args, scope) do
+    case truthy?(args[:from_selected_candidates]) do
+      true ->
+        case RhoFrameworks.Workbench.read_selected_candidate_role_ids(scope) do
+          [] ->
+            {:error,
+             "from_selected_candidates: true was passed, but no rows are checked in the " <>
+               "role_candidates table. Ask the user to check the rows they want, then retry — " <>
+               "or pass role_profile_ids_json explicitly."}
+
+          ids ->
+            {:ok, ids}
+        end
+
+      false ->
+        parse_role_ids(args[:role_profile_ids_json])
+    end
+  end
+
+  defp truthy?(v) when v in [true, "true", "1", 1], do: true
+  defp truthy?(_), do: false
+
+  @max_dedup_lines 25
+
+  defp build_seed_response(name, library_table, unique_count, role_ids, total, duplicates) do
+    role_count = length(role_ids)
+
+    base =
+      "Created framework '#{name}' (table '#{library_table}') with #{unique_count} unique skill(s) from #{role_count} role(s)."
+
+    dedup_section =
+      cond do
+        duplicates != [] ->
+          render_dedup_section(duplicates)
+
+        total > 0 ->
+          "All #{total} skill reference(s) across the picked roles are distinct — no overlap to collapse. " <>
+            "If you suspect semantically-similar skills, call `dedup_library(library_id: ...)`."
+
+        true ->
+          ""
+      end
+
+    text =
+      case dedup_section do
+        "" -> base
+        section -> base <> "\n\n" <> section
+      end
+
+    library_effect = %Rho.Effect.Table{
+      table_name: library_table,
+      schema_key: :skill_library,
+      mode_label: "Skill Library — #{name}",
+      rows: [],
+      skip_write?: true
+    }
+
+    %Rho.ToolResponse{
+      text: text,
+      effects: [%Rho.Effect.OpenWorkspace{key: :data_table}, library_effect]
+    }
+  end
+
+  # Render the list of skills that appeared in multiple picked roles.
+  # Truncates long lists at @max_dedup_lines with a count suffix.
+  defp render_dedup_section(duplicates) do
+    count = length(duplicates)
+
+    {head, tail_count} =
+      if count > @max_dedup_lines do
+        {Enum.take(duplicates, @max_dedup_lines), count - @max_dedup_lines}
+      else
+        {duplicates, 0}
+      end
+
+    lines = Enum.map(head, &render_dedup_line/1)
+
+    body = Enum.join(lines, "\n")
+
+    suffix =
+      if tail_count > 0,
+        do: "\n…and #{tail_count} more.",
+        else: ""
+
+    header =
+      "#{count} skill(s) appeared in multiple picked roles and were collapsed at union time:"
+
+    footer =
+      "If you suspect semantically-similar skills also need review, call " <>
+        "`dedup_library(library_id: ...)` to open a review tab."
+
+    "#{header}\n#{body}#{suffix}\n\n#{footer}"
+  end
+
+  defp render_dedup_line(%{skill_name: name, role_names: roles}) do
+    role_text =
+      roles
+      |> List.wrap()
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.sort()
+      |> Enum.join(", ")
+
+    "- \"#{name}\" — in #{role_text}"
   end
 
   # ── clarify ────────────────────────────────────────────────────────────

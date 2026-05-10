@@ -9,8 +9,10 @@ defmodule Rho.Sandbox do
 
   require Logger
 
-  @sandbox_dir Path.expand("~/.rho/sandboxes")
   @mount_ready_timeout 10_000
+
+  # Resolved at runtime so `RHO_DATA_DIR` overrides reach this path too.
+  defp sandbox_dir, do: Rho.Paths.sandboxes_dir()
 
   defstruct [:session_id, :db_path, :mount_path, :workspace, :port, :agent_id]
 
@@ -223,7 +225,7 @@ defmodule Rho.Sandbox do
   end
 
   defp db_dir(session_id) do
-    Path.join(@sandbox_dir, to_string(session_id))
+    Path.join(sandbox_dir(), to_string(session_id))
   end
 
   defp sanitize_id(session_id) do

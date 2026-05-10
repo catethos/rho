@@ -13,7 +13,7 @@ defmodule RhoFrameworks.LLM.SemanticDuplicates do
   recall on smaller models that otherwise drift conservative.
   """
   use RhoBaml.Function,
-    client: "OpenRouter",
+    client: "OpenRouterHaiku",
     params: [focal: :string, candidates: :string]
 
   @schema Zoi.struct(__MODULE__, %{

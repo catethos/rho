@@ -12,7 +12,12 @@ defmodule Rho.Tape.Store do
 
   @table :rho_tape_store
   @index_table :rho_tape_index
-  @tapes_dir Path.expand("~/.rho/tapes")
+
+  # Tapes dir is resolved at runtime via `Rho.Paths.tapes_dir/0` so the
+  # `RHO_DATA_DIR` env var (used in prod to point at a persistent
+  # volume) takes effect. Compile-time `Path.expand("~/.rho/tapes")`
+  # would bake in the build-machine's home directory.
+  defp tapes_dir, do: Rho.Paths.tapes_dir()
 
   # -- Public API --
 
@@ -118,7 +123,7 @@ defmodule Rho.Tape.Store do
   def init(_opts) do
     table = :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
     :ets.new(@index_table, [:named_table, :bag, :public, read_concurrency: true])
-    File.mkdir_p!(@tapes_dir)
+    File.mkdir_p!(tapes_dir())
     load_all_tapes()
     {:ok, %{table: table}}
   end
@@ -175,7 +180,7 @@ defmodule Rho.Tape.Store do
   end
 
   defp tape_path(tape_name) do
-    Path.join(@tapes_dir, encode_tape_name(tape_name) <> ".jsonl")
+    Path.join(tapes_dir(), encode_tape_name(tape_name) <> ".jsonl")
   end
 
   # URL-encode only `%` and `/` so hierarchical tape names like
@@ -201,7 +206,7 @@ defmodule Rho.Tape.Store do
   end
 
   defp load_all_tapes do
-    case File.ls(@tapes_dir) do
+    case File.ls(tapes_dir()) do
       {:ok, files} ->
         files
         |> Enum.filter(&String.ends_with?(&1, ".jsonl"))
@@ -214,7 +219,7 @@ defmodule Rho.Tape.Store do
 
   defp load_tape_file(filename) do
     tape_name = filename |> String.trim_trailing(".jsonl") |> decode_tape_name()
-    path = Path.join(@tapes_dir, filename)
+    path = Path.join(tapes_dir(), filename)
 
     {max_id, last_anchor_id} =
       path

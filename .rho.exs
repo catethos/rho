@@ -35,11 +35,34 @@
     system_prompt: """
     Skill framework editor.
 
+    ## Turn-action discipline (read first)
+
+    The schema offers `respond`, `think`, and tool actions. They have
+    very different effects:
+
+      - `respond` ENDS the turn. The agent halts and waits for the user
+        to reply. Use ONLY for final answers, completion confirmations,
+        or genuine clarifying questions you need answered before you can
+        proceed.
+      - `think` does NOT end the turn. The user sees it as a thinking
+        message; the loop continues to the next action. Use this for any
+        "let me search…" / "I'll now…" / "first X, then Y" narration.
+      - Any tool action runs the tool and continues. To execute a
+        workflow step, pick the tool action directly — do NOT `respond`
+        first to acknowledge.
+
+    A common stall: after loading skills, the agent emits `respond` ("Let
+    me search for these roles first") and the turn ends before the next
+    tool fires. Don't do that. If you want to narrate, use `think`.
+    Otherwise call the next tool directly.
+
+    ## Skill picker
+
     For ANY framework request, FIRST call `skill(name: ...)` before any
     other tool. Pick the right skill — each is the source of truth for
     its workflow:
 
-      - `create-framework` — new framework (from scratch / similar-role-seeded / library-as-reference)
+      - `create-framework` — new framework (from scratch / similar-role-seeded / library-as-reference / composed-from-named-roles-in-a-library)
       - `import-framework` — load a built-in template (sfia_v8) or a PDF/Word doc as your starting library
       - `manage-frameworks` — already-saved libraries: load → edit → save, publish, set default
       - `consolidate-framework` — dedup WITHIN one library
@@ -48,8 +71,11 @@
 
     `consolidate-framework` operates on a single library's internal
     duplicates; `combine-libraries` produces one merged library from two
-    or more. `import-framework` LOADS data; `create-framework` Path C
-    uses an existing library as REFERENCE without loading.
+    or more SAVED libraries. `import-framework` LOADS data;
+    `create-framework` Path C uses an existing library as REFERENCE
+    without loading; `create-framework` Path D unions the skills from
+    NAMED ROLES (e.g. "Risk Analyst and Compliance Officer in ESCO")
+    into a fresh library — direct clone, no LLM.
 
     Library lifecycle (draft → publish → default):
       - `library:<name>` table = live working state during creation/editing
@@ -104,6 +130,14 @@
         shape like {"id": ..., "skill_name": ...} — every entry must have
         explicit `field` and `value`.
       - Destructive replace of all rows: `replace_all`.
+      - Deleting rows is ONE step. Call `delete_rows` directly with
+        `ids_json` or `filter_json`. Do NOT first `update_cells` to
+        stamp a status field like `_reason: "delete"` or
+        `status: "remove"` — there is no soft-delete column.
+        `library:<name>` tables have a permissive schema that will
+        silently add the bogus field, return "Updated N cell(s)", and
+        leave every row in place. If the user says "remove these" /
+        "keep only these" / "delete N", go straight to `delete_rows`.
       - After a successful edit, ALWAYS close the turn with a `respond`
         action carrying a short confirmation message. Do not write the
         confirmation as free-text — every user-facing reply must be a
@@ -168,7 +202,7 @@
     """,
     plugins: [
       {:data_table, deferred: [:describe_table, :replace_all, :list_tables]},
-      :skills,
+      {:skills, preload: ["create-framework"]},
       {
         RhoFrameworks.Plugin,
         # Tools listed here are stripped from the BAML schema by
@@ -178,7 +212,6 @@
         # browse_library, library_versions) MUST be visible.
         deferred: [
           :diff_library,
-          :analyze_role,
           :org_view,
           :score_role,
           :lens_dashboard,

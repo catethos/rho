@@ -77,14 +77,23 @@ defmodule RhoBaml.SchemaWriter do
 
     reserved = [
       {"RespondAction", "respond",
-       "Reply directly to the user. The ONLY way to send text to the user — use it for answers, " <>
-         "summaries, follow-up questions, error reports, and clarification requests. " <>
-         "When you are missing information, blocked, or uncertain, ALWAYS use respond " <>
-         "(set kind to question, error, or clarification) instead of free-text — " <>
-         "never write user-facing prose outside this action.",
+       "Reply directly to the user. CALLING THIS ENDS THE TURN — the agent cannot " <>
+         "continue with tool calls after `respond` until the user replies. " <>
+         "Use only for: a final answer after a workflow finishes, a completion " <>
+         "confirmation, or a genuine clarifying question you need an answer to before " <>
+         "you can proceed. Set `kind` to question / error / clarification when applicable. " <>
+         "DO NOT use `respond` for progress narration ('let me search', 'I'll check', " <>
+         "'searching now') — that ends the turn before the next tool fires and the " <>
+         "agent stalls waiting for user input. To narrate intent without ending the turn, " <>
+         "use `think` instead, then call the tool action on the next turn.",
        [{"message", "string"}, {"kind", "string?"}]},
-      {"ThinkAction", "think", "Record an internal reasoning step without external action.",
-       [{"thought", "string"}]}
+      {"ThinkAction", "think",
+       "Narrate progress or reason about the next step WITHOUT ending the turn. " <>
+         "The user sees this rendered as a thinking-style message in the chat. " <>
+         "Use this for any 'let me…' / 'I'll now…' / 'first I'll search, then…' " <>
+         "narration when you intend to call a tool on the next turn. " <>
+         "Prefer `think` over `respond` whenever you plan to keep working — " <>
+         "`think` continues the loop, `respond` halts it.", [{"thought", "string"}]}
     ]
 
     tool_variants =
