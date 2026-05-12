@@ -57,7 +57,7 @@ Key modules:
 
 ### `apps/rho_stdlib/` — Built-in Tools & Plugins
 
-Deps: `rho` (in_umbrella), `floki`, `pythonx`, `erlang_python`, `xlsxir`, `live_render`, `yaml_elixir`.
+Deps: `rho` (in_umbrella), `floki`, `erlang_python`, `xlsxir`, `live_render`, `yaml_elixir`.
 
 Module namespaces:
 - `Rho.Stdlib` — plugin module map and `resolve_plugin/1`

@@ -24,7 +24,6 @@ defmodule RhoPython.MixProject do
 
   defp deps do
     [
-      {:pythonx, "~> 0.4"},
       {:erlang_python, "~> 2.3"}
     ]
   end

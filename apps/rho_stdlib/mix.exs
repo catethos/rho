@@ -31,7 +31,6 @@ defmodule RhoStdlib.MixProject do
       {:rho, in_umbrella: true},
       {:rho_python, in_umbrella: true},
       {:floki, "~> 0.37"},
-      {:pythonx, "~> 0.4"},
       {:erlang_python, "~> 2.3"},
       {:xlsxir, "~> 1.6"},
       {:live_render, "~> 0.5"},

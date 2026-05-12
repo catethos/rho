@@ -25,7 +25,6 @@ defmodule Rho.Stdlib.Application do
     {:ok, pid} = Supervisor.start_link(children, opts)
 
     maybe_setup_python()
-    maybe_setup_erlang_python()
     register_builtin_plugins()
 
     {:ok, pid}
@@ -60,18 +59,23 @@ defmodule Rho.Stdlib.Application do
   end
 
   defp maybe_setup_python do
-    if :python in all_plugin_names() do
-      RhoPython.declare_deps(Rho.AgentConfig.python_deps())
+    plugin_names = all_plugin_names()
+
+    if :python in plugin_names or :py_agent in plugin_names do
+      if :python in plugin_names do
+        RhoPython.declare_deps(default_python_repl_deps() ++ Rho.AgentConfig.python_deps())
+      end
+
+      if :py_agent in plugin_names do
+        py_agents_dir = Path.join(:code.priv_dir(:rho_stdlib) |> to_string(), "py_agents")
+        RhoPython.configure_py_agents(py_agents_dir, @py_agent_env_keys)
+      end
+
       :ok = RhoPython.await_ready()
     end
   end
 
-  defp maybe_setup_erlang_python do
-    if :py_agent in all_plugin_names() do
-      py_agents_dir = Path.join(:code.priv_dir(:rho_stdlib) |> to_string(), "py_agents")
-      RhoPython.start_erlang_python(py_agents_dir, @py_agent_env_keys)
-    end
-  end
+  defp default_python_repl_deps, do: ["matplotlib", "numpy", "pandas"]
 
   defp all_plugin_names do
     Rho.AgentConfig.agent_names()

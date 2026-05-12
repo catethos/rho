@@ -1,6 +1,6 @@
 defmodule Rho.Stdlib.Tools.Python do
   @moduledoc """
-  Python REPL tool powered by Pythonx.
+  Python REPL tool powered by `:erlang_python`.
 
   Provides a stateful Python interpreter per session. Variables and imports
   persist across calls within the same session, giving the agent a true REPL.

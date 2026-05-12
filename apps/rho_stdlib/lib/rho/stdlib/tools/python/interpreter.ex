@@ -2,47 +2,113 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
   @moduledoc """
   Per-session Python interpreter GenServer.
 
-  Maintains Python globals across tool calls within a session,
-  giving the agent a stateful REPL experience. Each session gets
-  its own interpreter identified by a session_id key.
+  Maintains Python state across tool calls within a session, giving
+  the agent a stateful Jupyter-style REPL. Each session gets its own
+  interpreter identified by a session_id key.
 
-  State is maintained on the Python side via a dedicated module
-  namespace, avoiding passing Pythonx.Object globals back through
-  the NIF (which can cause bus errors on some platforms).
+  State lives in a Python dict (`__rho_ns`) owned by this GenServer's
+  per-process erlang_python environment. Since erlang_python's
+  process-bound env is keyed by `{ContextPid, ErlangPid}`, terminating
+  the GenServer drops all Python state for that session.
   """
 
   use GenServer
 
   require Logger
 
-  # Bootstrap code creates a Python module registered in sys.modules,
-  # so we never need to pass Pythonx.Object globals back to the NIF.
-  @init_code """
-  import types as _t, sys as _s
-  _s.modules['__rho_ns'] = _t.ModuleType('__rho_ns')
-  _s.modules['__rho_ns'].__dict__['__builtins__'] = __builtins__
-  del _t, _s
+  # Bootstrap installs the per-session namespace dict + helper functions
+  # into the GenServer's process-bound Python env. Helpers are referenced
+  # by all subsequent eval calls.
+  @bootstrap_code """
+  import sys, ast, io, traceback
+
+  __rho_ns = {'__builtins__': __builtins__}
+
   try:
       import matplotlib
       matplotlib.use('Agg')
   except ImportError:
       pass
+
+
+  def __rho_exec(user_code):
+      captured = io.StringIO()
+      orig = sys.stdout
+      sys.stdout = captured
+      result = None
+      error = None
+      try:
+          tree = ast.parse(user_code, '<rho>')
+          if tree.body and isinstance(tree.body[-1], ast.Expr):
+              last = tree.body.pop()
+              if tree.body:
+                  exec(
+                      compile(
+                          ast.fix_missing_locations(
+                              ast.Module(body=tree.body, type_ignores=[])
+                          ),
+                          '<rho>',
+                          'exec',
+                      ),
+                      __rho_ns,
+                  )
+              result = eval(
+                  compile(
+                      ast.fix_missing_locations(ast.Expression(body=last.value)),
+                      '<rho>',
+                      'eval',
+                  ),
+                  __rho_ns,
+              )
+          else:
+              exec(compile(tree, '<rho>', 'exec'), __rho_ns)
+      except BaseException:
+          error = traceback.format_exc()
+      finally:
+          sys.stdout = orig
+
+      if error is not None:
+          return {'stdout': captured.getvalue(), 'error': error}
+
+      if isinstance(result, dict) and 'final' in result and 'result' in result:
+          final = result
+      elif result is not None:
+          final = {'final': True, 'result': result}
+      else:
+          final = None
+
+      return {'stdout': captured.getvalue(), 'result': final}
+
+
+  def __rho_capture_figures(output_dir):
+      paths = []
+      try:
+          import matplotlib.pyplot as plt
+          import time
+          ts = int(time.time() * 1000)
+          for i, fnum in enumerate(plt.get_fignums()):
+              fig = plt.figure(fnum)
+              p = output_dir + '/plot_' + str(ts) + '_' + str(i + 1) + '.png'
+              fig.savefig(p, format='png', bbox_inches='tight', dpi=150)
+              paths.append(p)
+          plt.close('all')
+      except ImportError:
+          pass
+      except Exception:
+          pass
+      return paths
   """
 
   # --- Public API ---
 
-  @doc "Start a named interpreter for the given session."
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-
     GenServer.start_link(__MODULE__, opts, name: via(session_id))
   end
 
   @doc """
-  Evaluate Python code in the session's interpreter.
-
-  Returns {:ok, output} or {:error, reason} where output includes
-  both captured stdout/stderr and the expression result.
+  Evaluate Python code in the session's interpreter. Returns
+  `{disposition, output}` where disposition is `:ok | :final | :error`.
   """
   def eval(session_id, code, workspace \\ nil) do
     case whereis(session_id) do
@@ -72,168 +138,104 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
   @impl true
   def init(opts) do
     workspace = Keyword.get(opts, :workspace)
-    {:ok, %{initialized: false, workspace: workspace}}
+    # Pin a context so every call from this GenServer routes to the
+    # same erlang_python worker — that's where __rho_ns lives.
+    ctx = :py.context()
+    {:ok, %{initialized?: false, workspace: workspace, ctx: ctx}}
   end
 
   @impl true
   def handle_call({:eval, code}, _from, state) do
-    {state, init_error} = maybe_init_namespace(state)
+    case ensure_bootstrap(state) do
+      {:ok, state} ->
+        files_before =
+          if state.workspace, do: snapshot_files(state.workspace), else: %{}
 
-    case init_error do
-      nil ->
-        {result, new_state} = do_eval(code, state)
-        {:reply, result, new_state}
+        case :py.eval(state.ctx, "__rho_exec(__user_code)", %{__user_code: code}) do
+          {:ok, response} ->
+            image_paths = capture_matplotlib_figures(state)
 
-      error ->
-        {:reply, error, state}
+            changed_files =
+              if state.workspace,
+                do: detect_changed_files(state.workspace, files_before),
+                else: []
+
+            {:reply, build_reply(response, changed_files, image_paths), state}
+
+          {:error, reason} ->
+            {:reply, {:error, {:eval_failed, format_py_error(reason)}}, state}
+        end
+
+      {:error, _} = err ->
+        {:reply, err, state}
     end
   end
 
   # --- Private ---
 
-  defp maybe_init_namespace(%{initialized: true} = state), do: {state, nil}
+  defp ensure_bootstrap(%{initialized?: true} = state), do: {:ok, state}
 
-  defp maybe_init_namespace(state) do
-    Logger.debug("[PythonInterpreter] initializing Python namespace")
+  defp ensure_bootstrap(state) do
+    Logger.debug("[PythonInterpreter] bootstrapping namespace")
 
-    try do
-      Pythonx.eval(@init_code, %{})
+    case :py.exec(state.ctx, @bootstrap_code) do
+      :ok ->
+        case maybe_chdir(state) do
+          :ok -> {:ok, %{state | initialized?: true}}
+          {:error, _} = err -> err
+        end
 
-      # Set working directory if workspace is configured
-      if state.workspace do
-        chdir_code = "import os; os.chdir(#{python_string_literal(state.workspace)})"
-        Pythonx.eval(chdir_code, %{})
-      end
-
-      {%{state | initialized: true}, nil}
-    rescue
-      e ->
-        Logger.error("[PythonInterpreter] namespace init failed: #{Exception.message(e)}")
-        {state, {:error, {:init_failed, "Python init failed: #{Exception.message(e)}"}}}
+      {:error, reason} ->
+        Logger.error("[PythonInterpreter] bootstrap failed: #{inspect(reason)}")
+        {:error, {:init_failed, "Python bootstrap failed: #{format_py_error(reason)}"}}
     end
   end
 
-  defp do_eval(code, state) do
-    Logger.debug("[PythonInterpreter] eval start | code_bytes=#{byte_size(code)}")
-    Logger.debug("[PythonInterpreter] code:\n#{String.slice(code, 0, 500)}")
+  defp maybe_chdir(%{workspace: nil}), do: :ok
 
-    # Wrap user code to execute inside the persistent namespace.
-    # Uses ast to split out the last expression (if any) so we can
-    # capture its value — similar to how Jupyter/IPython works.
-    wrapped_code = """
-    import sys as __s, ast as __a
-    __rho_ns = __s.modules['__rho_ns'].__dict__
-    __rho_tree = __a.parse(#{python_string_literal(code)}, '<rho>')
-    __rho_result = None
-    if __rho_tree.body and isinstance(__rho_tree.body[-1], __a.Expr):
-        __rho_last = __rho_tree.body.pop()
-        if __rho_tree.body:
-            exec(compile(__a.fix_missing_locations(__a.Module(body=__rho_tree.body, type_ignores=[])), '<rho>', 'exec'), __rho_ns)
-        __rho_result = eval(compile(__a.fix_missing_locations(__a.Expression(body=__rho_last.value)), '<rho>', 'eval'), __rho_ns)
-    else:
-        exec(compile(__rho_tree, '<rho>', 'exec'), __rho_ns)
-    del __a, __rho_tree, __rho_ns
-    # Normalize to structured response: {"final": bool, "result": value}
-    # If the code already returned this structure, use it as-is.
-    # Otherwise, wrap the result with final=True (default: show to user).
-    if isinstance(__rho_result, dict) and "final" in __rho_result and "result" in __rho_result:
-        __rho_final = __rho_result
-    elif __rho_result is not None:
-        __rho_final = {"final": True, "result": __rho_result}
-    else:
-        __rho_final = None
-    del __rho_result, __s
-    __rho_final
-    """
-
-    # Snapshot files in workspace before execution to detect created/modified files
-    workspace = state.workspace
-    files_before = if workspace, do: snapshot_files(workspace), else: %{}
-
-    try do
-      {:ok, string_io} = StringIO.open("")
-
-      Logger.debug("[PythonInterpreter] calling Pythonx.eval...")
-
-      {result, _updated_globals} =
-        Pythonx.eval(wrapped_code, %{}, stdout_device: string_io)
-
-      Logger.debug("[PythonInterpreter] Pythonx.eval returned")
-
-      # Capture any open matplotlib figures and save as PNG files
-      image_paths = capture_matplotlib_figures(workspace)
-
-      {_, {_, stdout}} = StringIO.close(string_io)
-      Logger.debug("[PythonInterpreter] stdout_bytes=#{byte_size(stdout)}")
-
-      changed_files = if workspace, do: detect_changed_files(workspace, files_before), else: []
-
-      {disposition, output} =
-        format_output(String.trim_trailing(stdout), result, changed_files, image_paths)
-
-      {{disposition, output}, state}
-    rescue
-      e in [Pythonx.Error] ->
-        Logger.error("[PythonInterpreter] Pythonx.Error: #{Exception.message(e)}")
-        {{:error, {:eval_failed, Exception.message(e)}}, state}
-
-      e ->
-        Logger.error("[PythonInterpreter] unexpected error: #{Exception.message(e)}")
-        {{:error, {:eval_failed, "Python eval failed: #{Exception.message(e)}"}}, state}
+  defp maybe_chdir(%{workspace: workspace, ctx: ctx}) do
+    case :py.exec(
+           ctx,
+           "import os; os.chdir(#{python_string_literal(workspace)})"
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:init_failed, format_py_error(reason)}}
     end
   end
 
-  # Capture any open matplotlib figures, save as PNG files, then close them.
-  # Returns a list of file paths where images were saved.
-  defp capture_matplotlib_figures(workspace) do
-    output_dir = workspace || System.tmp_dir!()
+  defp capture_matplotlib_figures(state) do
+    output_dir = state.workspace || System.tmp_dir!()
 
-    capture_code = """
-    __rho_paths = []
-    try:
-        import matplotlib.pyplot as __rho_plt
-        import time as __rho_time
-        __rho_ts = int(__rho_time.time() * 1000)
-        for __rho_i, __rho_fnum in enumerate(__rho_plt.get_fignums()):
-            __rho_fig = __rho_plt.figure(__rho_fnum)
-            __rho_path = #{python_string_literal(output_dir)} + f"/plot_{__rho_ts}_{__rho_i + 1}.png"
-            __rho_fig.savefig(__rho_path, format='png', bbox_inches='tight', dpi=150)
-            __rho_paths.append(__rho_path)
-        __rho_plt.close('all')
-        del __rho_plt, __rho_time, __rho_ts, __rho_fig, __rho_fnum, __rho_i, __rho_path
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    __rho_paths
-    """
-
-    try do
-      {result, _} = Pythonx.eval(capture_code, %{})
-      decoded = Pythonx.decode(result)
-      if is_list(decoded), do: decoded, else: []
-    rescue
+    case :py.eval(
+           state.ctx,
+           "__rho_capture_figures(__output_dir)",
+           %{__output_dir: output_dir}
+         ) do
+      {:ok, paths} when is_list(paths) -> paths
       _ -> []
     end
   end
 
-  defp format_output(stdout, result, changed_files, image_paths) do
-    decoded = safe_decode(result)
+  defp build_reply(%{"error" => traceback, "stdout" => stdout}, _changed, _images) do
+    msg =
+      [stdout, traceback]
+      |> Enum.reject(&(&1 == "" or is_nil(&1)))
+      |> Enum.join("\n")
+
+    {:error, {:eval_failed, msg}}
+  end
+
+  defp build_reply(%{"result" => result, "stdout" => stdout}, changed_files, image_paths) do
+    stdout = String.trim_trailing(stdout || "")
     image_tags = Enum.map(image_paths, &"[Plot saved: #{&1}]")
 
-    case decoded do
+    case result do
       %{"final" => final?, "result" => value} when is_boolean(final?) ->
         format_structured_output(stdout, final?, value, changed_files, image_tags)
 
       _ ->
-        format_plain_output(stdout, decoded, changed_files, image_tags)
+        format_plain_output(stdout, result, changed_files, image_tags)
     end
-  end
-
-  defp safe_decode(result) do
-    Pythonx.decode(result)
-  rescue
-    _ -> nil
   end
 
   defp format_structured_output(stdout, final?, value, changed_files, image_tags) do
@@ -252,11 +254,11 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     {disposition, Enum.join(parts, "\n")}
   end
 
-  defp format_plain_output(stdout, decoded, changed_files, image_tags) do
+  defp format_plain_output(stdout, result, changed_files, image_tags) do
     parts =
       [
         if(stdout != "", do: stdout),
-        if(decoded != nil, do: inspect(decoded)),
+        if(result != nil and result != :none, do: inspect(result)),
         format_changed_files(changed_files)
       ]
       |> Enum.reject(&is_nil/1)
@@ -273,15 +275,12 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
   defp format_changed_files([]), do: nil
   defp format_changed_files(files), do: "Files written: #{Enum.join(files, ", ")}"
 
-  # Escape user code into a Python triple-quoted raw string literal.
-  defp python_string_literal(code) do
-    # Use a triple-quoted string with backslash escaping for safety.
-    escaped =
-      code
-      |> String.replace("\\", "\\\\")
-      |> String.replace("\"\"\"", "\\\"\\\"\\\"")
+  defp format_py_error({exc_type, msg}), do: "#{exc_type}: #{msg}"
+  defp format_py_error(other), do: inspect(other)
 
-    ~s("""#{escaped}""")
+  defp python_string_literal(s) when is_binary(s) do
+    escaped = s |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+    "\"" <> escaped <> "\""
   end
 
   defp start_and_eval(session_id, code, workspace) do
@@ -300,9 +299,7 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     end
   end
 
-  defp via(session_id) do
-    {:via, Registry, {Rho.PythonRegistry, session_id}}
-  end
+  defp via(session_id), do: {:via, Registry, {Rho.PythonRegistry, session_id}}
 
   defp whereis(session_id) do
     case Registry.lookup(Rho.PythonRegistry, session_id) do
@@ -311,7 +308,6 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     end
   end
 
-  # Snapshot mtime of files in the workspace directory (non-recursive, top-level only)
   defp snapshot_files(workspace) do
     case File.ls(workspace) do
       {:ok, entries} ->
@@ -329,9 +325,7 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     end
   end
 
-  # Return list of filenames that were created or modified since the snapshot
   defp detect_changed_files(workspace, before) do
-    # Reuse snapshot_files to get current state, then diff against before
     after_snapshot = snapshot_files(workspace)
 
     after_snapshot

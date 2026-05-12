@@ -1,24 +1,37 @@
 defmodule RhoPython.Server do
   @moduledoc false
-  # Serializes pythonx + erlang_python initialization across consumer apps.
+  # Owns the umbrella's Python runtime lifecycle.
   #
-  # Pythonx init is lazy: `declare_deps/1` only collects deps; the first
-  # `await_ready/1` aggregates them into a single pyproject and runs
-  # `Pythonx.uv_init/1`. Subsequent calls are cheap (`:persistent_term`
-  # check). erlang_python init is similarly idempotent and gated by
-  # `start_erlang_python/2`.
+  # `declare_deps/1` aggregates pip deps from any number of consumer
+  # apps. `configure_py_agents/2` registers an optional sys.path dir +
+  # env-var export list (used by the `:py_agent` plugin). Both are
+  # idempotent and may be called in any order before init.
+  #
+  # `await_ready/1` runs the (potentially slow) venv build on first
+  # call: it ensures `:erlang_python` is started, creates a uv-managed
+  # venv at `RHO_PY_VENV` (or a default cache path) if missing,
+  # installs declared deps with `uv pip install`, activates the venv
+  # under erlang_python, and applies the py_agents configuration.
+  # Subsequent calls return `:ok` immediately via `:persistent_term`.
 
   use GenServer
 
   require Logger
 
-  @ready_key {__MODULE__, :pythonx_ready?}
+  @ready_key {__MODULE__, :ready?}
 
   # --- Public API ---
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
   def declare_deps(deps), do: GenServer.call(__MODULE__, {:declare_deps, deps})
+
+  def configure_py_agents(py_agents_dir, env_keys),
+    do:
+      GenServer.call(
+        __MODULE__,
+        {:configure_py_agents, py_agents_dir, env_keys}
+      )
 
   def ready?, do: :persistent_term.get(@ready_key, false)
 
@@ -27,26 +40,24 @@ defmodule RhoPython.Server do
       :ok
     else
       try do
-        GenServer.call(__MODULE__, :init_pythonx, timeout)
+        GenServer.call(__MODULE__, :init, timeout)
       catch
         :exit, {:timeout, _} -> {:error, :timeout}
       end
     end
   end
 
-  def start_erlang_python(py_agents_dir, env_keys),
-    do:
-      GenServer.call(
-        __MODULE__,
-        {:start_erlang_python, py_agents_dir, env_keys},
-        :timer.minutes(1)
-      )
-
   # --- GenServer ---
 
   @impl true
   def init(_) do
-    {:ok, %{deps: MapSet.new(), pythonx_initialized?: false, erlang_python_initialized?: false}}
+    {:ok,
+     %{
+       deps: MapSet.new(),
+       py_agents_dir: nil,
+       env_keys: [],
+       initialized?: false
+     }}
   end
 
   @impl true
@@ -54,79 +65,94 @@ defmodule RhoPython.Server do
     {:reply, :ok, %{state | deps: MapSet.union(state.deps, MapSet.new(deps))}}
   end
 
-  def handle_call(:init_pythonx, _from, %{pythonx_initialized?: true} = state),
+  def handle_call({:configure_py_agents, dir, keys}, _from, state) do
+    {:reply, :ok, %{state | py_agents_dir: dir, env_keys: keys}}
+  end
+
+  def handle_call(:init, _from, %{initialized?: true} = state),
     do: {:reply, :ok, state}
 
-  def handle_call(:init_pythonx, _from, state) do
-    deps = state.deps |> MapSet.to_list() |> Enum.sort()
-    do_init_pythonx(deps)
+  def handle_call(:init, _from, state) do
+    do_init(state)
     :persistent_term.put(@ready_key, true)
-    {:reply, :ok, %{state | pythonx_initialized?: true}}
+    {:reply, :ok, %{state | initialized?: true}}
   end
 
-  def handle_call(
-        {:start_erlang_python, _, _},
-        _from,
-        %{erlang_python_initialized?: true} = state
-      ),
-      do: {:reply, :ok, state}
+  # --- Init pipeline ---
 
-  def handle_call({:start_erlang_python, py_agents_dir, env_keys}, _from, state) do
-    do_init_erlang_python(py_agents_dir, env_keys)
-    {:reply, :ok, %{state | erlang_python_initialized?: true}}
-  end
-
-  # --- Pythonx ---
-
-  defp do_init_pythonx(deps) do
-    dep_lines = Enum.map_join(deps, "\n", &"  \"#{&1}\",")
-
-    pyproject = """
-    [project]
-    name = "rho-python"
-    version = "0.0.0"
-    requires-python = ">=3.11"
-    dependencies = [
-    #{dep_lines}
-    ]
-    """
-
-    Logger.info("Initializing Pythonx with deps: #{inspect(deps)}")
-    Pythonx.uv_init(pyproject)
-  end
-
-  # --- erlang_python ---
-
-  defp do_init_erlang_python(py_agents_dir, env_keys) do
+  defp do_init(state) do
     {:ok, _} = Application.ensure_all_started(:erlang_python)
 
-    :py.exec("""
-    import sys, os
-    if '#{py_agents_dir}' not in sys.path:
-        sys.path.insert(0, '#{py_agents_dir}')
-    """)
+    deps = state.deps |> MapSet.to_list() |> Enum.sort()
+    venv = resolve_venv_path()
 
-    export_env_keys_to_python(env_keys)
-
-    venv_path = System.get_env("RHO_PY_AGENT_VENV")
-
-    if venv_path do
-      :py.activate_venv(String.to_charlist(venv_path))
+    if deps != [] do
+      build_venv(venv, deps)
     end
 
-    Logger.info("erlang_python initialized, py_agents path: #{py_agents_dir}")
+    if venv_exists?(venv) do
+      :ok = :py.activate_venv(venv)
+    end
+
+    if state.py_agents_dir do
+      add_to_sys_path(state.py_agents_dir)
+      export_env_keys_to_python(state.env_keys)
+    end
+
+    Logger.info(
+      "RhoPython initialized: venv=#{venv}, deps=#{inspect(deps)}, py_agents_dir=#{inspect(state.py_agents_dir)}"
+    )
+  end
+
+  defp resolve_venv_path do
+    System.get_env("RHO_PY_VENV") ||
+      Path.join([cache_root(), "rho", "py_venv"])
+  end
+
+  defp cache_root do
+    case System.get_env("XDG_CACHE_HOME") do
+      nil ->
+        case System.user_home() do
+          nil -> System.tmp_dir!()
+          home -> Path.join(home, ".cache")
+        end
+
+      path ->
+        path
+    end
+  end
+
+  defp venv_exists?(venv), do: File.exists?(Path.join(venv, "pyvenv.cfg"))
+
+  defp build_venv(venv, deps) do
+    File.mkdir_p!(Path.dirname(venv))
+
+    unless venv_exists?(venv) do
+      Logger.info("Creating uv venv at #{venv}")
+      {out, status} = System.cmd("uv", ["venv", venv], stderr_to_stdout: true)
+      if status != 0, do: raise("uv venv failed (status=#{status}): #{out}")
+    end
+
+    Logger.info("Installing Python deps via uv: #{inspect(deps)}")
+
+    {out, status} =
+      System.cmd("uv", ["pip", "install", "--python", venv | deps], stderr_to_stdout: true)
+
+    if status != 0, do: raise("uv pip install failed (status=#{status}): #{out}")
+  end
+
+  defp add_to_sys_path(dir) do
+    :py.exec("""
+    import sys
+    if '#{dir}' not in sys.path:
+        sys.path.insert(0, '#{dir}')
+    """)
   end
 
   defp export_env_keys_to_python(env_keys) do
-    for key <- env_keys do
-      case System.get_env(key) do
-        nil ->
-          :ok
-
-        val ->
-          escaped = String.replace(val, "\\", "\\\\") |> String.replace("'", "\\'")
-          :py.exec("os.environ['#{key}'] = '#{escaped}'")
-      end
+    for key <- env_keys, val = System.get_env(key), val != nil do
+      escaped = val |> String.replace("\\", "\\\\") |> String.replace("'", "\\'")
+      :py.exec("import os; os.environ['#{key}'] = '#{escaped}'")
     end
   end
 end
