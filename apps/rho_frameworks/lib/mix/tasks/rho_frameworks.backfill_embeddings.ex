@@ -7,8 +7,8 @@ defmodule Mix.Tasks.RhoFrameworks.BackfillEmbeddings do
   re-running picks up only rows still in need.
 
   Embeddings are computed in batches via `RhoEmbeddings.embed_many/1`
-  against the configured backend (Pythonx in prod, Fake in tests). Empty
-  no-op if the embeddings server is disabled or not yet ready.
+  against the configured backend (OpenAI HTTP in prod, Fake in tests).
+  Empty no-op if the embeddings server is disabled or not yet ready.
 
   ## Targets
 

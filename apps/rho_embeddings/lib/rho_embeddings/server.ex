@@ -2,9 +2,9 @@ defmodule RhoEmbeddings.Server do
   @moduledoc false
   # Singleton GenServer owning the loaded embedding model.
   #
-  # All embed_many/1 calls funnel through here so they serialize against
-  # pythonx's GIL. The actual model load + eval calls go through the
-  # configured backend (Pythonx in prod, Fake in tests).
+  # All embed_many/1 calls funnel through here. The actual model load
+  # + eval calls go through the configured backend (OpenAI HTTP in
+  # prod, Fake in tests).
 
   use GenServer
 

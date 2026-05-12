@@ -1,15 +1,15 @@
 defmodule RhoEmbeddings do
   @moduledoc """
-  Local sentence-embedding service backed by `fastembed`.
+  Sentence-embedding service.
 
-  Wraps a singleton `RhoEmbeddings.Server` that owns the loaded
-  `TextEmbedding` model in pythonx globals. All `embed_many/1` calls
-  serialize through the server (matches pythonx's GIL contract).
+  Wraps a singleton `RhoEmbeddings.Server` that delegates to the
+  configured backend (OpenAI HTTP in prod, Fake in tests). All
+  `embed_many/1` calls serialize through the server.
 
-  Initialization is lazy: the server waits for `RhoPython.await_ready/1`
-  in `init/1`, then spawns an async `Task` to load the model. While the
-  load is in flight, `embed_many/1` returns `{:error, :not_ready}` and
-  `ready?/0` returns `false`.
+  Initialization is lazy: the server spawns an async `Task` in
+  `init/1` to load the backend. While the load is in flight,
+  `embed_many/1` returns `{:error, :not_ready}` and `ready?/0`
+  returns `false`.
   """
 
   alias RhoEmbeddings.Server

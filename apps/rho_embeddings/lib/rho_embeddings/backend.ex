@@ -1,14 +1,13 @@
 defmodule RhoEmbeddings.Backend do
   @moduledoc """
-  Behaviour wrapping the pythonx model load + embed calls.
+  Behaviour wrapping a model load + embed calls.
 
   Two implementations:
 
-    * `RhoEmbeddings.Backend.Pythonx` — production. Calls
-      `RhoPython.await_ready/1` then `Pythonx.eval/2` against the
-      configured `fastembed.TextEmbedding` model.
+    * `RhoEmbeddings.Backend.OpenAI` — production. HTTP-backed; calls
+      OpenAI's `/v1/embeddings` endpoint.
     * `RhoEmbeddings.Backend.Fake` — tests. Returns canned vectors so
-      the suite runs without downloading 210 MB of weights.
+      the suite runs without network access.
 
   Selected via `Application.get_env(:rho_embeddings, :backend, ...)`.
   """

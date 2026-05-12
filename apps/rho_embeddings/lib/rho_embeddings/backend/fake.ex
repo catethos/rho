@@ -1,7 +1,7 @@
 defmodule RhoEmbeddings.Backend.Fake do
   @moduledoc """
   Test backend. Returns deterministic 384-dim vectors derived from a
-  hash of the input text — no model download, no pythonx.
+  hash of the input text — no model download, no network.
 
   Tests can also pre-stash specific vectors for specific texts via
   `put_vector/2`, in which case those texts get the supplied vector
