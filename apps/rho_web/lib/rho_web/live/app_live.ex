@@ -75,7 +75,7 @@ defmodule RhoWeb.AppLive do
         max_file_size: 10_000_000
       )
       |> allow_upload(:files,
-        accept: ~w(.xlsx .csv),
+        accept: ~w(.xlsx .csv .pdf .docx .txt .md .markdown .html .htm),
         max_entries: 5,
         max_file_size: 10_000_000
       )
@@ -1674,9 +1674,8 @@ defmodule RhoWeb.AppLive do
           submit_to_session(socket, content, image_parts, has_text)
 
         true ->
-          # Files present — defer submit until parses complete.
-          socket = arm_parse_tasks(socket, content, image_parts, has_text, file_handles)
-          {:noreply, socket}
+          # Files present — defer submit only for file types that need parsing.
+          arm_parse_tasks(socket, content, image_parts, has_text, file_handles)
       end
     end
   end
@@ -2291,6 +2290,8 @@ defmodule RhoWeb.AppLive do
 
   # ── File upload parse pipeline helpers ───────────────────────────
 
+  @inline_total_preview_chars 16_000
+
   # Lifted from the original send_message body. Used both for the
   # no-files fast path and the post-parse submit.
   defp submit_to_session(socket, content, image_parts, has_text) do
@@ -2302,8 +2303,18 @@ defmodule RhoWeb.AppLive do
   defp arm_parse_tasks(socket, content, image_parts, has_text, file_handles) do
     sid = socket.assigns.session_id
 
+    {parse_handles, stored_handles} =
+      Enum.split_with(file_handles, &Rho.Stdlib.Uploads.Observer.parse_now?(&1.path))
+
+    stored_observations =
+      stored_handles
+      |> Enum.map(fn handle ->
+        {handle.id, {handle, Rho.Stdlib.Uploads.Observer.observe(sid, handle.id)}}
+      end)
+      |> Map.new()
+
     parsing =
-      file_handles
+      parse_handles
       |> Enum.map(fn handle ->
         task =
           Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
@@ -2320,38 +2331,100 @@ defmodule RhoWeb.AppLive do
       image_parts: image_parts,
       has_text: has_text,
       file_handles: file_handles,
-      observations: %{}
+      observations: stored_observations
     }
 
-    socket
-    |> assign(:files_parsing, parsing)
-    |> assign(:files_pending_send, pending)
+    socket =
+      socket
+      |> assign(:files_parsing, parsing)
+      |> assign(:files_pending_send, pending)
+
+    if parsing == %{} do
+      submit_with_uploads(socket)
+    else
+      {:noreply, socket}
+    end
   end
 
   defp submit_with_uploads(socket) do
     pending = socket.assigns.files_pending_send
 
-    enriched_text = build_enriched_message(pending.content, pending.observations)
+    enriched_text =
+      build_enriched_message(pending.content, pending.observations, pending.file_handles)
+
     enriched_has_text = enriched_text != ""
 
     socket = assign(socket, :files_pending_send, nil)
     submit_to_session(socket, enriched_text, pending.image_parts, enriched_has_text)
   end
 
-  defp build_enriched_message(content, observations) do
-    blocks =
-      observations
-      |> Map.values()
-      |> Enum.map(fn
-        {handle, {:ok, obs}} ->
-          obs.summary_text <> "\n[upload_id: #{handle.id}]"
+  defp build_enriched_message(content, observations, file_handles) do
+    {blocks, _remaining} =
+      Enum.map_reduce(file_handles, @inline_total_preview_chars, fn handle, remaining ->
+        {block, remaining} =
+          case Map.get(observations, handle.id) do
+            {^handle, {:ok, obs}} ->
+              render_upload_block(handle, obs, remaining)
 
-        {handle, {:error, reason}} ->
-          "[Upload error: #{handle.filename}: #{format_parse_error(reason)}]"
+            {_handle, {:ok, obs}} ->
+              render_upload_block(handle, obs, remaining)
+
+            {_handle, {:error, reason}} ->
+              {"[Upload error: #{handle.filename}: #{format_parse_error(reason)}]", remaining}
+
+            nil ->
+              {"[Upload error: #{handle.filename}: missing parse result]", remaining}
+          end
+
+        {block, remaining}
       end)
-      |> Enum.join("\n\n")
+
+    blocks = Enum.join(blocks, "\n\n")
 
     if content == "", do: blocks, else: content <> "\n\n" <> blocks
+  end
+
+  defp render_upload_block(handle, %{kind: :prose_text, summary_text: text}, remaining) do
+    {head, preview} = split_preview_block(text)
+
+    cond do
+      preview == nil ->
+        {text <> "\n[upload_id: #{handle.id}]", remaining}
+
+      remaining <= 0 ->
+        {head <> "\n[upload_id: #{handle.id}]", remaining}
+
+      true ->
+        preview_len = String.length(preview)
+        visible = String.slice(preview, 0, remaining)
+        suffix = if preview_len > remaining, do: "\n[Preview truncated.]", else: ""
+
+        block =
+          head <>
+            "\n\n--- Document preview ---\n" <>
+            visible <>
+            suffix <>
+            "\n--- End preview ---\n[upload_id: #{handle.id}]"
+
+        {block, max(remaining - preview_len, 0)}
+    end
+  end
+
+  defp render_upload_block(handle, %{summary_text: text}, remaining) do
+    {text <> "\n[upload_id: #{handle.id}]", remaining}
+  end
+
+  defp split_preview_block(text) do
+    case String.split(text, "\n\n--- Document preview ---\n", parts: 2) do
+      [head, rest] ->
+        case String.split(rest, "\n--- End preview ---", parts: 2) do
+          [preview, _tail] -> {head, preview}
+          _ -> {text, nil}
+        end
+
+      _ ->
+        {text, nil}
+    end
   end
 
   defp format_parse_error(:parse_timeout), do: "parsing exceeded 15s"

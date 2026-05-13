@@ -25,8 +25,8 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
         ReqLLM.tool(
           name: "ingest_document",
           description:
-            "Extract text or table data from an external file (Excel .xlsx, PDF .pdf, Word .docx). " <>
-              "Returns the extracted content as text or structured table data. " <>
+            "Extract table data from Excel/CSV or lightweight text from TXT/MD/HTML files. " <>
+              "PDF/DOCX inputs return stored-only summaries. " <>
               "Use the extracted content to populate the spreadsheet with add_rows.",
           parameter_schema: [
             file_path: [type: :string, required: true, doc: "absolute path"],

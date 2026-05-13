@@ -47,7 +47,7 @@ defmodule Rho.Stdlib.Plugins.Uploads do
         ReqLLM.tool(
           name: "observe_upload",
           description:
-            "Get a structured summary of an uploaded file: sheets, columns, sample rows, detected hints.",
+            "Get a summary of an uploaded file. Structured files include sheets, columns, sample rows, and detected hints.",
           parameter_schema: [
             upload_id: [type: :string, required: true, doc: "Upload handle id (upl_...)"]
           ],
@@ -107,13 +107,18 @@ defmodule Rho.Stdlib.Plugins.Uploads do
   end
 
   defp render_observation(obs) do
-    """
-    #{obs.summary_text}
+    base = "#{obs.summary_text}\n\nkind: #{obs.kind}"
 
-    kind: #{obs.kind}
-    sheet_strategy: #{obs.hints[:sheet_strategy]}
-    warnings: #{Enum.join(obs.warnings, "; ")}
-    """
+    base =
+      case obs.hints[:sheet_strategy] do
+        nil -> base
+        strategy -> base <> "\nsheet_strategy: #{strategy}"
+      end
+
+    case obs.warnings do
+      [] -> base
+      warnings -> base <> "\nwarnings: #{Enum.join(warnings, "; ")}"
+    end
   end
 
   defp format_bytes(n) when n < 1024, do: "#{n}B"

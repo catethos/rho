@@ -82,13 +82,18 @@ defmodule Rho.Recorder do
         })
       end)
 
+      meta_by_call_id = Map.new(entries[:tool_meta] || [], &{&1.call_id, &1})
+
       Enum.each(tool_results, fn %{tool_call_id: call_id, content: content} ->
-        append_with_tape_write(runtime, mem, tape, :tool_result, %{
-          "name" => "tool",
-          "status" => "ok",
-          "output" => extract_text(content),
-          "call_id" => call_id
-        })
+        meta = Map.get(meta_by_call_id, call_id, %{})
+
+        append_with_tape_write(
+          runtime,
+          mem,
+          tape,
+          :tool_result,
+          tool_result_payload(call_id, content, meta)
+        )
       end)
     end
 
@@ -112,6 +117,24 @@ defmodule Rho.Recorder do
   @spec rebuild_context(Runtime.t()) :: [map()]
   def rebuild_context(%Runtime{tape: %{name: tape}} = runtime) do
     [Rho.Runner.build_system_message(runtime) | Rho.Tape.Projection.build(tape)]
+  end
+
+  # Build a tape `:tool_result` payload, preserving the real tool name plus
+  # status/error_type when the strategy supplied them via `:tool_meta`. Falls
+  # back to a generic ok-shaped entry for callers that don't pass meta.
+  defp tool_result_payload(call_id, content, meta) do
+    base = %{
+      "name" => Map.get(meta, :name) || "tool",
+      "status" => meta |> Map.get(:status, :ok) |> Atom.to_string(),
+      "output" => extract_text(content),
+      "call_id" => call_id
+    }
+
+    case meta[:error_type] do
+      nil -> base
+      type when is_atom(type) -> Map.put(base, "error_type", Atom.to_string(type))
+      type -> Map.put(base, "error_type", to_string(type))
+    end
   end
 
   # -- Tape-write transformer pipeline --

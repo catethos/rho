@@ -25,6 +25,13 @@ defmodule RhoWeb.Router do
     end
   end
 
+  # Public tutorial — readable without an account
+  scope "/", RhoWeb do
+    pipe_through(:browser)
+
+    live("/tutorial", TutorialLive, :index)
+  end
+
   pipeline :rate_limit_login do
     plug(RhoWeb.Plugs.LoginRateLimit)
   end

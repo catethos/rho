@@ -61,6 +61,12 @@ defmodule Rho.TurnStrategy do
   Called by Runner after `Rho.ToolExecutor.run/5` completes. The returned
   map must include `:type`, `:assistant_msg`, `:tool_results`, and
   `:tool_calls` keys for the Runner to record and advance context.
+
+  May optionally include `:tool_meta` — a list of
+  `%{call_id, name, status, error_type}` maps, one per tool result. When
+  present, `Rho.Recorder` uses this to persist the real tool name plus
+  `status`/`error_type` onto the `:tool_result` tape entry instead of a
+  generic hardcoded `status: "ok"`.
   """
   @callback build_tool_step(
               tool_calls :: [tool_call()],

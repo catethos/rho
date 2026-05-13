@@ -4,7 +4,7 @@ defmodule Rho.Stdlib.Uploads.Observation do
   See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.2.
   """
 
-  @type kind :: :structured_table | :prose | :image | :unsupported
+  @type kind :: :structured_table | :pdf | :prose_text | :docx | :image | :unsupported
 
   @type sheet_summary :: %{
           name: String.t(),

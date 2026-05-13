@@ -43,6 +43,19 @@ defmodule Rho.Stdlib.Plugins.UploadsTest do
     assert text =~ "Recruitment Strategy"
   end
 
+  test "observe_upload summarizes PDF and read_upload stays table-only", %{sid: sid} do
+    {:ok, _pid} = Uploads.ensure_started(sid)
+    {:ok, h} = put_tmp(sid, "role.pdf", "%PDF-1.7\n")
+
+    {:ok, obs_text} = exec(:observe_upload, %{upload_id: h.id}, sid)
+    assert obs_text =~ "PDF uploaded"
+    assert obs_text =~ "kind: pdf"
+    assert obs_text =~ "extract_role_from_jd"
+
+    assert {:error, msg} = exec(:read_upload, %{upload_id: h.id}, sid)
+    assert msg =~ ":not_a_table"
+  end
+
   defp exec(name, args, sid) do
     [tool] =
       Plugin.tools([], %{session_id: sid})
@@ -61,6 +74,20 @@ defmodule Rho.Stdlib.Plugins.UploadsTest do
       mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       tmp_path: src,
       size: File.stat!(src).size
+    })
+  end
+
+  defp put_tmp(sid, filename, contents) do
+    dir = Path.join(System.tmp_dir!(), "rho_uploads_plugin_test")
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "#{System.unique_integer([:positive])}_#{filename}")
+    File.write!(path, contents)
+
+    Uploads.put(sid, %{
+      filename: filename,
+      mime: "application/octet-stream",
+      tmp_path: path,
+      size: File.stat!(path).size
     })
   end
 end

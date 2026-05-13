@@ -54,11 +54,22 @@ defmodule Rho.TurnStrategy.Direct do
         ReqLLM.Context.tool_result(r.call_id, r.result)
       end)
 
+    tool_meta =
+      Enum.map(results, fn r ->
+        %{
+          call_id: r.call_id,
+          name: r.name,
+          status: r.status,
+          error_type: Map.get(r[:event] || %{}, :error_type)
+        }
+      end)
+
     %{
       type: :tool_step,
       assistant_msg: assistant_msg,
       tool_results: tool_results,
       tool_calls: originals,
+      tool_meta: tool_meta,
       response_text: response_text
     }
   end

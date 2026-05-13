@@ -129,6 +129,61 @@ defmodule Rho.RunnerTest do
     end
   end
 
+  # -- Test: tape preserves tool error status + error_type --
+
+  describe "tape captures tool error shape" do
+    test "tool {:error, {type, msg}} persists as status=error + error_type on the tape" do
+      Service.ensure_bootstrap_anchor(@test_tape)
+
+      tool_resp =
+        tool_call_response("Let me check.", [{"call_e", "get_customer", %{"id" => "alice@x"}}])
+
+      final_resp = text_response("Sorry — you passed an email; call find_customer first.")
+
+      {_ref, _counter} = expect_stream_sequence([tool_resp, final_resp])
+
+      failing_tool = %{
+        tool:
+          ReqLLM.tool(
+            name: "get_customer",
+            description: "Fetch a customer by canonical ID.",
+            parameter_schema: [id: [type: :string, required: true, doc: "Customer ID"]],
+            callback: fn _args -> :ok end
+          ),
+        execute: fn _args, _ctx ->
+          {:error, {:invalid_customer_id, "Got an email — call find_customer_by_email first."}}
+        end
+      }
+
+      assert {:ok, _text} =
+               Rho.Runner.run("mock:model", [ReqLLM.Context.user("look up alice@x")],
+                 tape_name: @test_tape,
+                 tools: [failing_tool],
+                 on_event: fn _event -> :ok end,
+                 max_steps: 5
+               )
+
+      tape_entries = Store.read(@test_tape)
+
+      tool_result_entry =
+        Enum.find(tape_entries, fn
+          %{kind: :tool_result, payload: %{"call_id" => "call_e"}} -> true
+          _ -> false
+        end)
+
+      assert tool_result_entry, "expected a :tool_result entry on the tape"
+
+      assert tool_result_entry.payload["status"] == "error",
+             "tape lost the error status — got #{inspect(tool_result_entry.payload)}"
+
+      assert tool_result_entry.payload["error_type"] == "invalid_customer_id",
+             "tape lost the error_type"
+
+      assert tool_result_entry.payload["name"] == "get_customer",
+             "tape lost the real tool name"
+    end
+  end
+
   # -- Test: auto-compaction triggers when token threshold is exceeded --
 
   describe "auto-compaction" do

@@ -23,7 +23,7 @@ defmodule Rho.Stdlib.Uploads.Observer do
   alias Rho.Stdlib.Uploads
   alias Rho.Stdlib.Uploads.Handle
   alias Rho.Stdlib.Uploads.Observation
-  alias Rho.Stdlib.Uploads.Observer.{Csv, Excel, Hints, Image}
+  alias Rho.Stdlib.Uploads.Observer.{Csv, Excel, Hints, Image, Prose}
   alias Rho.Stdlib.Uploads.Server
 
   @parse_timeout_ms 15_000
@@ -68,17 +68,48 @@ defmodule Rho.Stdlib.Uploads.Observer do
   @spec parse_path(String.t(), keyword()) :: {:ok, Observation.t()} | {:error, term()}
   def parse_path(path, opts \\ []) do
     filename = Keyword.get(opts, :filename, Path.basename(path))
-    do_parse(path, filename, kind_for(path))
+    do_parse(path, filename, kind_for_path(path))
   end
 
   # --- Routing ---
 
-  defp kind_for(path) do
+  @type upload_kind ::
+          :structured_table
+          | :pdf
+          | :prose_text
+          | :docx
+          | :image
+          | :unsupported
+
+  @doc """
+  Classify an upload path by extension using the product-level upload kinds.
+  """
+  @spec kind_for_path(String.t()) :: upload_kind()
+  def kind_for_path(path) do
+    case Path.extname(path) |> String.downcase() do
+      ".xlsx" -> :structured_table
+      ".csv" -> :structured_table
+      ".pdf" -> :pdf
+      ext when ext in [".txt", ".md", ".markdown", ".html", ".htm"] -> :prose_text
+      ".docx" -> :docx
+      ext when ext in [".jpg", ".jpeg", ".png", ".webp"] -> :image
+      _ -> :unsupported
+    end
+  end
+
+  @doc """
+  Returns true when the LiveView send path should parse an upload before
+  submitting the chat message.
+  """
+  @spec parse_now?(String.t()) :: boolean()
+  def parse_now?(path) do
+    kind_for_path(path) in [:structured_table, :prose_text]
+  end
+
+  defp parser_for_table(path) do
     case Path.extname(path) |> String.downcase() do
       ".xlsx" -> :excel
       ".csv" -> :csv
-      ".pdf" -> :pdf
-      ext when ext in [".jpg", ".jpeg", ".png", ".webp"] -> :image
       _ -> :unsupported
     end
   end
@@ -92,13 +123,27 @@ defmodule Rho.Stdlib.Uploads.Observer do
   end
 
   defp do_parse(_path, filename, :pdf) do
-    # Pdf.parse/1 always returns {:error, :not_yet_supported} in v1 — no dispatch needed.
     {:ok,
      %Observation{
-       kind: :unsupported,
-       warnings: ["PDF parsing not yet supported (v2)."],
-       summary_text: "[Uploaded: #{filename}] PDF detected — parser ships in v2."
+       kind: :pdf,
+       summary_text:
+         "[Uploaded: #{filename}]\nPDF uploaded. Use upload_id with extract_role_from_jd for JD extraction."
      }}
+  end
+
+  defp do_parse(_path, filename, :docx) do
+    {:ok,
+     %Observation{
+       kind: :docx,
+       summary_text: "[Uploaded: #{filename}]\nDOCX uploaded. Text preview is not extracted yet."
+     }}
+  end
+
+  defp do_parse(path, filename, :prose_text) do
+    case Path.extname(path) |> String.downcase() do
+      ext when ext in [".html", ".htm"] -> Prose.parse_html(path, filename)
+      _ -> Prose.parse_text(path, filename)
+    end
   end
 
   defp do_parse(path, filename, :image) do
@@ -116,8 +161,13 @@ defmodule Rho.Stdlib.Uploads.Observer do
     end
   end
 
-  defp do_parse(path, filename, :excel), do: tabular_observation(filename, Excel.parse(path))
-  defp do_parse(path, filename, :csv), do: tabular_observation(filename, Csv.parse(path))
+  defp do_parse(path, filename, :structured_table) do
+    case parser_for_table(path) do
+      :excel -> tabular_observation(filename, Excel.parse(path))
+      :csv -> tabular_observation(filename, Csv.parse(path))
+      :unsupported -> do_parse(path, filename, :unsupported)
+    end
+  end
 
   defp tabular_observation(_filename, {:error, _} = err), do: err
 
@@ -136,12 +186,28 @@ defmodule Rho.Stdlib.Uploads.Observer do
   end
 
   defp dispatch_read(%Handle{path: path}, sheet, opts) do
-    case kind_for(path) do
-      :excel -> Excel.read_sheet(path, sheet, opts)
-      :csv -> Csv.read_sheet(path, sheet, opts)
-      :pdf -> {:error, :not_yet_supported}
-      :image -> {:error, :not_a_table}
-      :unsupported -> {:error, :unsupported}
+    case kind_for_path(path) do
+      :structured_table ->
+        case parser_for_table(path) do
+          :excel -> Excel.read_sheet(path, sheet, opts)
+          :csv -> Csv.read_sheet(path, sheet, opts)
+          :unsupported -> {:error, :unsupported}
+        end
+
+      :pdf ->
+        {:error, :not_a_table}
+
+      :prose_text ->
+        {:error, :not_a_table}
+
+      :docx ->
+        {:error, :not_a_table}
+
+      :image ->
+        {:error, :not_a_table}
+
+      :unsupported ->
+        {:error, :unsupported}
     end
   end
 
