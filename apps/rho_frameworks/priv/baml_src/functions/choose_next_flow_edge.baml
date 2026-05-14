@@ -1,7 +1,7 @@
 class ChooseNextFlowEdgeOutput {
-  reasoning string @description("One-sentence justification for the choice")
   confidence float @description("Confidence in the choice, 0.0 (low) to 1.0 (high)")
   next_edge string @description("The id of the chosen edge — must exactly match one of the allowed edge ids")
+  reasoning string @description("One-sentence justification for the choice")
 }
 
 function ChooseNextFlowEdge(current_label: string, allowed: string, summary: string) -> ChooseNextFlowEdgeOutput {

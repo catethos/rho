@@ -246,6 +246,19 @@ defmodule RhoWeb.Projections.SessionStateTest do
       assert Map.has_key?(s.agent_messages, "a1")
     end
 
+    test "keeps the configured agent name for UI labels" do
+      {s, _} =
+        reduce(state(), :agent_started, %{
+          agent_id: "a1",
+          session_id: "test-session",
+          role: :primary,
+          agent_name: :spreadsheet
+        })
+
+      assert s.agents["a1"].role == :primary
+      assert s.agents["a1"].agent_name == :spreadsheet
+    end
+
     test "does not duplicate tab order" do
       s = state()
       data = %{agent_id: "a1", session_id: "s", role: :coder}

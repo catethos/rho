@@ -68,6 +68,7 @@ defmodule RhoWeb.Projections.SessionState do
       agent_id: data.agent_id,
       session_id: data.session_id,
       role: data[:role] || :unknown,
+      agent_name: data[:agent_name],
       status: :idle,
       depth: data[:depth] || 0,
       capabilities: data[:capabilities] || [],
@@ -658,7 +659,7 @@ defmodule RhoWeb.Projections.SessionState do
       role: :system,
       type: :error,
       agent_id: agent_id,
-      content: "Error: #{inspect(reason)}"
+      content: format_error(reason)
     }
 
     state =

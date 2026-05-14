@@ -279,6 +279,7 @@ defmodule Rho.Agent.Worker do
     AgentRegistry.register(agent_id, %{
       session_id: session_id,
       role: role,
+      agent_name: agent_name,
       capabilities: capabilities,
       pid: self(),
       status: :idle,
@@ -292,6 +293,7 @@ defmodule Rho.Agent.Worker do
     started_event =
       Rho.Events.event(:agent_started, session_id, agent_id, %{
         role: role,
+        agent_name: agent_name,
         capabilities: capabilities,
         depth: depth,
         model: run_spec.model

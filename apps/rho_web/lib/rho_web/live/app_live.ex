@@ -59,10 +59,13 @@ defmodule RhoWeb.AppLive do
       |> assign(:agent_avatar, agent_avatar)
       |> assign(:threads, [])
       |> assign(:active_thread_id, nil)
+      |> assign(:conversations, [])
+      |> assign(:active_conversation_id, nil)
+      |> assign(:editing_conversation_id, nil)
       |> assign(:selected_agent_id, nil)
       |> assign(:timeline_open, false)
       |> assign(:drawer_open, false)
-      |> assign(:show_new_agent, false)
+      |> assign(:show_new_chat, false)
       |> assign(:uploaded_files, [])
       |> assign(:debug_mode, false)
       |> assign(:debug_projections, %{})
@@ -112,6 +115,7 @@ defmodule RhoWeb.AppLive do
         |> restore_from_snapshot()
         |> Welcome.maybe_render()
         |> refresh_threads()
+        |> refresh_conversations()
         |> refresh_data_table_session()
       else
         socket
@@ -149,6 +153,9 @@ defmodule RhoWeb.AppLive do
               |> assign(:chat_context, chat_context)
               |> merge_workspaces(new_workspaces)
               |> SessionCore.subscribe_and_hydrate(sid, session_ensure_opts(live_action))
+              |> restore_from_snapshot()
+              |> refresh_threads()
+              |> refresh_conversations()
               |> refresh_data_table_session()
 
             _ ->
@@ -160,13 +167,17 @@ defmodule RhoWeb.AppLive do
           socket
           |> assign(:chat_context, chat_context)
           |> merge_workspaces(new_workspaces)
+          |> refresh_conversations()
 
         true ->
           socket
       end
 
     # Load page-specific data
-    socket = apply_page(socket, new_page, params)
+    socket =
+      socket
+      |> apply_page(new_page, params)
+      |> refresh_conversations()
 
     {:noreply, socket}
   end
@@ -509,21 +520,6 @@ defmodule RhoWeb.AppLive do
 
     ~H"""
     <div id="session-root" phx-hook="CommandPalette" class={"session-layout #{if @has_workspaces, do: "workspace-mode", else: ""} #{if @drawer_open, do: "drawer-pinned", else: ""} #{if @debug_mode, do: "debug-mode", else: ""} #{if @shell.focus_workspace_id, do: "focus-mode", else: ""}"}>
-      <.session_header
-        session_id={@session_id}
-        agents={@agents}
-        total_input_tokens={@total_input_tokens}
-        total_output_tokens={@total_output_tokens}
-        total_cost={@total_cost}
-        total_cached_tokens={@total_cached_tokens}
-        total_reasoning_tokens={@total_reasoning_tokens}
-        step_input_tokens={@step_input_tokens}
-        step_output_tokens={@step_output_tokens}
-        user_avatar={@user_avatar}
-        uploads={@uploads}
-        debug_mode={@debug_mode}
-      />
-
       <.workspace_tab_bar
         :if={@has_workspaces}
         workspaces={@workspaces}
@@ -566,11 +562,19 @@ defmodule RhoWeb.AppLive do
           agents={@agents}
           agent_tab_order={@agent_tab_order}
           chat_status={chat_status(assigns)}
+          total_input_tokens={@total_input_tokens}
+          total_output_tokens={@total_output_tokens}
+          total_cost={@total_cost}
+          total_cached_tokens={@total_cached_tokens}
+          total_reasoning_tokens={@total_reasoning_tokens}
+          step_input_tokens={@step_input_tokens}
+          step_output_tokens={@step_output_tokens}
           uploads={@uploads}
+          debug_mode={@debug_mode}
           active_agent={@active_agent}
           connected={@connected}
-          threads={@threads}
-          active_thread_id={@active_thread_id}
+          conversations={@conversations}
+          editing_conversation_id={@editing_conversation_id}
           files_parsing={@files_parsing}
         />
 
@@ -582,7 +586,7 @@ defmodule RhoWeb.AppLive do
         />
       </div>
 
-      <.new_agent_dialog :if={@show_new_agent} session_id={@session_id} />
+      <.new_chat_dialog :if={@show_new_chat} />
 
       <.signal_timeline open={@timeline_open} />
 
@@ -615,7 +619,6 @@ defmodule RhoWeb.AppLive do
         open={@command_palette_open}
         workspaces={@workspaces}
         shell={@shell}
-        threads={@threads}
       />
 
       <button
@@ -1693,8 +1696,8 @@ defmodule RhoWeb.AppLive do
     {:noreply, socket}
   end
 
-  def handle_event("toggle_new_agent", _params, socket) do
-    {:noreply, assign(socket, :show_new_agent, !socket.assigns.show_new_agent)}
+  def handle_event("toggle_new_chat", _params, socket) do
+    {:noreply, assign(socket, :show_new_chat, !socket.assigns.show_new_chat)}
   end
 
   def handle_event("create_agent", %{"role" => role} = params, socket) do
@@ -1756,7 +1759,7 @@ defmodule RhoWeb.AppLive do
 
     socket =
       socket
-      |> assign(:show_new_agent, false)
+      |> assign(:show_new_chat, false)
       |> assign(:active_agent_id, agent_id)
       |> assign(:agents, Map.put(socket.assigns.agents, agent_id, agent_entry))
       |> assign(:agent_tab_order, socket.assigns.agent_tab_order ++ [agent_id])
@@ -1928,41 +1931,176 @@ defmodule RhoWeb.AppLive do
     {:noreply, assign(socket, :shell, Shell.toggle_chat(socket.assigns.shell))}
   end
 
+  # ── Conversation events ───────────────────────────────────────────
+
+  def handle_event("open_chat", %{"conversation_id" => conversation_id} = params, socket) do
+    thread_id = params |> Map.get("thread_id") |> blank_to_nil()
+
+    with %{} = conversation <- Rho.Conversation.get(conversation_id),
+         true <- can_access_conversation?(socket, conversation),
+         sid when is_binary(sid) <- conversation["session_id"] do
+      workspace = conversation["workspace"] || workspace_for_session(socket, sid)
+      target_thread_id = chat_target_thread_id(conversation, thread_id)
+
+      socket =
+        cond do
+          sid == socket.assigns[:session_id] and is_binary(target_thread_id) ->
+            switch_to_thread(socket, sid, workspace, target_thread_id)
+
+          sid == socket.assigns[:session_id] ->
+            refresh_conversations(socket)
+
+          true ->
+            maybe_switch_conversation_thread(conversation["id"], target_thread_id)
+
+            socket
+            |> switch_to_session(
+              sid,
+              workspace: workspace,
+              agent_name: conversation_agent_name(conversation)
+            )
+            |> maybe_restore_chat_thread(sid, workspace, target_thread_id)
+            |> refresh_threads()
+            |> refresh_conversations()
+            |> push_chat_session_patch(sid)
+        end
+        |> Welcome.render_for_active_agent()
+        |> assign(:editing_conversation_id, nil)
+        |> refresh_conversations()
+
+      {:noreply, socket}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_conversation", params, socket) do
+    handle_event("open_chat", params, socket)
+  end
+
+  def handle_event("archive_chat", %{"conversation_id" => conversation_id} = params, socket) do
+    thread_id = params |> Map.get("thread_id") |> blank_to_nil()
+    active_conversation_id = socket.assigns[:active_conversation_id]
+    active_thread_id = socket.assigns[:active_thread_id]
+
+    with %{} = conversation <- Rho.Conversation.get(conversation_id),
+         true <- can_access_conversation?(socket, conversation),
+         false <-
+           chat_row_active?(conversation_id, thread_id, active_conversation_id, active_thread_id),
+         :ok <- archive_chat_row(socket, conversation, thread_id) do
+      {:noreply, refresh_conversations(socket)}
+    else
+      {:ok, _conversation} ->
+        {:noreply, refresh_conversations(socket)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("archive_conversation", %{"conversation_id" => conversation_id}, socket) do
+    active_id = socket.assigns[:active_conversation_id]
+
+    with true <- conversation_id != active_id,
+         %{} = conversation <- Rho.Conversation.get(conversation_id),
+         true <- can_access_conversation?(socket, conversation),
+         {:ok, _} <- Rho.Conversation.archive(conversation_id) do
+      {:noreply, refresh_conversations(socket)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("new_conversation", params, socket) do
+    agent_name = params |> Map.get("role") |> normalize_agent_role()
+
+    socket =
+      socket
+      |> persist_current_thread_snapshot()
+      |> SessionCore.unsubscribe()
+      |> reset_session_runtime_assigns()
+      |> assign(:chat_context, %{})
+      |> assign(:show_new_chat, false)
+      |> assign(:editing_conversation_id, nil)
+
+    ensure_opts =
+      socket.assigns.live_action
+      |> session_ensure_opts()
+      |> Keyword.put(:agent_name, agent_name)
+
+    {sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+    {:ok, _pid} = Rho.Stdlib.Uploads.ensure_started(sid)
+
+    socket =
+      socket
+      |> SessionCore.subscribe_and_hydrate(sid, ensure_opts)
+      |> rebuild_chat_from_active_thread()
+      |> Welcome.maybe_render()
+      |> refresh_threads()
+      |> refresh_conversations()
+      |> refresh_data_table_session()
+      |> push_chat_session_patch(sid)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("edit_chat_title", %{"conversation_id" => conversation_id}, socket) do
+    with %{} = conversation <- Rho.Conversation.get(conversation_id),
+         true <- can_access_conversation?(socket, conversation) do
+      {:noreply, assign(socket, :editing_conversation_id, conversation_id)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_chat_title_edit", _params, socket) do
+    {:noreply, assign(socket, :editing_conversation_id, nil)}
+  end
+
+  def handle_event(
+        "rename_chat",
+        %{"conversation_id" => conversation_id, "title" => title},
+        socket
+      ) do
+    with %{} = conversation <- Rho.Conversation.get(conversation_id),
+         true <- can_access_conversation?(socket, conversation),
+         {:ok, _conversation} <- Rho.Conversation.set_title(conversation_id, title) do
+      {:noreply,
+       socket
+       |> assign(:editing_conversation_id, nil)
+       |> refresh_conversations()}
+    else
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("reorder_chats", %{"conversation_ids" => ids}, socket) when is_list(ids) do
+    ids =
+      ids
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
+      |> Enum.filter(fn conversation_id ->
+        case Rho.Conversation.get(conversation_id) do
+          %{} = conversation -> can_access_conversation?(socket, conversation)
+          _ -> false
+        end
+      end)
+
+    if ids != [] do
+      Rho.Conversation.reorder(ids)
+    end
+
+    {:noreply, refresh_conversations(socket)}
+  end
+
   # ── Thread events ──────────────────────────────────────────────────
 
   def handle_event("switch_thread", %{"thread_id" => thread_id}, socket) do
     sid = socket.assigns.session_id
     workspace = user_workspace(socket)
 
-    current_thread = Threads.active(sid, workspace)
-
-    if current_thread do
-      snapshot = Snapshot.build_snapshot(socket)
-      Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
-    end
-
-    case Threads.switch(sid, workspace, thread_id) do
-      :ok ->
-        target = Threads.get(sid, workspace, thread_id)
-
-        Rho.Agent.Primary.stop(sid)
-
-        socket = SessionCore.unsubscribe(socket)
-
-        start_opts = [tape_ref: target["tape_name"]]
-        socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
-
-        socket =
-          case Snapshot.load(sid, workspace, thread_id: thread_id) do
-            {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
-            _ -> rebuild_chat_from_thread(socket, target)
-          end
-
-        {:noreply, refresh_threads(socket)}
-
-      {:error, _} ->
-        {:noreply, socket}
-    end
+    {:noreply, switch_to_thread(socket, sid, workspace, thread_id)}
   end
 
   def handle_event("fork_from_here", %{"entry_id" => entry_id_str}, socket) do
@@ -1993,7 +2131,10 @@ defmodule RhoWeb.AppLive do
       Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
     end
 
-    case Threads.fork_thread(sid, workspace, tape_module, fork_point: fork_point) do
+    case Threads.fork_thread(sid, workspace, tape_module,
+           fork_point: fork_point,
+           name: "New chat"
+         ) do
       {:ok, thread} ->
         Rho.Agent.Primary.stop(sid)
         socket = SessionCore.unsubscribe(socket)
@@ -2004,7 +2145,7 @@ defmodule RhoWeb.AppLive do
         fork_snapshot = Snapshot.build_snapshot(socket)
         Snapshot.save(sid, workspace, fork_snapshot, thread_id: thread["id"])
 
-        {:noreply, refresh_threads(socket)}
+        {:noreply, socket |> refresh_threads() |> refresh_conversations()}
 
       {:error, reason} ->
         require Logger
@@ -2025,7 +2166,7 @@ defmodule RhoWeb.AppLive do
     tape_name = "#{sid}_thread_#{:erlang.unique_integer([:positive])}"
     tape_module.bootstrap(tape_name)
 
-    case Threads.create(sid, workspace, %{"name" => "New Thread", "tape_name" => tape_name}) do
+    case Threads.create(sid, workspace, %{"name" => "New chat", "tape_name" => tape_name}) do
       {:ok, thread} ->
         current_thread = Threads.active(sid, workspace)
 
@@ -2040,7 +2181,12 @@ defmodule RhoWeb.AppLive do
         socket = SessionCore.unsubscribe(socket)
         start_opts = [tape_ref: tape_name]
         socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
-        {:noreply, socket |> rebuild_chat_from_thread(thread) |> refresh_threads()}
+
+        {:noreply,
+         socket
+         |> rebuild_chat_from_thread(thread)
+         |> refresh_threads()
+         |> refresh_conversations()}
 
       {:error, _} ->
         {:noreply, socket}
@@ -2072,7 +2218,7 @@ defmodule RhoWeb.AppLive do
       end
 
     Threads.delete(sid, workspace, thread_id)
-    {:noreply, refresh_threads(socket)}
+    {:noreply, socket |> refresh_threads() |> refresh_conversations()}
   end
 
   def handle_event("close_drawer", _params, socket) do
@@ -2288,7 +2434,12 @@ defmodule RhoWeb.AppLive do
   defp submit_to_session(socket, content, image_parts, has_text) do
     submit_content = build_submit_content(content, image_parts, has_text)
     display_text = build_display_text(content, image_parts, has_text)
-    SessionCore.send_message(socket, display_text, submit_content: submit_content)
+
+    case SessionCore.send_message(socket, display_text, submit_content: submit_content) do
+      {:noreply, socket} ->
+        touch_active_conversation(socket)
+        {:noreply, refresh_conversations(socket)}
+    end
   end
 
   defp arm_parse_tasks(socket, content, image_parts, has_text, file_handles) do
@@ -2943,6 +3094,14 @@ defmodule RhoWeb.AppLive do
                 socket
             end
 
+          socket =
+            if refresh_conversation_event?(event.kind) do
+              touch_active_conversation(socket)
+              refresh_conversations(socket)
+            else
+              socket
+            end
+
           {:noreply, socket}
       end
     else
@@ -3047,10 +3206,9 @@ defmodule RhoWeb.AppLive do
   # Private Component Functions
   # ══════════════════════════════════════════════════════════════════
 
-  # --- Header component ---
+  # --- Session controls component ---
 
   attr(:session_id, :string, default: nil)
-  attr(:agents, :map, required: true)
   attr(:total_input_tokens, :integer, required: true)
   attr(:total_output_tokens, :integer, required: true)
   attr(:total_cost, :float, required: true)
@@ -3062,53 +3220,41 @@ defmodule RhoWeb.AppLive do
   attr(:uploads, :any, required: true)
   attr(:debug_mode, :boolean, default: false)
 
-  defp session_header(assigns) do
+  defp session_controls(assigns) do
     ~H"""
-    <header class="session-header">
-      <div class="header-left">
-        <h1 class="header-title">Rho</h1>
-        <span :if={@session_id} class="header-session-id"><%= truncate_id(@session_id) %></span>
-        <.badge :if={map_size(@agents) > 0}>
-          <%= map_size(@agents) %> agent<%= if map_size(@agents) != 1, do: "s" %>
-        </.badge>
-      </div>
-      <div class="header-right">
-        <span class="header-tokens" title="Total input / output tokens (last step input / output)">
-          <%= format_tokens(@total_input_tokens) %> in / <%= format_tokens(@total_output_tokens) %> out
-          <span :if={@step_input_tokens > 0} class="header-step-tokens">
-            (step: <%= format_tokens(@step_input_tokens) %> in / <%= format_tokens(@step_output_tokens) %> out)
-          </span>
+    <div class="session-controls">
+      <span class="header-tokens" title="Total input / output tokens (last step input / output)">
+        <%= format_tokens(@total_input_tokens) %> in / <%= format_tokens(@total_output_tokens) %> out
+        <span :if={@step_input_tokens > 0} class="header-step-tokens">
+          (step: <%= format_tokens(@step_input_tokens) %> in / <%= format_tokens(@step_output_tokens) %> out)
         </span>
-        <span :if={@total_cached_tokens > 0} class="header-tokens header-cached" title="Cached tokens">
-          cached: <%= format_tokens(@total_cached_tokens) %>
-        </span>
-        <span :if={@total_reasoning_tokens > 0} class="header-tokens header-reasoning" title="Reasoning tokens">
-          reasoning: <%= format_tokens(@total_reasoning_tokens) %>
-        </span>
-        <span :if={@total_cost > 0} class="header-cost">
-          $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
-        </span>
-        <button class={"btn-new-agent #{if @debug_mode, do: "debug-active"}"} phx-click="toggle_debug" title="Toggle debug mode">
-          Debug
-        </button>
-        <button class="btn-new-agent" phx-click="toggle_new_agent" title="New agent">
-          + Agent
-        </button>
-        <button :if={@session_id} class="btn-stop" phx-click="stop_session" title="Stop session">
-          Stop
-        </button>
-        <form id="avatar-upload-form" phx-change="validate_upload" class="header-avatar-form">
-          <label class="header-avatar" title="Click to upload avatar">
-            <%= if @user_avatar do %>
-              <img src={@user_avatar} class="header-avatar-img" />
-            <% else %>
-              <span class="header-avatar-placeholder">Y</span>
-            <% end %>
-            <.live_file_input upload={@uploads.avatar} class="sr-only" />
-          </label>
-        </form>
-      </div>
-    </header>
+      </span>
+      <span :if={@total_cached_tokens > 0} class="header-tokens header-cached" title="Cached tokens">
+        cached: <%= format_tokens(@total_cached_tokens) %>
+      </span>
+      <span :if={@total_reasoning_tokens > 0} class="header-tokens header-reasoning" title="Reasoning tokens">
+        reasoning: <%= format_tokens(@total_reasoning_tokens) %>
+      </span>
+      <span :if={@total_cost > 0} class="header-cost">
+        $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
+      </span>
+      <button class={"header-action-btn #{if @debug_mode, do: "debug-active"}"} phx-click="toggle_debug" title="Toggle debug mode">
+        Debug
+      </button>
+      <button :if={@session_id != ""} class="btn-stop" phx-click="stop_session" title="Stop session">
+        Stop
+      </button>
+      <form id="avatar-upload-form" phx-change="validate_upload" class="header-avatar-form">
+        <label class="header-avatar" title="Click to upload avatar">
+          <%= if @user_avatar do %>
+            <img src={@user_avatar} class="header-avatar-img" />
+          <% else %>
+            <span class="header-avatar-placeholder">Y</span>
+          <% end %>
+          <.live_file_input upload={@uploads.avatar} class="sr-only" />
+        </label>
+      </form>
+    </div>
     """
   end
 
@@ -3269,41 +3415,100 @@ defmodule RhoWeb.AppLive do
     """
   end
 
-  # --- Thread picker ---
+  # --- Chat rail ---
 
-  attr(:threads, :list, required: true)
-  attr(:active_thread_id, :string, default: nil)
+  attr(:chats, :list, default: [])
+  attr(:editing_conversation_id, :string, default: nil)
 
-  defp thread_picker(assigns) do
+  defp chat_rail(assigns) do
     ~H"""
-    <div :if={length(@threads) > 0} class="thread-picker">
-      <div class="thread-picker-tabs">
+    <div class="chat-rail">
+      <div class="chat-rail-head">
+        <span class="chat-rail-title">Chats</span>
+        <button class="chat-new-btn" phx-click="toggle_new_chat" title="New chat">
+          +
+        </button>
+      </div>
+      <div id="chat-list" class="chat-list" phx-hook="ChatReorder">
         <div
-          :for={thread <- @threads}
-          class={"thread-tab #{if thread["id"] == @active_thread_id, do: "active", else: ""}"}
+          :for={chat <- @chats}
+          class={"chat-row #{if chat.active, do: "active", else: ""}"}
+          data-chat-id={chat.id}
+          data-conversation-id={chat.conversation_id}
         >
-          <button
-            class="thread-tab-btn"
-            phx-click="switch_thread"
-            phx-value-thread_id={thread["id"]}
-            title={thread["summary"] || thread["name"]}
+          <span
+            class="chat-drag-handle"
+            draggable="true"
+            title="Drag to reorder"
+            aria-label="Drag to reorder"
           >
-            <span class="thread-tab-label"><%= thread["name"] %></span>
+            ⋮⋮
+          </span>
+          <%= if @editing_conversation_id == chat.conversation_id do %>
+            <form class="chat-title-form" phx-submit="rename_chat">
+              <input type="hidden" name="conversation_id" value={chat.conversation_id} />
+              <input
+                type="text"
+                name="title"
+                value={chat.title}
+                class="chat-title-input"
+                maxlength="80"
+                autofocus
+              />
+              <button type="submit" class="chat-title-save">Save</button>
+              <button
+                type="button"
+                class="chat-title-cancel"
+                phx-click="cancel_chat_title_edit"
+                aria-label="Cancel rename"
+              >
+                ×
+              </button>
+            </form>
+          <% else %>
+          <button
+            class="chat-open-btn"
+            phx-click="open_chat"
+            phx-value-conversation_id={chat.conversation_id}
+            phx-value-thread_id={chat.thread_id}
+            title={chat.title}
+          >
+            <span class="chat-row-main">
+              <span class="chat-row-title"><%= chat.title %></span>
+              <span class="chat-row-preview"><%= chat.preview %></span>
+            </span>
+            <span class="chat-row-meta">
+              <span class="chat-row-agent"><%= chat_agent_label(chat) %></span>
+              <span><%= chat.updated_label %></span>
+            </span>
           </button>
           <button
-            :if={thread["id"] != "thread_main"}
-            class="thread-tab-close"
-            phx-click="close_thread"
-            phx-value-thread_id={thread["id"]}
-            title="Close thread"
+            class="chat-edit-btn"
+            phx-click="edit_chat_title"
+            phx-value-conversation_id={chat.conversation_id}
+            title="Rename chat"
+            aria-label="Rename chat"
           >
-            &times;
+            Edit
           </button>
+          <button
+            :if={!chat.active}
+            class="chat-archive-btn"
+            phx-click="archive_chat"
+            phx-value-conversation_id={chat.conversation_id}
+            phx-value-thread_id={chat.thread_id}
+            title="Archive chat"
+            aria-label="Archive chat"
+            data-confirm="Archive this chat?"
+          >
+            ×
+          </button>
+          <% end %>
+        </div>
+        <div :if={@chats == []} class="chat-empty">
+          No saved chats yet
         </div>
       </div>
-      <button class="thread-new-btn" phx-click="new_blank_thread" title="New thread">
-        +
-      </button>
     </div>
     """
   end
@@ -3322,11 +3527,19 @@ defmodule RhoWeb.AppLive do
   attr(:agents, :map, required: true)
   attr(:agent_tab_order, :list, required: true)
   attr(:chat_status, :atom, default: :idle)
+  attr(:total_input_tokens, :integer, required: true)
+  attr(:total_output_tokens, :integer, required: true)
+  attr(:total_cost, :float, required: true)
+  attr(:total_cached_tokens, :integer, required: true)
+  attr(:total_reasoning_tokens, :integer, required: true)
+  attr(:step_input_tokens, :integer, required: true)
+  attr(:step_output_tokens, :integer, required: true)
   attr(:uploads, :any, required: true)
+  attr(:debug_mode, :boolean, default: false)
   attr(:active_agent, :map, default: nil)
   attr(:connected, :boolean, default: true)
-  attr(:threads, :list, default: [])
-  attr(:active_thread_id, :string, default: nil)
+  attr(:conversations, :list, default: [])
+  attr(:editing_conversation_id, :string, default: nil)
   attr(:files_parsing, :map, default: %{})
 
   defp chat_side_panel(assigns) do
@@ -3342,154 +3555,134 @@ defmodule RhoWeb.AppLive do
     ~H"""
     <div class={@panel_class}>
       <div class="dt-chat-header">
-        <span class="dt-chat-title">Assistant</span>
-        <.status_dot :if={@chat_status != :idle} status={@chat_status} />
-        <.thread_picker threads={@threads} active_thread_id={@active_thread_id} />
+        <div class="dt-chat-context">
+          <span class="dt-chat-title">Assistant</span>
+          <span :if={@active_agent} class="chat-active-agent">
+            <%= active_agent_label(@active_agent) %>
+          </span>
+          <span :if={@session_id != ""} class="chat-session-id" title={@session_id}>
+            <%= truncate_id(@session_id) %>
+          </span>
+          <.status_dot :if={@chat_status != :idle} status={@chat_status} />
+        </div>
+
+        <.session_controls
+          session_id={@session_id}
+          total_input_tokens={@total_input_tokens}
+          total_output_tokens={@total_output_tokens}
+          total_cost={@total_cost}
+          total_cached_tokens={@total_cached_tokens}
+          total_reasoning_tokens={@total_reasoning_tokens}
+          step_input_tokens={@step_input_tokens}
+          step_output_tokens={@step_output_tokens}
+          user_avatar={@user_avatar}
+          uploads={@uploads}
+          debug_mode={@debug_mode}
+        />
       </div>
 
-      <.tab_bar
-        :if={length(@agent_tab_order) > 1}
-        agent_tab_order={@agent_tab_order}
-        agents={@agents}
-        active_agent_id={@active_agent_id}
-        inflight={@inflight}
-      />
+      <div class="dt-chat-body">
+        <.chat_rail chats={@conversations} editing_conversation_id={@editing_conversation_id} />
 
-      <.chat_feed
-        messages={@messages}
-        session_id={@session_id}
-        inflight={@inflight}
-        active_agent_id={@active_agent_id}
-        user_avatar={@user_avatar}
-        agent_avatar={@agent_avatar}
-        pending={@pending}
-        active_step={@active_agent && @active_agent[:step]}
-        active_max_steps={@active_agent && @active_agent[:max_steps]}
-      />
+        <div class="dt-chat-main">
+          <.tab_bar
+            :if={length(@agent_tab_order) > 1}
+            agent_tab_order={@agent_tab_order}
+            agents={@agents}
+            active_agent_id={@active_agent_id}
+            inflight={@inflight}
+          />
 
-      <div class="chat-input-area">
-        <div :if={@uploads.files.entries != [] or @files_parsing != %{}} class="chat-attach-strip">
-          <%= for entry <- @uploads.files.entries do %>
-            <% entry_errors = upload_errors(@uploads.files, entry) %>
-            <div class={["chat-attach-chip", entry_errors != [] && "is-error"]}>
-              <span class="chat-attach-icon"><%= file_icon(entry.client_type, entry.client_name) %></span>
-              <span class="chat-attach-name"><%= entry.client_name %></span>
-              <%= if entry.progress < 100 do %>
-                <span class="chat-attach-progress"><%= entry.progress %>%</span>
+          <.chat_feed
+            messages={@messages}
+            session_id={@session_id}
+            inflight={@inflight}
+            active_agent_id={@active_agent_id}
+            user_avatar={@user_avatar}
+            agent_avatar={@agent_avatar}
+            pending={@pending}
+            active_step={@active_agent && @active_agent[:step]}
+            active_max_steps={@active_agent && @active_agent[:max_steps]}
+          />
+
+          <div class="chat-input-area">
+            <div :if={@uploads.files.entries != [] or @files_parsing != %{}} class="chat-attach-strip">
+              <%= for entry <- @uploads.files.entries do %>
+                <% entry_errors = upload_errors(@uploads.files, entry) %>
+                <div class={["chat-attach-chip", entry_errors != [] && "is-error"]}>
+                  <span class="chat-attach-icon"><%= file_icon(entry.client_type, entry.client_name) %></span>
+                  <span class="chat-attach-name"><%= entry.client_name %></span>
+                  <%= if entry.progress < 100 do %>
+                    <span class="chat-attach-progress"><%= entry.progress %>%</span>
+                  <% end %>
+                  <%= for err <- entry_errors do %>
+                    <span class="chat-attach-error"><%= upload_error_msg(err) %></span>
+                  <% end %>
+                  <button type="button" phx-click="cancel_file" phx-value-ref={entry.ref}
+                          class="chat-attach-remove" aria-label="Remove">×</button>
+                </div>
               <% end %>
-              <%= for err <- entry_errors do %>
-                <span class="chat-attach-error"><%= upload_error_msg(err) %></span>
+              <%= for {_ref, %{filename: name}} <- @files_parsing do %>
+                <div class="chat-attach-chip is-parsing">
+                  <span class="chat-attach-icon">⏳</span>
+                  <span class="chat-attach-name"><%= name %></span>
+                  <span class="chat-attach-progress">parsing…</span>
+                  <%!-- v1: no cancel-during-parse. Phoenix can't cleanly pass a Reference back through phx-click. 15s timeout caps the worst case. --%>
+                </div>
               <% end %>
-              <button type="button" phx-click="cancel_file" phx-value-ref={entry.ref}
-                      class="chat-attach-remove" aria-label="Remove">×</button>
             </div>
-          <% end %>
-          <%= for {_ref, %{filename: name}} <- @files_parsing do %>
-            <div class="chat-attach-chip is-parsing">
-              <span class="chat-attach-icon">⏳</span>
-              <span class="chat-attach-name"><%= name %></span>
-              <span class="chat-attach-progress">parsing…</span>
-              <%!-- v1: no cancel-during-parse. Phoenix can't cleanly pass a Reference back through phx-click. 15s timeout caps the worst case. --%>
-            </div>
-          <% end %>
+            <form id="chat-input-form" phx-submit="send_message" phx-change="validate_upload" class="chat-input-form">
+              <label class="chat-attach-button" title="Attach .xlsx / .csv / .pdf / .docx / text">
+                📎
+                <.live_file_input upload={@uploads.files} class="sr-only" />
+              </label>
+              <textarea
+                name="content"
+                id="chat-input"
+                placeholder="Ask to generate skills, edit rows, etc..."
+                rows="1"
+                phx-hook="AutoResize"
+              ></textarea>
+              <button type="submit" class="btn-send">Send</button>
+            </form>
+          </div>
         </div>
-        <form id="chat-input-form" phx-submit="send_message" phx-change="validate_upload" class="chat-input-form">
-          <label class="chat-attach-button" title="Attach .xlsx / .csv / .pdf / .docx / text">
-            📎
-            <.live_file_input upload={@uploads.files} class="sr-only" />
-          </label>
-          <textarea
-            name="content"
-            id="chat-input"
-            placeholder="Ask to generate skills, edit rows, etc..."
-            rows="1"
-            phx-hook="AutoResize"
-          ></textarea>
-          <button type="submit" class="btn-send">Send</button>
-        </form>
       </div>
     </div>
     """
   end
 
-  # --- New agent dialog ---
+  # --- New chat dialog ---
 
-  attr(:session_id, :string, default: nil)
-
-  defp new_agent_dialog(assigns) do
-    roles = Rho.AgentConfig.agent_names()
-
-    parent_options =
-      if assigns.session_id do
-        Rho.Agent.Registry.list_all(assigns[:session_id])
-        |> Enum.map(fn info -> {info.agent_id, tab_label_from_info(info)} end)
-        |> Enum.sort_by(fn {id, _} -> id end)
-      else
-        []
-      end
-
-    assigns =
-      assigns
-      |> assign(:roles, roles)
-      |> assign(:parent_options, parent_options)
+  defp new_chat_dialog(assigns) do
+    assigns = assign(assigns, :roles, agent_role_options())
 
     ~H"""
     <div class="modal-overlay">
-      <div class="modal-dialog" phx-click-away="toggle_new_agent">
-        <h3>Create New Agent</h3>
+      <div class="modal-dialog new-chat-dialog" phx-click-away="toggle_new_chat">
+        <h3>New Chat</h3>
 
-        <form phx-submit="create_agent" phx-hook="ParentPicker" id="new-agent-form">
-          <div :if={length(@parent_options) > 0} class="agent-parent-picker">
-            <label class="agent-parent-label">Parent agent</label>
-            <input type="hidden" name="parent_id" value="" id="new-agent-parent-input" />
-            <div class="agent-parent-list">
-              <button
-                type="button"
-                class="agent-parent-btn active"
-                data-parent-id=""
-                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: ""})}
-              >
-                None (top-level)
-              </button>
-              <button
-                :for={{id, label} <- @parent_options}
-                type="button"
-                class="agent-parent-btn"
-                data-parent-id={id}
-                phx-click={Phoenix.LiveView.JS.dispatch("rho:select-parent", detail: %{parent_id: id})}
-              >
-                <%= label %>
-              </button>
-            </div>
-          </div>
-
-          <div class="agent-role-list">
-            <button
-              :for={role <- @roles}
-              type="submit"
-              name="role"
-              value={role}
-              class="agent-role-btn"
-            >
-              <%= role %>
-            </button>
-          </div>
-        </form>
-        <button class="modal-cancel" phx-click="toggle_new_agent">Cancel</button>
+        <div class="new-chat-role-form">
+          <button
+            :for={role <- @roles}
+            type="button"
+            phx-click="new_conversation"
+            phx-value-role={role.value}
+            class="new-chat-role-btn"
+          >
+            <span class="new-chat-role-mark"><%= role.mark %></span>
+            <span class="new-chat-role-copy">
+              <span class="new-chat-role-name"><%= role.label %></span>
+              <span :if={role.description != ""} class="new-chat-role-desc">
+                <%= role.description %>
+              </span>
+            </span>
+          </button>
+        </div>
+        <button class="modal-cancel" phx-click="toggle_new_chat">Cancel</button>
       </div>
     </div>
     """
-  end
-
-  defp tab_label_from_info(info) do
-    name = info[:role] || info[:agent_id]
-    segments = String.split(to_string(info.agent_id), "/")
-
-    case segments do
-      [_sid, "primary"] -> "primary"
-      [_sid, "primary" | rest] -> List.last(rest) || to_string(name)
-      _ -> to_string(name)
-    end
   end
 
   # --- Debug panel ---
@@ -3619,8 +3812,72 @@ defmodule RhoWeb.AppLive do
   defp tab_label(agents, agent_id) do
     case Map.get(agents, agent_id) do
       nil -> "unknown"
-      %{role: role} -> to_string(role)
+      %{agent_name: agent_name} when not is_nil(agent_name) -> agent_role_label(agent_name)
+      %{role: role} -> agent_role_label(role)
     end
+  end
+
+  defp active_agent_label(%{agent_name: agent_name}) when not is_nil(agent_name),
+    do: agent_role_label(agent_name)
+
+  defp active_agent_label(%{role: role}), do: agent_role_label(role)
+  defp active_agent_label(_agent), do: "General"
+
+  defp chat_agent_label(chat), do: chat |> Map.get(:agent_name, :default) |> agent_role_label()
+
+  defp agent_role_options do
+    Rho.AgentConfig.agent_names()
+    |> Enum.map(fn role ->
+      description =
+        role
+        |> Rho.AgentConfig.agent()
+        |> Map.get(:description)
+        |> truncate_text(92)
+
+      %{
+        value: Atom.to_string(role),
+        label: agent_role_label(role),
+        mark: role_mark(role),
+        description: description || ""
+      }
+    end)
+  end
+
+  defp normalize_agent_role(role) when is_binary(role) do
+    Enum.find(Rho.AgentConfig.agent_names(), :default, &(Atom.to_string(&1) == role))
+  end
+
+  defp normalize_agent_role(role) when is_atom(role) do
+    if role in Rho.AgentConfig.agent_names(), do: role, else: :default
+  end
+
+  defp normalize_agent_role(_role), do: :default
+
+  defp conversation_agent_name(%{"agent_name" => agent_name}) when is_binary(agent_name),
+    do: normalize_agent_role(agent_name)
+
+  defp conversation_agent_name(_conversation), do: :default
+
+  defp agent_role_label(:default), do: "General"
+  defp agent_role_label("default"), do: "General"
+  defp agent_role_label(:primary), do: "General"
+  defp agent_role_label("primary"), do: "General"
+
+  defp agent_role_label(role) do
+    role
+    |> to_string()
+    |> String.replace("_", " ")
+    |> String.split(" ", trim: true)
+    |> Enum.map_join(" ", &String.capitalize/1)
+  end
+
+  defp role_mark(:default), do: "G"
+
+  defp role_mark(role) do
+    role
+    |> agent_role_label()
+    |> String.first()
+    |> Kernel.||("A")
   end
 
   defp agent_stopped?(agents, agent_id) do
@@ -3633,7 +3890,9 @@ defmodule RhoWeb.AppLive do
 
   @doc false
   def append_message(socket, msg) do
-    RhoWeb.Session.SignalRouter.append_message(socket, msg)
+    socket
+    |> RhoWeb.Session.SignalRouter.append_message(msg)
+    |> refresh_conversations()
   end
 
   defp restore_from_snapshot(socket) do
@@ -3680,6 +3939,176 @@ defmodule RhoWeb.AppLive do
     socket
     |> assign(:agent_messages, agent_messages)
     |> assign(:active_agent_id, primary_id)
+  end
+
+  defp switch_to_thread(socket, sid, workspace, thread_id)
+       when is_binary(sid) and is_binary(thread_id) do
+    current_thread = Threads.active(sid, workspace)
+
+    if current_thread && current_thread["id"] == thread_id do
+      socket
+      |> refresh_threads()
+      |> refresh_conversations()
+    else
+      if current_thread do
+        snapshot = Snapshot.build_snapshot(socket)
+        Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+      end
+
+      case Threads.switch(sid, workspace, thread_id) do
+        :ok ->
+          target =
+            Threads.get(sid, workspace, thread_id) ||
+              conversation_thread_for_session(sid, thread_id)
+
+          Rho.Agent.Primary.stop(sid)
+
+          socket = SessionCore.unsubscribe(socket)
+
+          start_opts =
+            if target && target["tape_name"], do: [tape_ref: target["tape_name"]], else: []
+
+          socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
+
+          socket
+          |> restore_chat_thread_from_snapshot(sid, workspace, thread_id, target)
+          |> refresh_threads()
+          |> refresh_conversations()
+
+        {:error, _} ->
+          socket
+      end
+    end
+  end
+
+  defp switch_to_thread(socket, _sid, _workspace, _thread_id), do: socket
+
+  defp maybe_restore_chat_thread(socket, _sid, _workspace, nil), do: socket
+
+  defp maybe_restore_chat_thread(socket, sid, workspace, thread_id) do
+    target =
+      Threads.get(sid, workspace, thread_id) || conversation_thread_for_session(sid, thread_id)
+
+    restore_chat_thread_from_snapshot(socket, sid, workspace, thread_id, target)
+  end
+
+  defp restore_chat_thread_from_snapshot(socket, sid, workspace, thread_id, target) do
+    case Snapshot.load(sid, workspace, thread_id: thread_id) do
+      {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
+      _ -> rebuild_chat_from_thread(socket, target)
+    end
+  end
+
+  defp conversation_thread_for_session(sid, thread_id) do
+    with %{} = conversation <- Rho.Conversation.get_by_session(sid) do
+      Enum.find(conversation["threads"] || [], &(&1["id"] == thread_id))
+    end
+  end
+
+  defp chat_target_thread_id(_conversation, thread_id) when is_binary(thread_id), do: thread_id
+
+  defp chat_target_thread_id(conversation, _thread_id) do
+    conversation["active_thread_id"] ||
+      conversation
+      |> Map.get("threads", [])
+      |> List.first()
+      |> then(&(&1 && &1["id"]))
+  end
+
+  defp maybe_switch_conversation_thread(_conversation_id, nil), do: :ok
+
+  defp maybe_switch_conversation_thread(conversation_id, thread_id) do
+    case Rho.Conversation.switch_thread(conversation_id, thread_id) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp archive_chat_row(socket, conversation, thread_id) when is_binary(thread_id) do
+    if length(conversation["threads"] || []) > 1 do
+      sid = conversation["session_id"]
+      workspace = conversation["workspace"] || workspace_for_session(socket, sid)
+
+      case Threads.delete(sid, workspace, thread_id) do
+        :ok -> :ok
+        {:error, _reason} -> Rho.Conversation.delete_thread(conversation["id"], thread_id)
+      end
+    else
+      Rho.Conversation.archive(conversation["id"])
+    end
+  end
+
+  defp archive_chat_row(_socket, conversation, _thread_id) do
+    Rho.Conversation.archive(conversation["id"])
+  end
+
+  defp chat_row_active?(conversation_id, thread_id, active_id, active_thread_id)
+       when conversation_id == active_id do
+    is_nil(thread_id) or is_nil(active_thread_id) or thread_id == active_thread_id
+  end
+
+  defp chat_row_active?(_conversation_id, _thread_id, _active_id, _active_thread_id), do: false
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  defp switch_to_session(socket, sid, opts) do
+    socket =
+      socket
+      |> persist_current_thread_snapshot()
+      |> SessionCore.unsubscribe()
+      |> assign(:session_id, sid)
+      |> reset_session_runtime_assigns()
+
+    ensure_opts = Keyword.merge(session_ensure_opts(socket.assigns.live_action), opts)
+
+    socket
+    |> SessionCore.subscribe_and_hydrate(sid, ensure_opts)
+    |> restore_from_snapshot()
+    |> refresh_threads()
+    |> refresh_conversations()
+    |> refresh_data_table_session()
+  end
+
+  defp persist_current_thread_snapshot(socket) do
+    sid = socket.assigns[:session_id]
+
+    if sid do
+      workspace = user_workspace(socket)
+      snapshot = Snapshot.build_snapshot(socket)
+      Snapshot.save(sid, workspace, snapshot)
+
+      if current_thread = Threads.active(sid, workspace) do
+        Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
+      end
+    end
+
+    socket
+  end
+
+  defp reset_session_runtime_assigns(socket) do
+    socket
+    |> assign(:inflight, %{})
+    |> assign(:signals, [])
+    |> assign(:ui_streams, %{})
+    |> assign(:debug_projections, %{})
+    |> assign(:total_input_tokens, 0)
+    |> assign(:total_output_tokens, 0)
+    |> assign(:total_cost, 0.0)
+    |> assign(:total_cached_tokens, 0)
+    |> assign(:total_reasoning_tokens, 0)
+    |> assign(:step_input_tokens, 0)
+    |> assign(:step_output_tokens, 0)
+    |> assign(:files_parsing, %{})
+    |> assign(:files_pending_send, nil)
+  end
+
+  defp push_chat_session_patch(socket, sid) do
+    case get_in(socket.assigns, [:current_organization, Access.key(:slug)]) do
+      slug when is_binary(slug) -> push_patch(socket, to: ~p"/orgs/#{slug}/chat/#{sid}")
+      _ -> socket
+    end
   end
 
   defp tail_replay(socket, _sid, nil), do: socket
@@ -4242,8 +4671,10 @@ defmodule RhoWeb.AppLive do
   # so a forgotten current_user assign doesn't silently leak into
   # someone else's directory.
   defp user_workspace(socket) do
-    sid = socket.assigns[:session_id]
+    workspace_for_session(socket, socket.assigns[:session_id])
+  end
 
+  defp workspace_for_session(socket, sid) do
     case {socket.assigns[:current_user], sid} do
       {%{id: user_id}, sid} when is_binary(sid) -> Rho.Paths.user_workspace(user_id, sid)
       _ -> File.cwd!()
@@ -4276,6 +4707,305 @@ defmodule RhoWeb.AppLive do
       socket
     end
   end
+
+  defp refresh_conversations(socket) do
+    active_conversation = active_conversation(socket)
+    active_id = active_conversation && active_conversation["id"]
+    active_thread_id = active_conversation && active_conversation["active_thread_id"]
+    active_messages = active_conversation_messages(socket)
+
+    conversations =
+      socket
+      |> conversation_list_opts()
+      |> Rho.Conversation.list()
+      |> Enum.flat_map(&chat_rail_items(&1, active_id, active_thread_id, active_messages))
+      |> Enum.take(24)
+
+    socket
+    |> assign(:conversations, conversations)
+    |> assign(:active_conversation_id, active_id)
+  end
+
+  defp active_conversation(socket) do
+    case socket.assigns[:session_id] do
+      sid when is_binary(sid) -> scoped_conversation_by_session(socket, sid)
+      _ -> nil
+    end
+  end
+
+  defp scoped_conversation_by_session(socket, sid) do
+    Rho.Conversation.get_by_session(sid, conversation_list_opts(socket))
+  end
+
+  defp conversation_list_opts(socket) do
+    [
+      user_id: get_in(socket.assigns, [:current_user, Access.key(:id)]),
+      organization_id: get_in(socket.assigns, [:current_organization, Access.key(:id)])
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp chat_rail_items(conversation, active_id, active_thread_id, active_messages) do
+    threads = conversation["threads"] || []
+
+    case threads do
+      [] ->
+        [chat_rail_item(conversation, nil, active_id, active_thread_id, active_messages, false)]
+
+      [_one] ->
+        Enum.map(
+          threads,
+          &chat_rail_item(conversation, &1, active_id, active_thread_id, active_messages, false)
+        )
+
+      many ->
+        Enum.map(
+          many,
+          &chat_rail_item(conversation, &1, active_id, active_thread_id, active_messages, true)
+        )
+    end
+  end
+
+  defp chat_rail_item(
+         conversation,
+         thread,
+         active_id,
+         active_thread_id,
+         active_messages,
+         threaded?
+       ) do
+    thread_id = thread && thread["id"]
+    active = chat_row_active?(conversation["id"], thread_id, active_id, active_thread_id)
+
+    messages =
+      if active and active_messages != [] do
+        active_messages
+      else
+        conversation_trace_messages(thread)
+      end
+
+    last_message = last_text_message(messages)
+    last_user_message = last_text_message(messages, :user)
+    updated_at = chat_row_updated_at(conversation, thread, active)
+
+    %{
+      id: chat_row_id(conversation, thread),
+      conversation_id: conversation["id"],
+      session_id: conversation["session_id"],
+      thread_id: thread_id,
+      agent_name: conversation_agent_name(conversation),
+      title: chat_title(conversation, thread, last_user_message, threaded?),
+      preview: conversation_preview(thread, last_message, conversation),
+      updated_at: updated_at,
+      updated_label: relative_time(updated_at),
+      active: active
+    }
+  end
+
+  defp chat_row_id(%{"id" => conversation_id}, %{"id" => thread_id}),
+    do: "#{conversation_id}:#{thread_id}"
+
+  defp chat_row_id(%{"id" => conversation_id}, _thread), do: conversation_id
+
+  defp chat_row_updated_at(conversation, thread, true) do
+    conversation["updated_at"] || (thread && thread["updated_at"])
+  end
+
+  defp chat_row_updated_at(conversation, thread, _active?) do
+    (thread && thread["updated_at"]) || conversation["updated_at"]
+  end
+
+  defp conversation_trace_messages(%{"tape_name" => tape_name}) when is_binary(tape_name) do
+    Rho.Trace.Projection.chat(tape_name, last: 80)
+  rescue
+    _ -> []
+  end
+
+  defp conversation_trace_messages(_thread), do: []
+
+  defp active_conversation_messages(socket) do
+    sid = socket.assigns[:session_id]
+    agent_id = socket.assigns[:active_agent_id] || (sid && Rho.Agent.Primary.agent_id(sid))
+
+    if agent_id do
+      Map.get(socket.assigns[:agent_messages] || %{}, agent_id, [])
+    else
+      []
+    end
+  end
+
+  defp last_text_message(messages, role \\ nil) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find(fn message ->
+      role_match? = is_nil(role) or Map.get(message, :role) == role
+      role_match? and conversation_message_text(message) != ""
+    end)
+  end
+
+  defp conversation_title(%{"title" => title}, _thread, _message)
+       when is_binary(title) and title not in ["", "New conversation"] do
+    truncate_text(title, 48)
+  end
+
+  defp conversation_title(_conversation, _thread, message) when is_map(message) do
+    message
+    |> conversation_message_text()
+    |> truncate_text(48)
+  end
+
+  defp conversation_title(_conversation, %{"name" => name}, _message)
+       when is_binary(name) and name not in ["", "Main", "New Thread", "New chat"] do
+    truncate_text(name, 48)
+  end
+
+  defp conversation_title(_conversation, _thread, _message), do: "New chat"
+
+  defp chat_title(conversation, thread, message, threaded?) do
+    cond do
+      custom_conversation_title?(conversation) ->
+        conversation_title(conversation, thread, nil)
+
+      is_map(message) ->
+        message
+        |> conversation_message_text()
+        |> truncate_text(48)
+
+      not threaded? ->
+        conversation_title(conversation, thread, nil)
+
+      title = thread_title(thread) ->
+        title
+
+      true ->
+        "New chat"
+    end
+  end
+
+  defp custom_conversation_title?(%{"title" => title})
+       when is_binary(title) and title not in ["", "New conversation"] do
+    true
+  end
+
+  defp custom_conversation_title?(_conversation), do: false
+
+  defp thread_title(%{"name" => name})
+       when is_binary(name) and name not in ["", "Main", "New Thread", "New chat"] do
+    truncate_text(name, 48)
+  end
+
+  defp thread_title(_thread), do: nil
+
+  defp conversation_preview(_thread, message, _conversation) when is_map(message) do
+    role =
+      message
+      |> Map.get(:role)
+      |> case do
+        :user -> "You"
+        :assistant -> "Assistant"
+        :system -> "System"
+        _ -> "Message"
+      end
+
+    "#{role}: #{message |> conversation_message_text() |> truncate_text(70)}"
+  end
+
+  defp conversation_preview(%{"summary" => summary}, _message, _conversation)
+       when is_binary(summary) and summary != "" do
+    truncate_text(summary, 70)
+  end
+
+  defp conversation_preview(_thread, _message, conversation) do
+    case conversation["title"] do
+      title when is_binary(title) and title not in ["", "New conversation"] ->
+        truncate_text(title, 70)
+
+      _ ->
+        "No messages yet"
+    end
+  end
+
+  defp conversation_message_text(%{content: content}), do: content_to_text(content)
+  defp conversation_message_text(%{"content" => content}), do: content_to_text(content)
+  defp conversation_message_text(_), do: ""
+
+  defp content_to_text(text) when is_binary(text) do
+    text
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
+  defp content_to_text(parts) when is_list(parts) do
+    parts
+    |> Enum.map_join(" ", fn
+      %{text: text} -> text
+      %{"text" => text} -> text
+      other when is_binary(other) -> other
+      _ -> ""
+    end)
+    |> content_to_text()
+  end
+
+  defp content_to_text(other) when is_map(other),
+    do: other |> inspect(limit: 20) |> content_to_text()
+
+  defp content_to_text(_), do: ""
+
+  defp truncate_text(nil, _max), do: ""
+
+  defp truncate_text(text, max) when is_binary(text) do
+    if String.length(text) > max do
+      String.slice(text, 0, max) <> "..."
+    else
+      text
+    end
+  end
+
+  defp relative_time(nil), do: ""
+
+  defp relative_time(iso) when is_binary(iso) do
+    with {:ok, dt, _} <- DateTime.from_iso8601(iso) do
+      seconds = max(DateTime.diff(DateTime.utc_now(), dt, :second), 0)
+
+      cond do
+        seconds < 60 -> "now"
+        seconds < 3600 -> "#{div(seconds, 60)}m"
+        seconds < 86_400 -> "#{div(seconds, 3600)}h"
+        seconds < 604_800 -> "#{div(seconds, 86_400)}d"
+        true -> Calendar.strftime(dt, "%b %-d")
+      end
+    else
+      _ -> ""
+    end
+  end
+
+  defp can_access_conversation?(socket, conversation) do
+    user_id = socket.assigns |> get_in([:current_user, Access.key(:id)]) |> stringify_id()
+    org_id = socket.assigns |> get_in([:current_organization, Access.key(:id)]) |> stringify_id()
+
+    conversation_matches?(conversation["user_id"], user_id) and
+      conversation_matches?(conversation["organization_id"], org_id)
+  end
+
+  defp conversation_matches?(nil, _current), do: true
+  defp conversation_matches?(_stored, nil), do: true
+  defp conversation_matches?(stored, current), do: stringify_id(stored) == stringify_id(current)
+
+  defp stringify_id(nil), do: nil
+  defp stringify_id(value), do: to_string(value)
+
+  defp touch_active_conversation(socket) do
+    case active_conversation(socket) do
+      %{"id" => conversation_id} -> Rho.Conversation.touch(conversation_id)
+      _ -> :ok
+    end
+  end
+
+  defp refresh_conversation_event?(kind)
+       when kind in [:message_sent, :turn_finished, :tool_start, :tool_result, :error],
+       do: true
+
+  defp refresh_conversation_event?(_kind), do: false
 
   defp close_overlay(socket) do
     if overlay_sid = socket.assigns[:overlay_session_id] do

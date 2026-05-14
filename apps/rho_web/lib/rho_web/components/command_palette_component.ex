@@ -98,15 +98,17 @@ defmodule RhoWeb.CommandPaletteComponent do
       if assigns.shell.focus_workspace_id do
         [%{id: "exit_focus", label: "Exit Focus Mode", shortcut: "Esc", category: :shell}]
       else
-        [%{id: "enter_focus", label: "Focus Workspace (fullscreen)", shortcut: "Esc", category: :shell}]
+        [
+          %{
+            id: "enter_focus",
+            label: "Focus Workspace (fullscreen)",
+            shortcut: "Esc",
+            category: :shell
+          }
+        ]
       end
 
-    thread_actions =
-      Enum.map(assigns.threads, fn thread ->
-        %{id: "switch_thread:#{thread["id"]}", label: "Switch to thread: #{thread["name"]}", category: :thread}
-      end)
-
-    workspace_actions ++ chat_action ++ focus_action ++ thread_actions
+    workspace_actions ++ chat_action ++ focus_action
   end
 
   defp filter_actions(actions, "") do

@@ -86,6 +86,7 @@ defmodule RhoWeb.Session.Threads do
         session_id: session_id,
         user_id: Keyword.get(opts, :user_id),
         organization_id: Keyword.get(opts, :organization_id),
+        agent_name: Keyword.get(opts, :agent_name) || Keyword.get(opts, :agent),
         workspace: workspace,
         title: Keyword.get(opts, :title, "New conversation"),
         active_thread_id: active_thread_id,
@@ -410,8 +411,8 @@ defmodule RhoWeb.Session.Threads do
   end
 
   defp conversation_for(session_id, workspace) do
-    case Rho.Conversation.get_by_session(session_id) do
-      %{"workspace" => ^workspace} = conversation -> conversation
+    case Rho.Conversation.get_by_session(session_id, workspace: workspace) do
+      %{} = conversation -> conversation
       _ -> nil
     end
   end

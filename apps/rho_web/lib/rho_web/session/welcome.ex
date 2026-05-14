@@ -43,9 +43,39 @@ defmodule RhoWeb.Session.Welcome do
   skipped (other agents in the same session may have prior activity).
   """
   def render_for_new_agent(socket, agent_id) do
+    render_for_agent(socket, agent_id, check_chat_context?: false, check_event_log?: false)
+  end
+
+  @doc """
+  Re-append the welcome message for the current agent when an empty
+  spreadsheet conversation is reopened.
+
+  Unlike `maybe_render/1`, this intentionally skips the session-level event
+  log guard: returning to a saved empty spreadsheet chat usually has a
+  `Session started` event, but still needs the synthetic intro.
+  """
+  def render_for_active_agent(socket) do
+    render_for_agent(socket, socket.assigns[:active_agent_id],
+      check_chat_context?: true,
+      check_event_log?: false
+    )
+  end
+
+  defp render_for_agent(socket, agent_id, opts) do
+    check_chat_context? = Keyword.get(opts, :check_chat_context?, true)
+    check_event_log? = Keyword.get(opts, :check_event_log?, true)
+
+    chat_context_ok? =
+      not check_chat_context? or empty_chat_context?(socket.assigns[:chat_context])
+
+    event_log_ok? =
+      not check_event_log? or empty_event_log?(socket.assigns[:session_id])
+
     if agent_id != nil and
          spreadsheet?(socket.assigns[:agents], agent_id) and
-         empty_messages?(socket.assigns[:agent_messages], agent_id) do
+         empty_messages?(socket.assigns[:agent_messages], agent_id) and
+         chat_context_ok? and
+         event_log_ok? do
       do_render(socket, agent_id)
     else
       socket
@@ -63,6 +93,8 @@ defmodule RhoWeb.Session.Welcome do
 
   defp spreadsheet?(%{} = agents, agent_id) do
     case Map.get(agents, agent_id) do
+      %{agent_name: :spreadsheet} -> true
+      %{agent_name: "spreadsheet"} -> true
       %{role: :spreadsheet} -> true
       _ -> false
     end
@@ -74,11 +106,15 @@ defmodule RhoWeb.Session.Welcome do
     case Map.get(agent_messages, agent_id) do
       [] -> true
       nil -> true
-      _ -> false
+      messages -> Enum.all?(messages, &anchor_message?/1)
     end
   end
 
   defp empty_messages?(_, _), do: true
+
+  defp anchor_message?(%{type: :anchor}), do: true
+  defp anchor_message?(%{type: "anchor"}), do: true
+  defp anchor_message?(_), do: false
 
   defp empty_chat_context?(nil), do: true
   defp empty_chat_context?(ctx) when is_map(ctx), do: map_size(ctx) == 0
@@ -98,10 +134,17 @@ defmodule RhoWeb.Session.Welcome do
       role: :assistant,
       type: :welcome,
       content: render_text(libraries),
+      animation_key: animation_key(socket, agent_id),
       agent_id: agent_id
     }
 
     SignalRouter.append_message(socket, msg)
+  end
+
+  defp animation_key(socket, agent_id) do
+    ["welcome", socket.assigns[:session_id], agent_id]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(":", &to_string/1)
   end
 
   defp render_text([]) do

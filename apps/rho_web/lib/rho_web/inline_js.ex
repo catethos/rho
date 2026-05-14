@@ -76,20 +76,80 @@ defmodule RhoWeb.InlineJS do
         }
       },
 
-      ParentPicker: {
+      ChatReorder: {
         mounted() {
-          this.el.addEventListener("rho:select-parent", function(e) {
-            var parentId = e.detail.parent_id;
-            var input = document.getElementById("new-agent-parent-input");
-            if (input) input.value = parentId;
-            var btns = e.currentTarget.querySelectorAll(".agent-parent-btn");
-            btns.forEach(function(btn) {
-              if (btn.getAttribute("data-parent-id") === parentId) {
-                btn.classList.add("active");
-              } else {
-                btn.classList.remove("active");
-              }
-            });
+          var self = this;
+          this.draggedRow = null;
+          this.startOrder = "";
+
+          this.onDragStart = function(e) {
+            var handle = e.target.closest(".chat-drag-handle");
+            if (!handle || !self.el.contains(handle)) return;
+
+            var row = handle.closest(".chat-row");
+            if (!row) return;
+
+            self.draggedRow = row;
+            self.startOrder = self.orderKey();
+            row.classList.add("is-dragging");
+
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", row.dataset.chatId || "");
+            }
+          };
+
+          this.onDragOver = function(e) {
+            if (!self.draggedRow) return;
+            e.preventDefault();
+
+            var target = e.target.closest(".chat-row");
+            if (!target || target === self.draggedRow || !self.el.contains(target)) return;
+
+            var rect = target.getBoundingClientRect();
+            var after = e.clientY > rect.top + rect.height / 2;
+            self.el.insertBefore(self.draggedRow, after ? target.nextSibling : target);
+          };
+
+          this.onDrop = function(e) {
+            if (!self.draggedRow) return;
+            e.preventDefault();
+            self.finishDrag();
+          };
+
+          this.onDragEnd = function() {
+            self.finishDrag();
+          };
+
+          this.el.addEventListener("dragstart", this.onDragStart);
+          this.el.addEventListener("dragover", this.onDragOver);
+          this.el.addEventListener("drop", this.onDrop);
+          this.el.addEventListener("dragend", this.onDragEnd);
+        },
+        destroyed() {
+          this.el.removeEventListener("dragstart", this.onDragStart);
+          this.el.removeEventListener("dragover", this.onDragOver);
+          this.el.removeEventListener("drop", this.onDrop);
+          this.el.removeEventListener("dragend", this.onDragEnd);
+        },
+        orderKey() {
+          return Array.from(this.el.querySelectorAll(".chat-row"))
+            .map(function(row) { return row.dataset.conversationId || ""; })
+            .filter(Boolean)
+            .filter(function(id, idx, ids) { return ids.indexOf(id) === idx; })
+            .join("|");
+        },
+        finishDrag() {
+          if (!this.draggedRow) return;
+
+          this.draggedRow.classList.remove("is-dragging");
+          this.draggedRow = null;
+
+          var nextOrder = this.orderKey();
+          if (!nextOrder || nextOrder === this.startOrder) return;
+
+          this.pushEvent("reorder_chats", {
+            conversation_ids: nextOrder.split("|")
           });
         }
       },
@@ -152,7 +212,7 @@ defmodule RhoWeb.InlineJS do
       WelcomeTypewriter: {
         mounted() {
           window.__rhoWelcomeShown = window.__rhoWelcomeShown || {};
-          var key = this.el.id;
+          var key = this.el.getAttribute("data-welcome-key") || this.el.id;
           var raw = this.el.getAttribute("data-md") || "";
           var html;
           if (window.marked) {
@@ -163,12 +223,25 @@ defmodule RhoWeb.InlineJS do
           }
 
           // Already played in this tab — render finished state and bail.
-          if (window.__rhoWelcomeShown[key]) {
+          var storageKey = "rho:" + key + ":shown";
+          var storedShown = false;
+          try {
+            storedShown = window.sessionStorage && window.sessionStorage.getItem(storageKey) === "1";
+          } catch (_e) {
+            storedShown = false;
+          }
+
+          if (window.__rhoWelcomeShown[key] || storedShown) {
             this.el.innerHTML = html;
             var card0 = this.el.closest(".welcome-card");
             if (card0) card0.classList.add("welcome-already-shown");
             return;
           }
+
+          window.__rhoWelcomeShown[key] = true;
+          try {
+            if (window.sessionStorage) window.sessionStorage.setItem(storageKey, "1");
+          } catch (_e) {}
 
           var src = document.createElement("div");
           src.innerHTML = html;
@@ -277,7 +350,7 @@ defmodule RhoWeb.InlineJS do
             var card = this.el.closest(".welcome-card");
             if (card) card.classList.add("welcome-typed");
             window.__rhoWelcomeShown = window.__rhoWelcomeShown || {};
-            window.__rhoWelcomeShown[this.el.id] = true;
+            window.__rhoWelcomeShown[this.el.getAttribute("data-welcome-key") || this.el.id] = true;
             return;
           }
           var entry = this._actions[this._idx++];

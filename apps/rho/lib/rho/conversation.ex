@@ -34,7 +34,9 @@ defmodule Rho.Conversation do
       "user_id" => stringify_nullable(attrs["user_id"]),
       "organization_id" => stringify_nullable(attrs["organization_id"]),
       "workspace" => attrs["workspace"],
+      "agent_name" => stringify_nullable(attrs["agent_name"] || attrs["agent"] || :default),
       "title" => attrs["title"] || "New conversation",
+      "position" => attrs["position"] || Index.next_position(attrs),
       "active_thread_id" => active_thread_id,
       "created_at" => attrs["created_at"] || now,
       "updated_at" => attrs["updated_at"] || now,
@@ -57,10 +59,23 @@ defmodule Rho.Conversation do
     end
   end
 
-  @doc "Get the most recently updated conversation for a session id."
-  @spec get_by_session(String.t()) :: map() | nil
-  def get_by_session(session_id) when is_binary(session_id) do
-    list(include_archived: true)
+  @doc """
+  Get a conversation by session id.
+
+  Optional `:user_id`, `:organization_id`, and `:workspace` filters constrain
+  the lookup for user-facing resume paths. Calling with no filters preserves the
+  internal/debug behavior of resolving by session id alone.
+  """
+  @spec get_by_session(String.t(), keyword()) :: map() | nil
+  def get_by_session(session_id, opts \\ []) when is_binary(session_id) do
+    workspace = Keyword.get(opts, :workspace)
+
+    list(
+      include_archived: true,
+      user_id: Keyword.get(opts, :user_id),
+      organization_id: Keyword.get(opts, :organization_id)
+    )
+    |> filter_workspace(workspace)
     |> Enum.find(&(&1["session_id"] == session_id))
   end
 
@@ -99,6 +114,52 @@ defmodule Rho.Conversation do
   @spec touch(String.t()) :: {:ok, map()} | {:error, term()}
   def touch(conversation_id) do
     update_conversation(conversation_id, &Map.put(&1, "updated_at", now()))
+  end
+
+  @doc "Persist a user-facing conversation title."
+  @spec set_title(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def set_title(conversation_id, title) when is_binary(title) do
+    title =
+      title
+      |> String.trim()
+      |> truncate(80)
+      |> case do
+        "" -> "New conversation"
+        value -> value
+      end
+
+    update_conversation(conversation_id, &Map.put(&1, "title", title))
+  end
+
+  @doc "Persist the user-defined order for conversations."
+  @spec reorder([String.t()]) :: :ok | {:error, term()}
+  def reorder(conversation_ids) when is_list(conversation_ids) do
+    conversation_ids
+    |> Enum.map(&to_string/1)
+    |> Enum.uniq()
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {conversation_id, index}, :ok ->
+      case set_position(conversation_id, index * 1000) do
+        {:ok, _conversation} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  @doc "Persist the agent config name associated with a conversation."
+  @spec set_agent_name(String.t(), atom() | String.t()) :: {:ok, map()} | {:error, term()}
+  def set_agent_name(conversation_id, agent_name) do
+    update_conversation(conversation_id, fn conversation ->
+      conversation
+      |> Map.put("agent_name", stringify_nullable(agent_name || :default))
+      |> Map.put("updated_at", now())
+    end)
+  end
+
+  @doc "Persist a sortable conversation position."
+  @spec set_position(String.t(), integer()) :: {:ok, map()} | {:error, term()}
+  def set_position(conversation_id, position) when is_integer(position) do
+    update_conversation(conversation_id, &Map.put(&1, "position", position))
   end
 
   @doc "Create a named thread under a conversation."
@@ -234,6 +295,11 @@ defmodule Rho.Conversation do
     Enum.filter(entries, &(stringify_nullable(&1[key]) == value))
   end
 
+  defp filter_workspace(entries, nil), do: entries
+
+  defp filter_workspace(entries, workspace),
+    do: Enum.filter(entries, &(&1["workspace"] == workspace))
+
   defp stringify_keys(map) do
     Map.new(map, fn
       {key, value} when is_atom(key) -> {Atom.to_string(key), value}
@@ -246,6 +312,14 @@ defmodule Rho.Conversation do
 
   defp generate_id do
     "conv_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+  end
+
+  defp truncate(text, max) when byte_size(text) <= max, do: text
+
+  defp truncate(text, max) do
+    text
+    |> String.slice(0, max)
+    |> String.trim()
   end
 
   defp now, do: DateTime.utc_now() |> DateTime.to_iso8601()

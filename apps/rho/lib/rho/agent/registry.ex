@@ -22,6 +22,7 @@ defmodule Rho.Agent.Registry do
       agent_id: agent_id,
       session_id: attrs[:session_id],
       role: attrs[:role],
+      agent_name: attrs[:agent_name],
       capabilities: attrs[:capabilities] || [],
       pid: attrs[:pid],
       status: attrs[:status] || :idle,

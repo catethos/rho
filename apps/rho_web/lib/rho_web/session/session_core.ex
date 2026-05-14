@@ -84,24 +84,34 @@ defmodule RhoWeb.Session.SessionCore do
   def subscribe_and_hydrate(socket, session_id, opts \\ []) do
     user_id = current_user_id(socket)
     opts = Keyword.put_new(opts, :user_id, user_id)
-    workspace = Keyword.get(opts, :workspace, user_workspace_for(user_id, session_id))
-    {conversation, active_thread} = ensure_conversation(session_id, workspace, opts)
 
-    opts =
-      opts
-      |> Keyword.put_new(:workspace, workspace)
-      |> Keyword.put(:conversation_id, conversation["id"])
-      |> Keyword.put(:thread_id, active_thread["id"])
-      |> Keyword.put_new(:tape_ref, active_thread["tape_name"])
+    with :ok <- Rho.SessionOwners.authorize(session_id, user_id) do
+      workspace = Keyword.get(opts, :workspace, user_workspace_for(user_id, session_id))
+      {conversation, active_thread} = ensure_conversation(session_id, workspace, opts)
+      agent_name = Keyword.get(opts, :agent_name) || conversation_agent_name(conversation)
 
-    tape_module = Rho.Config.tape_module()
-    tape_module.bootstrap(opts[:tape_ref])
+      opts =
+        opts
+        |> Keyword.put_new(:workspace, workspace)
+        |> Keyword.put(:agent_name, agent_name)
+        |> Keyword.put(:conversation_id, conversation["id"])
+        |> Keyword.put(:thread_id, active_thread["id"])
+        |> Keyword.put_new(:tape_ref, active_thread["tape_name"])
 
-    case Rho.Agent.Primary.ensure_started(session_id, opts) do
-      {:ok, _pid} ->
-        :ok = Rho.Events.subscribe(session_id, user_id)
-        do_hydrate(socket, session_id)
+      tape_module = Rho.Config.tape_module()
+      tape_module.bootstrap(opts[:tape_ref])
 
+      case Rho.Agent.Primary.ensure_started(session_id, opts) do
+        {:ok, _pid} ->
+          :ok = Rho.Events.subscribe(session_id, user_id)
+          do_hydrate(socket, session_id)
+
+        {:error, :forbidden} ->
+          socket
+          |> Phoenix.LiveView.put_flash(:error, "You don't have access to this session.")
+          |> Phoenix.LiveView.push_navigate(to: "/")
+      end
+    else
       {:error, :forbidden} ->
         socket
         |> Phoenix.LiveView.put_flash(:error, "You don't have access to this session.")
@@ -118,6 +128,7 @@ defmodule RhoWeb.Session.SessionCore do
            agent_id: info.agent_id,
            session_id: info.session_id,
            role: info.role,
+           agent_name: Map.get(info, :agent_name),
            status: info.status,
            depth: info.depth,
            capabilities: info.capabilities,
@@ -182,6 +193,7 @@ defmodule RhoWeb.Session.SessionCore do
     base_session_opts =
       session_opts(socket)
       |> then(fn o -> if agent_name, do: Keyword.put(o, :agent, agent_name), else: o end)
+      |> then(fn o -> if agent_name, do: Keyword.put(o, :agent_name, agent_name), else: o end)
 
     sid =
       session_id ||
@@ -521,7 +533,11 @@ defmodule RhoWeb.Session.SessionCore do
     default_tape = tape_module.memory_ref(session_id, workspace)
 
     conversation =
-      case Rho.Conversation.get_by_session(session_id) do
+      case Rho.Conversation.get_by_session(session_id,
+             user_id: opts[:user_id],
+             organization_id: opts[:organization_id],
+             workspace: workspace
+           ) do
         %{"workspace" => ^workspace} = existing ->
           existing
 
@@ -532,6 +548,8 @@ defmodule RhoWeb.Session.SessionCore do
           case RhoWeb.Session.Threads.import_legacy(session_id, workspace,
                  user_id: opts[:user_id],
                  organization_id: opts[:organization_id],
+                 agent_name: opts[:agent_name],
+                 agent: opts[:agent],
                  tape_name: default_tape
                ) do
             {:ok, imported} ->
@@ -544,12 +562,14 @@ defmodule RhoWeb.Session.SessionCore do
                   user_id: opts[:user_id],
                   organization_id: opts[:organization_id],
                   workspace: workspace,
+                  agent_name: opts[:agent_name] || opts[:agent],
                   tape_name: default_tape
                 })
 
               created
           end
       end
+      |> ensure_conversation_agent_name(opts[:agent_name] || opts[:agent])
 
     active_thread =
       Rho.Conversation.active_thread(conversation["id"]) ||
@@ -557,6 +577,21 @@ defmodule RhoWeb.Session.SessionCore do
         ensure_main_thread(conversation["id"], default_tape)
 
     {conversation, active_thread}
+  end
+
+  defp ensure_conversation_agent_name(conversation, nil), do: conversation
+
+  defp ensure_conversation_agent_name(%{"id" => id} = conversation, agent_name) do
+    value = to_string(agent_name)
+
+    if conversation["agent_name"] == value do
+      conversation
+    else
+      case Rho.Conversation.set_agent_name(id, value) do
+        {:ok, updated} -> updated
+        {:error, _reason} -> Map.put(conversation, "agent_name", value)
+      end
+    end
   end
 
   defp ensure_main_thread(conversation_id, tape_name) do
@@ -570,6 +605,13 @@ defmodule RhoWeb.Session.SessionCore do
     :ok = Rho.Conversation.switch_thread(conversation_id, thread["id"])
     thread
   end
+
+  defp conversation_agent_name(%{"agent_name" => agent_name}) when is_binary(agent_name) do
+    Rho.AgentConfig.agent_names()
+    |> Enum.find(:default, &(Atom.to_string(&1) == agent_name))
+  end
+
+  defp conversation_agent_name(_conversation), do: :default
 
   defp session_opts(socket) do
     [

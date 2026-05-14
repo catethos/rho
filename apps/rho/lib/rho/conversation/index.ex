@@ -86,6 +86,35 @@ defmodule Rho.Conversation.Index do
     conversation
     |> Map.put("threads", threads)
     |> Map.put_new("archived_at", nil)
+    |> Map.put_new("agent_name", "default")
+    |> Map.put_new("position", nil)
+  end
+
+  @doc "Return a position value that places a new conversation at the top of its scope."
+  @spec next_position(map()) :: integer()
+  def next_position(attrs) when is_map(attrs) do
+    attrs = stringify_keys(attrs)
+    user_id = stringify_nullable(attrs["user_id"])
+    organization_id = stringify_nullable(attrs["organization_id"])
+
+    positions =
+      index_entries()
+      |> Enum.filter(fn entry ->
+        stringify_nullable(entry["user_id"]) == user_id and
+          stringify_nullable(entry["organization_id"]) == organization_id and
+          is_nil(entry["archived_at"])
+      end)
+      |> Enum.flat_map(fn entry ->
+        case numeric_position(entry["position"]) do
+          nil -> []
+          position -> [position]
+        end
+      end)
+
+    case positions do
+      [] -> 0
+      _ -> Enum.min(positions) - 1000
+    end
   end
 
   @doc "Return all indexed entries."
@@ -97,12 +126,20 @@ defmodule Rho.Conversation.Index do
   defp upsert_index_entry(conversation) do
     index = load_index()
     entry = index_entry(conversation)
+    entry_id = entry["id"]
+
+    current = index["conversations"] || []
 
     entries =
-      index["conversations"]
-      |> Enum.reject(&(&1["id"] == entry["id"]))
-      |> Kernel.++([entry])
-      |> Enum.sort_by(&(&1["updated_at"] || ""), :desc)
+      if Enum.any?(current, &(&1["id"] == entry_id)) do
+        Enum.map(current, fn
+          %{"id" => id} when id == entry_id -> entry
+          other -> other
+        end)
+      else
+        current ++ [entry]
+      end
+      |> sort_index_entries()
 
     write_index(%{"conversations" => entries})
   end
@@ -113,13 +150,40 @@ defmodule Rho.Conversation.Index do
       "session_id",
       "user_id",
       "organization_id",
+      "agent_name",
       "title",
+      "position",
       "active_thread_id",
       "created_at",
       "updated_at",
       "archived_at"
     ])
   end
+
+  defp sort_index_entries(entries) do
+    entries
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {entry, index} ->
+      case numeric_position(entry["position"]) do
+        nil -> {1, index}
+        position -> {0, position}
+      end
+    end)
+    |> Enum.map(&elem(&1, 0))
+  end
+
+  defp numeric_position(position) when is_integer(position), do: position
+
+  defp numeric_position(position) when is_float(position), do: round(position)
+
+  defp numeric_position(position) when is_binary(position) do
+    case Integer.parse(position) do
+      {value, ""} -> value
+      _ -> nil
+    end
+  end
+
+  defp numeric_position(_position), do: nil
 
   defp normalize_index(index) when is_map(index) do
     %{"conversations" => Enum.map(index["conversations"] || [], &stringify_keys/1)}
@@ -145,4 +209,7 @@ defmodule Rho.Conversation.Index do
   defp stringify_value(value) when is_map(value), do: stringify_keys(value)
   defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
   defp stringify_value(value), do: value
+
+  defp stringify_nullable(nil), do: nil
+  defp stringify_nullable(value), do: to_string(value)
 end

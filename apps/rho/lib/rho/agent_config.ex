@@ -72,7 +72,7 @@ defmodule Rho.AgentConfig do
   @doc "Lists available agent names from .rho.exs."
   def agent_names do
     case load_file() do
-      %{} = agents -> Map.keys(agents)
+      %{} = agents -> agents |> Map.keys() |> sort_agent_names()
       _ -> [:default]
     end
   end
@@ -171,35 +171,82 @@ defmodule Rho.AgentConfig do
 
   defp load_file do
     now = System.monotonic_time(:second)
+    path = config_path()
 
     case :persistent_term.get({__MODULE__, :cache}, nil) do
-      {_mtime, result, checked_at} when now - checked_at < 2 ->
+      {^path, _mtime, result, checked_at} when now - checked_at < 2 ->
         result
 
       cache ->
-        do_load_file(cache, now)
+        do_load_file(path, cache, now)
     end
   end
 
-  defp do_load_file(cache, now) do
-    path = Path.expand(@config_file)
+  defp do_load_file(nil, _cache, now) do
+    result = nil
+    :persistent_term.put({__MODULE__, :cache}, {nil, nil, result, now})
+    result
+  end
 
+  defp do_load_file(path, cache, now) do
     case File.stat(path) do
       {:ok, %{mtime: mtime}} ->
         case cache do
-          {^mtime, result, _} ->
-            :persistent_term.put({__MODULE__, :cache}, {mtime, result, now})
+          {^path, ^mtime, result, _} ->
+            :persistent_term.put({__MODULE__, :cache}, {path, mtime, result, now})
             result
 
           _ ->
             {result, _} = Code.eval_file(path)
-            :persistent_term.put({__MODULE__, :cache}, {mtime, result, now})
+            :persistent_term.put({__MODULE__, :cache}, {path, mtime, result, now})
             result
         end
 
       {:error, _} ->
         nil
     end
+  end
+
+  defp config_path do
+    explicit_config_path() || discover_config_path(File.cwd!())
+  end
+
+  defp explicit_config_path do
+    case System.get_env("RHO_AGENT_CONFIG") ||
+           Application.get_env(:rho, :agent_config_path) do
+      path when is_binary(path) and path != "" -> Path.expand(path)
+      _ -> nil
+    end
+  end
+
+  defp discover_config_path(start_dir) do
+    start_dir
+    |> Path.expand()
+    |> ancestor_dirs()
+    |> Enum.map(&Path.join(&1, @config_file))
+    |> Enum.find(&File.exists?/1)
+  end
+
+  defp ancestor_dirs(dir) do
+    parent = Path.dirname(dir)
+
+    if parent == dir do
+      [dir]
+    else
+      [dir | ancestor_dirs(parent)]
+    end
+  end
+
+  defp sort_agent_names(names) do
+    names
+    |> Enum.sort_by(&to_string/1)
+    |> then(fn names ->
+      if :default in names do
+        [:default | List.delete(names, :default)]
+      else
+        names
+      end
+    end)
   end
 
   defp env_overrides do
