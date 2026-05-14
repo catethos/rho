@@ -6,11 +6,7 @@ defmodule RhoWeb.Session.Snapshot do
   Files are stored at `_rho/sessions/{session_id}/ui_snapshot.json` relative
   to the workspace root.
   """
-
   @filename "ui_snapshot.json"
-
-  # Assigns that are included in the snapshot.
-  # Everything else (PIDs, uploads, process-specific state) is excluded.
   @snapshot_fields [
     :agents,
     :agent_messages,
@@ -27,7 +23,6 @@ defmodule RhoWeb.Session.Snapshot do
     :debug_projections,
     :ws_states
   ]
-
   @doc """
   Save a snapshot map to disk for the given session.
 
@@ -40,11 +35,7 @@ defmodule RhoWeb.Session.Snapshot do
   def save(session_id, workspace, state, opts \\ []) when is_map(state) do
     dir = session_dir(session_id, workspace)
     path = snapshot_path(dir, opts[:thread_id])
-
-    serialized =
-      state
-      |> Map.put(:snapshot_at, System.system_time(:millisecond))
-      |> serialize()
+    serialized = state |> Map.put(:snapshot_at, System.system_time(:millisecond)) |> serialize()
 
     with :ok <- File.mkdir_p(Path.dirname(path)),
          json <- Jason.encode!(serialized, pretty: true) do
@@ -68,22 +59,15 @@ defmodule RhoWeb.Session.Snapshot do
     path = snapshot_path(dir, opts[:thread_id])
 
     case File.read(path) do
-      {:ok, json} ->
-        {:ok, json |> Jason.decode!() |> deserialize()}
-
-      {:error, :enoent} ->
-        :none
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, json} -> {:ok, json |> Jason.decode!() |> deserialize()}
+      {:error, :enoent} -> :none
+      {:error, reason} -> {:error, reason}
     end
   rescue
     _ -> :none
   end
 
-  @doc """
-  Delete the snapshot file for the given session.
-  """
+  @doc "Delete the snapshot file for the given session."
   @spec delete(String.t(), String.t()) :: :ok | {:error, term()}
   def delete(session_id, workspace) do
     path = Path.join(session_dir(session_id, workspace), @filename)
@@ -103,14 +87,10 @@ defmodule RhoWeb.Session.Snapshot do
   """
   @spec build_snapshot(Phoenix.LiveView.Socket.t()) :: map()
   def build_snapshot(%{assigns: assigns}) do
-    assigns
-    |> Map.take(@snapshot_fields)
-    |> Map.put(:active_page, Map.get(assigns, :active_page))
+    assigns |> Map.take(@snapshot_fields) |> Map.put(:active_page, Map.get(assigns, :active_page))
   end
 
-  @doc """
-  Apply a loaded snapshot into a socket, restoring persisted assigns.
-  """
+  @doc "Apply a loaded snapshot into a socket, restoring persisted assigns."
   @spec apply_snapshot(Phoenix.LiveView.Socket.t(), map()) :: Phoenix.LiveView.Socket.t()
   def apply_snapshot(socket, snapshot) when is_map(snapshot) do
     Enum.reduce(snapshot, socket, fn
@@ -119,18 +99,19 @@ defmodule RhoWeb.Session.Snapshot do
     end)
   end
 
-  # --- Serialization ---
-
   @doc false
   def serialize(state) when is_map(state) do
     Map.new(state, fn {k, v} -> {to_string(k), serialize_value(v)} end)
   end
 
-  defp serialize_value(%MapSet{} = ms),
-    do: %{"__type__" => "MapSet", "values" => MapSet.to_list(ms)}
+  defp serialize_value(%MapSet{} = ms) do
+    %{"__type__" => "MapSet", "values" => MapSet.to_list(ms)}
+  end
 
-  defp serialize_value(value) when is_atom(value) and not is_boolean(value) and not is_nil(value),
-    do: %{"__type__" => "atom", "value" => Atom.to_string(value)}
+  defp serialize_value(value)
+       when is_atom(value) and not is_boolean(value) and not is_nil(value) do
+    %{"__type__" => "atom", "value" => Atom.to_string(value)}
+  end
 
   defp serialize_value(value) when is_map(value) do
     if has_tuple_keys?(value) do
@@ -145,22 +126,37 @@ defmodule RhoWeb.Session.Snapshot do
     end
   end
 
-  defp serialize_value(value) when is_list(value), do: Enum.map(value, &serialize_value/1)
-  defp serialize_value(value) when is_pid(value), do: nil
-  defp serialize_value(value) when is_reference(value), do: nil
-  defp serialize_value(value) when is_function(value), do: nil
-  defp serialize_value(value) when is_tuple(value),
-    do: %{"__type__" => "tuple", "elements" => serialize_value(Tuple.to_list(value))}
-
-  defp serialize_value(value), do: value
-
-  defp has_tuple_keys?(map) when map_size(map) == 0, do: false
-
-  defp has_tuple_keys?(map) do
-    map |> Map.keys() |> Enum.any?(&is_tuple/1)
+  defp serialize_value(value) when is_list(value) do
+    Enum.map(value, &serialize_value/1)
   end
 
-  # --- Deserialization ---
+  defp serialize_value(value) when is_pid(value) do
+    nil
+  end
+
+  defp serialize_value(value) when is_reference(value) do
+    nil
+  end
+
+  defp serialize_value(value) when is_function(value) do
+    nil
+  end
+
+  defp serialize_value(value) when is_tuple(value) do
+    %{"__type__" => "tuple", "elements" => serialize_value(Tuple.to_list(value))}
+  end
+
+  defp serialize_value(value) do
+    value
+  end
+
+  defp has_tuple_keys?(map) when map_size(map) == 0 do
+    false
+  end
+
+  defp has_tuple_keys?(map) do
+    Enum.any?(map, fn {key, _value} -> is_tuple(key) end)
+  end
 
   @doc false
   def deserialize(data) when is_map(data) do
@@ -175,25 +171,28 @@ defmodule RhoWeb.Session.Snapshot do
         elements |> deserialize() |> List.to_tuple()
 
       %{"__type__" => "tuple_keyed_map", "entries" => entries} ->
-        Map.new(entries, fn %{"key" => k, "value" => v} ->
-          {deserialize(k), deserialize(v)}
-        end)
+        Map.new(entries, fn %{"key" => k, "value" => v} -> {deserialize(k), deserialize(v)} end)
 
       map ->
         Map.new(map, fn {k, v} -> {safe_to_atom(k), deserialize(v)} end)
     end
   end
 
-  def deserialize(data) when is_list(data), do: Enum.map(data, &deserialize/1)
-  def deserialize(data), do: data
+  def deserialize(data) when is_list(data) do
+    Enum.map(data, &deserialize/1)
+  end
 
-  # --- Helpers ---
+  def deserialize(data) do
+    data
+  end
 
   defp session_dir(session_id, workspace) do
     Path.join([workspace, "_rho", "sessions", session_id])
   end
 
-  defp snapshot_path(dir, nil), do: Path.join(dir, @filename)
+  defp snapshot_path(dir, nil) do
+    Path.join(dir, @filename)
+  end
 
   defp snapshot_path(dir, thread_id) when is_binary(thread_id) do
     Path.join([dir, "snapshots", "#{thread_id}.json"])

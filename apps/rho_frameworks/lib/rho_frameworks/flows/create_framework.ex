@@ -517,7 +517,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         rows
         |> Enum.flat_map(fn row ->
           case MapAccess.get(row, :proficiency_levels) do
-            list when is_list(list) and length(list) > 0 -> [length(list)]
+            list when is_list(list) and list != [] -> [length(list)]
             _ -> []
           end
         end)

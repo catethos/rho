@@ -328,26 +328,24 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
 
   defp format_seed_skills(rows) do
     rows
-    |> Enum.map(fn row ->
+    |> Enum.map_join("\n", fn row ->
       name = get(row, :skill_name) || get(row, :name) || "?"
       cat = get(row, :category) || ""
       cluster = get(row, :cluster) || ""
 
       "- #{name} [#{cat}#{if cluster == "", do: "", else: " / #{cluster}"}]"
     end)
-    |> Enum.join("\n")
   end
 
   defp format_gaps(rows) do
     rows
-    |> Enum.map(fn row ->
+    |> Enum.map_join("\n", fn row ->
       name = get(row, :skill_name) || "?"
       cat = get(row, :category) || ""
       rationale = get(row, :rationale) || ""
 
       "- #{name} [#{cat}]" <> if(rationale == "", do: "", else: " — #{rationale}")
     end)
-    |> Enum.join("\n")
   end
 
   defp parse_scope(:gaps_only), do: :gaps_only

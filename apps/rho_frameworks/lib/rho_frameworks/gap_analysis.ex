@@ -82,7 +82,8 @@ defmodule RhoFrameworks.GapAnalysis do
               do: :unknown,
               else:
                 Float.round(
-                  Enum.sum(Enum.map(known_entries, & &1.positive_gap)) / length(known_entries),
+                  Enum.reduce(known_entries, 0, fn entry, acc -> acc + entry.positive_gap end) /
+                    length(known_entries),
                   2
                 )
             ),
@@ -98,13 +99,14 @@ defmodule RhoFrameworks.GapAnalysis do
   end
 
   defp weighted_gap_avg(entries) do
-    total_weight = Enum.sum(Enum.map(entries, & &1.weight))
+    total_weight = Enum.reduce(entries, 0, fn entry, acc -> acc + entry.weight end)
 
     if total_weight == 0,
       do: 0.0,
       else:
         Float.round(
-          Enum.sum(Enum.map(entries, fn e -> e.positive_gap * e.weight end)) / total_weight,
+          Enum.reduce(entries, 0, fn entry, acc -> acc + entry.positive_gap * entry.weight end) /
+            total_weight,
           2
         )
   end

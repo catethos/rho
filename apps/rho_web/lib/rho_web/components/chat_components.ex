@@ -17,6 +17,8 @@ defmodule RhoWeb.ChatComponents do
   attr(:active_max_steps, :integer, default: nil)
 
   def chat_feed(assigns) do
+    assigns = assign(assigns, :messages, normalize_messages(assigns.messages))
+
     ~H"""
     <div class="chat-feed" id={"chat-feed-#{@active_agent_id}"} phx-hook="AutoScroll">
       <div :if={@messages == [] and map_size(@inflight) == 0 and not @pending} class="chat-empty">
@@ -75,6 +77,171 @@ defmodule RhoWeb.ChatComponents do
     </div>
     """
   end
+
+  @doc """
+  Normalizes persisted chat messages before render.
+
+  Older snapshots can contain TypedStructured control-loop messages as plain
+  assistant/user text. The reducer and trace projection now produce semantic
+  tool rows, but this keeps already-saved UI snapshots from replaying raw JSON.
+  """
+  def normalize_messages(messages) when is_list(messages), do: do_normalize_messages(messages, [])
+  def normalize_messages(_), do: []
+
+  defp do_normalize_messages([], acc), do: Enum.reverse(acc)
+
+  defp do_normalize_messages([msg, next | rest], acc) do
+    case structured_tool_pair(msg, next) do
+      {:tool_result, action, output} ->
+        do_normalize_messages(rest, [tool_message(msg, action, output) | acc])
+
+      :existing_tool_row ->
+        do_normalize_messages(rest, normalize_message(next, acc))
+
+      :none ->
+        do_normalize_messages([msg], acc, [next | rest])
+    end
+  end
+
+  defp do_normalize_messages([msg | rest], acc) do
+    do_normalize_messages(rest, normalize_message(msg, acc))
+  end
+
+  defp do_normalize_messages([msg], acc, rest) do
+    do_normalize_messages(rest, normalize_message(msg, acc))
+  end
+
+  defp normalize_message(msg, acc) do
+    cond do
+      assistant_text?(msg) or thinking_message?(msg) ->
+        case structured_action(message_content(msg)) do
+          {:ok, %{} = action} -> normalize_structured_action(msg, action, acc)
+          _ -> [msg | acc]
+        end
+
+      tool_result_text?(message_content(msg)) ->
+        {:ok, name, output} = tool_result_text(message_content(msg))
+        [tool_result_message(msg, name, output) | acc]
+
+      thought_noted?(message_content(msg)) ->
+        acc
+
+      true ->
+        [msg | acc]
+    end
+  end
+
+  defp normalize_structured_action(msg, action, acc) do
+    case action_tool(action) do
+      "respond" ->
+        message = action["message"] || action["answer"] || ""
+
+        if String.trim(to_string(message)) == "" do
+          acc
+        else
+          [Map.merge(msg, %{type: :text, role: :assistant, content: to_string(message)}) | acc]
+        end
+
+      "think" ->
+        acc
+
+      tool when is_binary(tool) ->
+        if thinking_message?(msg) do
+          acc
+        else
+          [tool_message(msg, action, nil) | acc]
+        end
+
+      _ ->
+        [msg | acc]
+    end
+  end
+
+  defp structured_tool_pair(msg, next) do
+    with true <- assistant_text?(msg) or thinking_message?(msg),
+         {:ok, %{} = action} <- structured_action(message_content(msg)),
+         tool when is_binary(tool) and tool not in ["respond", "think"] <- action_tool(action) do
+      cond do
+        match?({:ok, ^tool, _}, tool_result_text(message_content(next))) ->
+          {:ok, _result_name, output} = tool_result_text(message_content(next))
+          {:tool_result, action, output}
+
+        next[:type] == :tool_call and next[:name] == tool ->
+          :existing_tool_row
+
+        true ->
+          :none
+      end
+    else
+      _ -> :none
+    end
+  end
+
+  defp assistant_text?(msg), do: msg[:role] == :assistant and msg[:type] == :text
+  defp thinking_message?(msg), do: msg[:role] == :assistant and msg[:type] == :thinking
+  defp message_content(msg), do: msg[:content] || ""
+
+  defp structured_action(content) when is_binary(content) do
+    case Rho.StructuredOutput.parse(content) do
+      {:ok, %{} = map} ->
+        if action_tool(map), do: {:ok, map}, else: :error
+
+      _ ->
+        :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp structured_action(_), do: :error
+
+  defp action_tool(map), do: map["tool"] || map["action"] || map["tool_name"] || map["name"]
+
+  defp tool_message(msg, action, output) do
+    name = action_tool(action)
+
+    Map.merge(msg, %{
+      role: :assistant,
+      type: :tool_call,
+      name: name,
+      args: action["args"] || action["action_input"] || %{},
+      status: if(is_nil(output), do: :pending, else: :ok),
+      output: output,
+      content: "Tool: #{name || "unknown"}"
+    })
+    |> Map.put_new(:call_id, "structured-#{msg[:id] || System.unique_integer([:positive])}")
+  end
+
+  defp tool_result_message(msg, name, output) do
+    Map.merge(msg, %{
+      role: :assistant,
+      type: :tool_call,
+      name: name,
+      args: %{},
+      status: :ok,
+      output: output,
+      content: "Tool result: #{name || "unknown"}"
+    })
+    |> Map.put_new(:call_id, "synthetic-result-#{msg[:id] || System.unique_integer([:positive])}")
+  end
+
+  @tool_result_prefix ~r/^\[Tool Result: ([^\]]+)\]\n?(.*)$/s
+
+  defp tool_result_text?(content), do: match?({:ok, _, _}, tool_result_text(content))
+
+  defp tool_result_text(content) when is_binary(content) do
+    case Regex.run(@tool_result_prefix, content) do
+      [_, name, output] -> {:ok, name, output}
+      _ -> :error
+    end
+  end
+
+  defp tool_result_text(_), do: :error
+
+  defp thought_noted?(content) when is_binary(content),
+    do: String.starts_with?(content, "[System] Thought noted.")
+
+  defp thought_noted?(_), do: false
 
   attr(:message, :map, required: true)
   attr(:user_avatar, :string, default: nil)
@@ -401,11 +568,11 @@ defmodule RhoWeb.ChatComponents do
   defp format_args(args) when is_binary(args), do: args
   defp format_args(args), do: inspect(args)
 
-  defp truncate(text, max) when byte_size(text) > max do
-    String.slice(text, 0, max) <> "\n…(truncated)"
+  defp truncate(text, max_value) when byte_size(text) > max_value do
+    String.slice(text, 0, max_value) <> "\n…(truncated)"
   end
 
-  defp truncate(text, _max), do: text
+  defp truncate(text, _max_value), do: text
 
   @image_pattern ~r/!\[.*?\]\((data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+)\)/
   @file_image_pattern ~r/\[Plot saved: ([^\]]+\.png)\]/

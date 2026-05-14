@@ -740,8 +740,8 @@ defmodule RhoWeb.FlowLive do
   end
 
   defp truncate(nil, _), do: nil
-  defp truncate(s, max) when byte_size(s) <= max, do: s
-  defp truncate(s, max), do: String.slice(s, 0, max) <> "..."
+  defp truncate(s, max_value) when byte_size(s) <= max_value, do: s
+  defp truncate(s, max_value), do: String.slice(s, 0, max_value) <> "..."
 
   # -------------------------------------------------------------------
   # DataTable events

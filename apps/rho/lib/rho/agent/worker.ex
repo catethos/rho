@@ -363,7 +363,15 @@ defmodule Rho.Agent.Worker do
 
   # --- Collect (for delegated agents) ---
 
-  @impl true
+  def handle_call(
+        :collect,
+        _from,
+        %{status: :idle, current_turn_id: nil, last_result: nil} = state
+      ) do
+    # Already done — no stored result yet (no turn has been run).
+    {:reply, {:ok, "completed"}, state}
+  end
+
   def handle_call(
         :collect,
         _from,
@@ -374,18 +382,10 @@ defmodule Rho.Agent.Worker do
     {:reply, result, state}
   end
 
-  def handle_call(:collect, _from, %{status: :idle, current_turn_id: nil} = state) do
-    # Already done — no stored result yet (no turn has been run).
-    {:reply, {:ok, "completed"}, state}
-  end
-
   def handle_call(:collect, from, state) do
     {:noreply, %{state | waiters: [from | state.waiters]}}
   end
 
-  # --- Info / Status ---
-
-  @impl true
   def handle_call(:info, _from, state) do
     tape_info = state.tape_module.info(state.tape_ref)
 
@@ -414,10 +414,11 @@ defmodule Rho.Agent.Worker do
     {:reply, info, state}
   end
 
-  @impl true
   def handle_call(:status, _from, state) do
     {:reply, state.status, state}
   end
+
+  # --- Info / Status ---
 
   # --- Cancel ---
 
@@ -437,11 +438,6 @@ defmodule Rho.Agent.Worker do
 
   # --- Signal delivery ---
 
-  @impl true
-  def handle_cast({:set_persistent_tools, tools}, state) do
-    {:noreply, %{state | persistent_tools: tools}}
-  end
-
   def handle_cast({:deliver_signal, signal}, %{status: :idle} = state) do
     # Process signal immediately
     state = process_signal(signal, state)
@@ -451,6 +447,10 @@ defmodule Rho.Agent.Worker do
   def handle_cast({:deliver_signal, signal}, state) do
     # Queue for later
     {:noreply, %{state | mailbox: :queue.in(signal, state.mailbox)}}
+  end
+
+  def handle_cast({:set_persistent_tools, tools}, state) do
+    {:noreply, %{state | persistent_tools: tools}}
   end
 
   # --- Task result handling ---

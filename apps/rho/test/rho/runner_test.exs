@@ -271,7 +271,7 @@ defmodule Rho.RunnerTest do
                )
 
         step_starts = Enum.filter(events, &match?(%{type: :step_start}, &1))
-        assert length(step_starts) == 1
+        assert match?([_], step_starts)
       end
     end
   end

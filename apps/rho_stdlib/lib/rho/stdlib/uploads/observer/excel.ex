@@ -30,7 +30,7 @@ defmodule Rho.Stdlib.Uploads.Observer.Excel do
             Xlsxir.close(table)
             {columns, data_rows} = split_header_data(rows)
             total = length(data_rows)
-            sliced = data_rows |> Enum.drop(offset) |> Enum.take(limit) |> rows_as_maps(columns)
+            sliced = data_rows |> Enum.slice(offset, limit) |> rows_as_maps(columns)
             {:ok, %{columns: columns, rows: sliced, total: total}}
 
           :not_found ->

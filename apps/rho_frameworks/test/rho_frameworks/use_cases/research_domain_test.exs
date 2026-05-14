@@ -100,7 +100,7 @@ defmodule RhoFrameworks.UseCases.ResearchDomainTest do
         DataTable.get_rows(scope.session_id, table: "research_notes")
         |> Enum.filter(fn r -> Map.get(r, :pinned) || Map.get(r, "pinned") end)
 
-      assert length(pinned) == 1
+      assert match?([_], pinned)
     end
 
     test "schema is the one declared in DataTableSchemas" do

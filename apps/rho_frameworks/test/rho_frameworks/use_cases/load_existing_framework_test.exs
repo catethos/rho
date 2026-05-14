@@ -79,7 +79,7 @@ defmodule RhoFrameworks.UseCases.LoadExistingFrameworkTest do
 
       rows = DataTable.get_rows(session_id, table: "library:Backend Eng")
       assert is_list(rows)
-      assert length(rows) == 2
+      assert match?([_, _], rows)
 
       names =
         rows

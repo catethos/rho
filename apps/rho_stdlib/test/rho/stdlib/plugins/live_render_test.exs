@@ -15,7 +15,7 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
     test "returns present_ui tool at depth 0" do
       context = %{depth: 0, session_id: "s1", agent_id: "a1"}
       tools = LiveRender.tools([], context)
-      assert length(tools) == 1
+      assert match?([_], tools)
       assert %{tool: tool, execute: execute} = hd(tools)
       assert tool.name == "present_ui"
       assert is_function(execute, 2)
@@ -30,7 +30,7 @@ defmodule Rho.Stdlib.Plugins.LiveRenderTest do
   describe "prompt_sections/2" do
     test "returns a PromptSection struct" do
       sections = LiveRender.prompt_sections([], %{})
-      assert length(sections) == 1
+      assert match?([_], sections)
       section = hd(sections)
       assert %Rho.PromptSection{key: :live_render} = section
       assert section.heading =~ "present_ui"

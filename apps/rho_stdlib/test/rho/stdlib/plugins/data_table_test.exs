@@ -387,12 +387,6 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
       py
     end
 
-    defp edit_row_execute(sid) do
-      tools = Plugin.tools([], %{session_id: sid})
-      [%{execute: execute}] = Enum.filter(tools, &(&1.tool.name == "edit_row"))
-      execute
-    end
-
     test "edits a single proficiency level via child_match_field/value", %{session_id: sid} do
       _ = seed_python_with_levels(sid)
       execute = edit_row_execute(sid)

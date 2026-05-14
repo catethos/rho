@@ -314,11 +314,11 @@ defmodule Rho.Conversation do
     "conv_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
   end
 
-  defp truncate(text, max) when byte_size(text) <= max, do: text
+  defp truncate(text, max_value) when byte_size(text) <= max_value, do: text
 
-  defp truncate(text, max) do
+  defp truncate(text, max_value) do
     text
-    |> String.slice(0, max)
+    |> String.slice(0, max_value)
     |> String.trim()
   end
 

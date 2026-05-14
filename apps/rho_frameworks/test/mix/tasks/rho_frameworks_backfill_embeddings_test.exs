@@ -67,7 +67,7 @@ defmodule Mix.Tasks.RhoFrameworks.BackfillEmbeddingsTest do
         from(s in Skill, where: s.id in ^ids, order_by: s.id)
         |> Repo.all()
 
-      assert length(reloaded) == 3
+      assert match?([_, _, _], reloaded)
 
       for {row, text} <- Enum.zip(reloaded, Enum.sort_by(rows, & &1.id) |> Enum.map(& &1.name)) do
         # Pgvector decodes the binary back to a list-like struct; just

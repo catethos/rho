@@ -166,7 +166,7 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
 
       # Should have N+1 effects: 1 OpenWorkspace + N Tables
       table_effects = Enum.filter(effects, &match?(%Rho.Effect.Table{}, &1))
-      assert length(table_effects) == 2
+      assert match?([_, _], table_effects)
       assert Enum.any?(effects, &match?(%Rho.Effect.OpenWorkspace{key: :data_table}, &1))
     end
   end

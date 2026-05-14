@@ -113,7 +113,7 @@ defmodule RhoBaml.SchemaWriterTest do
     test "deferred tools are excluded from variants AND union" do
       defs = [
         tool_def("bash", cmd: [type: :string, required: true]),
-        Map.put(tool_def("hidden", x: [type: :string, required: true]), :deferred, true)
+        Map.merge(tool_def("hidden", x: [type: :string, required: true]), %{deferred: true})
       ]
 
       baml = SchemaWriter.to_baml(defs)

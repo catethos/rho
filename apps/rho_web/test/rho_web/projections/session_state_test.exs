@@ -72,8 +72,8 @@ defmodule RhoWeb.Projections.SessionStateTest do
 
       replay = fn ->
         Enum.reduce(signals, state(), fn sig, s ->
-          {s, _effects} = SessionState.reduce(s, sig)
-          s
+          {new_s, _effects} = SessionState.reduce(s, sig)
+          new_s
         end)
       end
 

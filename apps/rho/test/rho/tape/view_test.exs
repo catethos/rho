@@ -57,9 +57,7 @@ defmodule Rho.Tape.ViewTest do
       view = View.default(@test_tape)
       msgs = View.to_messages(view)
 
-      assert length(msgs) == 2
-      assert %{role: :user} = Enum.at(msgs, 0)
-      assert %{role: :assistant} = Enum.at(msgs, 1)
+      assert [%{role: :user}, %{role: :assistant}] = msgs
     end
 
     test "prepends anchor summary as user context message" do
@@ -89,7 +87,7 @@ defmodule Rho.Tape.ViewTest do
       msgs = View.to_messages(view)
 
       # The orphaned tool_result should be stripped; only the user message remains
-      assert length(msgs) == 1
+      assert match?([_], msgs)
       assert %{role: :user} = hd(msgs)
     end
 
@@ -110,7 +108,7 @@ defmodule Rho.Tape.ViewTest do
       view = View.default(@test_tape)
       msgs = View.to_messages(view)
 
-      assert length(msgs) == 2
+      assert match?([_, _], msgs)
       # First should be assistant message with tool_calls
       assert %{role: :assistant} = Enum.at(msgs, 0)
       # Second should be tool result
@@ -129,7 +127,7 @@ defmodule Rho.Tape.ViewTest do
       view = View.default(@test_tape)
       msgs = View.to_messages(view)
 
-      assert length(msgs) == 1
+      assert match?([_], msgs)
       assert %{role: :user} = hd(msgs)
     end
   end

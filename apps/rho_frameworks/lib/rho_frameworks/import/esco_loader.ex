@@ -281,23 +281,21 @@ defmodule RhoFrameworks.Import.Esco.Loader do
         rp_id = Map.get(rp_by_uri, rel.occupation_uri)
         skill_id = Map.get(skill_by_uri, rel.skill_uri)
 
-        cond do
-          is_nil(rp_id) or is_nil(skill_id) ->
-            {rows, drops + 1}
+        if is_nil(rp_id) or is_nil(skill_id) do
+          {rows, drops + 1}
+        else
+          row = %{
+            id: Ecto.UUID.generate(),
+            role_profile_id: rp_id,
+            skill_id: skill_id,
+            required: rel.required,
+            min_expected_level: 1,
+            weight: 1.0,
+            inserted_at: now,
+            updated_at: now
+          }
 
-          true ->
-            row = %{
-              id: Ecto.UUID.generate(),
-              role_profile_id: rp_id,
-              skill_id: skill_id,
-              required: rel.required,
-              min_expected_level: 1,
-              weight: 1.0,
-              inserted_at: now,
-              updated_at: now
-            }
-
-            {[row | rows], drops}
+          {[row | rows], drops}
         end
       end)
 

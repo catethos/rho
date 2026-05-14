@@ -29,7 +29,7 @@ defmodule RhoFrameworks.Import.EscoTest do
   describe "skill slug suffixing" do
     test "two skills with the same preferredLabel get distinct slugs", %{parsed: parsed} do
       manage_staff = Enum.filter(parsed.skills, &(&1.name == "manage staff"))
-      assert length(manage_staff) == 2
+      assert match?([_, _], manage_staff)
 
       slugs = manage_staff |> Enum.map(& &1.slug) |> Enum.sort()
       assert slugs == ["manage-staff-a4f2c1", "manage-staff-b7c0d3"]

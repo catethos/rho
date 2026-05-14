@@ -359,9 +359,9 @@ defmodule RhoWeb.Session.SessionCore do
               # Agent finished but we missed turn_finished — correct status
               # and flush any stale inflight data
               updated_agent = %{agent | status: :idle}
-              sock = flush_stale_inflight(sock, id)
-              sock = maybe_recover_result(sock, id, registry_status)
-              {Map.put(agents_acc, id, updated_agent), sock}
+              next_sock = flush_stale_inflight(sock, id)
+              next_sock = maybe_recover_result(next_sock, id, registry_status)
+              {Map.put(agents_acc, id, updated_agent), next_sock}
 
             _ ->
               {agents_acc, sock}

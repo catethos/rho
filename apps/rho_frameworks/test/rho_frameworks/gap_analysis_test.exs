@@ -44,7 +44,7 @@ defmodule RhoFrameworks.GapAnalysisTest do
 
       gaps = RhoFrameworks.GapAnalysis.individual_gap(snapshot, rp.id)
 
-      assert length(gaps) == 3
+      assert match?([_, _, _], gaps)
 
       sql_gap = Enum.find(gaps, &(&1.skill_name == "SQL"))
       assert sql_gap.gap == 1.0
@@ -73,7 +73,7 @@ defmodule RhoFrameworks.GapAnalysisTest do
 
     test "empty snapshot returns all skills as unknown", %{rp: rp} do
       gaps = RhoFrameworks.GapAnalysis.individual_gap(%{}, rp.id)
-      assert length(gaps) == 3
+      assert match?([_, _, _], gaps)
       assert Enum.all?(gaps, &(&1.current_level == :unknown))
       assert Enum.all?(gaps, &(&1.gap == :unknown))
     end

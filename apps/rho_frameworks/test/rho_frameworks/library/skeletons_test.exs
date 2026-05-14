@@ -19,7 +19,7 @@ defmodule RhoFrameworks.Library.SkeletonsTest do
         ])
 
       assert {:ok, skills} = Skeletons.parse_json(json)
-      assert length(skills) == 2
+      assert match?([_, _], skills)
     end
 
     test "returns error for empty array" do

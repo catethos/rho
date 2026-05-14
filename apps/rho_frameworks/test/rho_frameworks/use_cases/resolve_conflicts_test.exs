@@ -28,7 +28,7 @@ defmodule RhoFrameworks.UseCases.ResolveConflictsTest do
     %{scope: scope, session_id: session_id}
   end
 
-  defp seed_conflict(session_id, attrs \\ %{}) do
+  defp seed_conflict(session_id, attrs) do
     base = %{
       category: "Eng",
       confidence: "high",

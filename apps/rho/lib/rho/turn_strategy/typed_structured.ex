@@ -15,46 +15,26 @@ defmodule Rho.TurnStrategy.TypedStructured do
 
       turn_strategy: :typed_structured
   """
-
   @behaviour Rho.TurnStrategy
-
   require Logger
-
   alias Rho.ActionSchema
   alias Rho.LLM.Admission
   alias Rho.TurnStrategy.Shared
-
-  # --- Prompt sections ---
-
-  # No prompt_sections needed — BAML's {{ ctx.output_format }} handles
-  # format injection, and SchemaWriter includes tool descriptions in
-  # the Action class @description. Returning [] avoids duplicating the
-  # format spec in both the system prompt and the BAML template.
   @impl Rho.TurnStrategy
-  def prompt_sections(_tool_defs, _context), do: []
-
-  # --- Run: call LLM via BAML and classify response as intent ---
+  def prompt_sections(_tool_defs, _context) do
+    []
+  end
 
   @impl Rho.TurnStrategy
   def run(projection, runtime) do
     %{context: messages} = projection
     emit = runtime.emit
     step = Map.get(projection, :step)
-
     schema = ActionSchema.build(runtime.tool_defs)
     baml_path = RhoBaml.baml_path(:rho)
-
-    # Write dynamic action schema + client config to disk
     write_opts = [model: runtime.model]
     RhoBaml.SchemaWriter.write!(baml_path, runtime.tool_defs, write_opts)
-
-    # Serialize conversation messages for BAML prompt. The volatile
-    # portion of the system prompt is hoisted to the end of the text so
-    # the stable preamble + conversation tail can be a long byte-identical
-    # prefix across user turns — required for upstream automatic prefix
-    # caching (OpenAI / Anthropic-via-OpenRouter).
     messages_text = serialize_messages(messages, runtime)
-
     collector = BamlElixir.Collector.new("turn_#{step || 0}")
 
     case call_with_retry(baml_path, messages_text, emit, collector, 1) do
@@ -83,32 +63,27 @@ defmodule Rho.TurnStrategy.TypedStructured do
       {:tool, name, args, _tool_def, opts} ->
         maybe_emit_thinking(opts, emit)
         call_id = "typed_structured_#{System.unique_integer([:positive])}"
-
         {:call_tools, [%{name: name, args: args, call_id: call_id}], nil}
 
       {:unknown, name, _args} ->
-        available = Map.keys(runtime.tool_map) |> Enum.join(", ")
+        available = Enum.map_join(runtime.tool_map, ", ", fn {k, _} -> k end)
         reason = "unknown tool '#{name}'. Available: respond, think, #{available}"
         {:parse_error, reason, Jason.encode!(parsed)}
 
       {:parse_error, _reason} ->
-        # Treat unparseable response as a plain respond — avoids costly
-        # correction-prompt retries.
         message = parsed[:message] || parsed["message"] || inspect(parsed)
         {:respond, String.trim(to_string(message))}
     end
   end
 
-  # --- Build step entries from tool results ---
-
   @impl Rho.TurnStrategy
   def build_tool_step(tool_calls, results, _response_text) do
     [tc] = tool_calls
     [r] = results
-
     args_json = Jason.encode!(tc.args)
     assistant_text = Jason.encode!(%{tool: tc.name, args: tc.args})
-    result_text = "[Tool Result: #{tc.name}]\n#{r.result}"
+    result_text = "[Tool Result: #{tc.name}]
+#{r.result}"
 
     %{
       type: :tool_step,
@@ -133,8 +108,6 @@ defmodule Rho.TurnStrategy.TypedStructured do
       response_text: nil
     }
   end
-
-  # --- BAML streaming ---
 
   defp call_with_retry(baml_path, messages_text, emit, collector, attempt) do
     case Admission.with_slot(fn -> do_baml_call(baml_path, messages_text, emit, collector) end) do
@@ -180,10 +153,6 @@ defmodule Rho.TurnStrategy.TypedStructured do
           "[typed_structured] BAML stream failed in #{System.monotonic_time(:millisecond) - t0}ms: #{inspect(reason)}"
         )
 
-        # If the LLM emitted free-text that BAML couldn't fit into any
-        # action variant, recover the raw text from the collector and
-        # surface it as a `:respond` so the user sees the message instead
-        # of a parse-error stack trace.
         recover_parse_failure(reason, collector)
     end
   end
@@ -212,17 +181,12 @@ defmodule Rho.TurnStrategy.TypedStructured do
       String.contains?(reason, "Failed to coerce")
   end
 
-  defp parse_failure?(_), do: false
+  defp parse_failure?(_) do
+    false
+  end
 
-  # `BamlElixir.Collector.last_function_log/1` returns the raw LLM stream
-  # log. The exact shape is NIF-controlled and may vary by version, so
-  # walk the structure, skip known meta fields (function_name, model id,
-  # etc. — short identifiers we'd never want as the user-visible message),
-  # and pick the longest remaining string. LLM prose is long; identifiers
-  # are short, so longest-wins is a reliable heuristic across log shapes.
   @meta_keys ~w(function_name name model client_name client_id provider tag id)a
   @meta_key_strings Enum.map(@meta_keys, &Atom.to_string/1)
-
   defp extract_llm_text(collector) do
     log = BamlElixir.Collector.last_function_log(collector)
 
@@ -240,34 +204,59 @@ defmodule Rho.TurnStrategy.TypedStructured do
       nil
   end
 
-  defp longest_string(value), do: collect_strings(value, []) |> pick_longest()
+  defp longest_string(value) do
+    collect_strings(value, []) |> pick_longest()
+  end
 
   defp collect_strings(value, acc) when is_binary(value) do
-    if value == "", do: acc, else: [value | acc]
+    if value == "" do
+      acc
+    else
+      [value | acc]
+    end
   end
 
   defp collect_strings(%_{} = struct, acc) do
     struct |> Map.from_struct() |> collect_strings(acc)
   end
 
-  defp collect_strings(map, acc) when is_map(map) do
-    Enum.reduce(map, acc, fn {k, v}, acc ->
-      if meta_key?(k), do: acc, else: collect_strings(v, acc)
+  defp collect_strings(value, acc) when is_map(value) do
+    Enum.reduce(value, acc, fn {k, v}, acc ->
+      if meta_key?(k) do
+        acc
+      else
+        collect_strings(v, acc)
+      end
     end)
   end
 
-  defp collect_strings(list, acc) when is_list(list) do
-    Enum.reduce(list, acc, &collect_strings/2)
+  defp collect_strings(value, acc) when is_list(value) do
+    Enum.reduce(value, acc, &collect_strings/2)
   end
 
-  defp collect_strings({_, v}, acc), do: collect_strings(v, acc)
-  defp collect_strings(_, acc), do: acc
+  defp collect_strings({_, v}, acc) do
+    collect_strings(v, acc)
+  end
 
-  defp meta_key?(k) when is_atom(k), do: k in @meta_keys
-  defp meta_key?(k) when is_binary(k), do: k in @meta_key_strings
-  defp meta_key?(_), do: false
+  defp collect_strings(_, acc) do
+    acc
+  end
 
-  defp pick_longest([]), do: nil
+  defp meta_key?(k) when is_atom(k) do
+    k in @meta_keys
+  end
+
+  defp meta_key?(k) when is_binary(k) do
+    k in @meta_key_strings
+  end
+
+  defp meta_key?(_) do
+    false
+  end
+
+  defp pick_longest([]) do
+    nil
+  end
 
   defp pick_longest(strings) do
     Enum.max_by(strings, &byte_size/1)
@@ -290,54 +279,70 @@ defmodule Rho.TurnStrategy.TypedStructured do
     end
   end
 
-  # --- Message serialization ---
-
-  # Public for testing — see Rho.TurnStrategy.TypedStructuredTest.
   @doc false
   def serialize_messages(messages, runtime) do
     {system_msgs, tail} = Enum.split_with(messages, &system_role?/1)
-
     stable_text = runtime.system_prompt_stable || ""
     volatile_text = runtime.system_prompt_volatile || ""
 
-    # When the runtime didn't pre-split the prompt (e.g. test harness),
-    # fall back to whatever the system message carried so we don't lose
-    # context. In that case there's no volatile tail to hoist.
     stable_text =
-      if stable_text == "",
-        do: extract_system_text(system_msgs),
-        else: stable_text
+      if stable_text == "" do
+        extract_system_text(system_msgs)
+      else
+        stable_text
+      end
 
-    parts = [
-      prepend_role("system", stable_text),
-      Enum.map_join(tail, "\n\n", &serialize_message/1),
-      prepend_role("system", volatile_text)
-    ]
+    parts = [prepend_role("system", stable_text), Enum.map_join(tail, "
 
-    parts
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join("\n\n")
+", &serialize_message/1), prepend_role("system", volatile_text)]
+    parts |> Enum.reject(&(&1 == "")) |> Enum.join("
+
+")
   end
 
-  defp system_role?(%{role: :system}), do: true
-  defp system_role?(%{role: "system"}), do: true
-  defp system_role?(_), do: false
+  defp system_role?(%{role: :system}) do
+    true
+  end
+
+  defp system_role?(%{role: "system"}) do
+    true
+  end
+
+  defp system_role?(_) do
+    false
+  end
 
   defp extract_system_text(system_msgs) do
     system_msgs
-    |> Enum.map_join("\n\n", fn %{content: content} -> content_text(content) end)
+    |> Enum.map_join(
+      "
+
+",
+      fn %{content: content} -> content_text(content) end
+    )
   end
 
   defp content_text(content) when is_list(content) do
     content
     |> Enum.filter(fn part -> part.type == :text end)
-    |> Enum.map_join("\n", fn part -> part.text end)
+    |> Enum.map_join(
+      "
+",
+      fn part -> part.text end
+    )
   end
 
-  defp content_text(content) when is_binary(content), do: content
+  defp content_text(content) when is_binary(content) do
+    content
+  end
 
-  defp prepend_role(_role, ""), do: ""
-  defp prepend_role(role, text), do: "#{String.capitalize(role)}: #{text}"
+  defp prepend_role(_role, "") do
+    ""
+  end
+
+  defp prepend_role(role, text) do
+    "#{String.capitalize(role)}: #{text}"
+  end
 
   defp serialize_message(%{role: role, content: content}) when is_list(content) do
     role_label = role |> to_string() |> String.capitalize()
@@ -349,8 +354,6 @@ defmodule Rho.TurnStrategy.TypedStructured do
     "#{role_label}: #{content}"
   end
 
-  # --- BAML result cleanup ---
-
   defp clean_baml_result(result) when is_map(result) do
     result
     |> Map.drop([:__baml_class__])
@@ -359,17 +362,16 @@ defmodule Rho.TurnStrategy.TypedStructured do
     |> normalize_keys()
   end
 
-  defp clean_baml_result(other), do: other
+  defp clean_baml_result(result) do
+    result
+  end
 
-  # BAML returns atom keys — ActionSchema.dispatch expects string keys
   defp normalize_keys(map) when is_map(map) do
     Map.new(map, fn
       {k, v} when is_atom(k) -> {Atom.to_string(k), v}
       {k, v} -> {k, v}
     end)
   end
-
-  # --- Usage extraction ---
 
   defp extract_usage(collector) do
     case BamlElixir.Collector.usage(collector) do

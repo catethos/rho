@@ -8,7 +8,7 @@ defmodule RhoFrameworks.Flows.FinalizeSkeletonTest do
     test "returns 5 nodes in :review → :confirm → :choose_levels → :proficiency → :save order" do
       steps = FinalizeSkeleton.steps()
 
-      assert length(steps) == 5
+      assert match?([_, _, _, _, _], steps)
 
       assert Enum.map(steps, & &1.id) == [
                :review,

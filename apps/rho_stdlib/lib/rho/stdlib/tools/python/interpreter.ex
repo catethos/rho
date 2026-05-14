@@ -225,16 +225,16 @@ defmodule Rho.Stdlib.Tools.Python.Interpreter do
     {:error, {:eval_failed, msg}}
   end
 
-  defp build_reply(%{"result" => result, "stdout" => stdout}, changed_files, image_paths) do
+  defp build_reply(%{"result" => result, "stdout" => stdout}, changed, images) do
     stdout = String.trim_trailing(stdout || "")
-    image_tags = Enum.map(image_paths, &"[Plot saved: #{&1}]")
+    image_tags = Enum.map(images, &"[Plot saved: #{&1}]")
 
     case result do
       %{"final" => final?, "result" => value} when is_boolean(final?) ->
-        format_structured_output(stdout, final?, value, changed_files, image_tags)
+        format_structured_output(stdout, final?, value, changed, image_tags)
 
       _ ->
-        format_plain_output(stdout, result, changed_files, image_tags)
+        format_plain_output(stdout, result, changed, image_tags)
     end
   end
 

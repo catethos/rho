@@ -1,8 +1,6 @@
 defmodule Mix.Tasks.Rho.ImportFramework do
   use Mix.Task
-
   @shortdoc "Import a skills framework from an XLSX file into the database"
-
   @moduledoc """
   Import a skills framework from an XLSX file into the `rho_frameworks` database.
 
@@ -56,9 +54,7 @@ defmodule Mix.Tasks.Rho.ImportFramework do
   - `min_expected_level` defaults to 1 for all role-skill mappings since the
     XLSX only contains Y/N (not proficiency-level requirements per role).
   """
-
   import Ecto.Query
-
   alias RhoFrameworks.Repo
   alias RhoFrameworks.Frameworks.{Skill, RoleProfile, RoleSkill}
 
@@ -71,7 +67,6 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     "Insurance and Takaful",
     "Digital Insurance and Takaful"
   ]
-
   @impl Mix.Task
   def run(args) do
     {opts, rest, _} =
@@ -90,17 +85,21 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     org_name = opts[:org]
     lib_name = opts[:name] || "Future Skills Framework - Malaysian Financial Sector"
     dry_run = opts[:dry_run] || false
-    visibility = if opts[:public], do: "public", else: "private"
+
+    visibility =
+      if opts[:public] do
+        "public"
+      else
+        "private"
+      end
 
     Application.ensure_all_started(:xlsxir)
     Mix.Task.run("app.start", ["--no-start"])
     Application.ensure_all_started(:ecto_sql)
     Application.ensure_all_started(:postgrex)
     {:ok, _} = RhoFrameworks.Repo.start_link([])
-
     alias RhoFrameworks.Frameworks.Library
 
-    # 1. Resolve user and org (auto-create if missing)
     user =
       case Repo.get_by(RhoFrameworks.Accounts.User, email: email) do
         nil ->
@@ -137,8 +136,6 @@ defmodule Mix.Tasks.Rho.ImportFramework do
       end
 
     Mix.shell().info("User: #{user.email} | Org: #{org.name} (#{org.id})")
-
-    # 2. Parse XLSX sheets
     skills_data = parse_skills(file)
     roles_data = parse_roles(file)
     mapping_data = parse_mapping(file)
@@ -152,7 +149,6 @@ defmodule Mix.Tasks.Rho.ImportFramework do
       exit(:normal)
     end
 
-    # 3. Insert everything in a transaction
     result =
       Ecto.Multi.new()
       |> Ecto.Multi.run(:library, fn _repo, _ ->
@@ -170,9 +166,7 @@ defmodule Mix.Tasks.Rho.ImportFramework do
             |> Repo.insert()
 
           existing ->
-            existing
-            |> Library.changeset(%{visibility: visibility})
-            |> Repo.update()
+            existing |> Library.changeset(%{visibility: visibility}) |> Repo.update()
         end
       end)
       |> Ecto.Multi.run(:skills, fn _repo, %{library: library} ->
@@ -188,13 +182,12 @@ defmodule Mix.Tasks.Rho.ImportFramework do
 
     case result do
       {:ok, %{library: lib, skills: skills, role_profiles: rps, role_skills: rss}} ->
-        Mix.shell().info("""
-        Import complete!
-          Library: #{lib.name} (#{lib.id})
-          Skills: #{length(skills)}
-          Role Profiles: #{length(rps)}
-          Role-Skill Mappings: #{length(rss)}
-        """)
+        Mix.shell().info("Import complete!
+  Library: #{lib.name} (#{lib.id})
+  Skills: #{length(skills)}
+  Role Profiles: #{length(rps)}
+  Role-Skill Mappings: #{length(rss)}
+")
 
       {:error, step, changeset, _} ->
         Mix.shell().error("Import failed at step #{step}:")
@@ -202,14 +195,6 @@ defmodule Mix.Tasks.Rho.ImportFramework do
         exit({:shutdown, 1})
     end
   end
-
-  # --- Bulk import helpers ---
-  #
-  # Each `bulk_*_for_import` helper does a single `insert_all` with
-  # `on_conflict: {:replace, [...]}` against the natural-key unique index.
-  # Embedding fields are intentionally excluded from the replace list so a
-  # re-import doesn't wipe vectors written by the backfill task. One
-  # round-trip per table regardless of new-vs-existing split.
 
   defp bulk_upsert_skills_for_import(library_id, skills_data) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -292,7 +277,6 @@ defmodule Mix.Tasks.Rho.ImportFramework do
 
   defp bulk_upsert_role_skills_for_import(skills, role_profiles, mapping_data) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
-
     skill_by_name = Map.new(skills, fn s -> {normalize_name(s.name), s} end)
     rp_by_name = Map.new(role_profiles, fn rp -> {normalize_name(rp.name), rp} end)
 
@@ -362,15 +346,11 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     end
   end
 
-  # --- XLSX Parsers ---
-
   defp parse_skills(file) do
-    # Sheet 2 (index 2) = Skills to Job Roles Mapping
     {:ok, tid} = Xlsxir.extract(file, 2)
     rows = Xlsxir.get_list(tid)
     Xlsxir.close(tid)
 
-    # Data rows start at index 7 (after headers)
     rows
     |> Enum.drop(7)
     |> Enum.reject(fn r -> Enum.all?(r, &is_nil/1) end)
@@ -399,10 +379,10 @@ defmodule Mix.Tasks.Rho.ImportFramework do
         end)
 
       %{
-        name: safe_trim(Enum.at(row, 3)),
-        category: safe_trim(Enum.at(row, 1)),
-        cluster: safe_trim(Enum.at(row, 2)),
-        description: safe_trim(Enum.at(row, 4)),
+        name: safe_trim(row_cell(row, 3)),
+        category: safe_trim(row_cell(row, 1)),
+        cluster: safe_trim(row_cell(row, 2)),
+        description: safe_trim(row_cell(row, 4)),
         proficiency_levels: pl_descriptions,
         status: "published"
       }
@@ -412,8 +392,6 @@ defmodule Mix.Tasks.Rho.ImportFramework do
 
   defp parse_roles(file) do
     sub_sector_names = @sub_sector_columns
-
-    # Job roles are in Sheet 1 (index 1)
     {:ok, tid} = Xlsxir.extract(file, 1)
     rows = Xlsxir.get_list(tid)
     Xlsxir.close(tid)
@@ -429,10 +407,10 @@ defmodule Mix.Tasks.Rho.ImportFramework do
         |> Enum.map(fn {name, _} -> name end)
 
       %{
-        name: safe_trim(Enum.at(row, 3)),
-        role_family: safe_trim(Enum.at(row, 2)),
-        purpose: safe_trim(Enum.at(row, 4)),
-        description: safe_trim(Enum.at(row, 5)),
+        name: safe_trim(row_cell(row, 3)),
+        role_family: safe_trim(row_cell(row, 2)),
+        purpose: safe_trim(row_cell(row, 4)),
+        description: safe_trim(row_cell(row, 5)),
         metadata: %{"sub_sectors" => sub_sectors, "source" => "FSFM XLSX import"}
       }
     end)
@@ -440,30 +418,24 @@ defmodule Mix.Tasks.Rho.ImportFramework do
   end
 
   defp parse_mapping(file) do
-    # Use Sheet 3 (Job Roles → Skills) as it's easier to parse per-role
     {:ok, tid} = Xlsxir.extract(file, 2)
     rows = Xlsxir.get_list(tid)
     Xlsxir.close(tid)
-
-    # Row 7 (index 6) has role names starting at column 11
     role_name_row = Enum.at(rows, 6)
+    data_rows = rows |> Enum.drop(7) |> Enum.reject(fn r -> Enum.all?(r, &is_nil/1) end)
 
-    # Data rows start at index 7
-    data_rows =
-      rows
-      |> Enum.drop(7)
-      |> Enum.reject(fn r -> Enum.all?(r, &is_nil/1) end)
-
-    # For each skill row, collect which roles have "Y"
-    # Columns 11+ correspond to role names
     skill_to_roles =
       Enum.map(data_rows, fn row ->
         skill_name = safe_trim(Enum.at(row, 3))
-        if skill_name, do: {skill_name, row}, else: nil
+
+        if skill_name do
+          {skill_name, row}
+        else
+          nil
+        end
       end)
       |> Enum.reject(&is_nil/1)
 
-    # Build role_name -> [skill_names] from skill rows
     role_names_with_idx =
       role_name_row
       |> Enum.with_index()
@@ -485,11 +457,20 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     end)
   end
 
-  defp safe_trim(nil), do: nil
-  defp safe_trim(v) when is_binary(v), do: String.trim(v)
-  defp safe_trim(v), do: v
+  defp safe_trim(nil) do
+    nil
+  end
 
-  # Collapse whitespace, newlines, and normalize for comparison
+  defp safe_trim(v) when is_binary(v) do
+    String.trim(v)
+  end
+
+  defp safe_trim(v) do
+    v
+  end
+
+  defp row_cell(row, index), do: Enum.at(row, index)
+
   defp normalize_name(name) do
     name
     |> String.replace(~r/[\r\n]+/, " ")
@@ -499,9 +480,7 @@ defmodule Mix.Tasks.Rho.ImportFramework do
     |> String.downcase()
   end
 
-  # Fuzzy match: try substring/starts-with first, then Jaro distance
   defp fuzzy_match(key, name_map, original_name) do
-    # First try: one name starts with the other (handles truncation)
     substring_match =
       Enum.find(name_map, fn {k, _} ->
         String.starts_with?(k, key) or String.starts_with?(key, k)
@@ -513,11 +492,11 @@ defmodule Mix.Tasks.Rho.ImportFramework do
         matched
 
       nil ->
-        # Fallback: Jaro distance
         {best_score, best_key} =
-          name_map
-          |> Map.keys()
-          |> Enum.map(fn k -> {String.jaro_distance(key, k), k} end)
+          Enum.map(
+            name_map,
+            fn {_k, k} -> {String.jaro_distance(key, k), k} end
+          )
           |> Enum.max_by(&elem(&1, 0))
 
         if best_score >= 0.88 do

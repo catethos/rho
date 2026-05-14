@@ -305,7 +305,7 @@ defmodule RhoFrameworks.FlowRunner do
 
   def guard?(:two_libraries_picked, state) do
     case state.summaries[:pick_two_libraries] do
-      %{selected: selected} when is_list(selected) and length(selected) == 2 -> true
+      %{selected: [_, _]} -> true
       _ -> false
     end
   end

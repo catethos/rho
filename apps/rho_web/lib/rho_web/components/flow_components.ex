@@ -77,7 +77,7 @@ defmodule RhoWeb.FlowComponents do
     case Map.get(index, from) do
       %{next: next} when is_atom(next) and not is_nil(next) ->
         cond do
-          not Map.has_key?(index, next) ->
+          not map_key?(index, next) ->
             {[], false}
 
           MapSet.member?(seen, next) ->
@@ -93,6 +93,13 @@ defmodule RhoWeb.FlowComponents do
 
       _ ->
         {[], false}
+    end
+  end
+
+  defp map_key?(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _} -> true
+      :error -> false
     end
   end
 

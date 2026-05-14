@@ -48,7 +48,7 @@ defmodule RhoFrameworks.Accounts.User do
   defp normalize_email(email) when is_binary(email),
     do: email |> String.trim() |> String.downcase()
 
-  defp normalize_email(other), do: other
+  defp normalize_email(email), do: email
 
   defp validate_password(changeset) do
     changeset

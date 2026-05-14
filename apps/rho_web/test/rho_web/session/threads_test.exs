@@ -155,7 +155,7 @@ defmodule RhoWeb.Session.ThreadsTest do
       {:ok, _} = Threads.init(@session_id, ws, tape_name: "tape_1")
       threads = Threads.list(@session_id, ws)
 
-      assert length(threads) == 1
+      assert match?([_], threads)
       assert hd(threads)["id"] == "thread_main"
     end
 
@@ -169,7 +169,7 @@ defmodule RhoWeb.Session.ThreadsTest do
         })
 
       threads = Threads.list(@session_id, ws)
-      assert length(threads) == 2
+      assert match?([_, _], threads)
     end
   end
 
@@ -438,7 +438,7 @@ defmodule RhoWeb.Session.ThreadsTest do
 
       # Verify everything reads back correctly from disk
       threads = Threads.list(@session_id, ws)
-      assert length(threads) == 2
+      assert match?([_, _], threads)
 
       active = Threads.active(@session_id, ws)
       assert active["id"] == fork["id"]
@@ -538,7 +538,7 @@ defmodule RhoWeb.Session.ThreadsTest do
       {:ok, fork2} = Threads.fork_thread(@session_id, ws, FakeTapeModule, name: "Fork B")
 
       threads = Threads.list(@session_id, ws)
-      assert length(threads) == 3
+      assert match?([_, _, _], threads)
 
       # fork2 should be forked from fork1, not from main
       assert fork2["forked_from"] == fork1["id"]

@@ -180,13 +180,13 @@ defmodule Rho.Recorder do
 
   defp extract_text(content) when is_binary(content), do: content
 
-  defp extract_text(parts) when is_list(parts) do
-    Enum.map_join(parts, "", fn
+  defp extract_text(content) when is_list(content) do
+    Enum.map_join(content, fn
       %{text: t} -> t
       %{"text" => t} -> t
       _ -> ""
     end)
   end
 
-  defp extract_text(other), do: inspect(other)
+  defp extract_text(content), do: inspect(content)
 end

@@ -220,7 +220,7 @@ defmodule RhoFrameworks.Library.EditorTest do
       assert {:ok, %{count: 2}} = Editor.append_rows(%{table_name: tbl, rows: rows}, rt)
 
       assert {:ok, fetched} = Editor.read_rows(%{table_name: tbl}, rt)
-      assert length(fetched) == 2
+      assert match?([_, _], fetched)
     end
 
     test "returns error when table server not running", %{org_id: org_id} do

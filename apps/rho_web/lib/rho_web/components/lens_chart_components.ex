@@ -65,20 +65,7 @@ defmodule RhoWeb.LensChartComponents do
 
     # Count scores per cell
     score_counts =
-      assigns.scores
-      |> Enum.reduce(%{}, fn score, acc ->
-        score_axes = score[:axes] || score["axes"] || []
-
-        case Enum.sort_by(score_axes, &(&1[:sort_order] || &1["sort_order"])) do
-          [a0, a1 | _] ->
-            b0 = a0[:band] || a0["band"]
-            b1 = a1[:band] || a1["band"]
-            Map.update(acc, {b0, b1}, 1, &(&1 + 1))
-
-          _ ->
-            acc
-        end
-      end)
+      Enum.frequencies(assigns.scores)
 
     assigns =
       assigns

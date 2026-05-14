@@ -359,7 +359,7 @@ defmodule RhoWeb.Session.SnapshotTest do
 
       # Messages survived
       msgs = restored.assigns.agent_messages["primary_agent"]
-      assert length(msgs) == 2
+      assert match?([_, _], msgs)
       assert Enum.at(msgs, 0).content == "Hello"
 
       # Process-specific state was NOT restored

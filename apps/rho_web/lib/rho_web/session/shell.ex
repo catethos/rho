@@ -4,60 +4,79 @@ defmodule RhoWeb.Session.Shell do
   types (tab vs overlay), and visibility. Kept separate from projection
   state (which is signal-derived).
   """
-
   @type panel_mode :: :expanded | :collapsed | :hidden
-
   @type workspace_chrome :: %{
-    open?: boolean(),
-    surface: :tab | :overlay,
-    collapsed: boolean(),
-    pulse: boolean(),
-    unseen_count: non_neg_integer(),
-    last_activity_at: integer() | nil,
-    dismissed_correlation_id: String.t() | nil
-  }
-
+          open?: boolean(),
+          surface: :tab | :overlay,
+          collapsed: boolean(),
+          pulse: boolean(),
+          unseen_count: non_neg_integer(),
+          last_activity_at: integer() | nil,
+          dismissed_correlation_id: String.t() | nil
+        }
   @type t :: %{
-    chat_mode: panel_mode(),
-    focus_workspace_id: atom() | nil,
-    workspaces: %{atom() => workspace_chrome()}
-  }
-
+          chat_mode: panel_mode(),
+          focus_workspace_id: atom() | nil,
+          workspaces: %{atom() => workspace_chrome()}
+        }
   @doc "Initialize shell state for the given open workspace keys + full registry keys."
   def init(open_keys, all_keys \\ []) do
     has_workspaces = open_keys != []
-
-    # Merge: open keys get open?=true/surface=:tab, all others get open?=false
     all = Enum.uniq(open_keys ++ all_keys)
 
     %{
-      chat_mode: if(has_workspaces, do: :expanded, else: :hidden),
+      chat_mode:
+        if has_workspaces do
+          :expanded
+        else
+          :hidden
+        end,
       focus_workspace_id: nil,
-      workspaces: Map.new(all, fn key ->
-        is_open = key in open_keys
-        {key, %{
-          open?: is_open,
-          surface: if(is_open, do: :tab, else: :overlay),
-          collapsed: false,
-          pulse: false,
-          unseen_count: 0,
-          last_activity_at: nil,
-          dismissed_correlation_id: nil
-        }}
-      end)
+      workspaces:
+        Map.new(all, fn key ->
+          is_open = key in open_keys
+
+          {key,
+           %{
+             open?: is_open,
+             surface:
+               if is_open do
+                 :tab
+               else
+                 :overlay
+               end,
+             collapsed: false,
+             pulse: false,
+             unseen_count: 0,
+             last_activity_at: nil,
+             dismissed_correlation_id: nil
+           }}
+        end)
     }
   end
 
   @doc "Toggle chat between expanded and collapsed. Hidden stays hidden."
-  def toggle_chat(%{chat_mode: :expanded} = shell), do: %{shell | chat_mode: :collapsed}
-  def toggle_chat(%{chat_mode: :collapsed} = shell), do: %{shell | chat_mode: :expanded}
-  def toggle_chat(shell), do: shell
+  def toggle_chat(%{chat_mode: :expanded} = shell) do
+    %{shell | chat_mode: :collapsed}
+  end
+
+  def toggle_chat(%{chat_mode: :collapsed} = shell) do
+    %{shell | chat_mode: :expanded}
+  end
+
+  def toggle_chat(shell) do
+    shell
+  end
 
   @doc "Show chat panel (set to expanded if currently hidden)."
-  def show_chat(shell), do: %{shell | chat_mode: :expanded}
+  def show_chat(shell) do
+    %{shell | chat_mode: :expanded}
+  end
 
   @doc "Hide chat panel."
-  def hide_chat(shell), do: %{shell | chat_mode: :hidden}
+  def hide_chat(shell) do
+    %{shell | chat_mode: :hidden}
+  end
 
   @doc """
   Maybe auto-open a workspace as an overlay based on signal activity.
@@ -79,11 +98,7 @@ defmodule RhoWeb.Session.Shell do
         {shell, false}
 
       chrome ->
-        updated = %{chrome |
-          open?: true,
-          surface: :overlay,
-          collapsed: false
-        }
+        updated = %{chrome | open?: true, surface: :overlay, collapsed: false}
         {put_in(shell, [:workspaces, key], updated), true}
     end
   end
@@ -92,20 +107,22 @@ defmodule RhoWeb.Session.Shell do
   def pin_workspace(shell, key) do
     case get_in(shell, [:workspaces, key]) do
       nil -> shell
-      chrome ->
-        put_in(shell, [:workspaces, key], %{chrome | surface: :tab})
+      chrome -> put_in(shell, [:workspaces, key], %{chrome | surface: :tab})
     end
   end
 
   @doc "Dismiss an overlay workspace. Records the correlation_id to suppress re-open."
   def dismiss_overlay(shell, key, correlation_id \\ nil) do
     case get_in(shell, [:workspaces, key]) do
-      nil -> shell
+      nil ->
+        shell
+
       chrome ->
-        put_in(shell, [:workspaces, key], %{chrome |
-          open?: false,
-          surface: :overlay,
-          dismissed_correlation_id: correlation_id
+        put_in(shell, [:workspaces, key], %{
+          chrome
+          | open?: false,
+            surface: :overlay,
+            dismissed_correlation_id: correlation_id
         })
     end
   end
@@ -117,14 +134,19 @@ defmodule RhoWeb.Session.Shell do
         shell
 
       chrome ->
-        # Only increment unseen if workspace is not currently visible
         is_visible = chrome.open? and key == active_workspace_id and not chrome.collapsed
         now = System.system_time(:millisecond)
 
-        updated = %{chrome |
-          pulse: true,
-          last_activity_at: now,
-          unseen_count: if(is_visible, do: 0, else: chrome.unseen_count + 1)
+        updated = %{
+          chrome
+          | pulse: true,
+            last_activity_at: now,
+            unseen_count:
+              if is_visible do
+                0
+              else
+                chrome.unseen_count + 1
+              end
         }
 
         put_in(shell, [:workspaces, key], updated)
@@ -135,8 +157,7 @@ defmodule RhoWeb.Session.Shell do
   def clear_activity(shell, key) do
     case get_in(shell, [:workspaces, key]) do
       nil -> shell
-      chrome ->
-        put_in(shell, [:workspaces, key], %{chrome | pulse: false, unseen_count: 0})
+      chrome -> put_in(shell, [:workspaces, key], %{chrome | pulse: false, unseen_count: 0})
     end
   end
 
@@ -144,8 +165,7 @@ defmodule RhoWeb.Session.Shell do
   def set_collapsed(shell, key, collapsed?) do
     case get_in(shell, [:workspaces, key]) do
       nil -> shell
-      chrome ->
-        put_in(shell, [:workspaces, key], %{chrome | collapsed: collapsed?})
+      chrome -> put_in(shell, [:workspaces, key], %{chrome | collapsed: collapsed?})
     end
   end
 
@@ -153,8 +173,7 @@ defmodule RhoWeb.Session.Shell do
   def clear_pulse(shell, key) do
     case get_in(shell, [:workspaces, key]) do
       nil -> shell
-      chrome ->
-        put_in(shell, [:workspaces, key], %{chrome | pulse: false})
+      chrome -> put_in(shell, [:workspaces, key], %{chrome | pulse: false})
     end
   end
 
@@ -173,7 +192,6 @@ defmodule RhoWeb.Session.Shell do
         })
 
       chrome ->
-        # Already tracked — just open it as a tab
         put_in(shell, [:workspaces, key], %{chrome | open?: true, surface: :tab})
     end
   end
@@ -181,13 +199,18 @@ defmodule RhoWeb.Session.Shell do
   @doc "Remove a workspace from the shell state (close tab)."
   def remove_workspace(shell, key) do
     case get_in(shell, [:workspaces, key]) do
-      nil -> shell
+      nil ->
+        shell
+
       chrome ->
-        # Keep the chrome entry but mark as closed
         updated = put_in(shell, [:workspaces, key], %{chrome | open?: false, surface: :overlay})
-        # If no open workspaces remain, hide chat
         has_open = Enum.any?(updated.workspaces, fn {_k, c} -> c.open? end)
-        if has_open, do: updated, else: %{updated | chat_mode: :hidden}
+
+        if has_open do
+          updated
+        else
+          %{updated | chat_mode: :hidden}
+        end
     end
   end
 
@@ -210,9 +233,11 @@ defmodule RhoWeb.Session.Shell do
 
   @doc "Total unseen message count across all workspaces (for floating pill)."
   def total_unseen_chat_count(shell) do
-    shell.workspaces
-    |> Map.values()
-    |> Enum.reduce(0, fn chrome, acc -> acc + chrome.unseen_count end)
+    Enum.reduce(
+      shell.workspaces,
+      0,
+      fn {_k, chrome}, acc -> acc + chrome.unseen_count end
+    )
   end
 
   @doc "Return keys of workspaces that are open as overlays."

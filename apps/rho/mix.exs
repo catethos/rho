@@ -34,6 +34,7 @@ defmodule Rho.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:dotenvy, "~> 1.1"},
       {:rho_baml, in_umbrella: true},
+      {:credence, "~> 0.4.5", only: [:dev, :test], runtime: false},
       {:mimic, "~> 1.10", only: :test},
       {:stream_data, "~> 1.1", only: :test}
     ]

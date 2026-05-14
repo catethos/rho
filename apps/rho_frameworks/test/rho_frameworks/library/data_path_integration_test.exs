@@ -86,7 +86,7 @@ defmodule RhoFrameworks.Library.DataPathIntegrationTest do
 
       # Verify skills in DB have proficiency_levels
       skills = LibraryCtx.list_skills(lib.id)
-      assert length(skills) == 2
+      assert match?([_, _], skills)
 
       elixir_skill = Enum.find(skills, &(&1.name == "Elixir"))
       assert elixir_skill != nil

@@ -30,7 +30,7 @@ defmodule Rho.Tape.StoreTest do
       Store.append(@test_tape, Entry.new(:event, %{"name" => "test"}))
 
       entries = Store.read(@test_tape)
-      assert length(entries) == 3
+      assert match?([_, _, _], entries)
       assert Enum.map(entries, & &1.id) == [1, 2, 3]
     end
 
@@ -46,7 +46,7 @@ defmodule Rho.Tape.StoreTest do
       Store.append(@test_tape, Entry.new(:message, %{"content" => "c"}))
 
       entries = Store.read(@test_tape, 2)
-      assert length(entries) == 2
+      assert match?([_, _], entries)
       assert Enum.map(entries, & &1.id) == [2, 3]
     end
   end

@@ -57,7 +57,7 @@ defmodule Rho.ToolArgs do
     result
   end
 
-  def cast(args, _non_list_schema), do: args
+  def cast(args, _parameter_schema), do: args
 
   @doc """
   Validate that every param declared `required: true` in the parameter schema
@@ -85,7 +85,7 @@ defmodule Rho.ToolArgs do
     end
   end
 
-  def validate_required(_cast_args, _non_list_schema), do: :ok
+  def validate_required(_cast_args, _parameter_schema), do: :ok
 
   @doc """
   Full arg preparation pipeline: cast → coerce → validate.
@@ -113,5 +113,5 @@ defmodule Rho.ToolArgs do
     end
   end
 
-  def prepare(args, _non_list_schema), do: {:ok, args, []}
+  def prepare(args, _parameter_schema), do: {:ok, args, []}
 end

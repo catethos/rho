@@ -100,12 +100,12 @@ defmodule RhoFrameworks.UseCases.ImportFromUploadTest do
       raise "Could not find fixture #{rel}; tried: #{Enum.join(candidates, ", ")}"
   end
 
-  defp put_fixture(sid, abs) do
+  defp put_fixture(sid, abs_value) do
     Uploads.put(sid, %{
-      filename: Path.basename(abs),
+      filename: Path.basename(abs_value),
       mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      tmp_path: abs,
-      size: File.stat!(abs).size
+      tmp_path: abs_value,
+      size: File.stat!(abs_value).size
     })
   end
 end

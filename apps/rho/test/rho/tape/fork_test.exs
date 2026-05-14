@@ -24,7 +24,7 @@ defmodule Rho.Tape.ForkTest do
       on_exit(fn -> Store.clear(fork_name) end)
 
       entries = Store.read(fork_name)
-      assert length(entries) == 3
+      assert match?([_, _, _], entries)
 
       origin = List.last(entries)
       assert origin.kind == :anchor
@@ -122,7 +122,7 @@ defmodule Rho.Tape.ForkTest do
       main_after = Store.read(@main_tape)
       assert length(main_after) == main_before + 2
 
-      merged = Enum.take(main_after, -2)
+      merged = Enum.slice(main_after, -2..-1//1)
       assert Enum.at(merged, 0).payload["content"] == "fork msg 1"
       assert Enum.at(merged, 1).payload["content"] == "fork msg 2"
     end

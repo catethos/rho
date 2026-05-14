@@ -5,17 +5,9 @@ defmodule Rho.Stdlib.DataTable.Table do
   Holds rows keyed by server-generated row id, an explicit row order, a
   monotonic version counter, and the schema that validates writes.
   """
-
   alias Rho.Stdlib.DataTable.Schema
-
-  defstruct name: "main",
-            schema: nil,
-            rows_by_id: %{},
-            row_order: [],
-            version: 0
-
+  defstruct name: "main", schema: nil, rows_by_id: %{}, row_order: [], version: 0
   @type row :: map()
-
   @type t :: %__MODULE__{
           name: String.t(),
           schema: Schema.t(),
@@ -23,14 +15,15 @@ defmodule Rho.Stdlib.DataTable.Table do
           row_order: [String.t()],
           version: non_neg_integer()
         }
-
   @doc "Build an empty table with the given name and schema."
   def new(name, %Schema{} = schema) when is_binary(name) do
     %__MODULE__{name: name, schema: schema}
   end
 
   @doc "Row count."
-  def row_count(%__MODULE__{row_order: ids}), do: length(ids)
+  def row_count(%__MODULE__{row_order: ids}) do
+    length(ids)
+  end
 
   @doc "Return rows in declared order."
   def rows(%__MODULE__{rows_by_id: map, row_order: order}) do
@@ -48,19 +41,13 @@ defmodule Rho.Stdlib.DataTable.Table do
       when is_list(rows) and is_function(id_fun, 0) do
     Enum.reduce_while(rows, {:ok, table, []}, fn raw_row, {:ok, acc_table, acc_inserted} ->
       case normalize_and_id(raw_row, acc_table.schema, id_fun) do
-        {:ok, id, row} ->
-          insert_if_unique(acc_table, acc_inserted, id, row)
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
+        {:ok, id, row} -> insert_if_unique(acc_table, acc_inserted, id, row)
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
-      {:ok, updated, inserted} ->
-        {:ok, bump_version(updated), Enum.reverse(inserted)}
-
-      err ->
-        err
+      {:ok, updated, inserted} -> {:ok, bump_version(updated), Enum.reverse(inserted)}
+      err -> err
     end
   end
 
@@ -126,8 +113,13 @@ defmodule Rho.Stdlib.DataTable.Table do
   end
 
   @doc "Filter rows by a map of field/value pairs (does not mutate the table)."
-  def filter_rows(%__MODULE__{} = table, nil), do: rows(table)
-  def filter_rows(%__MODULE__{} = table, filter) when filter == %{}, do: rows(table)
+  def filter_rows(%__MODULE__{} = table, nil) do
+    rows(table)
+  end
+
+  def filter_rows(%__MODULE__{} = table, filter) when filter == %{} do
+    rows(table)
+  end
 
   def filter_rows(%__MODULE__{} = table, filter) when is_map(filter) do
     Enum.filter(rows(table), &match_filter?(&1, filter))
@@ -155,18 +147,21 @@ defmodule Rho.Stdlib.DataTable.Table do
     columns = Keyword.get(opts, :columns)
     limit = Keyword.get(opts, :limit)
     offset = Keyword.get(opts, :offset, 0)
-
     rows = filter_rows(table, filter)
 
     rows =
-      if offset > 0,
-        do: Enum.drop(rows, offset),
-        else: rows
+      if offset > 0 do
+        Enum.drop(rows, offset)
+      else
+        rows
+      end
 
     rows =
-      if limit,
-        do: Enum.take(rows, limit),
-        else: rows
+      if limit do
+        Enum.take(rows, limit)
+      else
+        rows
+      end
 
     rows =
       if columns do
@@ -179,15 +174,19 @@ defmodule Rho.Stdlib.DataTable.Table do
     %{rows: rows, total: total, offset: offset, limit: limit}
   end
 
-  defp row_count_filtered(table, nil), do: row_count(table)
-  defp row_count_filtered(table, filter) when filter == %{}, do: row_count(table)
+  defp row_count_filtered(table, nil) do
+    row_count(table)
+  end
+
+  defp row_count_filtered(table, filter) when filter == %{} do
+    row_count(table)
+  end
 
   defp row_count_filtered(table, filter) do
     Enum.count(rows(table), &match_filter?(&1, filter))
   end
 
   defp project_columns(rows, columns) do
-    # Resolve column names: try atom first, fall back to string
     Enum.map(rows, fn row ->
       Map.new(columns, fn col ->
         key = resolve_column_key(row, col)
@@ -200,10 +199,15 @@ defmodule Rho.Stdlib.DataTable.Table do
   defp resolve_column_key(row, col) when is_binary(col) do
     atom_key = try_existing_atom(col)
 
-    cond do
-      atom_key && Map.has_key?(row, atom_key) -> atom_key
-      Map.has_key?(row, col) -> col
-      true -> col
+    with {:atom, atom} when is_atom(atom) <- {:atom, atom_key},
+         {:ok, _} <- Map.fetch(row, atom) do
+      atom
+    else
+      _ ->
+        case Map.fetch(row, col) do
+          {:ok, _} -> col
+          :error -> col
+        end
     end
   end
 
@@ -224,45 +228,69 @@ defmodule Rho.Stdlib.DataTable.Table do
           []
 
         [first | _] ->
-          first
-          |> Map.keys()
-          |> Enum.reject(&(&1 in [:id, "id"]))
+          Enum.map(
+            Enum.reject(
+              first,
+              fn {_k, x} -> x in [:id, "id"] end
+            ),
+            fn {k, _} -> k end
+          )
       end
 
-    field_stats = Enum.map(fields, &field_stat(rows, &1))
+    field_stats =
+      rows
+      |> field_values(fields)
+      |> Enum.map(fn {field, values} -> field_stat(field, Enum.reverse(values)) end)
 
-    %{
-      total_rows: length(rows),
-      fields: field_stats,
-      version: table.version
-    }
+    %{total_rows: length(rows), fields: field_stats, version: table.version}
   end
 
-  defp field_stat(rows, field) do
-    values = Enum.map(rows, &Map.get(&1, field))
+  defp field_values(table_rows, fields) do
+    initial = Map.new(fields, &{&1, []})
 
-    if Enum.any?(values, &complex?/1) do
+    Enum.reduce(table_rows, initial, fn row, acc ->
+      Enum.reduce(fields, acc, fn field, field_acc ->
+        Map.update!(field_acc, field, &[Map.get(row, field) | &1])
+      end)
+    end)
+  end
+
+  defp field_stat(field, values) do
+    stats = value_stats(values)
+
+    if stats.complex_sample do
       %{
         field: field,
-        unique_count: values |> Enum.uniq() |> length(),
-        type: complex_type_label(values),
+        unique_count: MapSet.size(stats.unique),
+        type: complex_type_label(stats.complex_sample),
         sample: []
       }
     else
-      unique = Enum.uniq(values)
-      %{field: field, unique_count: length(unique), sample: Enum.take(unique, 10)}
+      sample = stats.sample |> Enum.reverse() |> Enum.take(10)
+      %{field: field, unique_count: MapSet.size(stats.unique), sample: sample}
     end
   end
 
-  defp complex?(v), do: is_list(v) or is_map(v)
+  defp value_stats(values) do
+    Enum.reduce(values, %{unique: MapSet.new(), sample: [], complex_sample: nil}, fn value, acc ->
+      unique? = not MapSet.member?(acc.unique, value)
 
-  defp complex_type_label(values) do
-    sample = Enum.find(values, &complex?/1)
+      %{
+        unique: MapSet.put(acc.unique, value),
+        sample: if(unique?, do: [value | acc.sample], else: acc.sample),
+        complex_sample: acc.complex_sample || if(complex?(value), do: value)
+      }
+    end)
+  end
 
+  defp complex?(v) do
+    is_list(v) or is_map(v)
+  end
+
+  defp complex_type_label(sample) do
     case sample do
       v when is_list(v) -> "list<#{length(v)}>"
       v when is_map(v) -> "map<#{map_size(v)}>"
-      _ -> "complex"
     end
   end
 
@@ -277,25 +305,27 @@ defmodule Rho.Stdlib.DataTable.Table do
     }
   end
 
-  # --- Internal ---
-
   defp insert_if_unique(acc_table, acc_inserted, id, row) do
-    if Map.has_key?(acc_table.rows_by_id, id) do
-      {:halt, {:error, {:duplicate_id, id}}}
-    else
-      row_with_id = Map.put(row, :id, id)
+    case Map.fetch(acc_table.rows_by_id, id) do
+      :error ->
+        row_with_id = Map.put(row, :id, id)
 
-      updated = %{
-        acc_table
-        | rows_by_id: Map.put(acc_table.rows_by_id, id, row_with_id),
-          row_order: acc_table.row_order ++ [id]
-      }
+        updated = %{
+          acc_table
+          | rows_by_id: Map.put(acc_table.rows_by_id, id, row_with_id),
+            row_order: acc_table.row_order ++ [id]
+        }
 
-      {:cont, {:ok, updated, [row_with_id | acc_inserted]}}
+        {:cont, {:ok, updated, [row_with_id | acc_inserted]}}
+
+      {:ok, _} ->
+        {:halt, {:error, {:duplicate_id, id}}}
     end
   end
 
-  defp bump_version(%__MODULE__{version: v} = t), do: %{t | version: v + 1}
+  defp bump_version(%__MODULE__{version: v} = t) do
+    %{t | version: v + 1}
+  end
 
   defp normalize_and_id(raw_row, schema, id_fun) when is_map(raw_row) do
     {supplied_id, row_without_id} = pop_supplied_id(raw_row)
@@ -310,18 +340,17 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  defp normalize_and_id(_, _, _), do: {:error, :invalid_row}
+  defp normalize_and_id(_, _, _) do
+    {:error, :invalid_row}
+  end
 
   defp pop_supplied_id(row) do
-    cond do
-      Map.has_key?(row, :id) and row[:id] != nil ->
-        {to_string(row[:id]), Map.drop(row, [:id, "id"])}
+    cleaned = Map.drop(row, [:id, "id"])
 
-      Map.has_key?(row, "id") and row["id"] != nil ->
-        {to_string(row["id"]), Map.drop(row, [:id, "id"])}
-
-      true ->
-        {nil, Map.drop(row, [:id, "id"])}
+    case {Map.fetch(row, :id), Map.fetch(row, "id")} do
+      {{:ok, id}, _} when not is_nil(id) -> {to_string(id), cleaned}
+      {_, {:ok, id}} when not is_nil(id) -> {to_string(id), cleaned}
+      _ -> {nil, cleaned}
     end
   end
 
@@ -332,14 +361,9 @@ defmodule Rho.Stdlib.DataTable.Table do
     child_key = fetch_change(change, "child_key")
 
     cond do
-      is_nil(field) ->
-        {:halt, {:error, {:missing_change_field, change}}}
-
-      not is_nil(child_key) ->
-        apply_child_change(table, id, child_key, field, value)
-
-      true ->
-        apply_row_change(table, id, field, value)
+      is_nil(field) -> {:halt, {:error, {:missing_change_field, change}}}
+      not is_nil(child_key) -> apply_child_change(table, id, child_key, field, value)
+      true -> apply_row_change(table, id, field, value)
     end
   end
 
@@ -362,7 +386,6 @@ defmodule Rho.Stdlib.DataTable.Table do
         case resolve_strict_field(field, table.schema) do
           {:ok, resolved_field} ->
             updated_row = Map.put(row, resolved_field, value)
-
             {:cont, {:ok, %{table | rows_by_id: Map.put(table.rows_by_id, id, updated_row)}}}
 
           {:error, reason} ->
@@ -371,24 +394,17 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  # Strict-mode tables reject writes to fields not declared in the schema.
-  # Returns the atom-keyed field name on success so the row stores it under
-  # the same key the schema/UI uses. Dynamic-mode tables fall through to
-  # the legacy field_to_atom path.
   defp resolve_strict_field(field, %Schema{mode: :strict} = schema) do
-    known = known_field_atoms(schema)
+    known = schema |> known_field_atoms() |> known_field_index()
 
     cond do
-      is_atom(field) and field in known ->
+      is_atom(field) and MapSet.member?(known.atoms, field) ->
         {:ok, field}
 
       is_binary(field) ->
-        case Enum.find(known, fn a -> Atom.to_string(a) == field end) do
-          nil ->
-            {:error, {:unknown_field, field, [available: Enum.map(known, &Atom.to_string/1)]}}
-
-          atom ->
-            {:ok, atom}
+        case Map.fetch(known.by_string, field) do
+          :error -> {:error, {:unknown_field, field, available: known.available}}
+          {:ok, atom} -> {:ok, atom}
         end
 
       true ->
@@ -396,7 +412,9 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  defp resolve_strict_field(field, schema), do: {:ok, field_to_atom(field, schema)}
+  defp resolve_strict_field(field, schema) do
+    {:ok, field_to_atom(field, schema)}
+  end
 
   defp apply_child_change(table, id, child_key, field, value) do
     schema = table.schema
@@ -408,9 +426,7 @@ defmodule Rho.Stdlib.DataTable.Table do
          children when is_list(children) <- Map.get(row, children_key) || [],
          {:ok, idx} <- find_child_index(children, key_map) do
       updated_children =
-        List.update_at(children, idx, fn child ->
-          Map.put(child || %{}, resolved_field, value)
-        end)
+        List.update_at(children, idx, fn child -> Map.put(child || %{}, resolved_field, value) end)
 
       updated_row = Map.put(row, children_key, updated_children)
       {:cont, {:ok, %{table | rows_by_id: Map.put(table.rows_by_id, id, updated_row)}}}
@@ -420,11 +436,13 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  defp fetch_children_key(%Schema{children_key: nil}, table_name),
-    do: {:error, {:no_children, table_name}}
+  defp fetch_children_key(%Schema{children_key: nil}, table_name) do
+    {:error, {:no_children, table_name}}
+  end
 
-  defp fetch_children_key(%Schema{children_key: key}, _table_name) when is_atom(key),
-    do: {:ok, key}
+  defp fetch_children_key(%Schema{children_key: key}, _table_name) when is_atom(key) do
+    {:ok, key}
+  end
 
   defp fetch_row(table, id) do
     case Map.get(table.rows_by_id, id) do
@@ -433,10 +451,6 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  # Coerce a child_key map into atom-keyed form, validating that every key is
-  # one of the schema's `child_key_fields`. Atoms not declared as key fields
-  # are rejected so an ambiguous "child_key: %{level_name: ...}" doesn't
-  # silently match the wrong child.
   defp normalize_child_key(child_key, %Schema{child_key_fields: declared} = schema)
        when is_map(child_key) do
     declared_set = MapSet.new(declared)
@@ -453,12 +467,16 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  defp normalize_child_key(_, _), do: {:error, :invalid_child_key}
+  defp normalize_child_key(_, _) do
+    {:error, :invalid_child_key}
+  end
 
   defp resolve_child_key_field(k, declared_set, _schema) when is_atom(k) do
-    if MapSet.member?(declared_set, k),
-      do: {:ok, k},
-      else: {:error, {:unknown_child_key_field, k, available: MapSet.to_list(declared_set)}}
+    if MapSet.member?(declared_set, k) do
+      {:ok, k}
+    else
+      {:error, {:unknown_child_key_field, k, available: MapSet.to_list(declared_set)}}
+    end
   end
 
   defp resolve_child_key_field(k, declared_set, _schema) when is_binary(k) do
@@ -473,21 +491,23 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  defp resolve_child_key_field(k, _, _), do: {:error, {:unknown_child_key_field, k, []}}
+  defp resolve_child_key_field(k, _, _) do
+    {:error, {:unknown_child_key_field, k, []}}
+  end
 
   defp resolve_child_field(field, %Schema{child_columns: cols}) do
-    known = Enum.map(cols || [], & &1.name)
+    known = cols |> Kernel.||([]) |> Enum.map(& &1.name) |> known_field_index()
 
     cond do
-      is_atom(field) and field in known ->
+      is_atom(field) and MapSet.member?(known.atoms, field) ->
         {:ok, field}
 
       is_binary(field) ->
-        case Enum.find(known, fn a -> Atom.to_string(a) == field end) do
-          nil ->
-            {:error, {:unknown_child_field, field, available: Enum.map(known, &Atom.to_string/1)}}
+        case Map.fetch(known.by_string, field) do
+          :error ->
+            {:error, {:unknown_child_field, field, available: known.available}}
 
-          atom ->
+          {:ok, atom} ->
             {:ok, atom}
         end
 
@@ -511,11 +531,7 @@ defmodule Rho.Stdlib.DataTable.Table do
 
       multiple ->
         {:error,
-         {:ambiguous_match,
-          %{
-            child_key: stringify_keys(key_map),
-            count: length(multiple)
-          }}}
+         {:ambiguous_match, %{child_key: stringify_keys(key_map), count: length(multiple)}}}
     end
   end
 
@@ -525,7 +541,9 @@ defmodule Rho.Stdlib.DataTable.Table do
     end)
   end
 
-  defp child_matches?(_, _), do: false
+  defp child_matches?(_, _) do
+    false
+  end
 
   defp fetch_child_value(child, key) when is_atom(key) do
     Map.get(child, key, Map.get(child, Atom.to_string(key)))
@@ -535,26 +553,46 @@ defmodule Rho.Stdlib.DataTable.Table do
     Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
 
-  defp field_to_atom(field, _schema) when is_atom(field), do: field
+  defp field_to_atom(field, _schema) when is_atom(field) do
+    field
+  end
 
   defp field_to_atom(field, schema) when is_binary(field) do
-    # Only convert to atom if the schema declares this field as an atom column.
     known = schema && known_field_atoms(schema)
 
     if known do
-      Enum.find(known, field, fn atom -> Atom.to_string(atom) == field end)
+      known |> known_field_index() |> Map.get(:by_string) |> Map.get(field, field)
     else
       try_existing_atom(field) || field
     end
   end
 
-  defp known_field_atoms(nil), do: nil
+  defp known_field_index(known) do
+    Enum.reduce(known, %{atoms: MapSet.new(), by_string: %{}, available: []}, fn atom, acc ->
+      string = Atom.to_string(atom)
+
+      %{
+        atoms: MapSet.put(acc.atoms, atom),
+        by_string: Map.put(acc.by_string, string, atom),
+        available: [string | acc.available]
+      }
+    end)
+    |> Map.update!(:available, &Enum.reverse/1)
+  end
+
+  defp known_field_atoms(nil) do
+    nil
+  end
 
   defp known_field_atoms(%Schema{} = schema) do
-    children = if schema.children_key, do: [schema.children_key], else: []
+    children =
+      if schema.children_key do
+        [schema.children_key]
+      else
+        []
+      end
 
-    (Schema.column_names(schema) ++ Schema.child_column_names(schema) ++ children)
-    |> Enum.uniq()
+    (Schema.column_names(schema) ++ Schema.child_column_names(schema) ++ children) |> Enum.uniq()
   end
 
   defp try_existing_atom(s) do
@@ -571,22 +609,32 @@ defmodule Rho.Stdlib.DataTable.Table do
     end)
   end
 
-  defp normalize_filter_key(_row, k) when is_atom(k), do: k
+  defp normalize_filter_key(_row, k) when is_atom(k) do
+    k
+  end
 
   defp normalize_filter_key(row, k) when is_binary(k) do
-    cond do
-      Map.has_key?(row, k) ->
+    case Map.fetch(row, k) do
+      {:ok, _} ->
         k
 
-      atom = try_existing_atom(k) ->
-        if Map.has_key?(row, atom), do: atom, else: k
+      :error ->
+        case try_existing_atom(k) do
+          nil ->
+            k
 
-      true ->
-        k
+          atom ->
+            case Map.fetch(row, atom) do
+              {:ok, _} -> atom
+              :error -> k
+            end
+        end
     end
   end
 
-  defp values_match?(a, a), do: true
+  defp values_match?(a, a) do
+    true
+  end
 
   defp values_match?(a, b) when is_integer(a) and is_binary(b) do
     case Integer.parse(b) do
@@ -602,5 +650,7 @@ defmodule Rho.Stdlib.DataTable.Table do
     end
   end
 
-  defp values_match?(_, _), do: false
+  defp values_match?(_, _) do
+    false
+  end
 end

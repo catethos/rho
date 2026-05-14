@@ -46,7 +46,7 @@ defmodule RhoBaml.SchemaCompiler do
     {lines, acc} =
       Enum.reduce(fields, {[], acc}, fn {key, type}, {lines, acc} ->
         nested_name = "#{class_name}#{camelize(key)}"
-        {baml_type, acc} = resolve_type(unwrap(type), nested_name, acc)
+        {baml_type, new_acc} = resolve_type(unwrap(type), nested_name, acc)
 
         optional_mark = if optional?(type), do: "?", else: ""
 
@@ -57,7 +57,7 @@ defmodule RhoBaml.SchemaCompiler do
           end
 
         line = "  #{key} #{baml_type}#{optional_mark}#{desc_mark}"
-        {[line | lines], acc}
+        {[line | lines], new_acc}
       end)
 
     body = lines |> Enum.reverse() |> Enum.join("\n")
@@ -139,8 +139,8 @@ defmodule RhoBaml.SchemaCompiler do
 
   defp camelize(atom) when is_atom(atom), do: atom |> Atom.to_string() |> camelize()
 
-  defp camelize(string) do
-    string |> String.split("_") |> Enum.map(&String.capitalize/1) |> Enum.join()
+  defp camelize(atom) do
+    atom |> String.split("_") |> Enum.map_join(&String.capitalize/1)
   end
 
   # -- BAML function file generation (used by RhoBaml.Function) --

@@ -229,7 +229,12 @@ defmodule Rho.Stdlib.Tools.ClearMemory do
 
   defp execute(args, tape_name) do
     confirm = args[:confirm] || false
-    archive = if Map.has_key?(args, :archive), do: args[:archive], else: true
+
+    archive =
+      case Map.fetch(args, :archive) do
+        {:ok, value} -> value
+        :error -> true
+      end
 
     if confirm do
       Rho.Tape.Service.reset(tape_name, archive)

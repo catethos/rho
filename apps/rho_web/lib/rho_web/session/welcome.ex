@@ -153,9 +153,7 @@ defmodule RhoWeb.Session.Welcome do
 
   defp render_text(libraries) do
     bullets =
-      libraries
-      |> Enum.map(&format_bullet/1)
-      |> Enum.join("\n")
+      libraries |> Enum.map_join("\n", &format_bullet/1)
 
     populated_variants(bullets)
     |> Enum.random()

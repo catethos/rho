@@ -250,9 +250,10 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   defp format_proficiency_summary(table_name, total, %{ok: ok, error: error, pending: 0}) do
     base = "Proficiency complete for '#{table_name}': #{ok}/#{total} categories OK"
 
-    cond do
-      error > 0 -> {:ok, base <> ", #{error} failed."}
-      true -> {:ok, base <> "."}
+    if error > 0 do
+      {:ok, base <> ", #{error} failed."}
+    else
+      {:ok, base <> "."}
     end
   end
 
@@ -445,7 +446,7 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     "Imported '#{single.library_name}' — #{single.skills_imported} skills, table '#{single.table_name}'."
   end
 
-  defp build_multi_library_text(libs) when length(libs) > 1 do
+  defp build_multi_library_text([_, _ | _] = libs) do
     total = Enum.reduce(libs, 0, fn l, acc -> acc + l.skills_imported end)
 
     per_lib =
@@ -653,21 +654,19 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   # in the role_candidates table. Selection wins when from_selected_candidates
   # is "true" — the chat-side path users are walked through.
   defp resolve_seed_role_ids(args, scope) do
-    case truthy?(args[:from_selected_candidates]) do
-      true ->
-        case RhoFrameworks.Workbench.read_selected_candidate_role_ids(scope) do
-          [] ->
-            {:error,
-             "from_selected_candidates: true was passed, but no rows are checked in the " <>
-               "role_candidates table. Ask the user to check the rows they want, then retry — " <>
-               "or pass role_profile_ids_json explicitly."}
+    if truthy?(args[:from_selected_candidates]) do
+      case RhoFrameworks.Workbench.read_selected_candidate_role_ids(scope) do
+        [] ->
+          {:error,
+           "from_selected_candidates: true was passed, but no rows are checked in the " <>
+             "role_candidates table. Ask the user to check the rows they want, then retry — " <>
+             "or pass role_profile_ids_json explicitly."}
 
-          ids ->
-            {:ok, ids}
-        end
-
-      false ->
-        parse_role_ids(args[:role_profile_ids_json])
+        ids ->
+          {:ok, ids}
+      end
+    else
+      parse_role_ids(args[:role_profile_ids_json])
     end
   end
 

@@ -134,7 +134,7 @@ defmodule Rho.Tape.Service do
         |> Store.read()
         |> Enum.filter(&(&1.kind != :anchor))
         |> Enum.map(& &1.id)
-        |> Enum.take(-20)
+        |> Enum.slice(-20..-1//1)
 
     payload = %{
       "name" => phase,

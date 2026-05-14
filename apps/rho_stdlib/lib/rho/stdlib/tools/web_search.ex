@@ -140,5 +140,5 @@ defmodule Rho.Stdlib.Tools.WebSearch do
     |> String.trim()
   end
 
-  defp trim_highlight(other), do: inspect(other)
+  defp trim_highlight(text), do: inspect(text)
 end

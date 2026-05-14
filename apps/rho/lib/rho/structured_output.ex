@@ -168,7 +168,7 @@ defmodule Rho.StructuredOutput do
   defp try_merge_objects(text) do
     objects = extract_json_objects(text)
 
-    if length(objects) >= 2 do
+    if match?([_, _ | _], objects) do
       merged = Enum.reduce(objects, %{}, &Map.merge(&2, &1))
       {:ok, merged}
     else

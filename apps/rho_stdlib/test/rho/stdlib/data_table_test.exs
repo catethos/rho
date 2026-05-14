@@ -51,7 +51,7 @@ defmodule Rho.Stdlib.DataTableTest do
         end
 
       pids = tasks |> Enum.map(&Task.await/1) |> Enum.uniq()
-      assert length(pids) == 1
+      assert match?([_], pids)
     end
   end
 
@@ -80,7 +80,7 @@ defmodule Rho.Stdlib.DataTableTest do
       DataTable.ensure_started(sid)
       assert {:ok, [_, _]} = DataTable.add_rows(sid, [%{"a" => 1}, %{"a" => 2}])
       rows = DataTable.get_rows(sid)
-      assert length(rows) == 2
+      assert match?([_, _], rows)
     end
   end
 

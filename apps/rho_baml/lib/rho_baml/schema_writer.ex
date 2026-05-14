@@ -111,9 +111,7 @@ defmodule RhoBaml.SchemaWriter do
       end)
 
     union_type =
-      all_variants
-      |> Enum.map(&elem(&1, 0))
-      |> Enum.join(" | ")
+      all_variants |> Enum.map_join(" | ", &elem(&1, 0))
 
     """
     #{classes_baml}
@@ -256,10 +254,7 @@ defmodule RhoBaml.SchemaWriter do
   end
 
   defp camelize_provider(prefix) do
-    prefix
-    |> String.split("_")
-    |> Enum.map(&String.capitalize/1)
-    |> Enum.join()
+    prefix |> String.split("_") |> Enum.map_join(&String.capitalize/1)
   end
 
   # -- Type mapping (NimbleOptions → BAML) --

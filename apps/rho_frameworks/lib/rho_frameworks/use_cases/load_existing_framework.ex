@@ -40,12 +40,10 @@ defmodule RhoFrameworks.UseCases.LoadExistingFramework do
   def run(input, %Scope{} = scope) do
     library_id = Map.get(input, :library_id) || Map.get(input, "library_id")
 
-    cond do
-      is_nil(library_id) or library_id == "" ->
-        {:error, :missing_library_id}
-
-      true ->
-        do_run(library_id, scope)
+    if is_nil(library_id) or library_id == "" do
+      {:error, :missing_library_id}
+    else
+      do_run(library_id, scope)
     end
   end
 

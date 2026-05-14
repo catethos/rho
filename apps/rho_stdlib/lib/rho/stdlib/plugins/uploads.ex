@@ -100,10 +100,9 @@ defmodule Rho.Stdlib.Plugins.Uploads do
 
   defp render_list(handles) do
     handles
-    |> Enum.map(fn h ->
+    |> Enum.map_join("\n", fn h ->
       "- #{h.filename} (#{h.id}, #{format_bytes(h.size)})"
     end)
-    |> Enum.join("\n")
   end
 
   defp render_observation(obs) do

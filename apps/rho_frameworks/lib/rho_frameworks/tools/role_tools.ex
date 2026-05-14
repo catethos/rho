@@ -63,12 +63,11 @@ defmodule RhoFrameworks.Tools.RoleTools do
     profiles = Roles.list_role_profiles(ctx.organization_id, opts)
 
     result =
-      Enum.map(profiles, fn rp ->
+      Enum.map_join(profiles, "\n", fn rp ->
         family = if rp.role_family, do: " [#{rp.role_family}]", else: ""
         level = if rp.seniority_label, do: " #{rp.seniority_label}", else: ""
         "- #{rp.name} (#{rp.id}) —#{family}#{level} #{rp.skill_count} skills"
       end)
-      |> Enum.join("\n")
 
     {:ok, result}
   end
@@ -422,7 +421,7 @@ defmodule RhoFrameworks.Tools.RoleTools do
     do: {:error, "Provide a `query` string or a `queries_json` array."}
 
   defp maybe_trim(s) when is_binary(s), do: String.trim(s)
-  defp maybe_trim(other), do: other
+  defp maybe_trim(s), do: s
 
   defp do_gap_analysis(args) do
     raw = args[:snapshot_json] || "{}"
@@ -435,7 +434,7 @@ defmodule RhoFrameworks.Tools.RoleTools do
           end)
 
         result =
-          if length(people) == 1 do
+          if match?([_], people) do
             {_id, snapshot} = hd(people)
             GapAnalysis.individual_gap(snapshot, args[:role_profile_id])
           else

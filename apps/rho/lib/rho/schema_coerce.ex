@@ -171,7 +171,7 @@ defmodule Rho.SchemaCoerce do
   defp coerce_float(value, _opts) when is_float(value), do: {:ok, value, []}
 
   defp coerce_float(value, _opts) when is_integer(value) do
-    {:ok, value * 1.0, [repair(:integer, :float, value)]}
+    {:ok, value / 1, [repair(:integer, :float, value)]}
   end
 
   defp coerce_float(value, _opts) when is_binary(value) do
@@ -181,7 +181,7 @@ defmodule Rho.SchemaCoerce do
 
       _ ->
         case Integer.parse(value) do
-          {i, ""} -> {:ok, i * 1.0, [repair(:string, :float, value)]}
+          {i, ""} -> {:ok, i / 1, [repair(:string, :float, value)]}
           _ -> {:error, {:cannot_parse_float, value}}
         end
     end
@@ -294,18 +294,15 @@ defmodule Rho.SchemaCoerce do
   # --- {:list, inner} coercion ---
 
   defp coerce_list(value, inner_type, opts) when is_list(value) do
-    result =
-      Enum.reduce_while(value, {:ok, [], []}, fn item, {:ok, acc, repairs} ->
-        case coerce(item, inner_type, opts) do
-          {:ok, coerced, item_repairs} ->
-            {:cont, {:ok, acc ++ [coerced], repairs ++ item_repairs}}
+    Enum.reduce_while(value, {:ok, [], []}, fn item, {:ok, acc, repairs} ->
+      case coerce(item, inner_type, opts) do
+        {:ok, coerced, item_repairs} ->
+          {:cont, {:ok, acc ++ [coerced], repairs ++ item_repairs}}
 
-          {:error, reason} ->
-            {:halt, {:error, {:list_item_coerce_failed, reason}}}
-        end
-      end)
-
-    result
+        {:error, reason} ->
+          {:halt, {:error, {:list_item_coerce_failed, reason}}}
+      end
+    end)
   end
 
   # Scalar-to-list wrap
@@ -322,18 +319,15 @@ defmodule Rho.SchemaCoerce do
   # --- {:map, key_type, value_type} coercion ---
 
   defp coerce_typed_map(value, _key_type, value_type, opts) when is_map(value) do
-    result =
-      Enum.reduce_while(value, {:ok, %{}, []}, fn {k, v}, {:ok, acc, repairs} ->
-        case coerce(v, value_type, opts) do
-          {:ok, coerced_v, v_repairs} ->
-            {:cont, {:ok, Map.put(acc, k, coerced_v), repairs ++ v_repairs}}
+    Enum.reduce_while(value, {:ok, %{}, []}, fn {k, v}, {:ok, acc, repairs} ->
+      case coerce(v, value_type, opts) do
+        {:ok, coerced_v, v_repairs} ->
+          {:cont, {:ok, Map.put(acc, k, coerced_v), repairs ++ v_repairs}}
 
-          {:error, reason} ->
-            {:halt, {:error, {:map_value_coerce_failed, k, reason}}}
-        end
-      end)
-
-    result
+        {:error, reason} ->
+          {:halt, {:error, {:map_value_coerce_failed, k, reason}}}
+      end
+    end)
   end
 
   defp coerce_typed_map(_value, _key_type, _value_type, _opts) do

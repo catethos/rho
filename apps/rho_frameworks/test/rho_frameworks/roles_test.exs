@@ -44,7 +44,7 @@ defmodule RhoFrameworks.RolesTest do
 
       # Skills should be draft
       skills = RhoFrameworks.Library.list_skills(lib.id)
-      assert length(skills) == 2
+      assert match?([_, _], skills)
       assert Enum.all?(skills, &(&1.status == "draft"))
     end
 
@@ -70,7 +70,7 @@ defmodule RhoFrameworks.RolesTest do
         )
 
       skills = RhoFrameworks.Library.list_skills(lib.id)
-      assert length(skills) == 3
+      assert match?([_, _, _], skills)
     end
 
     test "only name is required — rich fields optional", %{org_id: org_id, lib: lib} do
@@ -113,7 +113,7 @@ defmodule RhoFrameworks.RolesTest do
 
       {:ok, %{rows: loaded_rows}} = RhoFrameworks.Roles.load_role_profile(org_id, "ML Engineer")
 
-      assert length(loaded_rows) == 2
+      assert match?([_, _], loaded_rows)
 
       sql_row = Enum.find(loaded_rows, &(&1.skill_name == "SQL"))
       assert sql_row.required_level == 4
@@ -145,7 +145,7 @@ defmodule RhoFrameworks.RolesTest do
 
       # Skill still exists in library
       skills = RhoFrameworks.Library.list_skills(lib.id)
-      assert length(skills) == 1
+      assert match?([_], skills)
     end
   end
 
@@ -211,7 +211,7 @@ defmodule RhoFrameworks.RolesTest do
 
       cloned = RhoFrameworks.Roles.clone_role_skills(org_id, [rp1.id, rp2.id])
 
-      assert length(cloned) == 3
+      assert match?([_, _, _], cloned)
       sql = Enum.find(cloned, &(&1.skill_name == "SQL"))
       assert sql.required_level == 5
     end
@@ -398,7 +398,7 @@ defmodule RhoFrameworks.RolesTest do
 
       # Two distinct ids → two rows (despite identical names). Identity-by-name
       # would have collapsed to a single merged row.
-      assert length(cloned) == 2
+      assert match?([_, _], cloned)
       assert Enum.all?(cloned, &(&1.skill_name == "Project Management"))
     end
 
@@ -406,7 +406,7 @@ defmodule RhoFrameworks.RolesTest do
          %{org_id: org_id, role_a: role_a, role_b: role_b} do
       cloned = RhoFrameworks.Roles.clone_skills_for_library(org_id, [role_a.id, role_b.id])
 
-      assert length(cloned) == 2
+      assert match?([_, _], cloned)
       assert Enum.all?(cloned, &(&1.skill_name == "Project Management"))
     end
   end
@@ -433,7 +433,7 @@ defmodule RhoFrameworks.RolesTest do
       # Caller is a different org; the role lives in `other_org_id`.
       cloned = RhoFrameworks.Roles.clone_role_skills(caller_org_id, [rp.id])
 
-      assert length(cloned) == 1
+      assert match?([_], cloned)
       assert hd(cloned).skill_name == "Kubernetes"
     end
 
@@ -457,7 +457,7 @@ defmodule RhoFrameworks.RolesTest do
 
       cloned = RhoFrameworks.Roles.clone_skills_for_library(caller_org_id, [rp.id])
 
-      assert length(cloned) == 1
+      assert match?([_], cloned)
       assert hd(cloned).skill_name == "Terraform"
     end
   end

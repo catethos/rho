@@ -11,21 +11,16 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     * `:catalog` — the LiveRender catalog module (default: `LiveRender.StandardCatalog`)
     * `:max_spec_bytes` — maximum JSON size for a spec (default: 50_000)
   """
-
   @behaviour Rho.Plugin
-
   @default_catalog LiveRender.StandardCatalog
-  @default_max_bytes 50_000
-
+  @default_max_bytes 50000
   @impl Rho.Plugin
   def tools(mount_opts, context) do
-    # Only expose to depth-0 agents by default
     if (context[:depth] || 0) > 0 do
       []
     else
       catalog = Keyword.get(mount_opts, :catalog, @default_catalog)
       max_bytes = Keyword.get(mount_opts, :max_spec_bytes, @default_max_bytes)
-
       [present_ui_tool(context, catalog, max_bytes)]
     end
   end
@@ -34,22 +29,19 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
   def prompt_sections(mount_opts, context) do
     alias Rho.PromptSection
 
-    # Only expose to depth-0 agents (same gate as tools)
     if (context[:depth] || 0) > 0 do
       []
     else
       catalog = Keyword.get(mount_opts, :catalog, @default_catalog)
-      names = catalog.components() |> Map.keys() |> Enum.join(", ")
+      names = Enum.map_join(catalog.components(), ", ", fn {k, _} -> k end)
 
       [
         %PromptSection{
           key: :live_render,
           heading: "present_ui tool",
-          body: """
-          Components: #{names}
+          body: "Components: #{names}
 
-          Don't repeat UI content in text after rendering.\
-          """,
+Don't repeat UI content in text after rendering.",
           kind: :instructions,
           priority: :normal,
           examples: [
@@ -60,8 +52,6 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
       ]
     end
   end
-
-  # --- Tool definition ---
 
   defp present_ui_tool(context, catalog, max_bytes) do
     %{
@@ -82,9 +72,7 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
           ],
           callback: fn _args -> :ok end
         ),
-      execute: fn args, _ctx ->
-        execute_present_ui(args, context, catalog, max_bytes)
-      end
+      execute: fn args, _ctx -> execute_present_ui(args, context, catalog, max_bytes) end
     }
   end
 
@@ -92,8 +80,6 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     raw_spec = args[:spec]
     title = args[:title]
 
-    # Parse string-encoded specs (some models serialize nested objects as strings)
-    # Check size before decoding to avoid redundant encode in validate_size
     {spec, pre_validated_size} =
       case raw_spec do
         s when is_binary(s) ->
@@ -107,15 +93,19 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
       end
 
     with :ok <- validate_spec(spec, catalog, max_bytes, pre_validated_size) do
-      # Normalize: ensure root and elements exist
       spec = normalize_spec(spec)
       publish_spec(spec, title, context)
       {:ok, "Rendered."}
     end
   end
 
-  defp publish_spec(_spec, _title, %{session_id: nil}), do: :ok
-  defp publish_spec(_spec, _title, context) when not is_map_key(context, :session_id), do: :ok
+  defp publish_spec(_spec, _title, %{session_id: nil}) do
+    :ok
+  end
+
+  defp publish_spec(_spec, _title, context) when not is_map_key(context, :session_id) do
+    :ok
+  end
 
   defp publish_spec(spec, title, context) do
     session_id = context[:session_id]
@@ -123,7 +113,6 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     message_id = "ui_#{System.unique_integer([:positive])}"
     elements = spec["elements"] || %{}
     root_id = spec["root"]
-
     ordered_ids = bfs_element_order(root_id, elements)
 
     publish_delta = fn acc ->
@@ -166,13 +155,13 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     el = elements[el_id]
     data = get_in(el, ["props", "data"])
 
-    if is_list(data) and length(data) > 1 do
+    if is_list(data) and match?([_, _ | _], data) do
       Enum.reduce(data, acc, fn row, inner_acc ->
         existing_data = get_in(inner_acc, [el_id, "props", "data"]) || []
         updated_el = put_in(el, ["props", "data"], existing_data ++ [row])
-        inner_acc = Map.put(inner_acc, el_id, updated_el)
-        publish_delta.(inner_acc)
-        inner_acc
+        new_inner_acc = Map.put(inner_acc, el_id, updated_el)
+        publish_delta.(new_inner_acc)
+        new_inner_acc
       end)
     else
       acc = Map.put(acc, el_id, el)
@@ -181,13 +170,12 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     end
   end
 
-  # --- Validation ---
+  defp validate_spec(nil, _catalog, _max_bytes, _pre_size) do
+    {:error, "spec parameter is required"}
+  end
 
-  defp validate_spec(nil, _catalog, _max_bytes, _pre_size),
-    do: {:error, "spec parameter is required"}
-
-  defp validate_spec(spec, catalog, max_bytes, pre_validated_size) when is_map(spec) do
-    with :ok <- validate_size(spec, max_bytes, pre_validated_size),
+  defp validate_spec(spec, catalog, max_bytes, pre_size) when is_map(spec) do
+    with :ok <- validate_size(spec, max_bytes, pre_size),
          :ok <- validate_structure(spec) do
       validate_components(spec, catalog)
     end
@@ -203,8 +191,9 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     end
   end
 
-  defp validate_spec(_spec, _catalog, _max_bytes, _pre_size),
-    do: {:error, "spec must be a JSON object"}
+  defp validate_spec(_spec, _catalog, _max_bytes, _pre_size) do
+    {:error, "spec must be a JSON object"}
+  end
 
   defp validate_size(_spec, max_bytes, size) when is_integer(size) do
     if size > max_bytes do
@@ -214,7 +203,7 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
     end
   end
 
-  defp validate_size(spec, max_bytes, _pre_size) do
+  defp validate_size(spec, max_bytes, _size) do
     json = Jason.encode!(spec)
 
     if byte_size(json) > max_bytes do
@@ -250,17 +239,21 @@ defmodule Rho.Stdlib.Plugins.LiveRender do
       :ok
     else
       {:error,
-       "unknown component types: #{Enum.join(unknown, ", ")}. Available: #{catalog.components() |> Map.keys() |> Enum.join(", ")}"}
+       "unknown component types: #{Enum.join(unknown, ", ")}. Available: #{Enum.map_join(catalog.components(), ", ", fn {k, _} -> k end)}"}
     end
   end
 
-  defp bfs_element_order(nil, _elements), do: []
+  defp bfs_element_order(nil, _elements) do
+    []
+  end
 
   defp bfs_element_order(root_id, elements) do
     bfs_walk([root_id], elements, [])
   end
 
-  defp bfs_walk([], _elements, acc), do: Enum.reverse(acc)
+  defp bfs_walk([], _elements, acc) do
+    Enum.reverse(acc)
+  end
 
   defp bfs_walk([id | rest], elements, acc) do
     case Map.get(elements, id) do

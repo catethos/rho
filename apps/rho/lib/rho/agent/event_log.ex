@@ -112,7 +112,6 @@ defmodule Rho.Agent.EventLog do
     {:reply, {events, last_seq}, state}
   end
 
-  @impl true
   def handle_call(:path, _from, state) do
     {:reply, state.path, state}
   end

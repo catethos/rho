@@ -20,32 +20,158 @@ defmodule Rho.Trace.Analyzer do
   @doc "Return deterministic findings for a list of entries."
   @spec findings([Entry.t()], keyword()) :: [map()]
   def findings(entries, opts \\ []) when is_list(entries) do
-    entries = Enum.sort_by(entries, &(&1.id || 0))
+    trace = entries |> Enum.sort_by(&(&1.id || 0)) |> index_entries()
 
     []
-    |> Kernel.++(orphan_tool_results(entries))
-    |> Kernel.++(tool_calls_without_results(entries))
-    |> Kernel.++(repeated_tool_calls(entries))
-    |> Kernel.++(max_steps_exceeded(entries))
-    |> Kernel.++(parse_error_loop(entries))
-    |> Kernel.++(missing_final_assistant_message(entries))
-    |> Kernel.++(fork_without_context(entries))
-    |> Kernel.++(large_context_after_anchor(entries, opts))
-    |> Kernel.++(tool_error_without_type(entries))
-    |> Kernel.++(high_cost_turn(entries, opts))
+    |> Kernel.++(orphan_tool_results(trace))
+    |> Kernel.++(tool_calls_without_results(trace))
+    |> Kernel.++(repeated_tool_calls(trace))
+    |> Kernel.++(max_steps_exceeded(trace))
+    |> Kernel.++(parse_error_loop(trace))
+    |> Kernel.++(missing_final_assistant_message(trace))
+    |> Kernel.++(fork_without_context(trace))
+    |> Kernel.++(large_context_after_anchor(trace, opts))
+    |> Kernel.++(tool_error_without_type(trace))
+    |> Kernel.++(high_cost_turn(trace, opts))
     |> Enum.sort_by(fn finding ->
       {severity_rank(finding.severity), finding.entry_id || 0, finding.code}
     end)
   end
 
-  defp orphan_tool_results(entries) do
-    call_ids =
-      entries
-      |> Enum.filter(&(&1.kind == :tool_call))
-      |> MapSet.new(& &1.payload["call_id"])
+  defp index_entries(entries) do
+    initial = %{
+      tool_calls: [],
+      tool_results: [],
+      messages: [],
+      anchors: [],
+      max_step_errors: [],
+      parse_errors: [],
+      llm_usage_events: [],
+      tool_error_results: [],
+      tool_call_ids: MapSet.new(),
+      tool_result_ids: MapSet.new(),
+      copied_conversational_count: 0,
+      conversational_after_anchor_count: 0,
+      last_anchor_id: nil,
+      turn_started?: false,
+      turn_finished?: false
+    }
 
     entries
-    |> Enum.filter(&(&1.kind == :tool_result))
+    |> Enum.reduce(initial, &index_entry/2)
+    |> reverse_index_lists()
+  end
+
+  defp index_entry(%Entry{kind: :tool_call} = entry, acc) do
+    acc
+    |> add_conversational_entry(entry)
+    |> Map.update!(:tool_calls, &[entry | &1])
+    |> Map.update!(:tool_call_ids, &MapSet.put(&1, entry.payload["call_id"]))
+  end
+
+  defp index_entry(%Entry{kind: :tool_result} = entry, acc) do
+    acc
+    |> add_conversational_entry(entry)
+    |> Map.update!(:tool_results, &[entry | &1])
+    |> Map.update!(:tool_result_ids, &MapSet.put(&1, entry.payload["call_id"]))
+    |> maybe_add_tool_error(entry)
+  end
+
+  defp index_entry(%Entry{kind: :message} = entry, acc) do
+    acc
+    |> add_conversational_entry(entry)
+    |> Map.update!(:messages, &[entry | &1])
+  end
+
+  defp index_entry(%Entry{kind: :anchor} = entry, acc) do
+    %{
+      acc
+      | anchors: [entry | acc.anchors],
+        last_anchor_id: entry.id,
+        conversational_after_anchor_count: 0
+    }
+  end
+
+  defp index_entry(%Entry{kind: :event} = entry, acc) do
+    acc
+    |> index_event(entry)
+    |> maybe_add_max_step_error(entry)
+    |> maybe_add_parse_error(entry)
+    |> maybe_add_llm_usage(entry)
+  end
+
+  defp index_entry(_entry, acc), do: acc
+
+  defp add_conversational_entry(acc, entry) do
+    copied? = entry.meta["copied_from_tape"] || entry.meta["copied_from_entry_id"]
+
+    %{
+      acc
+      | copied_conversational_count:
+          acc.copied_conversational_count + if(copied?, do: 1, else: 0),
+        conversational_after_anchor_count: acc.conversational_after_anchor_count + 1
+    }
+  end
+
+  defp index_event(acc, entry) do
+    case entry.payload["name"] do
+      "turn_started" -> %{acc | turn_started?: true}
+      "turn_finished" -> %{acc | turn_finished?: true}
+      _ -> acc
+    end
+  end
+
+  defp maybe_add_max_step_error(acc, entry) do
+    if entry.payload["name"] == "error" and string_contains?(entry.payload["reason"], "max steps") do
+      Map.update!(acc, :max_step_errors, &[entry | &1])
+    else
+      acc
+    end
+  end
+
+  defp maybe_add_parse_error(acc, entry) do
+    if string_contains?(entry.payload["name"], "parse") or
+         string_contains?(entry.payload["reason"], "parse") do
+      Map.update!(acc, :parse_errors, &[entry | &1])
+    else
+      acc
+    end
+  end
+
+  defp maybe_add_llm_usage(acc, entry) do
+    if entry.payload["name"] == "llm_usage" do
+      Map.update!(acc, :llm_usage_events, &[entry | &1])
+    else
+      acc
+    end
+  end
+
+  defp maybe_add_tool_error(acc, entry) do
+    if entry.payload["status"] == "error" and blank?(entry.payload["error_type"]) do
+      Map.update!(acc, :tool_error_results, &[entry | &1])
+    else
+      acc
+    end
+  end
+
+  defp reverse_index_lists(trace) do
+    %{
+      trace
+      | tool_calls: Enum.reverse(trace.tool_calls),
+        tool_results: Enum.reverse(trace.tool_results),
+        messages: Enum.reverse(trace.messages),
+        anchors: Enum.reverse(trace.anchors),
+        max_step_errors: Enum.reverse(trace.max_step_errors),
+        parse_errors: Enum.reverse(trace.parse_errors),
+        llm_usage_events: Enum.reverse(trace.llm_usage_events),
+        tool_error_results: Enum.reverse(trace.tool_error_results)
+    }
+  end
+
+  defp orphan_tool_results(trace) do
+    call_ids = trace.tool_call_ids
+
+    trace.tool_results
     |> Enum.reject(fn entry -> MapSet.member?(call_ids, entry.payload["call_id"]) end)
     |> Enum.map(fn entry ->
       finding(:error, :orphan_tool_result, entry.id, "Tool result has no matching tool call.", %{
@@ -55,14 +181,10 @@ defmodule Rho.Trace.Analyzer do
     end)
   end
 
-  defp tool_calls_without_results(entries) do
-    result_ids =
-      entries
-      |> Enum.filter(&(&1.kind == :tool_result))
-      |> MapSet.new(& &1.payload["call_id"])
+  defp tool_calls_without_results(trace) do
+    result_ids = trace.tool_result_ids
 
-    entries
-    |> Enum.filter(&(&1.kind == :tool_call))
+    trace.tool_calls
     |> Enum.reject(fn entry -> MapSet.member?(result_ids, entry.payload["call_id"]) end)
     |> Enum.map(fn entry ->
       finding(
@@ -78,9 +200,8 @@ defmodule Rho.Trace.Analyzer do
     end)
   end
 
-  defp repeated_tool_calls(entries) do
-    entries
-    |> Enum.filter(&(&1.kind == :tool_call))
+  defp repeated_tool_calls(trace) do
+    trace.tool_calls
     |> Enum.chunk_by(& &1.payload["name"])
     |> Enum.filter(&(length(&1) >= 3))
     |> Enum.map(fn chunk ->
@@ -96,12 +217,8 @@ defmodule Rho.Trace.Analyzer do
     end)
   end
 
-  defp max_steps_exceeded(entries) do
-    entries
-    |> Enum.filter(fn entry ->
-      entry.kind == :event and entry.payload["name"] == "error" and
-        string_contains?(entry.payload["reason"], "max steps")
-    end)
+  defp max_steps_exceeded(trace) do
+    trace.max_step_errors
     |> Enum.map(fn entry ->
       finding(:error, :max_steps_exceeded, entry.id, "Run exceeded the maximum step budget.", %{
         reason: entry.payload["reason"]
@@ -109,16 +226,9 @@ defmodule Rho.Trace.Analyzer do
     end)
   end
 
-  defp parse_error_loop(entries) do
-    parse_errors =
-      Enum.filter(entries, fn entry ->
-        entry.kind == :event and
-          (string_contains?(entry.payload["name"], "parse") or
-             string_contains?(entry.payload["reason"], "parse"))
-      end)
-
-    if length(parse_errors) >= 2 do
-      first = hd(parse_errors)
+  defp parse_error_loop(trace) do
+    if match?([_, _ | _], trace.parse_errors) do
+      first = hd(trace.parse_errors)
 
       [
         finding(
@@ -127,8 +237,8 @@ defmodule Rho.Trace.Analyzer do
           first.id,
           "Multiple parse errors occurred in one trace.",
           %{
-            count: length(parse_errors),
-            entry_ids: Enum.map(parse_errors, & &1.id)
+            count: length(trace.parse_errors),
+            entry_ids: Enum.map(trace.parse_errors, & &1.id)
           }
         )
       ]
@@ -137,23 +247,12 @@ defmodule Rho.Trace.Analyzer do
     end
   end
 
-  defp missing_final_assistant_message(entries) do
-    last_message =
-      entries
-      |> Enum.filter(&(&1.kind == :message))
-      |> List.last()
+  defp missing_final_assistant_message(trace) do
+    last_message = List.last(trace.messages)
 
     case last_message do
       %Entry{payload: %{"role" => "user"}} ->
-        active_turn? =
-          Enum.any?(entries, fn entry ->
-            entry.kind == :event and entry.payload["name"] == "turn_started"
-          end) and
-            not Enum.any?(entries, fn entry ->
-              entry.kind == :event and entry.payload["name"] == "turn_finished"
-            end)
-
-        if active_turn? do
+        if trace.turn_started? and not trace.turn_finished? do
           []
         else
           [
@@ -172,18 +271,13 @@ defmodule Rho.Trace.Analyzer do
     end
   end
 
-  defp fork_without_context(entries) do
+  defp fork_without_context(trace) do
     origin =
-      Enum.find(entries, fn entry ->
-        entry.kind == :anchor and entry.payload["name"] == "fork_origin"
+      Enum.find(trace.anchors, fn entry ->
+        entry.payload["name"] == "fork_origin"
       end)
 
-    inherited_count =
-      entries
-      |> Enum.filter(&(&1.kind in [:message, :tool_call, :tool_result]))
-      |> Enum.count(&(&1.meta["copied_from_tape"] || &1.meta["copied_from_entry_id"]))
-
-    if origin && inherited_count == 0 do
+    if origin && trace.copied_conversational_count == 0 do
       [
         finding(
           :error,
@@ -198,26 +292,16 @@ defmodule Rho.Trace.Analyzer do
     end
   end
 
-  defp large_context_after_anchor(entries, opts) do
+  defp large_context_after_anchor(trace, opts) do
     threshold = Keyword.get(opts, :large_context_threshold, @default_large_context_threshold)
-
-    last_anchor_id =
-      case entries |> Enum.filter(&(&1.kind == :anchor)) |> List.last() do
-        nil -> nil
-        entry -> entry.id
-      end
-
-    count =
-      entries
-      |> Enum.filter(&(&1.kind in [:message, :tool_call, :tool_result]))
-      |> Enum.count(fn entry -> is_nil(last_anchor_id) or entry.id > last_anchor_id end)
+    count = trace.conversational_after_anchor_count
 
     if count > threshold do
       [
         finding(
           :info,
           :large_context_after_anchor,
-          last_anchor_id,
+          trace.last_anchor_id,
           "Context after latest anchor has #{count} conversational entries.",
           %{count: count, threshold: threshold}
         )
@@ -227,12 +311,8 @@ defmodule Rho.Trace.Analyzer do
     end
   end
 
-  defp tool_error_without_type(entries) do
-    entries
-    |> Enum.filter(fn entry ->
-      entry.kind == :tool_result and entry.payload["status"] == "error" and
-        blank?(entry.payload["error_type"])
-    end)
+  defp tool_error_without_type(trace) do
+    trace.tool_error_results
     |> Enum.map(fn entry ->
       finding(:warning, :tool_error_without_type, entry.id, "Tool error lacks error_type.", %{
         name: entry.payload["name"],
@@ -241,12 +321,11 @@ defmodule Rho.Trace.Analyzer do
     end)
   end
 
-  defp high_cost_turn(entries, opts) do
+  defp high_cost_turn(trace, opts) do
     token_threshold = Keyword.get(opts, :high_token_threshold, @default_high_token_threshold)
     cost_threshold = Keyword.get(opts, :high_cost_threshold, @default_high_cost_threshold)
 
-    entries
-    |> Enum.filter(fn entry -> entry.kind == :event and entry.payload["name"] == "llm_usage" end)
+    trace.llm_usage_events
     |> Enum.flat_map(fn entry ->
       tokens = safe_int(entry.payload["total_tokens"])
       cost = safe_float(entry.payload["total_cost"])

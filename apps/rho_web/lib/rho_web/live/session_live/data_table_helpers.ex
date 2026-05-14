@@ -5,14 +5,10 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   Handles refreshing data table state in socket assigns via the
   `SignalRouter` workspace state mechanism.
   """
-
   import Phoenix.Component, only: [assign: 3]
-
   alias RhoWeb.Session.SignalRouter
   alias RhoWeb.Session.Shell
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
-
-  # -- Public API (called from SessionLive) --
 
   @doc """
   Refetch the session-level table list (tab strip) plus the active
@@ -30,9 +26,7 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  @doc """
-  Refetch only the tab list (no active-table snapshot).
-  """
+  @doc "Refetch only the tab list (no active-table snapshot)."
   def refresh_data_table_tables(socket) do
     sid = socket.assigns[:session_id]
     state = ensure_dt_keys(read_dt_state(socket))
@@ -70,20 +64,12 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
         socket
 
       true ->
-        # Refresh tab counts for all tables alongside the active snapshot
         socket = refresh_data_table_tables(socket)
-
         state = ensure_dt_keys(read_dt_state(socket))
 
         case Rho.Stdlib.DataTable.get_table_snapshot(sid, table_name) do
           {:ok, snap} ->
-            new_state = %{
-              state
-              | active_snapshot: snap,
-                active_version: snap.version,
-                error: nil
-            }
-
+            new_state = %{state | active_snapshot: snap, active_version: snap.version, error: nil}
             SignalRouter.write_ws_state(socket, :data_table, new_state)
 
           {:error, :not_running} ->
@@ -116,14 +102,11 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
 
       :table_removed ->
         removed = data[:table_name]
-
         state = ensure_dt_keys(read_dt_state(socket))
-
         socket = refresh_data_table_tables(socket)
 
         if state.active_table == removed do
           new_state = ensure_dt_keys(read_dt_state(socket))
-
           fallback = pick_fallback_active_table(new_state)
           send(self(), {:data_table_switch_tab, fallback})
         end
@@ -134,7 +117,6 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
         view_key = data[:view_key]
         mode_label = data[:mode_label]
         table_name = data[:table_name]
-
         state = ensure_dt_keys(read_dt_state(socket))
 
         if is_binary(table_name) and table_name != state.active_table do
@@ -149,7 +131,9 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  def apply_data_table_event(socket, _), do: socket
+  def apply_data_table_event(socket, _) do
+    socket
+  end
 
   defp handle_table_changed(socket, data) do
     table_name = data[:table_name]
@@ -164,16 +148,18 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
           is_integer(data[:version]) and is_integer(state.active_version) and
             data[:version] <= state.active_version
 
-        if already_current?, do: socket, else: refresh_data_table_active(socket, table_name)
+        if already_current? do
+          socket
+        else
+          refresh_data_table_active(socket, table_name)
+        end
 
       true ->
         refresh_data_table_tables(socket)
     end
   end
 
-  @doc """
-  Handle a workspace_open signal from the EffectDispatcher.
-  """
+  @doc "Handle a workspace_open signal from the EffectDispatcher."
   def apply_open_workspace_event(socket, data) when is_map(data) do
     key = data[:key]
 
@@ -181,8 +167,7 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       not is_atom(key) or is_nil(key) ->
         socket
 
-      Map.has_key?(socket.assigns.workspaces, key) ->
-        # Already mounted — just focus it.
+      map_key?(socket.assigns.workspaces, key) ->
         socket
         |> assign(:active_workspace_id, key)
         |> assign(:shell, Shell.clear_activity(socket.assigns.shell, key))
@@ -195,13 +180,12 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  def apply_open_workspace_event(socket, _), do: socket
+  def apply_open_workspace_event(socket, _) do
+    socket
+  end
 
   defp mount_workspace(socket, key, ws_mod) do
-    shell =
-      socket.assigns.shell
-      |> Shell.add_workspace(key)
-      |> Shell.show_chat()
+    shell = socket.assigns.shell |> Shell.add_workspace(key) |> Shell.show_chat()
 
     socket =
       socket
@@ -210,13 +194,17 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       |> assign(:active_workspace_id, key)
       |> assign(:shell, shell)
 
-    if key == :data_table, do: refresh_data_table_session(socket), else: socket
+    if key == :data_table do
+      refresh_data_table_session(socket)
+    else
+      socket
+    end
   end
 
-  @doc """
-  Returns the initial data table projection state.
-  """
-  def dt_initial_state, do: RhoWeb.Projections.DataTableProjection.init()
+  @doc "Returns the initial data table projection state."
+  def dt_initial_state do
+    RhoWeb.Projections.DataTableProjection.init()
+  end
 
   @doc """
   Backfill keys added after initial state shape so stale ws_state
@@ -234,8 +222,6 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       true -> "main"
     end
   end
-
-  # -- Save / Fork actions --
 
   @doc """
   Save the active data table rows back to their library.
@@ -282,11 +268,6 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  # Resolve the effective library name (after any rename) and its table
-  # name. If a library record already exists for `lib_name`, rename it
-  # (and the in-memory table) when `new_name` differs. If no library
-  # exists yet, just use the renamed-in-memory table — `SaveFramework`
-  # will create the record on save.
   defp prepare_library_for_save(lib_name, new_name, org_id, sid, table_name) do
     case RhoFrameworks.Library.resolve_library(org_id, lib_name) do
       nil ->
@@ -303,14 +284,16 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   end
 
   defp effective_save_name(current_name, new_name) do
-    if is_binary(new_name) and String.trim(new_name) != "" and new_name != current_name,
-      do: new_name,
-      else: current_name
+    if is_binary(new_name) and String.trim(new_name) != "" and new_name != current_name do
+      new_name
+    else
+      current_name
+    end
   end
 
-  defp rename_in_session_table(_sid, old_table, old_name, new_name)
-       when old_name == new_name,
-       do: old_table
+  defp rename_in_session_table(_sid, old_table, old_name, new_name) when old_name == new_name do
+    old_table
+  end
 
   defp rename_in_session_table(sid, old_table, _old_name, new_name) do
     new_table = "library:" <> new_name
@@ -373,9 +356,7 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  @doc """
-  Set a transient flash message on the data table component.
-  """
+  @doc "Set a transient flash message on the data table component."
   def set_flash(socket, message) do
     state = ensure_dt_keys(read_dt_state(socket))
     new_state = Map.put(state, :flash_message, message)
@@ -393,7 +374,6 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     with {:ok, lib_name} <- extract_library_name(table_name),
          lib when not is_nil(lib) <- RhoFrameworks.Library.resolve_library(org_id, lib_name),
          {:ok, effective_table} <- maybe_rename_library(lib, new_name, sid, table_name) do
-      # Sync in-memory rows to DB before publishing
       case Rho.Stdlib.DataTable.get_rows(sid, table: effective_table) do
         rows when is_list(rows) and rows != [] ->
           RhoFrameworks.Library.save_to_library(lib.id, rows)
@@ -454,11 +434,19 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  defp extract_library_name("library:" <> name), do: {:ok, name}
-  defp extract_library_name(_), do: {:error, :not_library}
+  defp extract_library_name("library:" <> name) do
+    {:ok, name}
+  end
 
-  defp maybe_rename_library(%{name: current_name}, new_name, _sid, old_table_name)
-       when new_name == current_name or new_name == "" do
+  defp extract_library_name(_) do
+    {:error, :not_library}
+  end
+
+  defp maybe_rename_library(%{name: current_name}, current_name, _sid, old_table_name) do
+    {:ok, old_table_name}
+  end
+
+  defp maybe_rename_library(_lib, "", _sid, old_table_name) do
     {:ok, old_table_name}
   end
 
@@ -475,7 +463,6 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   end
 
   defp rename_data_table(sid, old_name, new_name) when old_name != new_name do
-    # Copy rows to new table, drop old one, switch tab
     schema = RhoFrameworks.DataTableSchemas.library_schema()
 
     with rows when is_list(rows) <- Rho.Stdlib.DataTable.get_rows(sid, table: old_name),
@@ -489,9 +476,9 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
     end
   end
 
-  defp rename_data_table(_, _, _), do: :ok
-
-  # -- Private --
+  defp rename_data_table(_, _, _) do
+    :ok
+  end
 
   defp read_dt_state(socket) do
     SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state()
@@ -531,6 +518,13 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       "main" in order -> %{state | active_table: "main"}
       order != [] -> %{state | active_table: hd(order)}
       true -> state
+    end
+  end
+
+  defp map_key?(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _} -> true
+      :error -> false
     end
   end
 end

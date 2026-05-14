@@ -190,21 +190,21 @@ defmodule RhoWeb.DataTableComponent do
 
     walk_leaf_groups(grouped, socket, fn group_id, rows, acc ->
       cond do
-        Map.has_key?(streamed, group_id) and rows_changed? ->
+        group_streamed?(streamed, group_id) and rows_changed? ->
           # Already streamed and snapshot version bumped → refresh to
           # first window in the current sort.
-          {acc, _meta} =
+          {next_socket, _meta} =
             seed_group_stream(acc, group_id, rows, panel_mode, collapsed, page_size, sort_key)
 
-          acc
+          next_socket
 
         MapSet.member?(hinted, group_id) and not collapsed?(collapsed, group_id) ->
           # Hinted-and-now-expanded → seed eagerly so the user sees the
           # rows on first render after the hint fires.
-          {acc, _meta} =
+          {next_socket, _meta} =
             seed_group_stream(acc, group_id, rows, panel_mode, collapsed, page_size, sort_key)
 
-          acc
+          next_socket
 
         true ->
           acc
@@ -225,6 +225,13 @@ defmodule RhoWeb.DataTableComponent do
       _, acc ->
         acc
     end)
+  end
+
+  defp group_streamed?(streamed, group_id) do
+    case Map.fetch(streamed, group_id) do
+      {:ok, _} -> true
+      :error -> false
+    end
   end
 
   # Visits every leaf group, threading `socket` through `fun.(group_id,
@@ -275,12 +282,12 @@ defmodule RhoWeb.DataTableComponent do
     end
   end
 
-  defp build_stream_items(rows, false, _collapsed) do
-    Enum.map(rows, fn row -> Map.put(row, :_kind, :parent) end)
+  defp build_stream_items(stream_rows, false, _collapsed) do
+    Enum.map(stream_rows, fn row -> Map.put(row, :_kind, :parent) end)
   end
 
-  defp build_stream_items(rows, true, collapsed) do
-    Enum.flat_map(rows, fn row ->
+  defp build_stream_items(stream_rows, true, collapsed) do
+    Enum.flat_map(stream_rows, fn row ->
       row_id_str = to_string(row_id(row))
       parent = Map.put(row, :_kind, :parent)
 
@@ -628,7 +635,7 @@ defmodule RhoWeb.DataTableComponent do
         collapsed = socket.assigns.collapsed
 
         rows = lookup_group_rows(socket.assigns.grouped, group_id)
-        next_window = rows |> Enum.drop(loaded) |> Enum.take(page_size)
+        next_window = rows |> Enum.slice(loaded, page_size)
         items = build_stream_items(next_window, panel_mode, collapsed)
 
         {socket, stream_name} = stream_name_for_group(socket, group_id)
@@ -869,10 +876,10 @@ defmodule RhoWeb.DataTableComponent do
     Enum.reduce(streamed, socket, fn {group_id, _meta}, acc ->
       rows = lookup_group_rows(grouped, group_id)
 
-      {acc, _meta} =
+      {new_acc, _meta} =
         seed_group_stream(acc, group_id, rows, panel_mode, collapsed, page_size, sort_key)
 
-      acc
+      new_acc
     end)
   end
 
@@ -970,7 +977,7 @@ defmodule RhoWeb.DataTableComponent do
   defp populate_group_on_expand(socket, group_id, collapsed) do
     streamed = socket.assigns[:_streamed_groups] || %{}
 
-    if Map.has_key?(streamed, group_id) do
+    if group_streamed?(streamed, group_id) do
       socket
     else
       schema = socket.assigns.schema
@@ -1017,7 +1024,7 @@ defmodule RhoWeb.DataTableComponent do
       not panel_mode ->
         socket
 
-      not Map.has_key?(streamed, parent_group_id) ->
+      not group_streamed?(streamed, parent_group_id) ->
         # Parent group was never streamed → nothing to update; the
         # parent row isn't in DOM yet anyway.
         socket
@@ -1048,17 +1055,31 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   defp lookup_group_rows(grouped, target_group_id) do
-    Enum.find_value(grouped, [], fn {label, children} ->
+    Enum.reduce_while(grouped, [], fn {label, children}, _acc ->
       case children do
         {:rows, rows} ->
-          if group_id_for(label) == target_group_id, do: rows
+          if group_id_for(label) == target_group_id do
+            {:halt, rows}
+          else
+            {:cont, []}
+          end
 
         {:nested, sub_groups} ->
-          Enum.find_value(sub_groups, fn {sub_label, rows} ->
-            if group_id_for(label, sub_label) == target_group_id, do: rows
-          end)
+          found =
+            Enum.reduce_while(sub_groups, [], fn {sub_label, rows}, _sub_acc ->
+              if group_id_for(label, sub_label) == target_group_id do
+                {:halt, rows}
+              else
+                {:cont, []}
+              end
+            end)
+
+          case found do
+            [] -> {:cont, []}
+            rows -> {:halt, rows}
+          end
       end
-    end) || []
+    end)
   end
 
   @impl true
@@ -1891,14 +1912,13 @@ defmodule RhoWeb.DataTableComponent do
 
   # --- Row lookup helpers ---
 
-  defp find_row(rows, id) do
-    Enum.find(rows, fn row -> to_string(row_id(row)) == id end)
+  defp find_row(row_entries, id) do
+    Enum.find(row_entries, fn row -> to_string(row_id(row)) == id end)
   end
 
   defp next_child_level(children) do
     children
-    |> Enum.map(&get_child_level/1)
-    |> Enum.max(fn -> 0 end)
+    |> Enum.reduce(fn el, best -> max(get_child_level(el), best) end)
     |> Kernel.+(1)
   end
 
@@ -1929,20 +1949,19 @@ defmodule RhoWeb.DataTableComponent do
 
   # --- Collect all group IDs for default-collapsed state ---
 
-  defp collect_all_group_ids(grouped) do
-    Enum.reduce(grouped, MapSet.new(), fn {group_label, children}, acc ->
-      group_id = "grp-" <> slug(group_label)
-      acc = MapSet.put(acc, group_id)
+  defp collect_all_group_ids(group_tree) do
+    Enum.reduce(group_tree, MapSet.new(), fn {group_label, children}, acc ->
+      group_id = group_id_for(group_label)
+      new_acc = MapSet.put(acc, group_id)
 
       case children do
-        {:nested, sub_groups} ->
-          Enum.reduce(sub_groups, acc, fn {sub_label, _rows}, inner_acc ->
-            sub_id = "grp-" <> slug(group_label) <> "-" <> slug(sub_label)
-            MapSet.put(inner_acc, sub_id)
+        {:nested, child_groups} ->
+          Enum.reduce(child_groups, new_acc, fn {sub_label, _rows}, inner_acc ->
+            MapSet.put(inner_acc, group_id_for(group_label, sub_label))
           end)
 
         {:rows, _} ->
-          acc
+          new_acc
       end
     end)
   end
@@ -1953,14 +1972,14 @@ defmodule RhoWeb.DataTableComponent do
 
   defp group_rows(rows, []), do: [{"All", {:rows, rows}}]
 
-  defp group_rows(rows, [field]) do
-    rows
+  defp group_rows(row_entries, [field]) do
+    row_entries
     |> group_preserving_order(field)
     |> Enum.map(fn {label, group_rows} -> {label, {:rows, group_rows}} end)
   end
 
-  defp group_rows(rows, [field1, field2 | _]) do
-    rows
+  defp group_rows(row_entries, [field1, field2 | _]) do
+    row_entries
     |> group_preserving_order(field1)
     |> Enum.map(fn {label, group_rows} ->
       sub_groups = group_preserving_order(group_rows, field2)
@@ -1968,18 +1987,18 @@ defmodule RhoWeb.DataTableComponent do
     end)
   end
 
-  defp group_preserving_order(rows, field) do
+  defp group_preserving_order(group_entries, field) do
     str_field = if is_atom(field), do: Atom.to_string(field), else: field
 
     {groups, order} =
-      Enum.reduce(rows, {%{}, %{}}, fn row, {groups, order} ->
+      Enum.reduce(group_entries, {%{}, %{}}, fn row, {groups, order} ->
         key =
           (Map.get(row, field) || Map.get(row, str_field) || "")
           |> to_string()
 
-        groups = Map.update(groups, key, [row], &[row | &1])
-        order = Map.put_new(order, key, map_size(order))
-        {groups, order}
+        new_groups = Map.update(groups, key, [row], &[row | &1])
+        new_order = Map.put_new(order, key, map_size(order))
+        {new_groups, new_order}
       end)
 
     order
@@ -1989,8 +2008,8 @@ defmodule RhoWeb.DataTableComponent do
 
   defp count_nested_rows({:rows, rows}), do: length(rows)
 
-  defp count_nested_rows({:nested, sub_groups}) do
-    Enum.reduce(sub_groups, 0, fn {_label, rows}, acc -> acc + length(rows) end)
+  defp count_nested_rows({:nested, nested_groups}) do
+    Enum.reduce(nested_groups, 0, fn {_label, rows}, acc -> acc + length(rows) end)
   end
 
   # --- Lookup helpers ---
@@ -2006,11 +2025,14 @@ defmodule RhoWeb.DataTableComponent do
     visible_row_ids(socket.assigns[:rows])
   end
 
-  defp visible_row_ids(rows) when is_list(rows) do
-    rows
-    |> Enum.map(&row_id/1)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&to_string/1)
+  defp visible_row_ids(visible_rows) when is_list(visible_rows) do
+    Enum.reduce(visible_rows, [], fn row, acc ->
+      case row_id(row) do
+        nil -> acc
+        id -> [to_string(id) | acc]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   defp visible_row_ids(_), do: []
@@ -2087,52 +2109,23 @@ defmodule RhoWeb.DataTableComponent do
   defp clamp_suggest_n(n) when is_integer(n), do: n |> max(1) |> min(10)
   defp clamp_suggest_n(_), do: 5
 
-  defp build_csv(rows, schema) do
-    columns = Enum.reject(schema.columns, fn col -> col.type == :action end)
-    child_columns = schema.child_columns || []
+  defp build_csv(export_rows, schema) do
+    csv_columns = Enum.reject(schema.columns, fn col -> col.type == :action end)
+    csv_child_columns = schema.child_columns || []
     children_key = schema.children_key
 
-    has_children = children_key != nil and child_columns != []
+    has_children = children_key != nil and csv_child_columns != []
 
-    all_headers =
-      if has_children do
-        Enum.map(columns, & &1.label) ++ Enum.map(child_columns, & &1.label)
-      else
-        Enum.map(columns, & &1.label)
-      end
+    all_headers = csv_headers(csv_columns, csv_child_columns, has_children)
 
     header = Enum.map_join(all_headers, ",", &csv_escape/1)
 
     data_lines =
-      Enum.flat_map(rows, fn row ->
-        parent_cells =
-          Enum.map(columns, fn col ->
-            val = Map.get(row, col.key) || Map.get(row, Atom.to_string(col.key)) || ""
-            csv_escape(to_string(val))
-          end)
+      Enum.flat_map(export_rows, fn row ->
+        parent_cells = csv_parent_cells(row, csv_columns)
 
         if has_children do
-          children =
-            Map.get(row, children_key) || Map.get(row, Atom.to_string(children_key)) || []
-
-          case children do
-            [] ->
-              blank_children = List.duplicate("", length(child_columns))
-              [Enum.join(parent_cells ++ blank_children, ",")]
-
-            children when is_list(children) ->
-              Enum.map(children, fn child ->
-                child_cells =
-                  Enum.map(child_columns, fn col ->
-                    val =
-                      Map.get(child, col.key) || Map.get(child, Atom.to_string(col.key)) || ""
-
-                    csv_escape(to_string(val))
-                  end)
-
-                Enum.join(parent_cells ++ child_cells, ",")
-              end)
-          end
+          csv_child_lines(row, children_key, csv_child_columns, parent_cells)
         else
           [Enum.join(parent_cells, ",")]
         end
@@ -2141,21 +2134,60 @@ defmodule RhoWeb.DataTableComponent do
     header <> "\n" <> Enum.join(data_lines, "\n")
   end
 
-  defp build_xlsx(rows, schema) do
-    columns = Enum.reject(schema.columns, fn col -> col.type == :action end)
-    child_columns = schema.child_columns || []
+  defp csv_parent_cells(row, parent_columns) do
+    Enum.map(parent_columns, fn col ->
+      val = Map.get(row, col.key) || Map.get(row, Atom.to_string(col.key)) || ""
+      csv_escape(to_string(val))
+    end)
+  end
+
+  defp csv_headers(header_parent_columns, header_child_columns, has_children) do
+    parent_labels = Enum.map(header_parent_columns, & &1.label)
+
+    if has_children do
+      parent_labels ++ Enum.map(header_child_columns, & &1.label)
+    else
+      parent_labels
+    end
+  end
+
+  defp csv_child_lines(row, children_key, csv_child_columns, parent_cells) do
+    children = Map.get(row, children_key) || Map.get(row, Atom.to_string(children_key)) || []
+
+    case children do
+      [] ->
+        blank_children = List.duplicate("", length(csv_child_columns))
+        [Enum.join(parent_cells ++ blank_children, ",")]
+
+      children_entries when is_list(children_entries) ->
+        Enum.map(children_entries, fn child ->
+          child_cells = csv_child_cells(child, csv_child_columns)
+          Enum.join(parent_cells ++ child_cells, ",")
+        end)
+    end
+  end
+
+  defp csv_child_cells(child, csv_children_columns) do
+    Enum.map(csv_children_columns, fn col ->
+      val = Map.get(child, col.key) || Map.get(child, Atom.to_string(col.key)) || ""
+      csv_escape(to_string(val))
+    end)
+  end
+
+  defp build_xlsx(export_rows, schema) do
+    xlsx_columns = Enum.reject(schema.columns, fn col -> col.type == :action end)
+    xlsx_child_columns = schema.child_columns || []
     children_key = schema.children_key
 
-    has_children = children_key != nil and child_columns != []
+    has_children = children_key != nil and xlsx_child_columns != []
 
     all_cols =
-      if has_children, do: columns ++ child_columns, else: columns
+      if has_children, do: xlsx_columns ++ xlsx_child_columns, else: xlsx_columns
 
     # Styled header row: bold white text on dark background
     header_style = [bold: true, bg_color: "#2B579A", color: "#FFFFFF", size: 11]
 
-    header_row =
-      Enum.map(all_cols, fn col -> [col.label | header_style] end)
+    header_row = Enum.map(all_cols, fn col -> [col.label | header_style] end)
 
     # Build data rows grouped by parent row (skill), with alternating
     # background color per skill group and a separator border on the
@@ -2164,93 +2196,19 @@ defmodule RhoWeb.DataTableComponent do
     separator = [bottom: [style: :thin, color: "#C0C0C0"]]
 
     {data_rows, _group_idx} =
-      Enum.flat_map_reduce(rows, 0, fn row, group_idx ->
-        parent_cells =
-          Enum.map(columns, fn col ->
-            val = Map.get(row, col.key) || Map.get(row, Atom.to_string(col.key)) || ""
-            xlsx_cell_value(val, col.type)
-          end)
-
+      Enum.flat_map_reduce(export_rows, 0, fn row, group_idx ->
         raw_rows =
-          if has_children do
-            children =
-              Map.get(row, children_key) || Map.get(row, Atom.to_string(children_key)) || []
-
-            case children do
-              [] ->
-                blank_children = List.duplicate("", length(child_columns))
-                [parent_cells ++ blank_children]
-
-              children when is_list(children) ->
-                Enum.map(children, fn child ->
-                  child_cells =
-                    Enum.map(child_columns, fn col ->
-                      val =
-                        Map.get(child, col.key) || Map.get(child, Atom.to_string(col.key)) || ""
-
-                      xlsx_cell_value(val, col.type)
-                    end)
-
-                  parent_cells ++ child_cells
-                end)
-            end
-          else
-            [parent_cells]
-          end
+          xlsx_raw_rows(row, xlsx_columns, children_key, xlsx_child_columns, has_children)
 
         striped? = rem(group_idx, 2) == 1
-
-        styled_rows =
-          raw_rows
-          |> Enum.with_index()
-          |> Enum.map(fn {cells, row_idx} ->
-            last_in_group? = row_idx == length(raw_rows) - 1
-
-            Enum.map(cells, fn cell ->
-              style =
-                if(striped?, do: [bg_color: stripe_color], else: []) ++
-                  if(last_in_group?, do: [border: separator], else: [])
-
-              case {cell, style} do
-                {_, []} -> cell
-                {val, props} when is_binary(val) -> [val | props]
-                {val, props} when is_number(val) -> [val | props]
-                _ -> cell
-              end
-            end)
-          end)
+        styled_rows = style_xlsx_rows(raw_rows, striped?, stripe_color, separator)
 
         {styled_rows, group_idx + 1}
       end)
 
     # Calculate column widths from content (capped at 60)
-    all_rows = [Enum.map(all_cols, & &1.label) | data_rows]
-
-    col_widths =
-      all_cols
-      |> Enum.with_index()
-      |> Enum.reduce(%{}, fn {_col, idx}, acc ->
-        max_len =
-          all_rows
-          |> Enum.map(fn row ->
-            cell = Enum.at(row, idx)
-
-            cell_str =
-              case cell do
-                [val | _] when is_binary(val) -> val
-                val when is_binary(val) -> val
-                val when is_number(val) -> to_string(val)
-                _ -> ""
-              end
-
-            String.length(cell_str)
-          end)
-          |> Enum.max(fn -> 8 end)
-
-        # Add padding, cap at 60
-        width = min(max_len + 3, 60)
-        Map.put(acc, idx + 1, width)
-      end)
+    all_rows = [xlsx_header_labels(all_cols) | data_rows]
+    col_widths = xlsx_column_widths(all_rows)
 
     sheet =
       %Elixlsx.Sheet{
@@ -2267,6 +2225,89 @@ defmodule RhoWeb.DataTableComponent do
 
     binary
   end
+
+  defp xlsx_raw_rows(row, xlsx_columns, children_key, xlsx_child_columns, has_children) do
+    parent_cells = xlsx_parent_cells(row, xlsx_columns)
+
+    if has_children do
+      xlsx_child_rows(row, children_key, xlsx_child_columns, parent_cells)
+    else
+      [parent_cells]
+    end
+  end
+
+  defp xlsx_parent_cells(row, xlsx_columns) do
+    Enum.map(xlsx_columns, fn col ->
+      val = Map.get(row, col.key) || Map.get(row, Atom.to_string(col.key)) || ""
+      xlsx_cell_value(val, col.type)
+    end)
+  end
+
+  defp xlsx_child_rows(row, children_key, xlsx_child_columns, parent_cells) do
+    children = Map.get(row, children_key) || Map.get(row, Atom.to_string(children_key)) || []
+
+    case children do
+      [] ->
+        blank_children = List.duplicate("", length(xlsx_child_columns))
+        [parent_cells ++ blank_children]
+
+      xlsx_children when is_list(xlsx_children) ->
+        Enum.map(xlsx_children, fn child ->
+          parent_cells ++ xlsx_child_cells(child, xlsx_child_columns)
+        end)
+    end
+  end
+
+  defp xlsx_header_labels(header_columns) do
+    Enum.map(header_columns, & &1.label)
+  end
+
+  defp xlsx_child_cells(child, xlsx_child_columns) do
+    Enum.map(xlsx_child_columns, fn col ->
+      val = Map.get(child, col.key) || Map.get(child, Atom.to_string(col.key)) || ""
+      xlsx_cell_value(val, col.type)
+    end)
+  end
+
+  defp style_xlsx_rows(raw_rows, striped?, stripe_color, separator) do
+    last_idx = length(raw_rows) - 1
+
+    raw_rows
+    |> Enum.with_index()
+    |> Enum.map(fn {cells, row_idx} ->
+      last_in_group? = row_idx == last_idx
+
+      Enum.map(cells, fn cell ->
+        style =
+          if(striped?, do: [bg_color: stripe_color], else: []) ++
+            if(last_in_group?, do: [border: separator], else: [])
+
+        case {cell, style} do
+          {_, []} -> cell
+          {val, props} when is_binary(val) -> [val | props]
+          {val, props} when is_number(val) -> [val | props]
+          _ -> cell
+        end
+      end)
+    end)
+  end
+
+  defp xlsx_column_widths(all_rows) do
+    all_rows
+    |> Enum.reduce(%{}, fn row, acc ->
+      row
+      |> Stream.with_index(1)
+      |> Enum.reduce(acc, fn {cell, idx}, width_acc ->
+        Map.update(width_acc, idx, cell_width(cell), &max(&1, cell_width(cell)))
+      end)
+    end)
+    |> Map.new(fn {idx, max_len} -> {idx, min(max_len + 3, 60)} end)
+  end
+
+  defp cell_width([val | _]) when is_binary(val), do: String.length(val)
+  defp cell_width(val) when is_binary(val), do: String.length(val)
+  defp cell_width(val) when is_number(val), do: val |> to_string() |> String.length()
+  defp cell_width(_), do: 0
 
   defp xlsx_cell_value(val, :number) when is_binary(val) do
     case Float.parse(val) do
@@ -2327,10 +2368,10 @@ defmodule RhoWeb.DataTableComponent do
 
   # --- Optimistic edit overlay ---
 
-  defp apply_optimistic(rows, optimistic) when optimistic == %{}, do: rows
+  defp apply_optimistic(optimistic_rows, optimistic) when optimistic == %{}, do: optimistic_rows
 
-  defp apply_optimistic(rows, optimistic) do
-    Enum.map(rows, fn row ->
+  defp apply_optimistic(optimistic_rows, optimistic) do
+    Enum.map(optimistic_rows, fn row ->
       id = to_string(row_id(row))
       apply_optimistic_row(row, id, optimistic)
     end)
@@ -2354,7 +2395,7 @@ defmodule RhoWeb.DataTableComponent do
       is_atom_key?(row, field) ->
         Map.put(row, String.to_existing_atom(field), value)
 
-      Map.has_key?(row, field) ->
+      map_key?(row, field) ->
         Map.put(row, field, value)
 
       true ->
@@ -2370,15 +2411,22 @@ defmodule RhoWeb.DataTableComponent do
         ArgumentError -> nil
       end
 
-    atom && Map.has_key?(row, atom)
+    atom && map_key?(row, atom)
+  end
+
+  defp map_key?(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _} -> true
+      :error -> false
+    end
   end
 
   defp update_child(row, idx, field, value) do
     children_key =
-      cond do
-        Map.has_key?(row, :proficiency_levels) -> :proficiency_levels
-        Map.has_key?(row, "proficiency_levels") -> "proficiency_levels"
-        true -> nil
+      case {Map.fetch(row, :proficiency_levels), Map.fetch(row, "proficiency_levels")} do
+        {{:ok, _}, _} -> :proficiency_levels
+        {_, {:ok, _}} -> "proficiency_levels"
+        _ -> nil
       end
 
     case children_key && Map.get(row, children_key) do

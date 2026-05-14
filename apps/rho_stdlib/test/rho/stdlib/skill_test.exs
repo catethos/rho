@@ -10,7 +10,7 @@ defmodule Rho.Stdlib.SkillTest do
     %{tmp_dir: tmp_dir}
   end
 
-  defp create_skill(tmp_dir, name, opts \\ []) do
+  defp create_skill(tmp_dir, name, opts) do
     desc = Keyword.get(opts, :description, "A test skill")
     body = Keyword.get(opts, :body, "Do the thing.")
     metadata = Keyword.get(opts, :metadata)
@@ -111,7 +111,7 @@ defmodule Rho.Stdlib.SkillTest do
       end
 
       skills = Skill.discover(workspace, sources: [:project])
-      assert length(skills) == 2
+      assert match?([_, _], skills)
       assert Enum.map(skills, & &1.name) == ["alpha", "beta"]
       assert Enum.all?(skills, &(&1.source == "project"))
     end
@@ -145,7 +145,7 @@ defmodule Rho.Stdlib.SkillTest do
       """)
 
       skills = Skill.discover(workspace, sources: [:project])
-      assert length(skills) == 1
+      assert match?([_], skills)
       assert hd(skills).description == "Project version"
     end
   end

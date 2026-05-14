@@ -1,11 +1,7 @@
 defmodule RhoWeb.AgentComponents do
-  @moduledoc """
-  Agent sidebar, agent tree node, and agent pill bar components.
-  """
+  @moduledoc "Agent sidebar, agent tree node, and agent pill bar components."
   use Phoenix.Component
-
   import RhoWeb.CoreComponents
-
   attr(:agents, :map, required: true)
   attr(:selected_agent_id, :string, default: nil)
 
@@ -64,25 +60,29 @@ defmodule RhoWeb.AgentComponents do
   end
 
   defp root_agents(agents) do
-    # Roots are agents whose derived parent is not itself a known agent
-    # (i.e. primaries, or orphans whose parent lives outside this view).
     known_ids = Map.keys(agents) |> MapSet.new()
 
-    agents
-    |> Map.values()
-    |> Enum.filter(fn agent ->
-      parent = Rho.Agent.Primary.parent_of(agent.agent_id)
-      is_nil(parent) or not MapSet.member?(known_ids, parent)
-    end)
+    Enum.map(
+      Enum.filter(
+        agents,
+        fn {_k, agent} ->
+          parent = Rho.Agent.Primary.parent_of(agent.agent_id)
+          is_nil(parent) or not MapSet.member?(known_ids, parent)
+        end
+      ),
+      fn {_, v} -> v end
+    )
     |> Enum.sort_by(& &1.agent_id)
   end
 
   defp children(agents, parent_id) do
-    agents
-    |> Map.values()
-    |> Enum.filter(fn agent ->
-      Rho.Agent.Primary.parent_of(agent.agent_id) == parent_id
-    end)
+    Enum.map(
+      Enum.filter(
+        agents,
+        fn {_k, agent} -> Rho.Agent.Primary.parent_of(agent.agent_id) == parent_id end
+      ),
+      fn {_, v} -> v end
+    )
     |> Enum.sort_by(& &1.agent_id)
   end
 end

@@ -150,34 +150,32 @@ defmodule Rho.Stdlib.Plugins.DataTable do
   defp render_selection_block(sid, {table_summary, ids, active?}, ctx) do
     count = length(ids)
 
-    cond do
-      not active? ->
-        # Non-active tables: collapsed count only. Avoids the per-table
-        # query cost when the user has selections in multiple tabs.
-        if xml?(ctx),
-          do: "\n  <selected table=\"#{table_summary.name}\" count=\"#{count}\" />",
-          else: "\n  Selected (#{count})"
+    if not active? do
+      # Non-active tables: collapsed count only. Avoids the per-table
+      # query cost when the user has selections in multiple tabs.
+      if xml?(ctx),
+        do: "\n  <selected table=\"#{table_summary.name}\" count=\"#{count}\" />",
+        else: "\n  Selected (#{count})"
+    else
+      shown = Enum.take(ids, @selection_preview_cap)
+      rest = count - length(shown)
+      rows = fetch_preview_rows(sid, table_summary.name, shown)
+      previews = Enum.map(shown, &row_preview(&1, rows, table_summary))
+      rest_line = if rest > 0, do: ["    … + #{rest} more selected"], else: []
 
-      true ->
-        shown = Enum.take(ids, @selection_preview_cap)
-        rest = count - length(shown)
-        rows = fetch_preview_rows(sid, table_summary.name, shown)
-        previews = Enum.map(shown, &row_preview(&1, rows, table_summary))
-        rest_line = if rest > 0, do: ["    … + #{rest} more selected"], else: []
+      if xml?(ctx) do
+        inner =
+          previews
+          |> Enum.map(fn line -> "  " <> line end)
+          |> Enum.concat(rest_line)
+          |> Enum.join("\n")
 
-        if xml?(ctx) do
-          inner =
-            previews
-            |> Enum.map(fn line -> "  " <> line end)
-            |> Enum.concat(rest_line)
-            |> Enum.join("\n")
-
-          "\n  <selected table=\"#{table_summary.name}\" count=\"#{count}\">\n" <>
-            inner <> "\n  </selected>"
-        else
-          "\n  Selected (#{count}):\n" <>
-            Enum.join(previews ++ rest_line, "\n")
-        end
+        "\n  <selected table=\"#{table_summary.name}\" count=\"#{count}\">\n" <>
+          inner <> "\n  </selected>"
+      else
+        "\n  Selected (#{count}):\n" <>
+          Enum.join(previews ++ rest_line, "\n")
+      end
     end
   end
 
@@ -255,7 +253,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
 
         Enum.map(tools, fn tool_def ->
           if MapSet.member?(deferred, tool_def.tool.name),
-            do: Map.put(tool_def, :deferred, true),
+            do: Map.merge(tool_def, %{deferred: true}),
             else: tool_def
         end)
     end
@@ -400,9 +398,16 @@ defmodule Rho.Stdlib.Plugins.DataTable do
       end
 
     cond do
-      atom_key && Map.has_key?(row, atom_key) -> atom_key
-      Map.has_key?(row, col) -> col
+      atom_key && map_key?(row, atom_key) -> atom_key
+      map_key?(row, col) -> col
       true -> col
+    end
+  end
+
+  defp map_key?(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _} -> true
+      :error -> false
     end
   end
 
@@ -836,10 +841,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
   defp format_table_error(reason), do: inspect(reason)
 
   defp join_fields(fields) do
-    fields
-    |> List.wrap()
-    |> Enum.map(&to_string/1)
-    |> Enum.join(", ")
+    fields |> List.wrap() |> Enum.map_join(", ", &to_string/1)
   end
 
   defp delete_rows_tool(session_id) do

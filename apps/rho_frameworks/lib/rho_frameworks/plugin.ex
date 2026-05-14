@@ -47,7 +47,7 @@ defmodule RhoFrameworks.Plugin do
 
         Enum.map(tools, fn tool_def ->
           if MapSet.member?(deferred, tool_def.tool.name),
-            do: Map.put(tool_def, :deferred, true),
+            do: Map.merge(tool_def, %{deferred: true}),
             else: tool_def
         end)
     end

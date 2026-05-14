@@ -35,6 +35,7 @@ defmodule Rho.Umbrella.MixProject do
   def cli do
     [
       preferred_envs: [
+        "rho.credence": :test,
         "rho.smoke": :test,
         "rho.verify": :test
       ]

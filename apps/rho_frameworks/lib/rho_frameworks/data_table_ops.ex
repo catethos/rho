@@ -85,10 +85,9 @@ defmodule RhoFrameworks.DataTableOps do
   defp put_if_absent(map, _key, nil), do: map
 
   defp put_if_absent(map, key, value) do
-    cond do
-      Map.has_key?(map, key) -> map
-      Map.has_key?(map, to_string(key)) -> map
-      true -> Map.put(map, key, value)
+    case {Map.fetch(map, key), Map.fetch(map, to_string(key))} do
+      {:error, :error} -> Map.put(map, key, value)
+      _ -> map
     end
   end
 

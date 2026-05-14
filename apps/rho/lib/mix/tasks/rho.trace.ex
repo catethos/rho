@@ -260,7 +260,7 @@ defmodule Mix.Tasks.Rho.Trace do
 
     {total_cost, total_no_cache, total_input, total_cached, total_output} =
       usage_events
-      |> Enum.with_index(1)
+      |> Stream.with_index(1)
       |> Enum.reduce({0.0, 0.0, 0, 0, 0}, &cache_turn_reducer/2)
 
     IO.puts(String.duplicate("-", String.length(header)))
@@ -498,8 +498,8 @@ defmodule Mix.Tasks.Rho.Trace do
   defp format_cost(n) when is_number(n), do: "$#{Float.round(n / 1, 4)}"
   defp format_cost(_), do: "$0.0"
 
-  defp truncate(str, max) do
-    if String.length(str) > max, do: String.slice(str, 0, max - 2) <> "..", else: str
+  defp truncate(str, max_value) do
+    if String.length(str) > max_value, do: String.slice(str, 0, max_value - 2) <> "..", else: str
   end
 
   defp usage do

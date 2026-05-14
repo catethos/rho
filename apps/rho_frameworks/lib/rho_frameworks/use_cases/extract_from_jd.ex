@@ -121,12 +121,10 @@ defmodule RhoFrameworks.UseCases.ExtractFromJD do
   end
 
   defp normalize_llm_error(reason) when is_binary(reason) do
-    cond do
-      String.contains?(reason, "OPENROUTER_API_KEY") ->
-        {:missing_llm_api_key, "OpenRouterHaiku", "OPENROUTER_API_KEY"}
-
-      true ->
-        reason
+    if String.contains?(reason, "OPENROUTER_API_KEY") do
+      {:missing_llm_api_key, "OpenRouterHaiku", "OPENROUTER_API_KEY"}
+    else
+      reason
     end
   end
 

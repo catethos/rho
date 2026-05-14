@@ -236,16 +236,16 @@ defmodule Rho.Tape.Store do
     end
   end
 
-  defp load_tape_line(tape_name, line, {max, anchor_id}) do
+  defp load_tape_line(tape_name, line, {max_value, anchor_id}) do
     case Entry.from_json(line) do
       {:ok, entry} ->
         :ets.insert(@table, {{tape_name, entry.id}, entry})
         index_entry(tape_name, entry)
         new_anchor = if entry.kind == :anchor, do: entry.id, else: anchor_id
-        {Kernel.max(max, entry.id), new_anchor}
+        {Kernel.max(max_value, entry.id), new_anchor}
 
       {:error, _} ->
-        {max, anchor_id}
+        {max_value, anchor_id}
     end
   end
 

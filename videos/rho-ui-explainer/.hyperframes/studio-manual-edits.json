@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "edits": [
+    {
+      "kind": "path-offset",
+      "target": {
+        "sourceFile": "index.html",
+        "selector": ".chat-feed",
+        "selectorIndex": 1
+      },
+      "x": -67,
+      "y": 0,
+      "updatedAt": "2026-05-14T13:38:07.946Z"
+    }
+  ]
+}

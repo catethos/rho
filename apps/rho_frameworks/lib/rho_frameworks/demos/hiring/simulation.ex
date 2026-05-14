@@ -4,11 +4,8 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
   Manages rounds, spawns evaluators, and publishes domain events.
   Not an LLM — a plain Elixir GenServer.
   """
-
   use GenServer
-
   require Logger
-
   alias RhoFrameworks.Demos.Hiring.{Candidates, Tools}
   alias Rho.Agent.{Worker, Supervisor}
   alias Rho.Events.Event
@@ -23,8 +20,6 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
     max_rounds: 2
   ]
 
-  # --- Public API ---
-
   def start(opts \\ []) do
     session_id = opts[:session_id] || "hiring_#{System.unique_integer([:positive])}"
     GenServer.start(__MODULE__, session_id, name: via(session_id))
@@ -35,10 +30,8 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
   end
 
   def begin_simulation(session_id) do
-    GenServer.call(via(session_id), :begin, 30_000)
+    GenServer.call(via(session_id), :begin, 30000)
   end
-
-  # --- GenServer callbacks ---
 
   @impl true
   def init(session_id) do
@@ -51,7 +44,6 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
     {:reply, state, state}
   end
 
-  @impl true
   def handle_call(:begin, _from, %{status: :not_started} = state) do
     Rho.Events.broadcast(
       state.session_id,
@@ -63,20 +55,24 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
     {:reply, :ok, %{state | status: :running}}
   end
 
-  def handle_call(:begin, _from, state), do: {:reply, {:error, :already_started}, state}
+  def handle_call(:begin, _from, state) do
+    {:reply, {:error, :already_started}, state}
+  end
 
   @impl true
   def handle_info(%Event{kind: :hiring_scores_submitted, data: data}, state) do
-    # Use the coordinator's current round, not the LLM's claimed round
     state = record_scores(state, data.role, state.round, data.scores)
     state = maybe_advance_round(state)
     {:noreply, state}
   end
 
-  def handle_info(%Event{}, state), do: {:noreply, state}
-  def handle_info(_msg, state), do: {:noreply, state}
+  def handle_info(%Event{}, state) do
+    {:noreply, state}
+  end
 
-  # --- Private ---
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
 
   defp spawn_evaluators(state) do
     roles = [:technical_evaluator, :culture_evaluator, :compensation_evaluator]
@@ -87,7 +83,6 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
         config = Rho.Config.agent_config(role)
         workspace = File.cwd!()
 
-        # Build tools: multi-agent tools + submit_scores + finish
         tool_context = %{
           tape_name: agent_id,
           workspace: workspace,
@@ -98,8 +93,6 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
           sandbox: nil
         }
 
-        # Only include multi-agent tools (send_message, broadcast, list_agents)
-        # Filter out unrelated tools like present_ui, bash, file tools, etc.
         allowed_tools = ~w(send_message broadcast_message list_agents)
 
         mount_tools =
@@ -109,8 +102,6 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
         score_tool = Tools.submit_scores_tool(state.session_id, agent_id, role)
         finish_tool = Rho.Stdlib.Tools.Finish.tool_def()
         all_tools = mount_tools ++ [score_tool, finish_tool]
-
-        # Bootstrap memory (one tape per evaluator, named by agent_id)
         memory_mod = Rho.Config.tape_module()
         memory_mod.bootstrap(agent_id)
 
@@ -162,49 +153,49 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
 
     Logger.info("[Hiring] Starting round #{round_num}")
 
-    # Submit prompt to each evaluator. Tools/system_prompt/model live in the
-    # RunSpec set at start_worker time; no per-turn overrides needed.
-    # Stagger starts by 1s to avoid Finch connection pool exhaustion.
     state.evaluators
     |> Enum.with_index()
     |> Enum.each(fn {{_role, agent_id}, idx} ->
-      if idx > 0, do: Process.sleep(1_000)
+      if idx > 0 do
+        Process.sleep(1000)
+      end
+
       pid = Worker.whereis(agent_id)
-      if pid, do: Worker.submit(pid, prompt)
+
+      if pid do
+        Worker.submit(pid, prompt)
+      end
     end)
 
     %{state | round: round_num}
   end
 
   defp round_prompt(1, _state) do
-    """
-    Evaluate the following candidates for Senior Backend Engineer.
-    Salary band: $160,000 — $190,000. Maximum 3 offers.
+    "Evaluate the following candidates for Senior Backend Engineer.
+Salary band: $160,000 — $190,000. Maximum 3 offers.
 
-    #{Candidates.format_all()}
+#{Candidates.format_all()}
 
-    Score each candidate 0-100 based on your evaluation criteria.
-    Use submit_scores with round: 1 when done.
-    """
+Score each candidate 0-100 based on your evaluation criteria.
+Use submit_scores with round: 1 when done.
+"
   end
 
   defp round_prompt(2, state) do
     summary = build_disagreement_summary(state)
+    "Round 2: The committee has reviewed initial scores. Here are the key disagreements:
 
-    """
-    Round 2: The committee has reviewed initial scores. Here are the key disagreements:
+#{summary}
 
-    #{summary}
-
-    Reconsider your scores in light of other evaluators' perspectives.
-    You may use send_message to debate specific candidates with other evaluators.
-    Then use submit_scores with round: 2 for your revised ratings.
-    """
+Reconsider your scores in light of other evaluators' perspectives.
+You may use send_message to debate specific candidates with other evaluators.
+Then use submit_scores with round: 2 for your revised ratings.
+"
   end
 
-  defp record_scores(state, role, round, scores) do
-    key = {role, round}
-    Logger.info("[Hiring] #{role} submitted scores for round #{round}")
+  defp record_scores(state, role, rounded, scores) do
+    key = {role, rounded}
+    Logger.info("[Hiring] #{role} submitted scores for round #{rounded}")
     %{state | scores: Map.put(state.scores, key, scores)}
   end
 
@@ -212,9 +203,10 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
     expected = map_size(state.evaluators)
 
     submitted =
-      state.scores
-      |> Map.keys()
-      |> Enum.count(fn {_role, r} -> r == state.round end)
+      Enum.count(
+        state.scores,
+        fn {_k, {_role, r}} -> r == state.round end
+      )
 
     if submitted >= expected do
       if state.round >= state.max_rounds do
@@ -242,55 +234,59 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
   end
 
   defp build_disagreement_summary(state) do
-    # Collect round 1 scores by candidate
     round1_scores =
       state.scores
-      |> Enum.filter(fn {{_role, round}, _scores} -> round == 1 end)
+      |> Enum.filter(fn {{_role, rounded}, _scores} -> rounded == 1 end)
       |> Enum.flat_map(fn {{role, _round}, scores} ->
-        Enum.map(scores, fn entry ->
-          {entry["id"], role, entry["score"]}
-        end)
+        Enum.map(scores, fn entry -> {entry["id"], role, entry["score"]} end)
       end)
       |> Enum.group_by(fn {id, _role, _score} -> id end)
 
-    # Find candidates with high variance (>20 point spread)
     round1_scores
     |> Enum.map(fn {id, entries} ->
       scores = Enum.map(entries, fn {_id, _role, score} -> score end)
-      min = Enum.min(scores, fn -> 0 end)
-      max = Enum.max(scores, fn -> 0 end)
-      spread = max - min
+      min_value = Enum.min(scores, fn -> 0 end)
+      max_value = Enum.max(scores, fn -> 0 end)
+      spread = max_value - min_value
 
       role_scores =
-        entries
-        |> Enum.map_join(", ", fn {_id, role, score} -> "#{role}: #{score}" end)
+        entries |> Enum.map_join(", ", fn {_id, role, score} -> "#{role}: #{score}" end)
 
       {id, spread, role_scores}
     end)
     |> Enum.sort_by(fn {_id, spread, _} -> -spread end)
-    |> Enum.map_join("\n", fn {id, spread, role_scores} ->
-      candidate = Enum.find(Candidates.all(), &(&1.id == id))
-      name = if candidate, do: candidate.name, else: id
-      "- #{id} (#{name}): spread #{spread} points — #{role_scores}"
-    end)
+    |> Enum.map_join(
+      "
+",
+      fn {id, spread, role_scores} ->
+        candidate = Enum.find(Candidates.all(), &(&1.id == id))
+
+        name =
+          if candidate do
+            candidate.name
+          else
+            id
+          end
+
+        "- #{id} (#{name}): spread #{spread} points — #{role_scores}"
+      end
+    )
   end
 
   defp compute_final_shortlist(state) do
-    # Average round 2 scores (or round 1 if no round 2) across evaluators
     latest_round = state.max_rounds
 
     candidate_averages =
       state.scores
-      |> Enum.filter(fn {{_role, round}, _scores} -> round == latest_round end)
+      |> Enum.filter(fn {{_role, rounded}, _scores} -> rounded == latest_round end)
       |> Enum.flat_map(fn {{_role, _round}, scores} ->
-        Enum.map(scores, fn entry ->
-          {entry["id"], entry["score"]}
-        end)
+        Enum.map(scores, fn entry -> {entry["id"], entry["score"]} end)
       end)
       |> Enum.group_by(fn {id, _score} -> id end)
       |> Enum.map(fn {id, entries} ->
         scores = Enum.map(entries, fn {_id, score} -> score end)
-        avg = Enum.sum(scores) / max(length(scores), 1)
+        {sum, count} = Enum.reduce(scores, {0, 0}, fn x, {s, c} -> {s + x, c + 1} end)
+        avg = sum / max(count, 1)
         {id, Float.round(avg, 1)}
       end)
       |> Enum.sort_by(fn {_id, avg} -> -avg end)
@@ -298,10 +294,19 @@ defmodule RhoFrameworks.Demos.Hiring.Simulation do
 
     Enum.map(candidate_averages, fn {id, avg} ->
       candidate = Enum.find(Candidates.all(), &(&1.id == id))
-      name = if candidate, do: candidate.name, else: id
+
+      name =
+        if candidate do
+          candidate.name
+        else
+          id
+        end
+
       %{id: id, name: name, avg_score: avg}
     end)
   end
 
-  defp via(session_id), do: {:via, Registry, {Rho.AgentRegistry, "sim_#{session_id}"}}
+  defp via(session_id) do
+    {:via, Registry, {Rho.AgentRegistry, "sim_#{session_id}"}}
+  end
 end

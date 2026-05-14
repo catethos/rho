@@ -49,7 +49,7 @@ defmodule RhoFrameworks.LensesTest do
       lens = Lenses.get_lens!(lens.id)
 
       for axis <- lens.axes do
-        total = axis.variables |> Enum.map(& &1.weight) |> Enum.sum()
+        total = axis.variables |> Enum.reduce(0, fn el, acc -> acc + (& &1.weight).(el) end)
         assert_in_delta total, 1.0, 0.001, "Weights for axis #{axis.name} should sum to 1.0"
       end
     end
@@ -98,8 +98,6 @@ defmodule RhoFrameworks.LensesTest do
       {:ok, score} = Lenses.score(lens.id, %{role_profile_id: rp.id}, variable_scores)
 
       assert length(score.axis_scores) == 2
-
-      [ai_score, adp_score] = Enum.sort_by(score.axis_scores, & &1.axis_id)
 
       # We need to figure out which axis_id is which — sort by the lens axes
       lens = Lenses.get_lens!(lens.id)
@@ -289,7 +287,7 @@ defmodule RhoFrameworks.LensesTest do
           )
         )
 
-      assert length(tags) == 2
+      assert match?([_, _], tags)
       assert Enum.any?(tags, &(&1.tag == "automatable"))
       assert Enum.any?(tags, &(&1.tag == "human_essential"))
     end
@@ -408,7 +406,7 @@ defmodule RhoFrameworks.LensesTest do
     test "scores_with_axes/1 returns scores with axis composites", %{lens: lens} do
       result = Lenses.scores_with_axes(lens.id)
 
-      assert length(result) == 2
+      assert match?([_, _], result)
 
       for entry <- result do
         assert Map.has_key?(entry, :score_id)
@@ -459,25 +457,25 @@ defmodule RhoFrameworks.LensesTest do
 
     test "list_scores/2 filters by classification", %{lens: lens} do
       restructure = Lenses.list_scores(lens.id, classification: "Restructure")
-      assert length(restructure) == 1
+      assert match?([_], restructure)
       assert hd(restructure).classification == "Restructure"
 
       leverage = Lenses.list_scores(lens.id, classification: "Leverage")
-      assert length(leverage) == 1
+      assert match?([_], leverage)
       assert hd(leverage).classification == "Leverage"
 
       all = Lenses.list_scores(lens.id)
-      assert length(all) == 2
+      assert match?([_, _], all)
     end
 
     test "list_scores/2 filters by axis band", %{lens: lens} do
       # AI Impact axis (sort_order 0), band 2 (high) — only rp1
       high_impact = Lenses.list_scores(lens.id, band: {0, 2})
-      assert length(high_impact) == 1
+      assert match?([_], high_impact)
 
       # Adaptability axis (sort_order 1), band 2 (high) — only rp2
       high_adapt = Lenses.list_scores(lens.id, band: {1, 2})
-      assert length(high_adapt) == 1
+      assert match?([_], high_adapt)
     end
 
     test "get_score/2 returns latest score for a target", %{lens: lens, rp1: rp1} do

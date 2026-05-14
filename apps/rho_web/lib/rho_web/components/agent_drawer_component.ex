@@ -114,10 +114,10 @@ defmodule RhoWeb.AgentDrawerComponent do
       |> assign(:tape_loaded_for, agent.agent_id)
   end
 
-  defp truncate(text, max) when is_binary(text) and byte_size(text) > max do
-    String.slice(text, 0, max) <> "…"
+  defp truncate(text, max_value) when is_binary(text) and byte_size(text) > max_value do
+    String.slice(text, 0, max_value) <> "…"
   end
 
-  defp truncate(text, _max) when is_binary(text), do: text
-  defp truncate(other, _max), do: inspect(other)
+  defp truncate(text, _max_value) when is_binary(text), do: text
+  defp truncate(text, _max_value), do: inspect(text)
 end

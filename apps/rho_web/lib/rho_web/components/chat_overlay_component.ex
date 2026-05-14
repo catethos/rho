@@ -186,7 +186,8 @@ defmodule RhoWeb.ChatOverlayComponent do
       content: content
     }
 
-    socket = assign(socket, :messages, Enum.take(socket.assigns.messages ++ [user_msg], -200))
+    socket =
+      assign(socket, :messages, Enum.slice(socket.assigns.messages ++ [user_msg], -200..-1//1))
 
     pid = Rho.Agent.Primary.whereis(sid)
 

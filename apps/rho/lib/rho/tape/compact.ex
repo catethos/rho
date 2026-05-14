@@ -34,11 +34,10 @@ defmodule Rho.Tape.Compact do
     view = View.default(tape_name)
 
     view.entries
-    |> Enum.map(fn entry ->
+    |> Enum.reduce(0, fn entry, acc ->
       content = entry.payload["content"] || entry.payload["output"] || inspect(entry.payload)
-      div(String.length(content), 4)
+      acc + div(String.length(content), 4)
     end)
-    |> Enum.sum()
   end
 
   @doc """

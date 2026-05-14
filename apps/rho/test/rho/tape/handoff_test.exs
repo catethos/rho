@@ -50,7 +50,7 @@ defmodule Rho.Tape.HandoffTest do
 
       all_entries = Store.read(@test_tape)
       messages = Enum.filter(all_entries, &(&1.kind == :message))
-      assert length(messages) == 2
+      assert match?([_, _], messages)
     end
 
     test "auto-collects source_ids from recent entries" do

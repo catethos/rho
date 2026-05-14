@@ -57,12 +57,11 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     libraries = Library.list_libraries(ctx.organization_id)
 
     result =
-      Enum.map(libraries, fn lib ->
+      Enum.map_join(libraries, "\n", fn lib ->
         version = if lib.version, do: "v#{lib.version}", else: "draft"
         flags = if lib.immutable, do: ", immutable", else: ""
         "- #{lib.name} (#{lib.id}) — #{lib.skill_count} skills, #{version}#{flags}"
       end)
-      |> Enum.join("\n")
 
     {:ok, result}
   end
@@ -568,18 +567,16 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     do: resolve_library_input(name, org_id)
 
   defp resolve_library_input(value, org_id) do
-    cond do
-      uuid?(value) ->
-        case Library.get_library(org_id, value) do
-          nil -> {:error, "Library not found: #{value}"}
-          lib -> {:ok, lib}
-        end
-
-      true ->
-        case Library.resolve_library(org_id, value) do
-          nil -> {:error, "Library not found: '#{value}'. Pass a UUID or exact saved name."}
-          lib -> {:ok, lib}
-        end
+    if uuid?(value) do
+      case Library.get_library(org_id, value) do
+        nil -> {:error, "Library not found: #{value}"}
+        lib -> {:ok, lib}
+      end
+    else
+      case Library.resolve_library(org_id, value) do
+        nil -> {:error, "Library not found: '#{value}'. Pass a UUID or exact saved name."}
+        lib -> {:ok, lib}
+      end
     end
   end
 
@@ -743,13 +740,12 @@ defmodule RhoFrameworks.Tools.LibraryTools do
 
   defp format_search_results(results) do
     results
-    |> Enum.map(fn r ->
+    |> Enum.map_join("\n", fn r ->
       name = MapAccess.get(r, :name)
       cat = MapAccess.get(r, :category)
       lib = MapAccess.get(r, :library_name, "?")
       "- #{name} [#{cat}] in \"#{lib}\""
     end)
-    |> Enum.join("\n")
     |> then(&"Found #{length(results)} results:\n#{&1}")
   end
 
@@ -848,22 +844,20 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   defdelegate library_table_name(lib_name), to: Editor, as: :table_name
 
   defp not_found_with_hints(org_id, name) do
-    cond do
-      name && Roles.get_role_profile_by_name(org_id, name) ->
-        {:error,
-         "'#{name}' is a role profile, not a library. " <>
-           "Use manage_role(action: \"load\", name: \"#{name}\") instead."}
+    if name && Roles.get_role_profile_by_name(org_id, name) do
+      {:error,
+       "'#{name}' is a role profile, not a library. " <>
+         "Use manage_role(action: \"load\", name: \"#{name}\") instead."}
+    else
+      available =
+        Library.list_libraries(org_id)
+        |> Enum.map_join(", ", & &1.name)
 
-      true ->
-        available =
-          Library.list_libraries(org_id)
-          |> Enum.map_join(", ", & &1.name)
-
-        if available == "" do
-          {:error, "No libraries found. Use manage_library(action: \"create\") to create one."}
-        else
-          {:error, "Library not found. Available: #{available}"}
-        end
+      if available == "" do
+        {:error, "No libraries found. Use manage_library(action: \"create\") to create one."}
+      else
+        {:error, "Library not found. Available: #{available}"}
+      end
     end
   end
 

@@ -190,11 +190,10 @@ defmodule RhoFrameworks.Flow.Policies.Hybrid do
 
   defp format_allowed(valid) do
     valid
-    |> Enum.map(fn %{to: id} = edge ->
+    |> Enum.map_join("\n", fn %{to: id} = edge ->
       label = Map.get(edge, :label) || Atom.to_string(id)
       "  - #{Atom.to_string(id)} — #{label}"
     end)
-    |> Enum.join("\n")
   end
 
   defp format_summary(state) do
@@ -204,10 +203,9 @@ defmodule RhoFrameworks.Flow.Policies.Hybrid do
       "(no prior summaries)"
     else
       summaries
-      |> Enum.map(fn {node_id, summary} ->
+      |> Enum.map_join("\n", fn {node_id, summary} ->
         "  - #{Atom.to_string(node_id)}: #{inspect(summary, limit: 5, printable_limit: 200)}"
       end)
-      |> Enum.join("\n")
     end
   end
 end

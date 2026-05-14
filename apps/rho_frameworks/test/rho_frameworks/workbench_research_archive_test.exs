@@ -92,7 +92,7 @@ defmodule RhoFrameworks.WorkbenchResearchArchiveTest do
       notes =
         Repo.all(from(n in ResearchNote, where: n.library_id == ^lib.id, order_by: n.fact))
 
-      assert length(notes) == 2
+      assert match?([_, _], notes)
       facts = Enum.map(notes, & &1.fact)
       assert "Pinned fact A" in facts
       assert "Pinned fact B" in facts

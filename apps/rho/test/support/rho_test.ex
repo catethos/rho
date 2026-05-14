@@ -134,7 +134,7 @@ defmodule Rho.Test do
     * All other opts forwarded to `RunSpec.build/1`
   """
   def run_with_responses(message, responses, opts \\ []) when is_list(responses) do
-    if length(responses) == 1 do
+    if match?([_], responses) do
       stub_llm(hd(responses))
     else
       stub_llm_sequence(responses)

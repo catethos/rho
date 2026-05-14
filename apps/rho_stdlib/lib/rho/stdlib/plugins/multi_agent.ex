@@ -879,7 +879,7 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   defp publish_lite_event(session_id, agent_id, event) when is_binary(session_id) do
     case event do
       %{type: type} when type in @lite_signal_types ->
-        tagged = Map.put(event, :lite, true)
+        tagged = Map.merge(event, %{lite: true})
         Rho.Events.broadcast(session_id, Rho.Events.normalize(tagged, session_id, agent_id))
 
       _ ->

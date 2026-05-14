@@ -57,7 +57,7 @@ defmodule Rho.Stdlib.Uploads.ObserverTest do
              Observer.read_sheet(sid, h.id, "Framework", offset: 0, limit: 5)
 
     assert "Skill Library Name" in cols
-    assert length(rows) == 5
+    assert match?([_, _, _, _, _], rows)
     # Total is data rows (excludes header). complete_framework_import.xlsx has 26 total rows.
     # If row count differs, verify with: python3 to count and update assertion.
     assert total == 25

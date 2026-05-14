@@ -175,7 +175,7 @@ defmodule RhoFrameworks.LibraryTest do
 
       {:ok, %{skills: result}} = RhoFrameworks.Library.save_to_library(lib.id, skills)
 
-      assert length(result) == 2
+      assert match?([_, _], result)
 
       sql_skill = Enum.find(result, fn skill -> skill.name == "SQL" end)
       assert sql_skill.status == "published"
@@ -607,7 +607,7 @@ defmodule RhoFrameworks.LibraryTest do
 
       rows = RhoFrameworks.Library.load_library_rows(lib.id)
 
-      assert length(rows) == 1
+      assert match?([_], rows)
 
       row = hd(rows)
       assert row.skill_name == "SQL"
@@ -627,7 +627,7 @@ defmodule RhoFrameworks.LibraryTest do
 
       rows = RhoFrameworks.Library.load_library_rows(lib.id)
 
-      assert length(rows) == 1
+      assert match?([_], rows)
       assert hd(rows).skill_name == "Rust"
       assert hd(rows).proficiency_levels == []
     end
@@ -640,7 +640,7 @@ defmodule RhoFrameworks.LibraryTest do
 
       rows = RhoFrameworks.Library.load_library_rows(lib.id, category: "Data")
 
-      assert length(rows) == 1
+      assert match?([_], rows)
       assert hd(rows).skill_name == "SQL"
     end
   end
@@ -717,10 +717,10 @@ defmodule RhoFrameworks.LibraryTest do
       {:ok, lib} = RhoFrameworks.Library.create_library(org_id, %{name: "Enrich Lib"})
 
       # Create two similar skills
-      {:ok, s1} =
+      {:ok, _s1} =
         RhoFrameworks.Library.upsert_skill(lib.id, %{name: "SQL Programming", category: "Tech"})
 
-      {:ok, s2} =
+      {:ok, _s2} =
         RhoFrameworks.Library.upsert_skill(lib.id, %{name: "SQL Querying", category: "Tech"})
 
       # Create role profiles referencing these skills
@@ -830,7 +830,7 @@ defmodule RhoFrameworks.LibraryTest do
       target_rs =
         Repo.all(from(rs in RhoFrameworks.Frameworks.RoleSkill, where: rs.skill_id == ^target.id))
 
-      assert length(target_rs) == 2
+      assert match?([_, _], target_rs)
     end
 
     test ":keep_higher conflict strategy takes max level", %{

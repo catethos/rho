@@ -22,8 +22,8 @@ defmodule Rho.Stdlib.Tools.PathUtilsTest do
   end
 
   test "resolves absolute path within workspace" do
-    abs = Path.join(@workspace, "bar.txt")
-    assert PathUtils.resolve_path(@workspace, abs) == abs
+    abs_value = Path.join(@workspace, "bar.txt")
+    assert PathUtils.resolve_path(@workspace, abs_value) == abs_value
   end
 
   test "raises on path escaping workspace via .." do

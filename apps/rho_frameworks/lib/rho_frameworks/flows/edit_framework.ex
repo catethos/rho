@@ -167,15 +167,13 @@ defmodule RhoFrameworks.Flows.EditFramework do
       get_in(summaries, [:load_existing_library, :table_name]) ||
         get_in(summaries, [:generate, :table_name])
 
-    cond do
-      is_nil(scope.session_id) or is_nil(table_name) ->
-        %{}
-
-      true ->
-        case modal_level_count(scope.session_id, table_name) do
-          nil -> %{levels: to_string(@no_proficiency_default)}
-          n when is_integer(n) -> %{levels: to_string(n)}
-        end
+    if is_nil(scope.session_id) or is_nil(table_name) do
+      %{}
+    else
+      case modal_level_count(scope.session_id, table_name) do
+        nil -> %{levels: to_string(@no_proficiency_default)}
+        n when is_integer(n) -> %{levels: to_string(n)}
+      end
     end
   end
 
@@ -187,7 +185,7 @@ defmodule RhoFrameworks.Flows.EditFramework do
         rows
         |> Enum.map(&MapAccess.get(&1, :proficiency_levels))
         |> Enum.flat_map(fn
-          list when is_list(list) and length(list) > 0 -> [length(list)]
+          list when is_list(list) and list != [] -> [length(list)]
           _ -> []
         end)
         |> case do

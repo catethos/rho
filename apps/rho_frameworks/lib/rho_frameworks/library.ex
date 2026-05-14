@@ -1,6 +1,5 @@
 defmodule RhoFrameworks.Library do
   @moduledoc "Context for library CRUD, skills, immutability, forking, and deduplication."
-
   import Ecto.Query
   require Logger
   alias RhoFrameworks.Repo
@@ -13,8 +12,6 @@ defmodule RhoFrameworks.Library do
     DuplicateDismissal,
     ResearchNote
   }
-
-  # --- Library CRUD ---
 
   def list_libraries(org_id, opts \\ []) do
     type = Keyword.get(opts, :type)
@@ -55,13 +52,6 @@ defmodule RhoFrameworks.Library do
   Designed for prompt injection — lightweight query, no proficiency data.
   """
   def library_summary(org_id) do
-    # Skip public libraries: ESCO has 14k skills and naive enumeration blows
-    # agent prompt budgets. Agents discover public skills via
-    # `search_skills_across/3` instead.
-    #
-    # Two queries: a simple library list (no aggregation) and a single skills
-    # fetch covering all of them. `skill_count` is derived from the second
-    # query, so the first query doesn't need a left-join + group_by.
     libraries =
       from(l in Library,
         where: l.organization_id == ^org_id,
@@ -90,24 +80,28 @@ defmodule RhoFrameworks.Library do
         |> Repo.all()
         |> Enum.group_by(& &1.library_id)
 
-      Enum.map(libraries, fn lib ->
-        skills = Map.get(skills_by_library, lib.id, [])
-        by_category = Enum.group_by(skills, & &1.category)
-
-        %{
-          id: lib.id,
-          name: lib.name,
-          skill_count: length(skills),
-          immutable: lib.immutable,
-          version: lib.version,
-          published_at: lib.published_at,
-          categories:
-            Enum.map(by_category, fn {cat, cat_skills} ->
-              %{category: cat, skills: Enum.map(cat_skills, & &1.name)}
-            end)
-        }
-      end)
+      build_library_summary(libraries, skills_by_library)
     end
+  end
+
+  defp build_library_summary(library_rows, skills_by_library) do
+    Enum.map(library_rows, fn lib ->
+      skills = Map.get(skills_by_library, lib.id, [])
+      by_category = Enum.group_by(skills, & &1.category)
+
+      %{
+        id: lib.id,
+        name: lib.name,
+        skill_count: length(skills),
+        immutable: lib.immutable,
+        version: lib.version,
+        published_at: lib.published_at,
+        categories:
+          Enum.map(by_category, fn {cat, cat_skills} ->
+            %{category: cat, skills: Enum.map(cat_skills, & &1.name)}
+          end)
+      }
+    end)
   end
 
   @doc """
@@ -117,10 +111,7 @@ defmodule RhoFrameworks.Library do
   pinned subset of the session's `research_notes` named table. Read-only.
   """
   def list_research_notes(library_id) when is_binary(library_id) do
-    from(n in ResearchNote,
-      where: n.library_id == ^library_id,
-      order_by: [desc: n.inserted_at]
-    )
+    from(n in ResearchNote, where: n.library_id == ^library_id, order_by: [desc: n.inserted_at])
     |> Repo.all()
   end
 
@@ -133,7 +124,9 @@ defmodule RhoFrameworks.Library do
     |> Repo.one()
   end
 
-  def get_library(_org_id, nil), do: nil
+  def get_library(_org_id, nil) do
+    nil
+  end
 
   def get_library(org_id, id) when is_binary(id) do
     Repo.get_by(Library, id: id, organization_id: org_id)
@@ -156,9 +149,7 @@ defmodule RhoFrameworks.Library do
   def rename_library(org_id, library_id, new_name) do
     with lib when not is_nil(lib) <- get_library(org_id, library_id),
          :ok <- ensure_mutable!(lib) do
-      lib
-      |> Library.changeset(%{name: new_name})
-      |> Repo.update()
+      lib |> Library.changeset(%{name: new_name}) |> Repo.update()
     else
       nil -> {:error, :not_found}
       error -> error
@@ -173,9 +164,7 @@ defmodule RhoFrameworks.Library do
   end
 
   def create_library(org_id, attrs) do
-    %Library{}
-    |> Library.changeset(Map.put(attrs, :organization_id, org_id))
-    |> Repo.insert()
+    %Library{} |> Library.changeset(Map.put(attrs, :organization_id, org_id)) |> Repo.insert()
   end
 
   def get_or_create_default_library(org_id) do
@@ -194,10 +183,12 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # --- Immutability ---
-
   defp maybe_check_mutable(library, opts) do
-    if Keyword.get(opts, :skip_mutability, false), do: :ok, else: ensure_mutable!(library)
+    if Keyword.get(opts, :skip_mutability, false) do
+      :ok
+    else
+      ensure_mutable!(library)
+    end
   end
 
   def ensure_mutable!(%Library{immutable: true, name: name}) do
@@ -206,13 +197,11 @@ defmodule RhoFrameworks.Library do
        "Fork it with fork_library to create a mutable working copy."}
   end
 
-  def ensure_mutable!(%Library{immutable: false}), do: :ok
+  def ensure_mutable!(%Library{immutable: false}) do
+    :ok
+  end
 
-  # --- Versioning ---
-
-  @doc """
-  Compute the next version tag for a library: YYYY.N where N increments per year.
-  """
+  @doc "Compute the next version tag for a library: YYYY.N where N increments per year."
   def next_version_tag(org_id, library_name) do
     year = Date.utc_today().year
     pattern = "#{year}.%"
@@ -220,9 +209,7 @@ defmodule RhoFrameworks.Library do
     latest_n =
       from(l in Library,
         where:
-          l.organization_id == ^org_id and
-            l.name == ^library_name and
-            like(l.version, ^pattern),
+          l.organization_id == ^org_id and l.name == ^library_name and like(l.version, ^pattern),
         select: max(fragment("CAST(split_part(?, '.', 2) AS INTEGER)", l.version))
       )
       |> Repo.one()
@@ -245,9 +232,11 @@ defmodule RhoFrameworks.Library do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
       metadata =
-        if notes,
-          do: Map.put(lib.metadata || %{}, "publish_notes", notes),
-          else: lib.metadata
+        if notes do
+          Map.put(lib.metadata || %{}, "publish_notes", notes)
+        else
+          lib.metadata
+        end
 
       lib
       |> Library.changeset(%{
@@ -295,9 +284,7 @@ defmodule RhoFrameworks.Library do
         {:ok, copy_all_skills(source.id, draft.id)}
       end)
       |> Ecto.Multi.run(:link_superseded, fn _repo, %{library: draft} ->
-        source
-        |> Library.changeset(%{superseded_by_id: draft.id})
-        |> Repo.update()
+        source |> Library.changeset(%{superseded_by_id: draft.id}) |> Repo.update()
       end)
       |> Repo.transaction()
       |> case do
@@ -352,8 +339,8 @@ defmodule RhoFrameworks.Library do
   def get_default_version(org_id, library_name) do
     from(l in Library,
       where:
-        l.organization_id == ^org_id and l.name == ^library_name and
-          l.is_default == true and not is_nil(l.version),
+        l.organization_id == ^org_id and l.name == ^library_name and l.is_default == true and
+          not is_nil(l.version),
       limit: 1
     )
     |> Repo.one()
@@ -371,8 +358,8 @@ defmodule RhoFrameworks.Library do
         :clear_previous,
         from(l in Library,
           where:
-            l.organization_id == ^org_id and l.name == ^lib.name and
-              l.is_default == true and l.id != ^lib.id
+            l.organization_id == ^org_id and l.name == ^lib.name and l.is_default == true and
+              l.id != ^lib.id
         ),
         set: [is_default: false]
       )
@@ -409,22 +396,14 @@ defmodule RhoFrameworks.Library do
   def resolve_library(org_id, library_name, nil) do
     from(l in Library,
       where: l.organization_id == ^org_id and l.name == ^library_name,
-      order_by: [
-        desc: is_nil(l.version),
-        desc: l.is_default,
-        desc: l.published_at
-      ],
+      order_by: [desc: is_nil(l.version), desc: l.is_default, desc: l.published_at],
       limit: 1
     )
     |> Repo.one()
   end
 
   def resolve_library(org_id, library_name, version) do
-    Repo.get_by(Library,
-      organization_id: org_id,
-      name: library_name,
-      version: version
-    )
+    Repo.get_by(Library, organization_id: org_id, name: library_name, version: version)
   end
 
   @doc "Diff two versions of the same library. Returns added/removed/modified skills."
@@ -442,10 +421,8 @@ defmodule RhoFrameworks.Library do
       true ->
         skills_a = list_skills(lib_a.id) |> Map.new(&{&1.slug, &1})
         skills_b = list_skills(lib_b.id) |> Map.new(&{&1.slug, &1})
-
         slugs_a = Map.keys(skills_a) |> MapSet.new()
         slugs_b = Map.keys(skills_b) |> MapSet.new()
-
         added = MapSet.difference(slugs_b, slugs_a) |> Enum.map(&skills_b[&1].name)
         removed = MapSet.difference(slugs_a, slugs_b) |> Enum.map(&skills_a[&1].name)
 
@@ -476,10 +453,11 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # --- Skills ---
-
   def list_skills(library_id, opts \\ [])
-  def list_skills(nil, _opts), do: []
+
+  def list_skills(nil, _opts) do
+    []
+  end
 
   def list_skills(library_id, opts) when is_binary(library_id) do
     category = Keyword.get(opts, :category)
@@ -519,10 +497,7 @@ defmodule RhoFrameworks.Library do
           |> Repo.insert()
 
         existing ->
-          attrs =
-            existing
-            |> guard_status_downgrade(attrs)
-            |> add_embedding_attrs(existing)
+          attrs = existing |> guard_status_downgrade(attrs) |> add_embedding_attrs(existing)
 
           existing
           |> Skill.changeset(Map.drop(attrs, [:library_id, "library_id"]))
@@ -530,16 +505,6 @@ defmodule RhoFrameworks.Library do
       end
     end
   end
-
-  # --- Batch upsert (private) ---
-  #
-  # Round-trip shape against Postgres:
-  #   1. Pre-fetch existing slugs in `library_id`         (1 query)
-  #   2. Bulk-embed any rows whose text hash changed      (≤1 embed_many call)
-  #   3. `insert_all` with ON CONFLICT for the whole set  (1 query, returning rows)
-  # Status downgrade rule (a published skill keeps its status) is enforced in
-  # SQL via a CASE expression in the on-conflict update; embedding fields use
-  # COALESCE so rows whose text didn't change keep the existing vector.
 
   @doc """
   Upsert a batch of skills into `library_id`. Pre-normalised attrs (`:name`,
@@ -571,10 +536,6 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # Fields that should follow the changeset rule "absent key -> keep existing
-  # value". Embedding fields are NOT in this list — they're handled by COALESCE
-  # in the on-conflict SQL so an absent embedding row still keeps any vector
-  # written by the backfill task.
   @upsert_preserve_keys [
     :description,
     :category,
@@ -585,6 +546,7 @@ defmodule RhoFrameworks.Library do
     :proficiency_levels,
     :source_skill_id
   ]
+  @skill_insert_chunk 1000
 
   defp fill_missing_from_existing(attrs, existing_by_slug) do
     slug = Skill.slugify(attrs[:name])
@@ -595,34 +557,23 @@ defmodule RhoFrameworks.Library do
 
       existing ->
         Enum.reduce(@upsert_preserve_keys, attrs, fn key, acc ->
-          if Map.has_key?(acc, key) or Map.has_key?(acc, Atom.to_string(key)) do
-            acc
-          else
-            Map.put(acc, key, Map.get(existing, key))
+          case {Map.fetch(acc, key), Map.fetch(acc, Atom.to_string(key))} do
+            {:error, :error} -> Map.put(acc, key, Map.get(existing, key))
+            _ -> acc
           end
         end)
     end
   end
 
-  defp bulk_upsert_skill_rows(_library_id, []), do: []
-
-  # Postgres caps bound parameters at 65_535. With ~17 columns per row, 1_000
-  # rows/chunk leaves comfortable headroom and matches the chunk size used by
-  # the ESCO loader.
-  @skill_insert_chunk 1_000
+  defp bulk_upsert_skill_rows(_library_id, []) do
+    []
+  end
 
   defp bulk_upsert_skill_rows(library_id, attr_list) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    # Postgres rejects an INSERT ... ON CONFLICT batch when two rows
-    # share the conflict-target keys (cardinality_violation). Collapse
-    # by slug here — last write wins, matching how a sequential upsert
-    # would behave — so that "P&L Ownership" appearing twice in an
-    # imported sheet doesn't blow up the whole save.
     rows =
-      attr_list
-      |> Enum.map(&build_insert_all_row(&1, library_id, now))
-      |> dedupe_rows_by_slug()
+      attr_list |> Enum.map(&build_insert_all_row(&1, library_id, now)) |> dedupe_rows_by_slug()
 
     rows
     |> Stream.chunk_every(@skill_insert_chunk)
@@ -639,9 +590,7 @@ defmodule RhoFrameworks.Library do
   end
 
   defp dedupe_rows_by_slug(rows) do
-    rows
-    |> Enum.reduce(%{}, fn row, acc -> Map.put(acc, row.slug, row) end)
-    |> Map.values()
+    rows |> Enum.reduce(%{}, fn row, acc -> Map.put(acc, row.slug, row) end) |> Map.values()
   end
 
   defp skill_on_conflict_query do
@@ -700,7 +649,9 @@ defmodule RhoFrameworks.Library do
     Map.delete(attrs, :status) |> Map.delete("status")
   end
 
-  defp guard_status_downgrade(_skill, attrs), do: attrs
+  defp guard_status_downgrade(_skill, attrs) do
+    attrs
+  end
 
   defp normalize_skill_attrs(skill_map) do
     %{
@@ -712,8 +663,6 @@ defmodule RhoFrameworks.Library do
       status: "published"
     }
   end
-
-  # --- Save to Library (structured skill maps) ---
 
   def save_to_library(library_id, skills) do
     do_save_to_library(library_id, skills)
@@ -730,7 +679,6 @@ defmodule RhoFrameworks.Library do
         do_save_to_library(library_id, skills)
 
       true ->
-        # Published library — auto-create a draft and save there
         case create_draft_from_latest(org_id, lib.name) do
           {:ok, %{library: draft}} ->
             save_skills_to_draft(draft.id, skills)
@@ -756,9 +704,7 @@ defmodule RhoFrameworks.Library do
     normalized = Enum.map(skills, &normalize_skill_attrs/1)
 
     Ecto.Multi.new()
-    |> Ecto.Multi.run(:skills, fn _repo, _ ->
-      bulk_upsert_skills(library_id, normalized)
-    end)
+    |> Ecto.Multi.run(:skills, fn _repo, _ -> bulk_upsert_skills(library_id, normalized) end)
     |> Repo.transaction()
   end
 
@@ -783,12 +729,8 @@ defmodule RhoFrameworks.Library do
     |> maybe_filter(:categories, categories)
     |> maybe_filter(:status, status)
     |> Repo.all()
-    |> Enum.map(fn row ->
-      %{row | proficiency_levels: row.proficiency_levels || []}
-    end)
+    |> Enum.map(fn row -> %{row | proficiency_levels: row.proficiency_levels || []} end)
   end
-
-  # --- Browse Library ---
 
   @doc "Total number of skills in a library. Cheap aggregate query."
   def skill_count(library_id) when is_binary(library_id) do
@@ -808,11 +750,7 @@ defmodule RhoFrameworks.Library do
       where: s.library_id == ^library_id,
       group_by: [s.category, s.cluster],
       order_by: [s.category, s.cluster],
-      select: %{
-        category: s.category,
-        cluster: s.cluster,
-        count: count(s.id)
-      }
+      select: %{category: s.category, cluster: s.cluster, count: count(s.id)}
     )
     |> maybe_filter(:status, status)
     |> Repo.all()
@@ -822,8 +760,7 @@ defmodule RhoFrameworks.Library do
   Loads skills in one (category, cluster) cell of a library, ordered for display.
   `category` and `cluster` may be nil to match rows with no value.
   """
-  def list_cluster_skills(library_id, category, cluster, opts \\ [])
-      when is_binary(library_id) do
+  def list_cluster_skills(library_id, category, cluster, opts \\ []) when is_binary(library_id) do
     status = Keyword.get(opts, :status)
 
     from(s in Skill,
@@ -857,9 +794,7 @@ defmodule RhoFrameworks.Library do
     from(s in Skill,
       where: s.library_id == ^library_id,
       where:
-        like(s.name, ^pattern) or
-          like(s.description, ^pattern) or
-          like(s.category, ^pattern) or
+        like(s.name, ^pattern) or like(s.description, ^pattern) or like(s.category, ^pattern) or
           like(s.cluster, ^pattern),
       order_by: [s.category, s.cluster, s.sort_order, s.name],
       select: %{
@@ -890,8 +825,13 @@ defmodule RhoFrameworks.Library do
     |> Repo.one()
   end
 
-  defp where_match(query, field, nil), do: from(s in query, where: is_nil(field(s, ^field)))
-  defp where_match(query, field, value), do: from(s in query, where: field(s, ^field) == ^value)
+  defp where_match(query, field, nil) do
+    from(s in query, where: is_nil(field(s, ^field)))
+  end
+
+  defp where_match(query, field, value) do
+    from(s in query, where: field(s, ^field) == ^value)
+  end
 
   def browse_library(library_id, opts \\ []) do
     list_skills(library_id, opts)
@@ -909,8 +849,6 @@ defmodule RhoFrameworks.Library do
     end)
   end
 
-  # --- Search ---
-
   def search_skills(library_id, query, opts \\ []) do
     category = Keyword.get(opts, :category)
     limit = Keyword.get(opts, :limit, 50)
@@ -919,9 +857,7 @@ defmodule RhoFrameworks.Library do
     from(s in Skill,
       where: s.library_id == ^library_id,
       where:
-        like(s.name, ^pattern) or
-          like(s.description, ^pattern) or
-          like(s.category, ^pattern) or
+        like(s.name, ^pattern) or like(s.description, ^pattern) or like(s.category, ^pattern) or
           like(s.cluster, ^pattern),
       limit: ^limit,
       order_by: s.name
@@ -941,9 +877,7 @@ defmodule RhoFrameworks.Library do
         join: l in Library,
         on: s.library_id == l.id,
         where:
-          like(s.name, ^pattern) or
-            like(s.description, ^pattern) or
-            like(s.category, ^pattern),
+          like(s.name, ^pattern) or like(s.description, ^pattern) or like(s.category, ^pattern),
         limit: ^limit,
         order_by: s.name,
         select: %{
@@ -970,8 +904,6 @@ defmodule RhoFrameworks.Library do
   defp scope_skills_to_visible_libraries(query, org_id, false) do
     from([_s, l] in query, where: l.organization_id == ^org_id)
   end
-
-  # --- Fork / Derive ---
 
   def fork_library(org_id, source_library_id, new_name, opts \\ []) do
     derive_library(org_id, [source_library_id], new_name, opts)
@@ -1024,66 +956,29 @@ defmodule RhoFrameworks.Library do
     attrs = add_embedding_attrs_with_source(attrs, existing, skill)
 
     case existing do
-      nil ->
-        %Skill{}
-        |> Skill.changeset(attrs)
-        |> Repo.insert()
-
-      existing ->
-        existing
-        |> Skill.changeset(Map.drop(attrs, [:library_id]))
-        |> Repo.update()
+      nil -> %Skill{} |> Skill.changeset(attrs) |> Repo.insert()
+      existing -> existing |> Skill.changeset(Map.drop(attrs, [:library_id])) |> Repo.update()
     end
   end
 
-  # Bulk copy: takes [{source_skill, target_name}] pairs (target_name may
-  # differ from source.name when disambiguated by the merge flow). Pre-fetches
-  # target slugs in a single query, batches embedding generation through one
-  # `embed_many` call (reusing the source's embedding when its text hash
-  # matches), then `insert_all`s the new rows. Existing rows in the target
-  # library still go through per-row update via the shared helper.
-  defp copy_skills_bulk([], _target_library_id), do: []
+  defp copy_skills_bulk([], _target_library_id) do
+    []
+  end
 
-  defp copy_skills_bulk(pairs, target_library_id) do
-    slugs = Enum.map(pairs, fn {_, name} -> Skill.slugify(name) end)
+  defp copy_skills_bulk(skill_name_pairs, target_library_id) do
+    slugs = Enum.map(skill_name_pairs, fn {_, name} -> Skill.slugify(name) end)
 
     existing =
       from(s in Skill, where: s.library_id == ^target_library_id and s.slug in ^slugs)
       |> Repo.all()
       |> Map.new(&{&1.slug, &1})
 
-    attr_list = build_copy_attrs_bulk(pairs, existing)
+    attr_list = build_copy_attrs_bulk(skill_name_pairs, existing)
     bulk_upsert_skill_rows(target_library_id, attr_list)
   end
 
-  defp build_copy_attrs_bulk(pairs, existing) do
-    prepared =
-      Enum.map(pairs, fn {source_skill, target_name} ->
-        attrs = base_copy_attrs(source_skill, target_name)
-        slug = Skill.slugify(target_name)
-        target_existing = Map.get(existing, slug)
-        text = embed_text_for(attrs, target_existing)
-        hash = text_hash(text)
-
-        cond do
-          target_existing && target_existing.embedding_text_hash == hash &&
-              not is_nil(target_existing.embedding) ->
-            {attrs, :reuse_target, nil, hash}
-
-          source_skill.embedding_text_hash == hash and
-              not is_nil(source_skill.embedding) ->
-            {attrs, :reuse_source, source_skill.embedding, hash}
-
-          true ->
-            {attrs, :needs_embed, text, hash}
-        end
-      end)
-
-    texts_to_embed =
-      prepared
-      |> Enum.filter(fn {_, tag, _, _} -> tag == :needs_embed end)
-      |> Enum.map(fn {_, _, text_or_vec, _} -> text_or_vec end)
-      |> Enum.uniq()
+  defp build_copy_attrs_bulk(skill_name_pairs, existing) do
+    {prepared, texts_to_embed} = prepare_copy_attrs_bulk(skill_name_pairs, existing)
 
     vec_by_text =
       case rho_embed_many(texts_to_embed) do
@@ -1091,7 +986,50 @@ defmodule RhoFrameworks.Library do
         {:error, _} -> %{}
       end
 
-    Enum.map(prepared, fn
+    apply_copy_embeddings(prepared, vec_by_text)
+  end
+
+  defp prepare_copy_attrs_bulk(copy_pairs, existing) do
+    {prepared, texts, _seen} =
+      Enum.reduce(copy_pairs, {[], [], MapSet.new()}, fn {source_skill, target_name},
+                                                         {rows, texts, seen} ->
+        prepared = prepare_copy_attrs(source_skill, target_name, existing)
+
+        case prepared do
+          {_attrs, :needs_embed, text, _hash} ->
+            {next_texts, next_seen} = append_unique_text(texts, seen, text)
+            {[prepared | rows], next_texts, next_seen}
+
+          _ ->
+            {[prepared | rows], texts, seen}
+        end
+      end)
+
+    {Enum.reverse(prepared), Enum.reverse(texts)}
+  end
+
+  defp prepare_copy_attrs(source_skill, target_name, existing) do
+    attrs = base_copy_attrs(source_skill, target_name)
+    slug = Skill.slugify(target_name)
+    target_existing = Map.get(existing, slug)
+    text = embed_text_for(attrs, target_existing)
+    hash = text_hash(text)
+
+    cond do
+      target_existing && target_existing.embedding_text_hash == hash &&
+          not is_nil(target_existing.embedding) ->
+        {attrs, :reuse_target, nil, hash}
+
+      source_skill.embedding_text_hash == hash and not is_nil(source_skill.embedding) ->
+        {attrs, :reuse_source, source_skill.embedding, hash}
+
+      true ->
+        {attrs, :needs_embed, text, hash}
+    end
+  end
+
+  defp apply_copy_embeddings(prepared_rows, vec_by_text) do
+    Enum.map(prepared_rows, fn
       {attrs, :reuse_target, _, _} ->
         attrs
 
@@ -1104,6 +1042,14 @@ defmodule RhoFrameworks.Library do
           vec -> put_embedding_fields(attrs, vec, hash)
         end
     end)
+  end
+
+  defp append_unique_text(texts, seen, text) do
+    if MapSet.member?(seen, text) do
+      {texts, seen}
+    else
+      {[text | texts], MapSet.put(seen, text)}
+    end
   end
 
   defp base_copy_attrs(source_skill, target_name) do
@@ -1120,8 +1066,6 @@ defmodule RhoFrameworks.Library do
     }
   end
 
-  # --- Diff ---
-
   def diff_against_source(org_id, library_id) do
     lib = get_library!(org_id, library_id) |> Repo.preload(:derived_from)
 
@@ -1129,11 +1073,7 @@ defmodule RhoFrameworks.Library do
       source_skills = list_skills(lib.derived_from_id) |> Map.new(&{&1.id, &1})
       fork_skills = list_skills(library_id)
       fork_by_source = Map.new(fork_skills, fn s -> {s.source_skill_id, s} end)
-
-      added =
-        fork_skills
-        |> Enum.filter(&is_nil(&1.source_skill_id))
-        |> Enum.map(& &1.name)
+      added = fork_skills |> Enum.filter(&is_nil(&1.source_skill_id)) |> Enum.map(& &1.name)
 
       removed =
         source_skills
@@ -1148,8 +1088,7 @@ defmodule RhoFrameworks.Library do
         end)
         |> Enum.map(fn {_, s} -> s.name end)
 
-      unchanged_count =
-        length(fork_skills) - length(added) - length(modified)
+      unchanged_count = length(fork_skills) - length(added) - length(modified)
 
       {:ok,
        %{
@@ -1164,12 +1103,9 @@ defmodule RhoFrameworks.Library do
   end
 
   defp skill_modified?(source, fork) do
-    source.name != fork.name ||
-      source.description != fork.description ||
+    source.name != fork.name || source.description != fork.description ||
       source.proficiency_levels != fork.proficiency_levels
   end
-
-  # --- Combine Libraries ---
 
   @doc """
   Preview what combining source libraries would produce, without writing to DB.
@@ -1189,22 +1125,17 @@ defmodule RhoFrameworks.Library do
         end
       end)
 
-    # Collect all skills tagged with their source library
     tagged_skills =
       Enum.flat_map(sources, fn src ->
-        list_skills(src.id)
-        |> Enum.map(fn skill -> {skill, src} end)
+        list_skills(src.id) |> Enum.map(fn skill -> {skill, src} end)
       end)
 
-    # Build slug groups to find cross-source conflicts
-    slug_groups =
-      Enum.group_by(tagged_skills, fn {skill, _src} -> Skill.slugify(skill.name) end)
+    slug_groups = Enum.group_by(tagged_skills, fn {skill, _src} -> Skill.slugify(skill.name) end)
 
-    # Skills with slug collisions across different sources are conflicts
     {clean_tagged, conflict_groups} =
       Enum.split_with(slug_groups, fn {_slug, group} ->
         source_ids = group |> Enum.map(fn {_s, src} -> src.id end) |> Enum.uniq()
-        length(source_ids) <= 1 or length(group) <= 1
+        !match?([_, _ | _], source_ids) or !match?([_, _ | _], group)
       end)
 
     clean =
@@ -1220,37 +1151,28 @@ defmodule RhoFrameworks.Library do
         }
       end)
 
-    # For conflict groups, also run word-overlap detection within each group
     slug_conflicts =
-      Enum.flat_map(conflict_groups, fn {_slug, group} ->
-        cross_source_pairs(group)
-      end)
+      Enum.flat_map(conflict_groups, fn {_slug, group} -> cross_source_pairs(group) end)
 
-    # Additionally, run word-overlap across all source skills for non-slug matches
     all_skills = Enum.map(tagged_skills, fn {skill, src} -> {skill, src} end)
     word_conflicts = find_cross_source_word_overlaps(all_skills)
 
-    # Merge and deduplicate conflict pairs
     all_conflicts =
-      (slug_conflicts ++ word_conflicts)
-      |> deduplicate_pairs()
-      |> enrich_preview_conflicts()
+      (slug_conflicts ++ word_conflicts) |> deduplicate_pairs() |> enrich_preview_conflicts()
 
-    # Skills involved in conflicts
     conflicted_ids =
-      all_conflicts
-      |> Enum.flat_map(fn c -> [c.skill_a.id, c.skill_b.id] end)
-      |> MapSet.new()
+      all_conflicts |> Enum.flat_map(fn c -> [c.skill_a.id, c.skill_b.id] end) |> MapSet.new()
 
-    # Remove conflicted skills from clean list
     clean = Enum.reject(clean, fn s -> MapSet.member?(conflicted_ids, s.skill_id) end)
+
+    counts_by_source = Enum.frequencies_by(tagged_skills, fn {_skill, src} -> src.id end)
 
     source_summaries =
       Enum.map(sources, fn src ->
         %{
           id: src.id,
           name: src.name,
-          skill_count: Enum.count(tagged_skills, fn {_s, s} -> s.id == src.id end)
+          skill_count: Map.get(counts_by_source, src.id, 0)
         }
       end)
 
@@ -1277,13 +1199,7 @@ defmodule RhoFrameworks.Library do
       when is_list(source_library_ids) do
     description = Keyword.get(opts, :description)
 
-    sources =
-      Enum.map(source_library_ids, fn id ->
-        case get_library(org_id, id) do
-          nil -> get_public_library!(id)
-          lib -> lib
-        end
-      end)
+    sources = load_source_libraries(org_id, source_library_ids)
 
     desc =
       description ||
@@ -1292,7 +1208,6 @@ defmodule RhoFrameworks.Library do
           many -> "Combined from: #{Enum.map_join(many, ", ", & &1.name)}"
         end
 
-    # Build skip/merge/disambiguate sets from resolutions
     {skip_ids, merge_map, disambiguate_ids} = build_resolution_plan(resolutions)
 
     Ecto.Multi.new()
@@ -1312,17 +1227,11 @@ defmodule RhoFrameworks.Library do
         |> Enum.flat_map(fn src -> list_skills(src.id) end)
         |> Enum.reject(&MapSet.member?(skip_ids, &1.id))
 
-      # First pass: copy non-skipped skills. Skills in disambiguate_ids
-      # (keep_both resolutions) get a "(N)" suffix on slug collision
-      # instead of being deduped away.
       {copied, _seen} =
         copy_skills_with_targeted_disambiguation(eligible_skills, lib.id, disambiguate_ids)
 
-      # Second pass: apply merge resolutions (absorb proficiency levels from dropped skill)
       copied_by_source = Map.new(copied, fn s -> {s.source_skill_id, s} end)
-
       apply_merge_resolutions(merge_map, copied_by_source)
-
       {:ok, Map.new(Enum.reverse(copied), &{&1.source_skill_id, &1})}
     end)
     |> Repo.transaction()
@@ -1335,10 +1244,6 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # Build skip set and merge map from resolutions.
-  # Accepts two formats:
-  #   1. %{"skill_a_id" => id, "skill_b_id" => id, "action" => ..., "keep" => id}
-  #   2. %{"conflict_id" => "id_a:id_b", "action" => ..., "keep_skill_id" => id}
   defp build_resolution_plan(resolutions) do
     resolutions
     |> Enum.map(&normalize_resolution/1)
@@ -1352,14 +1257,23 @@ defmodule RhoFrameworks.Library do
 
     case res["action"] do
       action when action in ["pick", "merge"] ->
-        drop_id = if keep_id == a_id, do: b_id, else: a_id
-        merges = if action == "merge", do: Map.put(merges, keep_id, drop_id), else: merges
+        drop_id =
+          if keep_id == a_id do
+            b_id
+          else
+            a_id
+          end
+
+        merges =
+          if action == "merge" do
+            Map.put(merges, keep_id, drop_id)
+          else
+            merges
+          end
+
         {MapSet.put(skip, drop_id), merges, disambiguate}
 
       "keep_both" when is_binary(a_id) and is_binary(b_id) ->
-        # Both skills survive; whichever is iterated second hits a slug
-        # collision and gets a "(N)" suffix in
-        # copy_skills_with_targeted_disambiguation/3.
         {skip, merges, disambiguate |> MapSet.put(a_id) |> MapSet.put(b_id)}
 
       _ ->
@@ -1367,7 +1281,6 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # Normalize agent format (conflict_id + keep_skill_id) to canonical format
   defp normalize_resolution(%{"conflict_id" => conflict_id} = res) do
     case String.split(conflict_id, ":") do
       [a_id, b_id] ->
@@ -1383,38 +1296,51 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  defp normalize_resolution(res), do: res
-
-  # Generate conflict pairs from skills that share a slug but come from different sources
-  defp cross_source_pairs(tagged_group) do
-    for {skill_a, src_a} <- tagged_group,
-        {skill_b, src_b} <- tagged_group,
-        skill_a.id < skill_b.id,
-        src_a.id != src_b.id do
-      %{
-        skill_a: preview_skill_summary(skill_a, src_a),
-        skill_b: preview_skill_summary(skill_b, src_b),
-        confidence: :high,
-        detection_method: :slug_prefix
-      }
-    end
+  defp normalize_resolution(res) do
+    res
   end
 
-  # Find word-overlap duplicates across source boundaries (not caught by slug match)
-  defp find_cross_source_word_overlaps(tagged_skills) do
-    for {skill_a, src_a} <- tagged_skills,
-        {skill_b, src_b} <- tagged_skills,
-        skill_a.id < skill_b.id,
-        src_a.id != src_b.id,
-        Skill.slugify(skill_a.name) != Skill.slugify(skill_b.name),
-        jaccard_similarity(skill_a.name, skill_b.name) >= 0.5 do
-      %{
-        skill_a: preview_skill_summary(skill_a, src_a),
-        skill_b: preview_skill_summary(skill_b, src_b),
-        confidence: :medium,
-        detection_method: :word_overlap
-      }
-    end
+  defp cross_source_pairs(tagged_group) do
+    tagged_group
+    |> unordered_pairs()
+    |> Enum.flat_map(fn {{skill_a, src_a}, {skill_b, src_b}} ->
+      if src_a.id != src_b.id do
+        {summary_a, summary_b} = ordered_preview_pair({skill_a, src_a}, {skill_b, src_b})
+
+        [
+          %{
+            skill_a: summary_a,
+            skill_b: summary_b,
+            confidence: :high,
+            detection_method: :slug_prefix
+          }
+        ]
+      else
+        []
+      end
+    end)
+  end
+
+  defp find_cross_source_word_overlaps(tagged_rows) do
+    tagged_rows
+    |> unordered_pairs()
+    |> Enum.flat_map(fn {{skill_a, src_a}, {skill_b, src_b}} ->
+      if src_a.id != src_b.id and Skill.slugify(skill_a.name) != Skill.slugify(skill_b.name) and
+           jaccard_similarity(skill_a.name, skill_b.name) >= 0.5 do
+        {summary_a, summary_b} = ordered_preview_pair({skill_a, src_a}, {skill_b, src_b})
+
+        [
+          %{
+            skill_a: summary_a,
+            skill_b: summary_b,
+            confidence: :medium,
+            detection_method: :word_overlap
+          }
+        ]
+      else
+        []
+      end
+    end)
   end
 
   defp preview_skill_summary(skill, source) do
@@ -1435,10 +1361,16 @@ defmodule RhoFrameworks.Library do
     }
   end
 
+  defp ordered_preview_pair({skill_a, src_a}, {skill_b, src_b}) do
+    if skill_a.id < skill_b.id do
+      {preview_skill_summary(skill_a, src_a), preview_skill_summary(skill_b, src_b)}
+    else
+      {preview_skill_summary(skill_b, src_b), preview_skill_summary(skill_a, src_a)}
+    end
+  end
+
   defp enrich_preview_conflicts(conflicts) do
-    skill_ids =
-      Enum.flat_map(conflicts, fn c -> [c.skill_a.id, c.skill_b.id] end)
-      |> Enum.uniq()
+    skill_ids = Enum.flat_map(conflicts, fn c -> [c.skill_a.id, c.skill_b.id] end) |> Enum.uniq()
 
     role_counts =
       if skill_ids == [] do
@@ -1467,7 +1399,14 @@ defmodule RhoFrameworks.Library do
     combine_commit(org_id, source_library_ids, new_name, [], opts)
   end
 
-  # --- Derive Library (unified fork + combine) ---
+  defp load_source_libraries(org_id, source_ids) do
+    Enum.map(source_ids, fn id ->
+      case get_library(org_id, id) do
+        nil -> get_public_library!(id)
+        lib -> lib
+      end
+    end)
+  end
 
   @doc """
   Create a new mutable library by copying skills from one or more source libraries.
@@ -1481,13 +1420,7 @@ defmodule RhoFrameworks.Library do
     categories = Keyword.get(opts, :categories, :all)
     description = Keyword.get(opts, :description)
 
-    sources =
-      Enum.map(source_library_ids, fn id ->
-        case get_library(org_id, id) do
-          nil -> get_public_library!(id)
-          lib -> lib
-        end
-      end)
+    sources = load_source_libraries(org_id, source_library_ids)
 
     desc =
       description ||
@@ -1513,12 +1446,6 @@ defmodule RhoFrameworks.Library do
     |> Repo.transaction()
   end
 
-  # Single-source forks have no slug-collision risk (skills.library_id+slug is
-  # unique), so we can copy entirely inside Postgres with INSERT … SELECT —
-  # no data leaves the DB, embeddings are reused as-is, and bound params stay
-  # constant regardless of skill count. Multi-source forks keep the
-  # disambiguation path because the same slug can legitimately appear in two
-  # sources with different descriptions.
   defp copy_sources_skills([single_source], target_lib_id, categories) do
     count = copy_skills_via_sql(single_source.id, target_lib_id, categories)
     {:ok, count}
@@ -1526,9 +1453,7 @@ defmodule RhoFrameworks.Library do
 
   defp copy_sources_skills(sources, target_lib_id, categories) do
     all_skills =
-      Enum.flat_map(sources, fn src ->
-        list_skills(src.id, skills_filter_opts(categories))
-      end)
+      Enum.flat_map(sources, fn src -> list_skills(src.id, skills_filter_opts(categories)) end)
 
     {copied, _seen} = copy_skills_with_disambiguation(all_skills, target_lib_id)
     {:ok, length(copied)}
@@ -1571,8 +1496,6 @@ defmodule RhoFrameworks.Library do
     n
   end
 
-  # --- Import Library ---
-
   def import_library(org_id, skill_maps, opts \\ []) do
     name = Keyword.get(opts, :name, "Imported Library")
     description = Keyword.get(opts, :description)
@@ -1588,8 +1511,6 @@ defmodule RhoFrameworks.Library do
     end)
     |> Repo.transaction()
   end
-
-  # --- Template Loading ---
 
   def load_template(org_id, source_key, template_data, opts \\ []) do
     visibility = Keyword.get(opts, :visibility, "private")
@@ -1615,7 +1536,9 @@ defmodule RhoFrameworks.Library do
     |> Repo.transaction()
   end
 
-  defp create_template_role_profiles(_org_id, _lib, [], _skills), do: []
+  defp create_template_role_profiles(_org_id, _lib, [], _skills) do
+    []
+  end
 
   defp create_template_role_profiles(org_id, lib, role_profile_defs, skills) do
     skill_by_name = Map.new(skills, fn skill -> {skill.name, skill} end)
@@ -1657,16 +1580,11 @@ defmodule RhoFrameworks.Library do
     rp
   end
 
-  # --- Deduplication ---
-
   def find_duplicates(library_id, opts \\ []) do
     depth = Keyword.get(opts, :depth, :standard)
-
     skills = list_skills(library_id)
     dismissed = list_dismissed_pairs(library_id)
-
-    candidates =
-      find_slug_prefix_overlaps(skills) ++ find_word_overlap_in_category(skills)
+    candidates = find_slug_prefix_overlaps(skills) ++ find_word_overlap_in_category(skills)
 
     candidates =
       if depth == :deep do
@@ -1703,7 +1621,6 @@ defmodule RhoFrameworks.Library do
          :ok <- ensure_mutable!(target.library) do
       new_name = Keyword.get(opts, :new_name)
       conflict_strategy = Keyword.get(opts, :on_conflict, :keep_higher)
-
       source_refs = Repo.all(from(rs in RoleSkill, where: rs.skill_id == ^source_id))
 
       target_ref_map =
@@ -1726,11 +1643,8 @@ defmodule RhoFrameworks.Library do
       |> Ecto.Multi.run(:levels, fn _repo, _ ->
         {:ok, merge_proficiency_levels(source, target)}
       end)
-      |> Ecto.Multi.run(:rename, fn _repo, _ ->
-        maybe_rename_skill(target, new_name)
-      end)
+      |> Ecto.Multi.run(:rename, fn _repo, _ -> maybe_rename_skill(target, new_name) end)
       |> Ecto.Multi.run(:delete_source, fn _repo, _ ->
-        # Delete orphaned source role_skills first
         from(rs in RoleSkill, where: rs.skill_id == ^source_id) |> Repo.delete_all()
         Repo.delete(source)
       end)
@@ -1741,11 +1655,8 @@ defmodule RhoFrameworks.Library do
   defp apply_merge_resolutions(merge_map, copied_by_source) do
     Enum.each(merge_map, fn {keep_id, absorb_id} ->
       case {Map.get(copied_by_source, keep_id), Repo.get(Skill, absorb_id)} do
-        {%Skill{} = target, %Skill{} = source} ->
-          merge_proficiency_levels(source, target)
-
-        _ ->
-          :ok
+        {%Skill{} = target, %Skill{} = source} -> merge_proficiency_levels(source, target)
+        _ -> :ok
       end
     end)
   end
@@ -1757,33 +1668,29 @@ defmodule RhoFrameworks.Library do
   end
 
   defp count_slug_variants(slugs, slug) do
-    Enum.count(slugs, fn {k, _} -> String.starts_with?(k, slug <> "-") end)
+    Enum.count(slugs, fn
+      {key, _value} -> String.starts_with?(key, slug <> "-")
+      key -> String.starts_with?(key, slug <> "-")
+    end)
   end
 
-  # Copy skills with optional targeted disambiguation. Skills whose id
-  # is in `disambiguate_ids` (keep_both resolutions) get a "(N)" suffix
-  # on slug collision; all others fall back to slug-dedup (skip).
-  # Equivalent to the deleted `copy_skills_deduped` when the set is
-  # empty.
-  defp copy_skills_with_targeted_disambiguation(skills, library_id, disambiguate_ids) do
+  defp copy_skills_with_targeted_disambiguation(skill_rows, library_id, disambiguate_ids) do
     {pairs, _slugs} =
-      Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
+      Enum.reduce(skill_rows, {[], MapSet.new()}, fn skill, {acc, slugs} ->
         slug = Skill.slugify(skill.name)
 
-        case Map.get(slugs, slug) do
-          nil ->
-            {[{skill, skill.name} | acc], Map.put(slugs, slug, true)}
+        if MapSet.member?(slugs, slug) do
+          if MapSet.member?(disambiguate_ids, skill.id) do
+            counter = count_slug_variants(slugs, slug) + 2
+            disambiguated_name = "#{skill.name} (#{counter})"
 
-          _existing ->
-            if MapSet.member?(disambiguate_ids, skill.id) do
-              counter = count_slug_variants(slugs, slug) + 2
-              disambiguated_name = "#{skill.name} (#{counter})"
-
-              {[{skill, disambiguated_name} | acc],
-               Map.put(slugs, Skill.slugify(disambiguated_name), true)}
-            else
-              {acc, slugs}
-            end
+            {[{skill, disambiguated_name} | acc],
+             MapSet.put(slugs, Skill.slugify(disambiguated_name))}
+          else
+            {acc, slugs}
+          end
+        else
+          {[{skill, skill.name} | acc], MapSet.put(slugs, slug)}
         end
       end)
 
@@ -1791,9 +1698,9 @@ defmodule RhoFrameworks.Library do
     {copied, %{}}
   end
 
-  defp copy_skills_with_disambiguation(skills, library_id) do
+  defp copy_skills_with_disambiguation(disambiguation_rows, library_id) do
     {pairs, _slugs} =
-      Enum.reduce(skills, {[], %{}}, fn skill, {acc, slugs} ->
+      Enum.reduce(disambiguation_rows, {[], %{}}, fn skill, {acc, slugs} ->
         slug = Skill.slugify(skill.name)
 
         case Map.get(slugs, slug) do
@@ -1823,7 +1730,9 @@ defmodule RhoFrameworks.Library do
     end)
   end
 
-  defp maybe_rename_skill(_skill, nil), do: {:ok, nil}
+  defp maybe_rename_skill(_skill, nil) do
+    {:ok, nil}
+  end
 
   defp maybe_rename_skill(skill, new_name) do
     skill |> Skill.changeset(%{name: new_name}) |> Repo.update()
@@ -1831,7 +1740,11 @@ defmodule RhoFrameworks.Library do
 
   def dismiss_duplicate(library_id, skill_a_id, skill_b_id) do
     {id_a, id_b} =
-      if skill_a_id < skill_b_id, do: {skill_a_id, skill_b_id}, else: {skill_b_id, skill_a_id}
+      if skill_a_id < skill_b_id do
+        {skill_a_id, skill_b_id}
+      else
+        {skill_b_id, skill_a_id}
+      end
 
     %DuplicateDismissal{}
     |> DuplicateDismissal.changeset(%{library_id: library_id, skill_a_id: id_a, skill_b_id: id_b})
@@ -1839,84 +1752,56 @@ defmodule RhoFrameworks.Library do
   end
 
   def consolidation_report(library_id) do
-    skills = list_skills(library_id) |> Repo.preload(:role_skills)
+    report_skills = list_skills(library_id) |> Repo.preload(:role_skills)
     duplicates = find_duplicates(library_id)
 
-    drafts =
-      skills
-      |> Enum.filter(&(&1.status == "draft"))
-      |> Enum.sort_by(fn s -> -length(s.role_skills) end)
-      |> Enum.map(fn s ->
-        %{id: s.id, name: s.name, role_count: length(s.role_skills)}
-      end)
-
-    orphans =
-      skills
-      |> Enum.filter(fn s -> s.role_skills == [] end)
-      |> Enum.map(fn s -> %{id: s.id, name: s.name, status: s.status} end)
+    {drafts, orphans} = consolidation_buckets(report_skills)
 
     %{
-      total_skills: length(skills),
+      total_skills: length(report_skills),
       duplicate_pairs: duplicates,
       drafts: drafts,
       orphans: orphans
     }
   end
 
-  # --- LLM-based semantic dedup ---
-  #
-  # Two-stage funnel keeps cost flat as the library grows:
-  #   1. Embedding pre-filter — pgvector cosine distance (`<=>`) finds pairs
-  #      of skills whose embeddings cluster within
-  #      @semantic_distance_threshold. Surfaces cross-name matches the jaro
-  #      filter cannot catch ("数据分析" ↔ "Data Analysis"). Skills without
-  #      embeddings (load failed, backfill not yet run) fall back to a
-  #      jaro pairwise filter against the full skill list.
-  #   2. LLM verification — chunked candidate pairs run in parallel; the
-  #      model only sees plausible pairs and returns the indices that are
-  #      TRUE duplicates. Token cost scales with candidate-pair count, not
-  #      total skill count.
+  defp consolidation_buckets(report_skills) do
+    {drafts, orphans} =
+      Enum.reduce(report_skills, {[], []}, fn skill, {drafts, orphans} ->
+        next_drafts =
+          if skill.status == "draft" do
+            [%{id: skill.id, name: skill.name, role_count: length(skill.role_skills)} | drafts]
+          else
+            drafts
+          end
 
-  # Cosine distance threshold (1 - cosine_similarity). 0.40 picked for
-  # the post-LLM pipeline: dropping the LLM verifier means the cosine
-  # filter alone is the signal, so we tighten the threshold so the
-  # candidate set stays manageable for human review (~120 pairs at
-  # 157 skills; ~600 at 0.50 was too noisy without LLM filtering).
-  @semantic_distance_threshold 0.40
+        next_orphans =
+          if skill.role_skills == [] do
+            [%{id: skill.id, name: skill.name, status: skill.status} | orphans]
+          else
+            orphans
+          end
 
-  # Confidence tiers for semantic pairs based on cosine distance.
-  # Tighter distance ⇒ more likely a real duplicate.
-  @semantic_high_distance_threshold 0.20
-  @semantic_medium_distance_threshold 0.30
+        {next_drafts, next_orphans}
+      end)
 
-  # Soft cap on neighbors-per-skill returned by the HNSW KNN inner query.
-  # Empirically the largest neighbor set we've seen per skill is ~30 at
-  # 0.50; 200 is a generous ceiling. If a skill has >200 neighbors
-  # within threshold, the tail gets dropped — accepted because the
-  # tail is increasingly noisy and the LLM filter is the precision
-  # gate.
+    {Enum.sort_by(drafts, &(-&1.role_count)), Enum.reverse(orphans)}
+  end
+
+  @semantic_distance_threshold 0.4
+  @semantic_high_distance_threshold 0.2
+  @semantic_medium_distance_threshold 0.3
   @semantic_knn_top_k 200
-
   @semantic_jaro_fallback_threshold 0.6
+  defp find_semantic_duplicates_via_llm(_library_id, []), do: []
+  defp find_semantic_duplicates_via_llm(_library_id, [_]), do: []
 
-  # Embedding-only semantic dedup. Returns pairs with their cosine
-  # distance attached so the UI / caller can rank candidates and apply
-  # its own threshold per use case.
-  #
-  # An LLM verifier was tried (DeepSeek-V3, Gemini 2.5 Flash, Haiku 4.5,
-  # GPT-4o-mini, gpt-oss-120b) and rejected: the FSFM eval found ~75%
-  # false-positive rate on the LLM's "confirmed" pairs regardless of
-  # prompt iteration. The cosine signal is cleaner — surface it as
-  # candidates, let humans dismiss/merge via `dismiss_duplicate/3`.
-  defp find_semantic_duplicates_via_llm(_library_id, skills) when length(skills) < 2, do: []
-
-  defp find_semantic_duplicates_via_llm(library_id, skills) do
+  defp find_semantic_duplicates_via_llm(library_id, semantic_rows) do
     embedding_pairs = candidate_pairs_via_embedding_with_distance(library_id)
 
     fallback_pairs =
-      candidate_pairs_via_jaro_fallback(skills)
-      # Jaro-only pairs don't have a meaningful cosine distance — tag
-      # them with nil and bucket them as :low confidence.
+      semantic_rows
+      |> candidate_pairs_via_jaro_fallback()
       |> Enum.map(fn {a, b} -> {a, b, nil} end)
 
     (embedding_pairs ++ fallback_pairs)
@@ -1925,7 +1810,12 @@ defmodule RhoFrameworks.Library do
   end
 
   defp build_semantic_pair_with_distance({a, b, distance}) do
-    {sa, sb} = if a.id < b.id, do: {a, b}, else: {b, a}
+    {sa, sb} =
+      if a.id < b.id do
+        {a, b}
+      else
+        {b, a}
+      end
 
     %{
       skill_a: %{id: sa.id, name: sa.name, category: sa.category},
@@ -1936,66 +1826,68 @@ defmodule RhoFrameworks.Library do
     }
   end
 
-  defp confidence_from_distance(nil), do: :low
-  defp confidence_from_distance(d) when d < @semantic_high_distance_threshold, do: :high
-  defp confidence_from_distance(d) when d < @semantic_medium_distance_threshold, do: :medium
-  defp confidence_from_distance(_), do: :low
-
-  defp sorted_pair_key(id_a, id_b) do
-    if id_a < id_b, do: {id_a, id_b}, else: {id_b, id_a}
+  defp confidence_from_distance(nil) do
+    :low
   end
 
-  # Per-skill KNN via LATERAL join. The inner subquery's
-  # `ORDER BY ... <=> ... LIMIT N` is exactly the shape pgvector's HNSW
-  # index accelerates — drops a 6s pairwise scan to sub-second on real
-  # libraries. Returns {skill_a, skill_b, cosine_distance} triples; the
-  # full Skill rows are fetched in a single follow-up query and stitched
-  # back together.
+  defp confidence_from_distance(d) when d < @semantic_high_distance_threshold do
+    :high
+  end
+
+  defp confidence_from_distance(d) when d < @semantic_medium_distance_threshold do
+    :medium
+  end
+
+  defp confidence_from_distance(_) do
+    :low
+  end
+
+  defp sorted_pair_key(id_a, id_b) do
+    if id_a < id_b do
+      {id_a, id_b}
+    else
+      {id_b, id_a}
+    end
+  end
+
   defp candidate_pairs_via_embedding_with_distance(library_id) do
     threshold = @semantic_distance_threshold
     top_k = @semantic_knn_top_k
+    sql = "SELECT s1.id AS a_id, s2.id AS b_id, s2.dist AS dist
+FROM skills s1
+CROSS JOIN LATERAL (
+  SELECT s.id, (s.embedding <=> s1.embedding) AS dist
+  FROM skills s
+  WHERE s.library_id = s1.library_id
+    AND s.id > s1.id
+    AND s.embedding IS NOT NULL
+    AND (s.embedding <=> s1.embedding) < $2
+  ORDER BY s.embedding <=> s1.embedding
+  LIMIT $3
+) s2
+WHERE s1.library_id = $1
+  AND s1.embedding IS NOT NULL
+"
 
-    sql = """
-    SELECT s1.id AS a_id, s2.id AS b_id, s2.dist AS dist
-    FROM skills s1
-    CROSS JOIN LATERAL (
-      SELECT s.id, (s.embedding <=> s1.embedding) AS dist
-      FROM skills s
-      WHERE s.library_id = s1.library_id
-        AND s.id > s1.id
-        AND s.embedding IS NOT NULL
-        AND (s.embedding <=> s1.embedding) < $2
-      ORDER BY s.embedding <=> s1.embedding
-      LIMIT $3
-    ) s2
-    WHERE s1.library_id = $1
-      AND s1.embedding IS NOT NULL
-    """
-
-    %{rows: rows} =
+    %{rows: db_rows} =
       Repo.query!(sql, [Ecto.UUID.dump!(library_id), threshold, top_k],
         timeout: :timer.minutes(2)
       )
 
-    case rows do
+    case db_rows do
       [] ->
         []
 
       _ ->
         triples =
-          Enum.map(rows, fn [a_uuid, b_uuid, dist] ->
+          Enum.map(db_rows, fn [a_uuid, b_uuid, dist] ->
             {Ecto.UUID.cast!(a_uuid), Ecto.UUID.cast!(b_uuid), dist}
           end)
 
-        ids =
-          triples
-          |> Enum.flat_map(fn {a, b, _} -> [a, b] end)
-          |> Enum.uniq()
+        ids = triples |> Enum.flat_map(fn {a, b, _} -> [a, b] end) |> Enum.uniq()
 
         skills_by_id =
-          from(s in Skill, where: s.id in ^ids)
-          |> Repo.all()
-          |> Map.new(&{&1.id, &1})
+          from(s in Skill, where: s.id in ^ids) |> Repo.all() |> Map.new(&{&1.id, &1})
 
         Enum.map(triples, fn {a_id, b_id, dist} ->
           {Map.fetch!(skills_by_id, a_id), Map.fetch!(skills_by_id, b_id), dist}
@@ -2003,60 +1895,35 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # Jaro fallback for skills missing embeddings — pairs each non-embedded
-  # skill against the full library list so a non-embedded row can still
-  # pair with an embedded one. Runs in-memory; cheap O(n) per non-embedded
-  # skill.
-  defp candidate_pairs_via_jaro_fallback(skills) do
-    {without_embedding, _with_embedding} =
-      Enum.split_with(skills, fn s -> is_nil(s.embedding) end)
+  defp candidate_pairs_via_jaro_fallback(jaro_rows) do
+    threshold = @semantic_jaro_fallback_threshold
 
-    case without_embedding do
-      [] ->
+    jaro_rows
+    |> unordered_pairs()
+    |> Enum.flat_map(fn {a, b} ->
+      if (is_nil(a.embedding) or is_nil(b.embedding)) and
+           String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold do
+        [{a, b}]
+      else
         []
-
-      _ ->
-        threshold = @semantic_jaro_fallback_threshold
-
-        for a <- without_embedding,
-            b <- skills,
-            a.id != b.id,
-            String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold do
-          if a.id < b.id, do: {a, b}, else: {b, a}
-        end
-    end
+      end
+    end)
   end
-
-  # --- Embedding helpers ---
-  #
-  # Embeddings are computed inline on upsert so dedup pre-filtering can run
-  # against pgvector's `<=>` operator. The text is `name\ndescription`,
-  # SHA-256 hashed for change detection — re-embedding only happens when the
-  # hash differs (or when no embedding has ever been written).
-  #
-  # If RhoEmbeddings returns `{:error, :not_ready | :disabled | _}`, we log
-  # and save the row WITHOUT an embedding. The `BackfillEmbeddings` mix
-  # task picks these up later.
 
   defp add_embedding_attrs(attrs, existing) do
     text = embed_text_for(attrs, existing)
     hash = text_hash(text)
 
-    cond do
-      existing && existing.embedding_text_hash == hash && not is_nil(existing.embedding) ->
-        attrs
-
-      true ->
-        case rho_embed_one(text) do
-          {:ok, vec} -> put_embedding_fields(attrs, vec, hash)
-          {:error, _} -> attrs
-        end
+    if existing && existing.embedding_text_hash == hash && not is_nil(existing.embedding) do
+      attrs
+    else
+      case rho_embed_one(text) do
+        {:ok, vec} -> put_embedding_fields(attrs, vec, hash)
+        {:error, _} -> attrs
+      end
     end
   end
 
-  # Like add_embedding_attrs/2 but, on a fresh copy whose source row already
-  # has an embedding for the exact same text, copies that embedding instead
-  # of calling embed_many. Cheaper than re-embedding for fork/derive paths.
   defp add_embedding_attrs_with_source(attrs, existing, source_skill) do
     text = embed_text_for(attrs, existing)
     hash = text_hash(text)
@@ -2077,29 +1944,8 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  # Bulk path: build texts that need embedding for the whole batch, run a
-  # single embed_many call, then merge results back per-attrs. No-op for
-  # rows where the existing hash already matches the new text.
-  defp add_embedding_attrs_bulk(attr_list, existing_by_slug) do
-    prepared =
-      Enum.map(attr_list, fn attrs ->
-        slug = Skill.slugify(attrs[:name])
-        existing = Map.get(existing_by_slug, slug)
-        text = embed_text_for(attrs, existing)
-        hash = text_hash(text)
-
-        needs_embed? =
-          is_nil(existing) or existing.embedding_text_hash != hash or
-            is_nil(existing.embedding)
-
-        {attrs, text, hash, needs_embed?}
-      end)
-
-    texts_to_embed =
-      prepared
-      |> Enum.filter(fn {_a, _t, _h, needs?} -> needs? end)
-      |> Enum.map(fn {_a, t, _h, _n} -> t end)
-      |> Enum.uniq()
+  defp add_embedding_attrs_bulk(attrs, existing_by_slug) do
+    {prepared, texts_to_embed} = prepare_embedding_attrs_bulk(attrs, existing_by_slug)
 
     vec_by_text =
       case rho_embed_many(texts_to_embed) do
@@ -2107,7 +1953,35 @@ defmodule RhoFrameworks.Library do
         {:error, _} -> %{}
       end
 
-    Enum.map(prepared, fn {attrs, text, hash, needs_embed?} ->
+    apply_bulk_embeddings(prepared, vec_by_text)
+  end
+
+  defp prepare_embedding_attrs_bulk(attrs_rows, existing_by_slug) do
+    {prepared, texts, _seen} =
+      Enum.reduce(attrs_rows, {[], [], MapSet.new()}, fn attrs, {rows, texts, seen} ->
+        slug = Skill.slugify(attrs[:name])
+        existing = Map.get(existing_by_slug, slug)
+        text = embed_text_for(attrs, existing)
+        hash = text_hash(text)
+
+        needs_embed? =
+          is_nil(existing) or existing.embedding_text_hash != hash or is_nil(existing.embedding)
+
+        row = {attrs, text, hash, needs_embed?}
+
+        if needs_embed? do
+          {next_texts, next_seen} = append_unique_text(texts, seen, text)
+          {[row | rows], next_texts, next_seen}
+        else
+          {[row | rows], texts, seen}
+        end
+      end)
+
+    {Enum.reverse(prepared), Enum.reverse(texts)}
+  end
+
+  defp apply_bulk_embeddings(embedding_rows, vec_by_text) do
+    Enum.map(embedding_rows, fn {attrs, text, hash, needs_embed?} ->
       case needs_embed? && Map.get(vec_by_text, text) do
         false -> attrs
         nil -> attrs
@@ -2117,28 +1991,35 @@ defmodule RhoFrameworks.Library do
   end
 
   defp put_embedding_fields(attrs, vec, hash) do
-    Map.merge(attrs, %{
-      embedding: vec,
-      embedding_text_hash: hash,
-      embedded_at: DateTime.utc_now()
-    })
+    Map.merge(attrs, %{embedding: vec, embedding_text_hash: hash, embedded_at: DateTime.utc_now()})
   end
 
   defp embed_text_for(attrs, existing) do
     name = attrs[:name] || (existing && existing.name) || ""
 
     desc =
-      cond do
-        Map.has_key?(attrs, :description) -> attrs[:description] || ""
-        Map.has_key?(attrs, "description") -> attrs["description"] || ""
-        existing -> existing.description || ""
-        true -> ""
+      case {Map.fetch(attrs, :description), Map.fetch(attrs, "description")} do
+        {{:ok, value}, _} ->
+          value || ""
+
+        {_, {:ok, value}} ->
+          value || ""
+
+        _ ->
+          if existing do
+            existing.description || ""
+          else
+            ""
+          end
       end
 
-    "#{name}\n#{desc}"
+    "#{name}
+#{desc}"
   end
 
-  defp text_hash(text), do: :crypto.hash(:sha256, text)
+  defp text_hash(text) do
+    :crypto.hash(:sha256, text)
+  end
 
   defp rho_embed_one(text) do
     case rho_embed_many([text]) do
@@ -2147,7 +2028,9 @@ defmodule RhoFrameworks.Library do
     end
   end
 
-  defp rho_embed_many([]), do: {:ok, []}
+  defp rho_embed_many([]) do
+    {:ok, []}
+  end
 
   defp rho_embed_many(texts) do
     case RhoEmbeddings.embed_many(texts) do
@@ -2170,12 +2053,8 @@ defmodule RhoFrameworks.Library do
       {:error, :not_running}
   end
 
-  # --- Private helpers ---
-
   defp enrich_with_role_references(candidates) do
-    skill_ids =
-      Enum.flat_map(candidates, fn c -> [c.skill_a.id, c.skill_b.id] end)
-      |> Enum.uniq()
+    skill_ids = Enum.flat_map(candidates, fn c -> [c.skill_a.id, c.skill_b.id] end) |> Enum.uniq()
 
     role_refs =
       from(rs in RoleSkill,
@@ -2193,24 +2072,18 @@ defmodule RhoFrameworks.Library do
   defp enrich_candidate(c, role_refs) do
     refs_a = Map.get(role_refs, c.skill_a.id, [])
     refs_b = Map.get(role_refs, c.skill_b.id, [])
-
     role_names_a = Enum.map(refs_a, &elem(&1, 0))
     role_names_b = Enum.map(refs_b, &elem(&1, 0))
-
+    levels_a = Map.new(refs_a)
+    levels_b = Map.new(refs_b)
     shared_roles = MapSet.intersection(MapSet.new(role_names_a), MapSet.new(role_names_b))
 
     level_conflict =
       Enum.any?(shared_roles, fn role ->
-        level_a = refs_a |> Enum.find(fn {n, _} -> n == role end) |> elem(1)
-        level_b = refs_b |> Enum.find(fn {n, _} -> n == role end) |> elem(1)
-        level_a != level_b
+        Map.fetch!(levels_a, role) != Map.fetch!(levels_b, role)
       end)
 
-    Map.merge(c, %{
-      roles_a: role_names_a,
-      roles_b: role_names_b,
-      level_conflict: level_conflict
-    })
+    Map.merge(c, %{roles_a: role_names_a, roles_b: role_names_b, level_conflict: level_conflict})
   end
 
   defp list_dismissed_pairs(library_id) do
@@ -2220,46 +2093,90 @@ defmodule RhoFrameworks.Library do
     |> MapSet.new()
   end
 
-  defp find_slug_prefix_overlaps(skills) do
-    slugs = Enum.map(skills, fn s -> {s.id, s.slug, s.name, s.category} end)
+  defp find_slug_prefix_overlaps(prefix_rows) do
+    prefix_rows
+    |> Enum.map(fn s -> {s.id, s.slug, s.name, s.category} end)
+    |> slug_prefix_overlaps()
+  end
 
-    for {id_a, slug_a, name_a, cat_a} <- slugs,
-        {id_b, slug_b, name_b, cat_b} <- slugs,
-        id_a < id_b,
-        shared_prefix_length(slug_a, slug_b) >= 3 do
-      %{
-        skill_a: %{id: id_a, name: name_a, category: cat_a},
-        skill_b: %{id: id_b, name: name_b, category: cat_b},
-        confidence: :high,
-        detection_method: :slug_prefix
-      }
+  defp slug_prefix_overlaps(slug_rows) do
+    slug_rows
+    |> unordered_pairs()
+    |> Enum.flat_map(fn {{id_a, slug_a, name_a, cat_a}, {id_b, slug_b, name_b, cat_b}} ->
+      if shared_prefix_length(slug_a, slug_b) >= 3 do
+        {summary_a, summary_b} =
+          ordered_skill_summary_pair({id_a, name_a, cat_a}, {id_b, name_b, cat_b})
+
+        [
+          %{
+            skill_a: summary_a,
+            skill_b: summary_b,
+            confidence: :high,
+            detection_method: :slug_prefix
+          }
+        ]
+      else
+        []
+      end
+    end)
+  end
+
+  defp find_word_overlap_in_category(category_rows) do
+    by_cat = Enum.group_by(category_rows, & &1.category)
+
+    Enum.flat_map(by_cat, fn {_cat, cat_skills} ->
+      cat_skills
+      |> unordered_pairs()
+      |> Enum.flat_map(fn {a, b} ->
+        if jaccard_similarity(a.name, b.name) >= 0.5 do
+          {summary_a, summary_b} =
+            ordered_skill_summary_pair({a.id, a.name, a.category}, {b.id, b.name, b.category})
+
+          [
+            %{
+              skill_a: summary_a,
+              skill_b: summary_b,
+              confidence: :medium,
+              detection_method: :word_overlap
+            }
+          ]
+        else
+          []
+        end
+      end)
+    end)
+  end
+
+  defp ordered_skill_summary_pair({id_a, name_a, cat_a}, {id_b, name_b, cat_b}) do
+    summary_a = %{id: id_a, name: name_a, category: cat_a}
+    summary_b = %{id: id_b, name: name_b, category: cat_b}
+
+    if id_a < id_b do
+      {summary_a, summary_b}
+    else
+      {summary_b, summary_a}
     end
   end
 
-  defp find_word_overlap_in_category(skills) do
-    by_cat = Enum.group_by(skills, & &1.category)
+  defp unordered_pairs(rows) do
+    rows |> collect_unordered_pairs([]) |> Enum.reverse()
+  end
 
-    Enum.flat_map(by_cat, fn {_cat, cat_skills} ->
-      for a <- cat_skills,
-          b <- cat_skills,
-          a.id < b.id,
-          jaccard_similarity(a.name, b.name) >= 0.5 do
-        %{
-          skill_a: %{id: a.id, name: a.name, category: a.category},
-          skill_b: %{id: b.id, name: b.name, category: b.category},
-          confidence: :medium,
-          detection_method: :word_overlap
-        }
-      end
-    end)
+  defp collect_unordered_pairs([], acc), do: acc
+  defp collect_unordered_pairs([_single], acc), do: acc
+
+  defp collect_unordered_pairs([first | rest], acc) do
+    next_acc = Enum.reduce(rest, acc, fn item, pairs -> [{first, item} | pairs] end)
+    collect_unordered_pairs(rest, next_acc)
   end
 
   defp shared_prefix_length(a, b) do
     a
     |> String.graphemes()
     |> Enum.zip(String.graphemes(b))
-    |> Enum.take_while(fn {x, y} -> x == y end)
-    |> length()
+    |> Enum.reduce_while(0, fn {x, y}, acc ->
+      if x == y, do: {:cont, acc + 1}, else: {:halt, acc}
+    end)
   end
 
   defp jaccard_similarity(a, b) do
@@ -2267,31 +2184,42 @@ defmodule RhoFrameworks.Library do
     words_b = b |> String.downcase() |> String.split(~r/\s+/) |> MapSet.new()
     inter = MapSet.intersection(words_a, words_b) |> MapSet.size()
     union = MapSet.union(words_a, words_b) |> MapSet.size()
-    if union == 0, do: 0.0, else: inter / union
+
+    if union == 0 do
+      0.0
+    else
+      inter / union
+    end
   end
 
   defp deduplicate_pairs(candidates) do
-    candidates
-    |> Enum.uniq_by(fn c ->
-      ids = [c.skill_a.id, c.skill_b.id] |> Enum.sort()
-      {Enum.at(ids, 0), Enum.at(ids, 1)}
-    end)
+    Enum.uniq_by(candidates, fn c -> sorted_pair_key(c.skill_a.id, c.skill_b.id) end)
   end
 
   defp reject_dismissed(candidates, dismissed) do
     Enum.reject(candidates, fn c ->
       {id_a, id_b} =
-        if c.skill_a.id < c.skill_b.id,
-          do: {c.skill_a.id, c.skill_b.id},
-          else: {c.skill_b.id, c.skill_a.id}
+        if c.skill_a.id < c.skill_b.id do
+          {c.skill_a.id, c.skill_b.id}
+        else
+          {c.skill_b.id, c.skill_a.id}
+        end
 
       MapSet.member?(dismissed, {id_a, id_b})
     end)
   end
 
-  defp confidence_score(:high), do: 3
-  defp confidence_score(:medium), do: 2
-  defp confidence_score(:low), do: 1
+  defp confidence_score(:high) do
+    3
+  end
+
+  defp confidence_score(:medium) do
+    2
+  end
+
+  defp confidence_score(:low) do
+    1
+  end
 
   defp resolve_conflict(source_rs, target_rs, :keep_higher) do
     if source_rs.min_expected_level > target_rs.min_expected_level do
@@ -2324,7 +2252,11 @@ defmodule RhoFrameworks.Library do
     gaps = map_size(merged) - map_size(target_levels)
 
     if gaps > 0 do
-      sorted = merged |> Map.values() |> Enum.sort_by(fn l -> l["level"] || l[:level] end)
+      sorted =
+        Enum.map(Enum.sort_by(merged, fn {_k, l} -> l["level"] || l[:level] end), fn {_, v} ->
+          v
+        end)
+
       target |> Skill.changeset(%{proficiency_levels: sorted}) |> Repo.update!()
     end
 
@@ -2339,19 +2271,25 @@ defmodule RhoFrameworks.Library do
     from(l in query, where: l.organization_id == ^org_id)
   end
 
-  defp maybe_filter_type(query, nil), do: query
+  defp maybe_filter_type(query, nil) do
+    query
+  end
 
   defp maybe_filter_type(query, type) do
     from(l in query, where: l.type == ^type)
   end
 
-  defp maybe_exclude_immutable(query, false), do: query
+  defp maybe_exclude_immutable(query, false) do
+    query
+  end
 
   defp maybe_exclude_immutable(query, true) do
     from(l in query, where: l.immutable == false)
   end
 
-  defp maybe_filter_version_scope(query, nil), do: query
+  defp maybe_filter_version_scope(query, nil) do
+    query
+  end
 
   defp maybe_filter_version_scope(query, :drafts) do
     from(l in query, where: is_nil(l.version))
@@ -2362,11 +2300,12 @@ defmodule RhoFrameworks.Library do
   end
 
   defp maybe_filter_version_scope(query, :latest) do
-    # Show drafts + latest published per name (no superseded versions)
     from(l in query, where: is_nil(l.version) or is_nil(l.superseded_by_id))
   end
 
-  defp maybe_filter(query, _field, nil), do: query
+  defp maybe_filter(query, _field, nil) do
+    query
+  end
 
   defp maybe_filter(query, :category, value) do
     from(s in query, where: s.category == ^value)
@@ -2380,13 +2319,19 @@ defmodule RhoFrameworks.Library do
     from(s in query, where: s.status == ^value)
   end
 
-  defp skills_filter_opts(:all), do: []
-  defp skills_filter_opts(categories) when is_list(categories), do: [categories: categories]
-  defp skills_filter_opts(_), do: []
+  defp skills_filter_opts(:all) do
+    []
+  end
+
+  defp skills_filter_opts(categories) when is_list(categories) do
+    [categories: categories]
+  end
+
+  defp skills_filter_opts(_) do
+    []
+  end
 
   defp sanitize_query(query) do
-    query
-    |> String.replace(~r/[^\w\s]/, "")
-    |> String.trim()
+    query |> String.replace(~r/[^\w\s]/, "") |> String.trim()
   end
 end

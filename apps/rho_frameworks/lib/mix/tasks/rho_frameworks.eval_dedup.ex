@@ -1,6 +1,5 @@
 defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
   @shortdoc "Sweep cosine thresholds against a real library and emit a CSV"
-
   @moduledoc """
   Empirical threshold tuning for `find_semantic_duplicates_via_llm/2`.
 
@@ -25,7 +24,7 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
       mix rho_frameworks.eval_dedup
 
       # Custom library + thresholds
-      mix rho_frameworks.eval_dedup --library-name "My Library" \\
+      mix rho_frameworks.eval_dedup --library-name "My Library" \
         --thresholds 0.20,0.30,0.40,0.50,0.60
 
       # Skip LLM (cheap dry-run, just candidate counts)
@@ -54,23 +53,18 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
 
   Reads only — does not mutate any rows.
   """
-
   use Mix.Task
-
   import Ecto.Query
-
   alias RhoFrameworks.Frameworks.{Library, Skill}
   alias RhoFrameworks.Repo
-
-  @default_thresholds [0.30, 0.35, 0.40, 0.45, 0.50, 0.55]
+  @default_thresholds [0.3, 0.35, 0.4, 0.45, 0.5, 0.55]
   @default_output "tmp/dedup_eval.csv"
   @default_library_name "Future Skills Framework - Malaysian Financial Sector"
   @jaro_fallback_threshold 0.6
   @chunk_size 40
   @chunk_concurrency 16
-  @chunk_timeout_ms 60_000
+  @chunk_timeout_ms 60000
   @est_tokens_per_chunk 2500
-
   @impl Mix.Task
   def run(args) do
     {opts, _, _} =
@@ -84,20 +78,14 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
         ]
       )
 
-    # `app.start` loads runtime.exs (DATABASE_URL/NEON_URL) and starts
-    # the supervision tree for rho_frameworks.
     Mix.Task.run("app.start")
-
     library = resolve_library!(opts)
     thresholds = parse_thresholds(opts[:thresholds])
     output = opts[:output] || @default_output
     skip_llm? = opts[:no_llm] || false
-
     skills = Repo.all(from(s in Skill, where: s.library_id == ^library.id))
-
     with_embedding = Enum.count(skills, fn s -> not is_nil(s.embedding) end)
     without_embedding = length(skills) - with_embedding
-
     Mix.shell().info("=== eval_dedup library=#{library.name} (#{library.id})")
 
     Mix.shell().info(
@@ -107,7 +95,6 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
 
     Mix.shell().info("    thresholds=#{inspect(thresholds)}")
     Mix.shell().info("")
-
     fallback_pairs = candidate_pairs_via_jaro_fallback(skills, @jaro_fallback_threshold)
     sweep_max = Enum.max(thresholds)
 
@@ -124,24 +111,18 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
     Mix.shell().info("")
 
     rows =
-      Enum.map(thresholds, fn t ->
-        evaluate(t, library.id, fallback_pairs, confirmed_set)
-      end)
+      Enum.map(thresholds, fn t -> evaluate(t, library.id, fallback_pairs, confirmed_set) end)
 
     File.mkdir_p!(Path.dirname(output))
     write_csv(output, rows)
     print_summary(rows)
-
     Mix.shell().info("")
     Mix.shell().info("Wrote #{output}")
   end
 
-  # --- Pipeline ---
-
   defp run_llm_pass(library_id, sweep_max, fallback_pairs) do
     cosine_pairs = candidate_pairs_via_embedding(library_id, sweep_max)
     all_pairs = dedup_pairs(cosine_pairs ++ fallback_pairs)
-
     chunk_count = chunk_count_for(length(all_pairs))
 
     Mix.shell().info(
@@ -176,14 +157,11 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
 
   defp evaluate(threshold, library_id, fallback_pairs, confirmed_set) do
     started = System.monotonic_time(:millisecond)
-
     cosine_pairs = candidate_pairs_via_embedding(library_id, threshold)
     all_pairs = dedup_pairs(cosine_pairs ++ fallback_pairs)
 
     confirmed =
-      Enum.count(all_pairs, fn {a, b} ->
-        MapSet.member?(confirmed_set, pair_key(a, b))
-      end)
+      Enum.count(all_pairs, fn {a, b} -> MapSet.member?(confirmed_set, pair_key(a, b)) end)
 
     chunks = chunk_count_for(length(all_pairs))
 
@@ -200,10 +178,6 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
   end
 
   defp candidate_pairs_via_embedding(library_id, threshold) do
-    # Pairwise self-join can't use the HNSW index (HNSW is KNN-only), so
-    # this is a sequential cosine scan over n*(n-1)/2 pairs. Bump the
-    # checkout/query timeout to 2min so Neon's round-trip latency
-    # doesn't blow past Postgrex's default 15s.
     from(s1 in Skill,
       join: s2 in Skill,
       on: s2.library_id == s1.library_id and s2.id > s1.id,
@@ -227,39 +201,37 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
             b <- skills,
             a.id != b.id,
             String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold do
-          if a.id < b.id, do: {a, b}, else: {b, a}
+          if a.id < b.id do
+            {a, b}
+          else
+            {b, a}
+          end
         end
         |> Enum.uniq_by(fn {a, b} -> {a.id, b.id} end)
     end
   end
 
-  # Group pairs by focal skill (smaller-id side of each pair) so each LLM
-  # call sees one focal + N candidates instead of N disjoint pairs. Same
-  # shape as the production pipeline in RhoFrameworks.Library.
   defp build_focal_chunks(pairs, max_candidates) do
     pairs
     |> Enum.reduce(%{}, fn {a, b}, acc ->
-      {focal, neighbor} = if a.id < b.id, do: {a, b}, else: {b, a}
+      {focal, neighbor} =
+        if a.id < b.id do
+          {a, b}
+        else
+          {b, a}
+        end
 
-      Map.update(acc, focal.id, {focal, [neighbor]}, fn {f, ns} ->
-        {f, [neighbor | ns]}
-      end)
+      Map.update(acc, focal.id, {focal, [neighbor]}, fn {f, ns} -> {f, [neighbor | ns]} end)
     end)
-    |> Map.values()
-    |> Enum.flat_map(fn {focal, neighbors} ->
-      neighbors
-      |> Enum.chunk_every(max_candidates)
-      |> Enum.map(fn chunk -> {focal, chunk} end)
+    |> Enum.flat_map(fn {_k, {focal, neighbors}} ->
+      neighbors |> Enum.chunk_every(max_candidates) |> Enum.map(fn chunk -> {focal, chunk} end)
     end)
   end
 
   defp verify_focal_chunk({focal, candidates}) do
     indexed = Enum.with_index(candidates)
-
-    candidates_text =
-      Enum.map_join(indexed, "\n", fn {c, idx} ->
-        "[#{idx}] #{format_skill(c)}"
-      end)
+    candidates_text = Enum.map_join(indexed, "
+", fn {c, idx} -> "[#{idx}] #{format_skill(c)}" end)
 
     case RhoFrameworks.LLM.SemanticDuplicates.call(%{
            focal: format_skill(focal),
@@ -269,8 +241,9 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
         confirmed = MapSet.new(indices)
 
         for {neighbor, idx} <- indexed,
-            MapSet.member?(confirmed, idx),
-            do: pair_key(focal, neighbor)
+            MapSet.member?(confirmed, idx) do
+          pair_key(focal, neighbor)
+        end
 
       {:error, reason} ->
         Mix.shell().error("LLM call failed: #{inspect(reason)}")
@@ -279,20 +252,35 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
   end
 
   defp format_skill(s) do
-    desc = if s.description && s.description != "", do: " — #{s.description}", else: ""
+    desc =
+      if s.description && s.description != "" do
+        " — #{s.description}"
+      else
+        ""
+      end
+
     "#{s.name} (#{s.category})#{desc}"
   end
 
-  defp dedup_pairs(pairs), do: Enum.uniq_by(pairs, fn {a, b} -> {a.id, b.id} end)
-
-  defp pair_key(a, b) do
-    if a.id < b.id, do: {a.id, b.id}, else: {b.id, a.id}
+  defp dedup_pairs(pairs) do
+    Enum.uniq_by(pairs, fn {a, b} -> {a.id, b.id} end)
   end
 
-  defp chunk_count_for(0), do: 0
-  defp chunk_count_for(n), do: ceil(n / @chunk_size)
+  defp pair_key(a, b) do
+    if a.id < b.id do
+      {a.id, b.id}
+    else
+      {b.id, a.id}
+    end
+  end
 
-  # --- Resolution / parsing ---
+  defp chunk_count_for(0) do
+    0
+  end
+
+  defp chunk_count_for(n) do
+    ceil(n / @chunk_size)
+  end
 
   defp resolve_library!(opts) do
     cond do
@@ -319,7 +307,9 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
     end
   end
 
-  defp parse_thresholds(nil), do: @default_thresholds
+  defp parse_thresholds(nil) do
+    @default_thresholds
+  end
 
   defp parse_thresholds(s) when is_binary(s) do
     s
@@ -333,15 +323,15 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
     end)
   end
 
-  # --- Output ---
-
   defp write_csv(path, rows) do
     header =
       "threshold,cosine_candidates,fallback_candidates,total_unique," <>
-        "llm_chunks,confirmed_dupes,est_tokens,elapsed_ms\n"
+        "llm_chunks,confirmed_dupes,est_tokens,elapsed_ms
+"
 
-    body = Enum.map_join(rows, "\n", &row_to_csv/1) <> "\n"
-
+    body = Enum.map_join(rows, "
+", &row_to_csv/1) <> "
+"
     File.write!(path, header <> body)
   end
 
@@ -351,7 +341,9 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
       "#{r.confirmed_dupes},#{r.est_tokens},#{r.elapsed_ms}"
   end
 
-  defp format_threshold(t), do: :erlang.float_to_binary(t, decimals: 2)
+  defp format_threshold(t) do
+    :erlang.float_to_binary(t, decimals: 2)
+  end
 
   defp print_summary(rows) do
     Mix.shell().info(
@@ -372,13 +364,12 @@ defmodule Mix.Tasks.RhoFrameworks.EvalDedup do
           pad(r.llm_chunks, 6) <>
           " | " <>
           pad(r.confirmed_dupes, 9) <>
-          " | " <>
-          pad(r.est_tokens, 10) <>
-          " | " <>
-          pad(r.elapsed_ms, 10)
+          " | " <> pad(r.est_tokens, 10) <> " | " <> pad(r.elapsed_ms, 10)
       )
     end)
   end
 
-  defp pad(v, n), do: v |> to_string() |> String.pad_leading(n)
+  defp pad(v, n) do
+    v |> to_string() |> String.pad_leading(n)
+  end
 end

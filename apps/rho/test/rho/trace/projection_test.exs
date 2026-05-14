@@ -33,6 +33,44 @@ defmodule Rho.Trace.ProjectionTest do
     assert result.output == "ok"
   end
 
+  test "chat projection renders typed structured tool steps as tool rows", %{tape: tape} do
+    Service.append(tape, :message, %{"role" => "user", "content" => "extract this"})
+
+    {:ok, action} =
+      Service.append(tape, :message, %{
+        "role" => "assistant",
+        "content" => ~s({"args":{"upload_id":"upl_123"},"tool":"extract_role_from_jd"})
+      })
+
+    Service.append(tape, :message, %{
+      "role" => "user",
+      "content" => "[Tool Result: extract_role_from_jd]\nExtracted 12 skill(s)."
+    })
+
+    [_user, tool] = Rho.Trace.Projection.chat(tape)
+    assert tool.tape_entry_id == action.id
+    assert tool.role == :assistant
+    assert tool.type == :tool_call
+    assert tool.name == "extract_role_from_jd"
+    assert tool.args == %{"upload_id" => "upl_123"}
+    assert tool.status == :ok
+    assert tool.output == "Extracted 12 skill(s)."
+  end
+
+  test "chat projection hides typed structured think bookkeeping", %{tape: tape} do
+    Service.append(tape, :message, %{
+      "role" => "assistant",
+      "content" => ~s({"tool":"think","thought":"I should inspect the table."})
+    })
+
+    Service.append(tape, :message, %{
+      "role" => "user",
+      "content" => "[System] Thought noted. Continue with your next action."
+    })
+
+    assert Rho.Trace.Projection.chat(tape) == []
+  end
+
   test "context projection matches canonical JSONL projection", %{tape: tape} do
     Service.append(tape, :message, %{"role" => "user", "content" => "hello"})
 

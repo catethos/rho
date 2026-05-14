@@ -70,8 +70,8 @@ defmodule Rho.Tape.Entry do
     end)
   end
 
-  def normalize_keys(list) when is_list(list), do: Enum.map(list, &normalize_keys/1)
-  def normalize_keys(value), do: value
+  def normalize_keys(map) when is_list(map), do: Enum.map(map, &normalize_keys/1)
+  def normalize_keys(map), do: map
 
   # -- Media redaction --
 
@@ -79,15 +79,15 @@ defmodule Rho.Tape.Entry do
     Map.new(map, fn {k, v} -> {k, redact_media(v)} end)
   end
 
-  defp redact_media(list) when is_list(list), do: Enum.map(list, &redact_media/1)
+  defp redact_media(map) when is_list(map), do: Enum.map(map, &redact_media/1)
 
-  defp redact_media(str) when is_binary(str) do
-    if String.contains?(str, "data:") and String.contains?(str, ";base64,") do
-      Regex.replace(~r/data:[^;]+;base64,[A-Za-z0-9+\/=]+/, str, "[media]")
+  defp redact_media(map) when is_binary(map) do
+    if String.contains?(map, "data:") and String.contains?(map, ";base64,") do
+      Regex.replace(~r/data:[^;]+;base64,[A-Za-z0-9+\/=]+/, map, "[media]")
     else
-      str
+      map
     end
   end
 
-  defp redact_media(value), do: value
+  defp redact_media(map), do: map
 end

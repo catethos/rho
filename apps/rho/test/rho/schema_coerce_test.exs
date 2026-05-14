@@ -214,7 +214,7 @@ defmodule Rho.SchemaCoerceTest do
   describe "coerce/3 {:list, inner}" do
     test "coerces list items recursively" do
       assert {:ok, [1, 2, 3], repairs} = SchemaCoerce.coerce(["1", "2", "3"], {:list, :integer})
-      assert length(repairs) == 3
+      assert match?([_, _, _], repairs)
     end
 
     test "scalar-to-list wrap" do
@@ -224,7 +224,7 @@ defmodule Rho.SchemaCoerceTest do
 
     test "scalar-to-list with inner coercion" do
       assert {:ok, [42], repairs} = SchemaCoerce.coerce("42", {:list, :integer})
-      assert length(repairs) == 2
+      assert match?([_, _], repairs)
     end
 
     test "passes through correctly typed list" do
@@ -257,7 +257,7 @@ defmodule Rho.SchemaCoerceTest do
       args = %{name: "foo", count: "5"}
 
       assert {:ok, %{name: "foo", count: 5}, repairs} = SchemaCoerce.coerce_fields(args, schema)
-      assert length(repairs) == 1
+      assert match?([_], repairs)
       assert hd(repairs).field == :count
     end
 

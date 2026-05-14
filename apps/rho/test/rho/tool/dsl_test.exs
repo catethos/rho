@@ -63,7 +63,7 @@ defmodule Rho.Tool.DSLTest do
     test "returns a list of tool_def maps" do
       tools = SampleTools.__tools__()
       assert is_list(tools)
-      assert length(tools) == 4
+      assert match?([_, _, _, _], tools)
 
       for tool_def <- tools do
         assert %{tool: %ReqLLM.Tool{}, execute: execute} = tool_def

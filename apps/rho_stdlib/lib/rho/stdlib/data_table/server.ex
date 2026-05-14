@@ -137,7 +137,7 @@ defmodule Rho.Stdlib.DataTable.Server do
 
   def handle_call({:create_table, name, schema}, from, state) do
     cond do
-      Map.has_key?(state.tables, name) ->
+      map_key?(state.tables, name) ->
         {:reply, {:error, :already_exists}, state}
 
       not match?(%Schema{}, schema) ->
@@ -316,6 +316,13 @@ defmodule Rho.Stdlib.DataTable.Server do
   end
 
   # --- Internal ---
+
+  defp map_key?(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _} -> true
+      :error -> false
+    end
+  end
 
   defp with_table(state, name, source, fun) do
     case Map.fetch(state.tables, name) do

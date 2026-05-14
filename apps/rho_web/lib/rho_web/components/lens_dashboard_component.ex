@@ -111,5 +111,5 @@ defmodule RhoWeb.LensDashboardComponent do
     end
   end
 
-  defp parse_id(id), do: id
+  defp parse_id(str), do: str
 end

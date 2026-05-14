@@ -1,7 +1,6 @@
 defmodule Rho.Stdlib.Uploads.ServerTest do
   use ExUnit.Case, async: false
 
-  alias Rho.Stdlib.Uploads
   alias Rho.Stdlib.Uploads.{Handle, Server}
 
   setup do

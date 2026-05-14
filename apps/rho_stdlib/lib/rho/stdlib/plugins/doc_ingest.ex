@@ -41,24 +41,22 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
       execute: fn args, _ctx ->
         path = args[:file_path] || args["file_path"]
 
-        cond do
-          is_nil(path) or path == "" ->
-            {:error, "file_path is required"}
+        if is_nil(path) or path == "" do
+          {:error, "file_path is required"}
+        else
+          path = Path.expand(path)
 
-          true ->
-            path = Path.expand(path)
+          if File.exists?(path) do
+            case Rho.Stdlib.Uploads.parse_one_off(path) do
+              {:ok, %Rho.Stdlib.Uploads.Observation{} = obs} ->
+                {:ok, format_observation_as_text(obs)}
 
-            if File.exists?(path) do
-              case Rho.Stdlib.Uploads.parse_one_off(path) do
-                {:ok, %Rho.Stdlib.Uploads.Observation{} = obs} ->
-                  {:ok, format_observation_as_text(obs)}
-
-                {:error, reason} ->
-                  {:error, "Ingest failed: #{inspect(reason)}"}
-              end
-            else
-              {:error, "File not found: #{path}"}
+              {:error, reason} ->
+                {:error, "Ingest failed: #{inspect(reason)}"}
             end
+          else
+            {:error, "File not found: #{path}"}
+          end
         end
       end
     }
@@ -67,18 +65,16 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
   defp format_observation_as_text(%Rho.Stdlib.Uploads.Observation{kind: :structured_table} = obs) do
     sheets_text =
       obs.sheets
-      |> Enum.map(fn s ->
+      |> Enum.map_join("\n\n--- Sheet Break ---\n\n", fn s ->
         rows_text =
           s.sample_rows
-          |> Enum.map(fn r ->
+          |> Enum.map_join("\n", fn r ->
             r
             |> Enum.map_join(" | ", fn {k, v} -> "#{k}: #{v}" end)
           end)
-          |> Enum.join("\n")
 
         "Sheet: #{s.name} (#{s.row_count} rows)\nHeaders: #{Enum.join(s.columns, " | ")}\n#{rows_text}"
       end)
-      |> Enum.join("\n\n--- Sheet Break ---\n\n")
 
     obs.summary_text <> "\n\n" <> sheets_text
   end

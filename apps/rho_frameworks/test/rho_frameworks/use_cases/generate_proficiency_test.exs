@@ -164,7 +164,7 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
       assert {:async, %{workers: workers}} =
                GenerateProficiency.run(%{table_name: @table, levels: 5}, scope)
 
-      assert length(workers) == 2
+      assert match?([_, _], workers)
       assert Enum.sort(Enum.map(workers, & &1.category)) == ["Design", "Eng"]
       assert Enum.find(workers, &(&1.category == "Eng")).count == 2
       assert Enum.find(workers, &(&1.category == "Design")).count == 1
@@ -178,7 +178,7 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
       for name <- ["Vim", "Tmux", "Figma"] do
         levels = rows[name][:proficiency_levels] || rows[name]["proficiency_levels"]
 
-        assert is_list(levels) and length(levels) == 2,
+        assert is_list(levels) and match?([_, _], levels),
                "expected #{name} to have 2 levels (row=#{inspect(rows[name])})"
       end
     end
@@ -254,7 +254,7 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
       assert {:async, %{workers: workers}} =
                GenerateProficiency.run(%{table_name: @table, levels: 5}, scope)
 
-      assert length(workers) == 2
+      assert match?([_, _], workers)
 
       events = wait_for_completed(2, 1_500)
       statuses = events |> Enum.map(& &1.status) |> Enum.sort()
@@ -263,7 +263,7 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
       # Design worker still persisted its skill.
       rows = by_skill_name(library_rows(session_id))
       figma_levels = rows["Figma"][:proficiency_levels] || rows["Figma"]["proficiency_levels"]
-      assert is_list(figma_levels) and length(figma_levels) == 2
+      assert is_list(figma_levels) and match?([_, _], figma_levels)
 
       # Eng worker did not — its row's proficiency_levels stayed at the seed value (nil/[]).
       vim_levels = rows["Vim"][:proficiency_levels] || rows["Vim"]["proficiency_levels"]

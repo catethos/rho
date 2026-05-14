@@ -545,13 +545,13 @@ defmodule Rho.Runner do
 
   # -- Main loop --
 
-  defp do_loop(_context, _runtime, step: step, max_steps: max)
-       when step > max do
-    {:error, "max steps exceeded (#{max})"}
+  defp do_loop(_context, _runtime, step: step, max_steps: max_value)
+       when step > max_value do
+    {:error, "max steps exceeded (#{max_value})"}
   end
 
-  defp do_loop(context, runtime, step: step, max_steps: max) do
-    runtime.emit.(%{type: :step_start, step: step, max_steps: max})
+  defp do_loop(context, runtime, step: step, max_steps: max_value) do
+    runtime.emit.(%{type: :step_start, step: step, max_steps: max_value})
 
     t0 = System.monotonic_time(:millisecond)
 
@@ -577,7 +577,7 @@ defmodule Rho.Runner do
 
       warn_if_slow(t3 - t2, 30_000, "[runner] strategy.run took #{t3 - t2}ms at step #{step}")
 
-      handle_strategy_result(result, context, runtime, step, max)
+      handle_strategy_result(result, context, runtime, step, max_value)
     else
       {:error, reason} ->
         Logger.error(
@@ -603,61 +603,65 @@ defmodule Rho.Runner do
     [build_system_message(runtime) | messages]
   end
 
-  defp do_lite_loop(_context, _runtime, step: step, max_steps: max)
-       when step > max do
-    {:error, "max steps exceeded (#{max})"}
+  defp do_lite_loop(_context, _runtime, step: step, max_steps: max_value)
+       when step > max_value do
+    {:error, "max steps exceeded (#{max_value})"}
   end
 
-  defp do_lite_loop(context, runtime, step: step, max_steps: max) do
-    runtime.emit.(%{type: :step_start, step: step, max_steps: max})
+  defp do_lite_loop(context, runtime, step: step, max_steps: max_value) do
+    runtime.emit.(%{type: :step_start, step: step, max_steps: max_value})
 
     projection = %{context: context, tools: runtime.req_tools, step: step}
     result = runtime.turn_strategy.run(projection, runtime)
 
-    handle_lite_result(result, context, runtime, step, max)
+    handle_lite_result(result, context, runtime, step, max_value)
   end
 
   # -- {:respond, text} in lite mode --
 
-  defp handle_lite_result({:respond, text}, _context, _runtime, _step, _max) do
+  defp handle_lite_result({:respond, text}, _context, _runtime, _step, _max_value) do
     {:ok, text || ""}
   end
 
   # -- {:call_tools, ...} in lite mode — direct execution --
 
-  defp handle_lite_result({:call_tools, tool_calls, response_text}, context, runtime, step, max) do
+  defp handle_lite_result(
+         {:call_tools, tool_calls, response_text},
+         context,
+         runtime,
+         step,
+         max_value
+       ) do
     {results, final} =
       execute_tools_lite(tool_calls, runtime.tool_map, runtime.context, runtime.emit)
 
-    cond do
-      final != nil ->
-        {:ok, final}
-
-      true ->
-        entries = runtime.turn_strategy.build_tool_step(tool_calls, results, response_text)
-        next_context = context ++ [entries.assistant_msg | entries.tool_results]
-        do_lite_loop(next_context, runtime, step: step + 1, max_steps: max)
+    if final != nil do
+      {:ok, final}
+    else
+      entries = runtime.turn_strategy.build_tool_step(tool_calls, results, response_text)
+      next_context = context ++ [entries.assistant_msg | entries.tool_results]
+      do_lite_loop(next_context, runtime, step: step + 1, max_steps: max_value)
     end
   end
 
   # -- {:think, ...} in lite mode --
 
-  defp handle_lite_result({:think, _thought}, context, runtime, step, max) do
-    do_lite_loop(context, runtime, step: step + 1, max_steps: max)
+  defp handle_lite_result({:think, _thought}, context, runtime, step, max_value) do
+    do_lite_loop(context, runtime, step: step + 1, max_steps: max_value)
   end
 
   # -- {:parse_error, ...} in lite mode --
 
   # Invariant: `reason` is a binary — TypedStructured.dispatch_parsed/2
   # is the only emitter and it builds the reason from string interpolation.
-  defp handle_lite_result({:parse_error, reason, _raw}, context, runtime, step, max) do
+  defp handle_lite_result({:parse_error, reason, _raw}, context, runtime, step, max_value) do
     correction = ReqLLM.Context.user("Parse error: #{reason}. Please try again.")
-    do_lite_loop(context ++ [correction], runtime, step: step + 1, max_steps: max)
+    do_lite_loop(context ++ [correction], runtime, step: step + 1, max_steps: max_value)
   end
 
   # -- {:error, ...} in lite mode --
 
-  defp handle_lite_result({:error, reason}, _context, runtime, _step, _max) do
+  defp handle_lite_result({:error, reason}, _context, runtime, _step, _max_value) do
     runtime.emit.(%{type: :error, reason: reason})
     {:error, "LLM call failed: #{inspect(reason)}"}
   end
@@ -794,19 +798,19 @@ defmodule Rho.Runner do
   # LLM responded without calling tools. Run :post_step — if any
   # transformer injects messages, continue looping; otherwise terminate.
 
-  defp handle_strategy_result({:respond, text}, context, runtime, step, max) do
+  defp handle_strategy_result({:respond, text}, context, runtime, step, max_value) do
     Recorder.record_assistant_text(runtime, text)
 
     next_step = step + 1
 
-    case run_post_step(runtime, next_step, max, :text_response) do
+    case run_post_step(runtime, next_step, max_value, :text_response) do
       [] ->
         {:ok, text}
 
       msgs ->
         Recorder.record_injected_messages(runtime, msgs)
         updated_context = advance_text_response_context(context, text, msgs, runtime)
-        do_loop(updated_context, runtime, step: next_step, max_steps: max)
+        do_loop(updated_context, runtime, step: next_step, max_steps: max_value)
     end
   end
 
@@ -819,7 +823,7 @@ defmodule Rho.Runner do
          context,
          runtime,
          step,
-         max
+         max_value
        ) do
     emit = runtime.emit
 
@@ -840,7 +844,7 @@ defmodule Rho.Runner do
 
     Logger.info("[runner] all tool results collected")
 
-    classify_tool_outcome(tool_calls, results, response_text, context, runtime, step, max)
+    classify_tool_outcome(tool_calls, results, response_text, context, runtime, step, max_value)
   catch
     {:rho_transformer_halt, reason} ->
       runtime.emit.(%{type: :error, reason: {:halt, reason}})
@@ -851,18 +855,18 @@ defmodule Rho.Runner do
   # Structured-output strategy wants to reason. Build think step entries
   # and continue looping.
 
-  defp handle_strategy_result({:think, thought}, context, runtime, step, max) do
+  defp handle_strategy_result({:think, thought}, context, runtime, step, max_value) do
     runtime.emit.(%{type: :llm_text, text: thought})
 
     entries = runtime.turn_strategy.build_think_step(thought)
     Recorder.record_tool_step(runtime, entries)
 
     next_step = step + 1
-    injected = run_post_step(runtime, next_step, max, :think_step)
+    injected = run_post_step(runtime, next_step, max_value, :think_step)
     Recorder.record_injected_messages(runtime, injected)
 
     updated_context = advance_context(context, entries, injected, runtime)
-    do_loop(updated_context, runtime, step: next_step, max_steps: max)
+    do_loop(updated_context, runtime, step: next_step, max_steps: max_value)
   end
 
   # -- {:parse_error, reason, raw_text} --
@@ -874,7 +878,7 @@ defmodule Rho.Runner do
          context,
          runtime,
          step,
-         max
+         max_value
        ) do
     correction =
       "[System] Your response could not be parsed: #{inspect(reason)}. " <>
@@ -893,48 +897,54 @@ defmodule Rho.Runner do
           Recorder.rebuild_context(runtime)
       end
 
-    do_loop(updated_context, runtime, step: step + 1, max_steps: max)
+    do_loop(updated_context, runtime, step: step + 1, max_steps: max_value)
   end
 
   # -- {:error, reason} --
 
-  defp handle_strategy_result({:error, reason}, _ctx, _runtime, _step, _max),
+  defp handle_strategy_result({:error, reason}, _context, _runtime, _step, _max_value),
     do: {:error, reason}
 
   # ===================================================================
   # Tool outcome classification
   # ===================================================================
 
-  defp classify_tool_outcome(tool_calls, results, response_text, context, runtime, step, max) do
+  defp classify_tool_outcome(
+         tool_calls,
+         results,
+         response_text,
+         context,
+         runtime,
+         step,
+         max_value
+       ) do
     final_output =
       Enum.find_value(results, fn r ->
         if r.disposition == :final, do: r.result
       end)
 
-    cond do
-      final_output != nil ->
-        Recorder.record_assistant_text(runtime, final_output)
-        {:ok, final_output}
+    if final_output != nil do
+      Recorder.record_assistant_text(runtime, final_output)
+      {:ok, final_output}
+    else
+      entries =
+        runtime.turn_strategy.build_tool_step(tool_calls, results, response_text)
 
-      true ->
-        entries =
-          runtime.turn_strategy.build_tool_step(tool_calls, results, response_text)
+      Recorder.record_tool_step(runtime, entries)
 
-        Recorder.record_tool_step(runtime, entries)
+      next_step = step + 1
+      injected = run_post_step(runtime, next_step, max_value, :tool_step)
+      Recorder.record_injected_messages(runtime, injected)
 
-        next_step = step + 1
-        injected = run_post_step(runtime, next_step, max, :tool_step)
-        Recorder.record_injected_messages(runtime, injected)
-
-        updated_context = advance_context(context, entries, injected, runtime)
-        do_loop(updated_context, runtime, step: next_step, max_steps: max)
+      updated_context = advance_context(context, entries, injected, runtime)
+      do_loop(updated_context, runtime, step: next_step, max_steps: max_value)
     end
   end
 
   # -- :post_step stage --
 
-  defp run_post_step(%Runtime{context: ctx}, step, max, step_kind) do
-    data = %{step: step, max_steps: max, entries_appended: [], step_kind: step_kind}
+  defp run_post_step(%Runtime{context: ctx}, step, max_value, step_kind) do
+    data = %{step: step, max_steps: max_value, entries_appended: [], step_kind: step_kind}
 
     case Rho.PluginRegistry.apply_stage(:post_step, data, ctx) do
       {:cont, nil} -> []

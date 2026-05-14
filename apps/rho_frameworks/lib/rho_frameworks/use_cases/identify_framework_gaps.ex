@@ -119,14 +119,13 @@ defmodule RhoFrameworks.UseCases.IdentifyFrameworkGaps do
 
   defp format_existing_skills(rows) do
     rows
-    |> Enum.map(fn row ->
+    |> Enum.map_join("\n", fn row ->
       name = row[:skill_name] || row["skill_name"] || "?"
       cat = row[:category] || row["category"] || ""
       desc = row[:skill_description] || row["skill_description"] || ""
 
       "- #{name} [#{cat}]" <> if(desc == "", do: "", else: " — #{desc}")
     end)
-    |> Enum.join("\n")
   end
 
   defp normalize_gap(gap) when is_map(gap) do

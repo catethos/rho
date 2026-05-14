@@ -99,8 +99,8 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
   # so this UseCase is callable with either shape.
   defp parse_levels(n) when is_integer(n), do: n
 
-  defp parse_levels(s) when is_binary(s) do
-    case Integer.parse(s) do
+  defp parse_levels(n) when is_binary(n) do
+    case Integer.parse(n) do
       {n, _} -> n
       :error -> @default_levels
     end
@@ -128,30 +128,28 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
         # change = regenerate" semantic without touching anything else.
         rows_to_generate = Enum.reject(rows, &already_at_scale?(&1, levels))
 
-        cond do
-          rows_to_generate == [] ->
-            {:ok, %{skipped: true, reason: :all_skills_already_at_scale}}
+        if rows_to_generate == [] do
+          {:ok, %{skipped: true, reason: :all_skills_already_at_scale}}
+        else
+          by_category = Enum.group_by(rows_to_generate, &MapAccess.get(&1, :category))
 
-          true ->
-            by_category = Enum.group_by(rows_to_generate, &MapAccess.get(&1, :category))
+          if map_size(by_category) == 0 do
+            {:error, :empty_rows}
+          else
+            workers =
+              Enum.map(by_category, fn {category, cat_skills} ->
+                spawn_category_worker(
+                  category,
+                  cat_skills,
+                  levels,
+                  table_name,
+                  parent_agent_id,
+                  scope
+                )
+              end)
 
-            if map_size(by_category) == 0 do
-              {:error, :empty_rows}
-            else
-              workers =
-                Enum.map(by_category, fn {category, cat_skills} ->
-                  spawn_category_worker(
-                    category,
-                    cat_skills,
-                    levels,
-                    table_name,
-                    parent_agent_id,
-                    scope
-                  )
-                end)
-
-              {:async, %{workers: workers}}
-            end
+            {:async, %{workers: workers}}
+          end
         end
     end
   end
@@ -327,16 +325,16 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
 
   defp publish_requested(%Scope{session_id: nil}, _parent, _worker, _category, _count), do: :ok
 
-  defp publish_requested(%Scope{} = scope, parent_agent_id, worker_agent_id, category, count) do
+  defp publish_requested(%Scope{} = scope, parent, worker, category, count) do
     # `agent_id` is the *parent* (chat agent) so the LV appends the
     # delegation card to its chat thread. `worker_agent_id` identifies
     # the spawned writer separately for status updates.
-    parent = parent_agent_id || scope.session_id
+    parent = parent || scope.session_id
 
     data = %{
       session_id: scope.session_id,
       agent_id: parent,
-      worker_agent_id: worker_agent_id,
+      worker_agent_id: worker,
       role: :proficiency_writer,
       task: "Proficiency levels: #{category} (#{count} skills)"
     }
@@ -349,15 +347,15 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
 
   defp publish_completed(%Scope{session_id: nil}, _parent, _worker, _status, _result), do: :ok
 
-  defp publish_completed(%Scope{} = scope, parent_agent_id, worker_agent_id, status, result_text) do
-    parent = parent_agent_id || scope.session_id
+  defp publish_completed(%Scope{} = scope, parent, worker, status, result) do
+    parent = parent || scope.session_id
 
     data = %{
       session_id: scope.session_id,
       agent_id: parent,
-      worker_agent_id: worker_agent_id,
+      worker_agent_id: worker,
       status: status,
-      result: result_text
+      result: result
     }
 
     Rho.Events.broadcast(

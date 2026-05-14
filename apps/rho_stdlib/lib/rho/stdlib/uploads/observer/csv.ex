@@ -20,7 +20,7 @@ defmodule Rho.Stdlib.Uploads.Observer.Csv do
     limit = Keyword.get(opts, :limit, 200) |> min(1000)
 
     with {:ok, [header | data]} <- parse_rows(path) do
-      sliced = data |> Enum.drop(offset) |> Enum.take(limit) |> rows_as_maps(header)
+      sliced = data |> Enum.slice(offset, limit) |> rows_as_maps(header)
       {:ok, %{columns: header, rows: sliced, total: length(data)}}
     end
   end

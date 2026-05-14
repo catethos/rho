@@ -125,7 +125,7 @@ defmodule Rho.Stdlib.DataTable.ActiveViewListenerTest do
 
       wait_for(fn ->
         case DataTable.get_selection(sid, "main") do
-          ids when is_list(ids) and length(ids) == 2 -> {:ok, ids}
+          [_, _] = ids -> {:ok, ids}
           _ -> :pending
         end
       end)

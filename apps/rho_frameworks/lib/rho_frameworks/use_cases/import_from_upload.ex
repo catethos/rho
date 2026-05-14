@@ -101,13 +101,11 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
   defp pick_sheet(obs, input) do
     explicit = Map.get(input, :sheet) || Map.get(input, "sheet")
 
-    cond do
-      is_binary(explicit) and explicit != "" ->
-        explicit
-
-      true ->
-        [%{name: name} | _] = obs.sheets
-        name
+    if is_binary(explicit) and explicit != "" do
+      explicit
+    else
+      [%{name: name} | _] = obs.sheets
+      name
     end
   end
 

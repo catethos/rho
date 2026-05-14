@@ -151,7 +151,6 @@ defmodule Rho.LLM.Admission do
     end
   end
 
-  @impl true
   def handle_call(:stats, _from, state) do
     stats = %{
       in_flight: map_size(state.holders),

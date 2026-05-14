@@ -82,13 +82,15 @@ defmodule Rho.Stdlib.PluginRegistryTest do
     @behaviour Rho.Plugin
 
     @impl true
-    def tools(_opts, _ctx), do: raise("boom")
+    def tools(_opts, _ctx), do: crash!()
 
     @impl true
-    def prompt_sections(_opts, _ctx), do: raise("boom")
+    def prompt_sections(_opts, _ctx), do: crash!()
 
     @impl true
-    def bindings(_opts, _ctx), do: raise("boom")
+    def bindings(_opts, _ctx), do: crash!()
+
+    defp crash!, do: raise("boom")
   end
 
   # --- Registration ---

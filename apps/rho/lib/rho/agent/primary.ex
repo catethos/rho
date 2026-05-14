@@ -82,8 +82,8 @@ defmodule Rho.Agent.Primary do
   @spec parent_of(String.t()) :: String.t() | nil
   def parent_of(agent_id) when is_binary(agent_id) do
     case String.split(agent_id, "/") do
-      segments when length(segments) >= 3 ->
-        segments |> Enum.drop(-1) |> Enum.join("/")
+      [_, _, _ | _] = segments ->
+        segments |> Enum.slice(0..-2//1) |> Enum.join("/")
 
       _ ->
         nil

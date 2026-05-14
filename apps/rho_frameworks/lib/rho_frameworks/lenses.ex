@@ -74,7 +74,7 @@ defmodule RhoFrameworks.Lenses do
       |> Enum.map(fn axis ->
         vars = Enum.map(axis.variables, &score_variable(&1, variable_scores))
 
-        composite = vars |> Enum.map(& &1.weighted_score) |> Enum.sum()
+        composite = vars |> Enum.reduce(0, fn el, acc -> acc + (& &1.weighted_score).(el) end)
         band = classify_band(composite, axis.band_thresholds)
 
         %{axis_id: axis.id, composite: composite, band: band, variable_scores: vars}

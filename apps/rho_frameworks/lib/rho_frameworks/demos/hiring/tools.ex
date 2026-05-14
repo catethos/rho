@@ -22,7 +22,7 @@ defmodule RhoFrameworks.Demos.Hiring.Tools do
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
-        round = args["round"] || args[:round]
+        rounded = args["round"] || args[:round]
         raw_scores = args["scores"] || args[:scores]
 
         case Jason.decode(raw_scores) do
@@ -31,12 +31,12 @@ defmodule RhoFrameworks.Demos.Hiring.Tools do
               session_id,
               Rho.Events.event(:hiring_scores_submitted, session_id, agent_id, %{
                 role: role,
-                round: round,
+                round: rounded,
                 scores: scores
               })
             )
 
-            {:ok, "Scores submitted for round #{round}: #{length(scores)} candidates scored."}
+            {:ok, "Scores submitted for round #{rounded}: #{length(scores)} candidates scored."}
 
           _ ->
             {:error,

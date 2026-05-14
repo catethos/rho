@@ -55,7 +55,7 @@ defmodule Rho.Agent.EventLogTest do
       Process.sleep(50)
 
       {all_events, _} = EventLog.read(sid, limit: 100)
-      assert length(all_events) >= 5
+      assert match?([_, _, _, _, _ | _], all_events)
 
       # Read after the 2nd event
       {page2, _} = EventLog.read(sid, after: 2, limit: 100)
@@ -70,7 +70,7 @@ defmodule Rho.Agent.EventLogTest do
       Process.sleep(50)
 
       {events, _} = EventLog.read(sid, limit: 2)
-      assert length(events) == 2
+      assert match?([_, _], events)
     end
   end
 

@@ -21,7 +21,6 @@ defmodule Rho.Stdlib.DataTable.Schema do
   is what lets `update_cells` / `edit_row` reach into a single child cell
   without depending on the order of the children array.
   """
-
   alias Rho.Stdlib.DataTable.Schema.Column
 
   defstruct name: nil,
@@ -41,17 +40,20 @@ defmodule Rho.Stdlib.DataTable.Schema do
           child_columns: [Column.t()],
           child_key_fields: [atom()]
         }
-
   @doc "Build a dynamic (schemaless) schema. All keys stored as strings; no validation."
   def dynamic(name \\ nil) do
     %__MODULE__{name: name, mode: :dynamic}
   end
 
   @doc "Declared column name atoms for this schema."
-  def column_names(%__MODULE__{columns: cols}), do: Enum.map(cols, & &1.name)
+  def column_names(%__MODULE__{columns: cols}) do
+    Enum.map(cols, & &1.name)
+  end
 
   @doc "Declared child column name atoms for this schema."
-  def child_column_names(%__MODULE__{child_columns: cols}), do: Enum.map(cols || [], & &1.name)
+  def child_column_names(%__MODULE__{child_columns: cols}) do
+    Enum.map(cols || [], & &1.name)
+  end
 
   @doc """
   Validate the shape of a schema definition.
@@ -63,7 +65,9 @@ defmodule Rho.Stdlib.DataTable.Schema do
       declared `child_columns` field. This is what makes nested editing
       addressable by natural key instead of list index.
   """
-  def validate_definition(%__MODULE__{children_key: nil}), do: :ok
+  def validate_definition(%__MODULE__{children_key: nil}) do
+    :ok
+  end
 
   def validate_definition(%__MODULE__{children_key: key, child_key_fields: keys} = schema)
       when is_atom(key) do
@@ -85,7 +89,9 @@ defmodule Rho.Stdlib.DataTable.Schema do
     end
   end
 
-  def validate_definition(_), do: {:error, :invalid_schema}
+  def validate_definition(_) do
+    {:error, :invalid_schema}
+  end
 
   @doc """
   Validate and normalize a row against this schema.
@@ -101,9 +107,11 @@ defmodule Rho.Stdlib.DataTable.Schema do
     children_key = schema.children_key
 
     allowed =
-      if children_key,
-        do: MapSet.put(declared, children_key),
-        else: declared
+      if children_key do
+        MapSet.put(declared, children_key)
+      else
+        declared
+      end
 
     required = required_column_names(schema.columns)
     allowed_list = allowed |> Enum.sort() |> Enum.map(&Atom.to_string/1)
@@ -118,9 +126,9 @@ defmodule Rho.Stdlib.DataTable.Schema do
     end
   end
 
-  def validate_row(_, _), do: {:error, :invalid_row}
-
-  # --- Helpers ---
+  def validate_row(_, _) do
+    {:error, :invalid_row}
+  end
 
   defp atomize_known_keys(row, allowed) do
     result =
@@ -151,12 +159,16 @@ defmodule Rho.Stdlib.DataTable.Schema do
 
   defp reject_unknown(row, allowed, allowed_list, required_list) do
     unknown =
-      row
-      |> Map.keys()
-      |> Enum.reject(fn
-        k when is_atom(k) -> MapSet.member?(allowed, k)
-        _ -> false
-      end)
+      Enum.map(
+        Enum.reject(
+          row,
+          fn
+            {k, _v} when is_atom(k) -> MapSet.member?(allowed, k)
+            {_k, _v} -> false
+          end
+        ),
+        fn {k, _} -> k end
+      )
 
     case unknown do
       [] -> :ok
@@ -167,14 +179,9 @@ defmodule Rho.Stdlib.DataTable.Schema do
   defp coerce_columns(row, columns) do
     Enum.reduce_while(columns, {:ok, row}, fn %Column{name: name, type: type}, {:ok, acc} ->
       case Map.fetch(acc, name) do
-        :error ->
-          {:cont, {:ok, acc}}
-
-        {:ok, nil} ->
-          {:cont, {:ok, acc}}
-
-        {:ok, value} ->
-          coerce_single_column(acc, name, value, type)
+        :error -> {:cont, {:ok, acc}}
+        {:ok, nil} -> {:cont, {:ok, acc}}
+        {:ok, value} -> coerce_single_column(acc, name, value, type)
       end
     end)
   end
@@ -186,12 +193,25 @@ defmodule Rho.Stdlib.DataTable.Schema do
     end
   end
 
-  defp coerce(v, :any), do: {:ok, v}
-  defp coerce(v, :string) when is_binary(v), do: {:ok, v}
-  defp coerce(v, :string) when is_integer(v) or is_float(v), do: {:ok, to_string(v)}
-  defp coerce(v, :string) when is_boolean(v), do: {:ok, to_string(v)}
+  defp coerce(v, :any) do
+    {:ok, v}
+  end
 
-  defp coerce(v, :integer) when is_integer(v), do: {:ok, v}
+  defp coerce(v, :string) when is_binary(v) do
+    {:ok, v}
+  end
+
+  defp coerce(v, :string) when is_integer(v) or is_float(v) do
+    {:ok, to_string(v)}
+  end
+
+  defp coerce(v, :string) when is_boolean(v) do
+    {:ok, to_string(v)}
+  end
+
+  defp coerce(v, :integer) when is_integer(v) do
+    {:ok, v}
+  end
 
   defp coerce(v, :integer) when is_binary(v) do
     case Integer.parse(v) do
@@ -200,8 +220,13 @@ defmodule Rho.Stdlib.DataTable.Schema do
     end
   end
 
-  defp coerce(v, :float) when is_float(v), do: {:ok, v}
-  defp coerce(v, :float) when is_integer(v), do: {:ok, v * 1.0}
+  defp coerce(v, :float) when is_float(v) do
+    {:ok, v}
+  end
+
+  defp coerce(v, :float) when is_integer(v) do
+    {:ok, v / 1}
+  end
 
   defp coerce(v, :float) when is_binary(v) do
     case Float.parse(v) do
@@ -210,23 +235,31 @@ defmodule Rho.Stdlib.DataTable.Schema do
     end
   end
 
-  defp coerce(v, :boolean) when is_boolean(v), do: {:ok, v}
-  defp coerce("true", :boolean), do: {:ok, true}
-  defp coerce("false", :boolean), do: {:ok, false}
-  defp coerce(_, type), do: {:error, {:bad_type, type}}
+  defp coerce(v, :boolean) when is_boolean(v) do
+    {:ok, v}
+  end
 
-  defp validate_children(row, %__MODULE__{children_key: nil}), do: {:ok, row}
+  defp coerce("true", :boolean) do
+    {:ok, true}
+  end
+
+  defp coerce("false", :boolean) do
+    {:ok, false}
+  end
+
+  defp coerce(_, type) do
+    {:error, {:bad_type, type}}
+  end
+
+  defp validate_children(row, %__MODULE__{children_key: nil}) do
+    {:ok, row}
+  end
 
   defp validate_children(row, %__MODULE__{children_key: key, child_columns: child_cols}) do
     case Map.get(row, key) do
-      nil ->
-        {:ok, row}
-
-      children when is_list(children) ->
-        validate_child_list(row, key, children, child_cols)
-
-      _other ->
-        {:error, {:bad_children, key}}
+      nil -> {:ok, row}
+      children when is_list(children) -> validate_child_list(row, key, children, child_cols)
+      _other -> {:error, {:bad_children, key}}
     end
   end
 
@@ -264,8 +297,6 @@ defmodule Rho.Stdlib.DataTable.Schema do
   end
 
   defp required_column_names(columns) do
-    columns
-    |> Enum.filter(& &1.required?)
-    |> Enum.map(& &1.name)
+    columns |> Enum.filter(& &1.required?) |> Enum.map(& &1.name)
   end
 end

@@ -39,7 +39,7 @@ defmodule Rho.Tape.ServiceTest do
 
       entries = Store.read(@test_tape)
       anchors = Enum.filter(entries, &(&1.kind == :anchor))
-      assert length(anchors) == 1
+      assert match?([_], anchors)
     end
   end
 
@@ -118,7 +118,7 @@ defmodule Rho.Tape.ServiceTest do
       Service.append(@test_tape, :event, %{"name" => "hello_event"})
 
       results = Service.search(@test_tape, "hello")
-      assert length(results) == 2
+      assert match?([_, _], results)
       assert hd(results).payload["content"] == "hello world"
     end
 
@@ -126,7 +126,7 @@ defmodule Rho.Tape.ServiceTest do
       Service.append(@test_tape, :message, %{"role" => "user", "content" => "Hello World"})
 
       results = Service.search(@test_tape, "hello")
-      assert length(results) == 1
+      assert match?([_], results)
     end
   end
 
@@ -136,7 +136,7 @@ defmodule Rho.Tape.ServiceTest do
       Service.reset(@test_tape)
 
       entries = Store.read(@test_tape)
-      assert length(entries) == 1
+      assert match?([_], entries)
       assert hd(entries).kind == :anchor
     end
   end

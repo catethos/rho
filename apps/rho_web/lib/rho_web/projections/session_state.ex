@@ -236,8 +236,8 @@ defmodule RhoWeb.Projections.SessionState do
   defp dispatch_session_event(:step_start, state, data, _s),
     do: reduce_step_start(state, data)
 
-  defp dispatch_session_event(:before_llm, state, data, signal),
-    do: reduce_before_llm(state, data, signal)
+  defp dispatch_session_event(:before_llm, state, data, s),
+    do: reduce_before_llm(state, data, s)
 
   defp dispatch_session_event(:ui_spec_delta, state, data, _s),
     do: reduce_ui_spec_delta(state, data)
@@ -251,8 +251,8 @@ defmodule RhoWeb.Projections.SessionState do
   defp dispatch_session_event(:error, state, data, _s),
     do: reduce_error(state, data)
 
-  defp dispatch_session_event(kind, state, data, signal),
-    do: add_signal(state, [], kind, data, signal)
+  defp dispatch_session_event(kind, state, data, s),
+    do: add_signal(state, [], kind, data, s)
 
   # --- Individual reducers ---
 
@@ -740,7 +740,7 @@ defmodule RhoWeb.Projections.SessionState do
       correlation_id: data[:correlation_id]
     }
 
-    signals = Enum.take(state.signals ++ [sig], -500)
+    signals = Enum.slice(state.signals ++ [sig], -500..-1//1)
     state = Map.put(state, :signals, signals)
 
     effects = [{:push_event, "signal", sig} | existing_effects]
@@ -751,7 +751,7 @@ defmodule RhoWeb.Projections.SessionState do
   def append_message(state, msg) do
     agent_id = msg[:agent_id] || primary_agent_id(state)
     current = Map.get(state.agent_messages, agent_id, [])
-    updated = Map.put(state.agent_messages, agent_id, Enum.take(current ++ [msg], -200))
+    updated = Map.put(state.agent_messages, agent_id, Enum.slice(current ++ [msg], -200..-1//1))
     Map.put(state, :agent_messages, updated)
   end
 

@@ -1,0 +1,2186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      :root {
+        --bg-abyss: #F6F4F0;
+        --bg-deep: #EDEAE4;
+        --bg-mid: #F2F0EB;
+        --bg-shelf: #FAF9F7;
+        --bg-surface: #FFFFFF;
+        --bg-hover: #F0EDE8;
+        --border: #E2DFD8;
+        --border-active: #C9C5BC;
+        --border-violet: rgba(120, 100, 160, 0.18);
+        --text-primary: #1C1917;
+        --text-secondary: #57534E;
+        --text-muted: #8D8780;
+        --teal: #C2855A;
+        --teal-bright: #9D5F2E;
+        --teal-dim: rgba(194, 133, 90, 0.07);
+        --teal-glow: rgba(194, 133, 90, 0.10);
+        --teal-glow-strong: rgba(194, 133, 90, 0.16);
+        --violet: #697CA8;
+        --violet-dim: rgba(124, 141, 181, 0.08);
+        --green: #517F5D;
+        --green-dim: rgba(107, 158, 120, 0.10);
+        --amber: #A98520;
+        --amber-dim: rgba(201, 168, 76, 0.10);
+        --red: #B34740;
+        --red-dim: rgba(199, 92, 84, 0.08);
+        --accent: #B87333;
+        --radius: 8px;
+        --radius-sm: 5px;
+        --radius-lg: 12px;
+        --shadow-sm: 0 1px 3px rgba(28, 25, 23, 0.04), 0 1px 2px rgba(28, 25, 23, 0.02);
+        --shadow-md: 0 4px 12px rgba(28, 25, 23, 0.06), 0 1px 3px rgba(28, 25, 23, 0.04);
+        --shadow-lg: 0 12px 32px rgba(28, 25, 23, 0.08), 0 4px 8px rgba(28, 25, 23, 0.04);
+      }
+
+      html, body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg-abyss);
+        color: var(--text-primary);
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        letter-spacing: 0;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        opacity: 0.28;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(255,255,255,0.52), rgba(246,244,240,0.96)), var(--bg-abyss);
+      }
+
+      .scene {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        padding: 58px 72px 86px;
+        opacity: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+      }
+
+      .scene-layout {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 390px;
+        gap: 30px;
+      }
+
+      .scene-copy {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 26px 28px;
+        box-shadow: var(--shadow-md);
+        align-self: start;
+      }
+
+      .scene-copy .kicker,
+      .kicker {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--teal-bright);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 12px;
+      }
+
+      .scene-copy h2 {
+        font-size: 34px;
+        line-height: 1.04;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 12px;
+      }
+
+      .scene-copy p {
+        font-size: 17px;
+        line-height: 1.45;
+        color: var(--text-secondary);
+      }
+
+      .caption {
+        position: absolute;
+        left: 50%;
+        bottom: 28px;
+        transform: translateX(-50%);
+        width: min(1050px, calc(100% - 180px));
+        text-align: center;
+        padding: 14px 24px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: rgba(255,255,255,0.94);
+        color: var(--text-primary);
+        box-shadow: var(--shadow-md);
+        font-size: 22px;
+        line-height: 1.28;
+        z-index: 30;
+      }
+
+      .app-frame {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-surface);
+        box-shadow: var(--shadow-lg);
+        display: flex;
+        flex-direction: column;
+      }
+
+      .global-nav {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 48px;
+        padding: 0 24px;
+        background: var(--bg-surface);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .global-nav-left { display: flex; align-items: center; gap: 28px; }
+      .global-nav-logo {
+        font-size: 17px;
+        font-weight: 700;
+        color: var(--text-primary);
+        text-decoration: none;
+        letter-spacing: 0;
+      }
+      .org-switcher {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        border-radius: var(--radius-sm);
+      }
+      .org-switcher-arrow { font-size: 11px; color: var(--text-muted); }
+      .global-nav-links { display: flex; gap: 3px; }
+      .global-nav-link {
+        padding: 6px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-decoration: none;
+        border-radius: var(--radius-sm);
+      }
+      .global-nav-link[aria-current="page"] {
+        color: var(--teal-bright);
+        background: var(--teal-dim);
+      }
+      .global-nav-right { display: flex; align-items: center; gap: 12px; }
+      .global-nav-user { font-size: 12px; color: var(--text-muted); }
+
+      .session-layout {
+        display: flex;
+        flex-direction: column;
+        height: calc(100% - 48px);
+        overflow: hidden;
+      }
+      .session-layout.workspace-mode .main-panels {
+        display: grid;
+        grid-template-columns: 1fr 6px 1fr;
+      }
+      .session-layout:not(.workspace-mode) .main-panels {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+      .main-panels {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .panel-resizer {
+        width: 6px;
+        background: var(--border);
+      }
+
+      .dt-chat-panel {
+        width: 100%;
+        border-left: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+        background: var(--bg-surface);
+      }
+      .session-layout:not(.workspace-mode) .dt-chat-panel {
+        max-width: 1180px;
+        margin: 0 auto;
+        border-left: none;
+      }
+      .dt-chat-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        height: 48px;
+        flex-shrink: 0;
+      }
+      .dt-chat-context {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 8px;
+      }
+      .dt-chat-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .chat-active-agent {
+        max-width: 14rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding: 3px 8px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--bg-shelf);
+        color: var(--text-secondary);
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .chat-session-id,
+      .header-tokens,
+      .header-cost,
+      .mono {
+        font-family: "JetBrains Mono", monospace;
+      }
+      .chat-session-id {
+        max-width: 9rem;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+      .session-controls {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 11px;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+      .header-cost { color: var(--text-secondary); font-weight: 700; }
+      .header-avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #78716C;
+        color: #fff;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .dt-chat-body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        overflow: hidden;
+      }
+      .chat-rail {
+        width: 248px;
+        min-width: 248px;
+        border-right: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bg-shelf) 72%, var(--bg-surface));
+        padding: 13px 11px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .chat-rail-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 11px;
+      }
+      .chat-rail-title {
+        font-size: 11px;
+        font-weight: 750;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .chat-new-btn {
+        width: 22px;
+        height: 22px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-surface);
+        color: var(--text-secondary);
+        font-size: 14px;
+      }
+      .chat-list {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        overflow: hidden;
+      }
+      .chat-row {
+        position: relative;
+        display: flex;
+        min-height: 70px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--bg-surface);
+        overflow: hidden;
+      }
+      .chat-row.active {
+        border-color: var(--teal);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--teal) 50%, transparent);
+      }
+      .chat-drag-handle {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 22px;
+        display: grid;
+        place-items: center;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+      .chat-open-btn {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        padding: 11px 14px 11px 28px;
+      }
+      .chat-row-main {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .chat-row-title {
+        color: var(--text-primary);
+        font-size: 13px;
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .chat-row-preview {
+        color: var(--text-muted);
+        font-size: 11px;
+        line-height: 1.25;
+      }
+      .chat-row-meta {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+      .chat-row-agent { color: var(--text-secondary); font-weight: 700; }
+      .dt-chat-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-surface);
+      }
+      .chat-feed {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        padding: 24px 28px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        background: linear-gradient(180deg, var(--bg-surface), var(--bg-shelf));
+      }
+      .message-wrapper { display: flex; }
+      .message {
+        display: flex;
+        align-items: flex-start;
+        gap: 11px;
+        max-width: 740px;
+      }
+      .message-user {
+        margin-left: auto;
+        flex-direction: row-reverse;
+      }
+      .message-avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 800;
+        flex: 0 0 30px;
+      }
+      .avatar-user { background: var(--violet); }
+      .avatar-assistant { background: var(--teal); }
+      .message-content { min-width: 0; }
+      .message-body {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-surface);
+        padding: 13px 15px;
+        font-size: 15px;
+        line-height: 1.42;
+        color: var(--text-primary);
+        box-shadow: var(--shadow-sm);
+      }
+      .message-user .message-body {
+        background: var(--teal-dim);
+        border-color: rgba(194, 133, 90, 0.24);
+      }
+      .pending-indicator {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-secondary);
+      }
+      .pending-step {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .pending-dots span { display: inline-block; font-weight: 800; }
+      .tool-call {
+        width: 610px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-shelf);
+        overflow: hidden;
+      }
+      .tool-call-summary {
+        height: 40px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 0 14px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .tool-status {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 5px var(--green-dim);
+      }
+      .tool-call-detail {
+        border-top: 1px solid var(--border);
+        padding: 12px 14px;
+        color: var(--text-secondary);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        line-height: 1.52;
+      }
+      .chat-input-area {
+        max-width: 800px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 14px 28px 18px;
+        border-top: 1px solid var(--border);
+        background: var(--bg-surface);
+        flex-shrink: 0;
+      }
+      .chat-attach-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 4px 8px 8px;
+      }
+      .chat-attach-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        background: var(--bg-surface);
+        border: 1px solid #d5d0c7;
+        border-radius: 14px;
+        font-size: 12px;
+        min-height: 26px;
+      }
+      .chat-attach-chip.is-parsing {
+        background: #dceefb;
+        border-color: #1971c2;
+      }
+      .chat-attach-icon { font-size: 14px; }
+      .chat-attach-name {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .chat-attach-progress {
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .chat-attach-remove {
+        background: transparent;
+        border: 0;
+        color: var(--text-muted);
+        font-size: 14px;
+      }
+      .chat-input-form {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        background: var(--bg-shelf);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 10px 14px;
+      }
+      .chat-input-form:focus-within {
+        border-color: var(--teal);
+        box-shadow: 0 0 0 3px var(--teal-glow);
+      }
+      .chat-attach-button {
+        cursor: pointer;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        font-size: 18px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0,0,0,0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .chat-input-form textarea {
+        flex: 1;
+        border: none;
+        outline: none;
+        resize: none;
+        font-family: "DM Sans", sans-serif;
+        font-size: 14px;
+        color: var(--text-primary);
+        background: transparent;
+        padding: 3px 0;
+        min-height: 24px;
+        line-height: 1.55;
+      }
+      .chat-input-form textarea::placeholder { color: var(--text-muted); }
+      .btn-send,
+      .btn-primary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 8px 16px;
+        border-radius: var(--radius);
+        border: none;
+        background: var(--text-primary);
+        color: var(--bg-surface);
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .btn-secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 8px 16px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        background: var(--bg-surface);
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .flow-container {
+        max-width: 860px;
+        margin: 32px auto;
+        padding: 0 24px;
+      }
+      .flow-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+      .flow-title {
+        font-size: 24px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .flow-mode-toggle {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px;
+        background: var(--bg-mid);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+      }
+      .flow-mode-button {
+        border: 0;
+        background: transparent;
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 650;
+        color: var(--text-secondary);
+        border-radius: 999px;
+      }
+      .flow-mode-button-active {
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        box-shadow: var(--shadow-sm);
+      }
+      .flow-stepper {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        margin-bottom: 28px;
+        padding: 12px 0;
+      }
+      .flow-step {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+      }
+      .flow-step-number {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 750;
+        border: 2px solid var(--border);
+        color: var(--text-muted);
+        background: var(--bg-surface);
+      }
+      .flow-step-label {
+        font-size: 13px;
+        color: var(--text-muted);
+        font-weight: 650;
+      }
+      .flow-step-active .flow-step-number {
+        border-color: var(--teal);
+        color: var(--teal-bright);
+        background: var(--teal-dim);
+      }
+      .flow-step-active .flow-step-label {
+        color: var(--text-primary);
+      }
+      .flow-step-completed .flow-step-number {
+        border-color: var(--green);
+        color: var(--green);
+        background: var(--green-dim);
+      }
+      .flow-step-connector {
+        flex: 1;
+        height: 2px;
+        background: var(--border);
+        margin: 0 12px;
+        min-width: 16px;
+      }
+      .flow-step-content {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 30px;
+        box-shadow: var(--shadow-sm);
+      }
+      .flow-form {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .flow-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .flow-label {
+        font-size: 14px;
+        font-weight: 650;
+        color: var(--text-secondary);
+      }
+      .flow-input {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-family: "DM Sans", sans-serif;
+        background: var(--bg-shelf);
+        color: var(--text-primary);
+      }
+      .flow-textarea { min-height: 100px; resize: none; }
+      .flow-action-status {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 28px 0;
+      }
+      .flow-action-running {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        color: var(--text-secondary);
+        font-size: 15px;
+        width: 100%;
+      }
+      .flow-action-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .flow-spinner,
+      .flow-spinner-sm {
+        border: 2.5px solid var(--border);
+        border-top-color: var(--teal);
+        border-radius: 50%;
+      }
+      .flow-spinner {
+        width: 22px;
+        height: 22px;
+      }
+      .flow-spinner-sm {
+        width: 14px;
+        height: 14px;
+      }
+      .flow-tool-log {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 8px 0;
+      }
+      .flow-tool-event {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-family: "JetBrains Mono", monospace;
+      }
+      .flow-tool-name { color: var(--teal-bright); font-weight: 700; }
+      .flow-tool-phase { color: var(--text-muted); }
+      .flow-tool-ok { color: var(--green); }
+      .flow-select-step {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .flow-select-hint {
+        color: var(--text-secondary);
+        font-size: 14px;
+      }
+      .flow-select-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .flow-select-card {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 12px 16px;
+        border: 1px solid var(--bg-deep);
+        border-radius: var(--radius);
+        background: var(--bg-surface);
+      }
+      .flow-select-card-active {
+        border-color: var(--accent);
+        background: rgba(184, 115, 51, 0.05);
+      }
+      .flow-checkbox {
+        width: 18px;
+        height: 18px;
+        border: 2px solid var(--text-muted);
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        margin-top: 2px;
+      }
+      .flow-checkbox-checked {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+      .flow-select-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .flow-select-card-title {
+        font-weight: 700;
+        color: var(--text-primary);
+        font-size: 14px;
+      }
+      .flow-select-card-subtitle {
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+      .flow-select-card-detail {
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+      .flow-select-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding-top: 8px;
+      }
+      .flow-table-review {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .flow-table-wrap {
+        max-height: 480px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .flow-fan-out {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .flow-worker-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+      }
+      .flow-progress-card {
+        background: var(--bg-shelf);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 12px 16px;
+      }
+      .flow-progress-completed { border-color: rgba(107, 158, 120, 0.25); }
+      .flow-progress-running { border-color: rgba(194, 133, 90, 0.34); }
+      .flow-progress-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .flow-progress-category {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .flow-progress-count {
+        font-size: 12px;
+        color: var(--text-muted);
+        font-family: "JetBrains Mono", monospace;
+      }
+      .flow-progress-status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+      .flow-status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .flow-status-pending { background: var(--text-muted); }
+      .flow-status-completed { background: var(--green); }
+      .step-chat {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 16px 20px;
+        margin-top: 18px;
+        background: var(--bg-mid);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .step-chat-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .step-chat-title {
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .step-chat-form {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .step-chat-textarea {
+        flex: 1;
+        padding: 9px 11px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-family: "DM Sans", sans-serif;
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        resize: none;
+        min-height: 44px;
+      }
+      .step-chat-tool-log {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 0;
+        margin: 0;
+      }
+      .step-chat-tool {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 8px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .flow-action-complete {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        color: var(--green);
+        font-size: 15px;
+        padding: 34px 0;
+      }
+      .flow-action-headline {
+        color: var(--text-primary);
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .flow-action-detail {
+        color: var(--text-secondary);
+        font-size: 14px;
+      }
+
+      .dt-panel {
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+        overflow: hidden;
+        background: var(--bg-surface);
+      }
+      .dt-tab-strip {
+        display: flex;
+        gap: 2px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-deep);
+      }
+      .dt-tab {
+        padding: 7px 14px 6px;
+        font-size: 12px;
+        font-weight: 650;
+        color: var(--text-muted);
+        background: transparent;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .dt-tab-active {
+        color: var(--text-primary);
+        border-bottom-color: var(--accent);
+      }
+      .dt-tab-count {
+        font-size: 11px;
+        color: var(--text-muted);
+        background: var(--bg-hover);
+        padding: 1px 6px;
+        border-radius: 8px;
+      }
+      .dt-selection-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 7px 20px;
+        background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface));
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        flex-shrink: 0;
+      }
+      .dt-selection-count {
+        color: var(--text-primary);
+        font-weight: 700;
+      }
+      .dt-selection-clear {
+        padding: 3px 10px;
+        font-size: 11px;
+        font-weight: 650;
+        color: var(--text-muted);
+        background: var(--bg-deep);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+      }
+      .dt-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 20px;
+        background: var(--bg-surface);
+        border-bottom: 1px solid var(--border);
+        height: 52px;
+        flex-shrink: 0;
+      }
+      .dt-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .dt-row-count,
+      .dt-cost {
+        font-size: 11px;
+        color: var(--text-muted);
+        font-family: "JetBrains Mono", monospace;
+        padding: 3px 10px;
+        background: var(--bg-deep);
+        border-radius: 10px;
+      }
+      .dt-cost {
+        color: var(--teal-bright);
+        background: var(--teal-dim);
+      }
+      .dt-toolbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+      }
+      .dt-action-btn,
+      .dt-add-row-btn {
+        padding: 5px 11px;
+        font-size: 11px;
+        font-weight: 650;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg-surface);
+        color: var(--text-secondary);
+      }
+      .dt-save-btn {
+        background: var(--teal-dim);
+        border-color: rgba(194, 133, 90, 0.28);
+        color: var(--teal-bright);
+      }
+      .dt-table-wrap {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        padding: 16px 20px 32px;
+      }
+      .dt-group-l1 {
+        margin-bottom: 12px;
+        border-radius: var(--radius);
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        overflow: hidden;
+      }
+      #scene-refine .dt-group-l1 {
+        min-height: 272px;
+      }
+      .dt-group-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .dt-group-header-l1 {
+        padding: 12px 16px;
+        background: var(--bg-surface);
+        border-bottom: 1px solid var(--border);
+        font-weight: 700;
+        font-size: 13px;
+        color: var(--text-primary);
+      }
+      .dt-group-header-l2 {
+        padding: 9px 16px 9px 20px;
+        background: var(--bg-shelf);
+        border-bottom: 1px solid var(--border);
+        font-weight: 650;
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+      .dt-chevron {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        background: var(--bg-deep);
+        flex-shrink: 0;
+      }
+      .dt-chevron::after {
+        content: "";
+        width: 0;
+        height: 0;
+        border-left: 4px solid var(--text-muted);
+        border-top: 3px solid transparent;
+        border-bottom: 3px solid transparent;
+        transform: rotate(90deg);
+      }
+      .dt-group-name { flex: 1; }
+      .dt-group-count {
+        font-size: 11px;
+        color: var(--text-muted);
+        font-family: "JetBrains Mono", monospace;
+        padding: 2px 8px;
+        background: var(--bg-deep);
+        border-radius: 10px;
+      }
+      .dt-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .dt-th {
+        background: var(--bg-deep);
+        color: var(--text-muted);
+        padding: 6px 14px;
+        text-align: left;
+        font-weight: 650;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        border-bottom: 2px solid var(--border);
+      }
+      .dt-th-select,
+      .dt-td-select {
+        width: 32px;
+        padding: 0;
+        text-align: center;
+      }
+      .dt-row-checkbox {
+        width: 14px;
+        height: 14px;
+        accent-color: var(--accent);
+      }
+      .dt-row td:first-child { border-left: 3px solid transparent; }
+      .dt-row-selected {
+        background: color-mix(in srgb, var(--accent) 6%, transparent);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .dt-td {
+        padding: 10px 14px;
+        color: var(--text-primary);
+        vertical-align: top;
+        border-bottom: 1px solid var(--border);
+      }
+      .dt-td-id {
+        width: 44px;
+        text-align: center;
+        color: var(--text-muted);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+      }
+      .dt-td-source { width: 24px; text-align: center; padding: 10px 4px; }
+      .dt-source-badge {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        line-height: 16px;
+        font-size: 10px;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 700;
+        border-radius: 3px;
+        text-align: center;
+        color: #fff;
+      }
+      .dt-source-user { background: var(--teal); }
+      .dt-source-flow { background: var(--text-muted); }
+      .dt-source-agent { background: var(--violet); }
+      .dt-td-skill_name { font-weight: 700; color: var(--text-primary); }
+      .dt-td-skill_description,
+      .dt-td-level_description {
+        color: var(--text-secondary);
+        line-height: 1.5;
+        font-size: 12px;
+      }
+      .dt-td-level {
+        font-weight: 700;
+        color: var(--teal-bright);
+        font-family: "JetBrains Mono", monospace;
+        text-align: center;
+      }
+      .dt-proficiency-row td { background: var(--bg-deep); }
+      .dt-proficiency-panel {
+        display: grid;
+        grid-template-columns: 2.2rem 9rem 1fr 22px;
+        gap: 0;
+        align-items: baseline;
+        padding: 8px 20px 8px 40px;
+      }
+      .dt-proficiency-item { display: contents; }
+      .dt-proficiency-item > * {
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .dt-proficiency-level {
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--teal-bright);
+        background: var(--teal-dim);
+        padding: 2px 6px;
+        border-radius: 4px;
+        justify-self: start;
+      }
+      .dt-proficiency-name {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-primary);
+        padding-left: 8px;
+      }
+      .dt-proficiency-desc {
+        font-size: 13px;
+        color: var(--text-secondary);
+        line-height: 1.4;
+        padding-left: 8px;
+      }
+      .dt-cell-input {
+        width: 100%;
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        border: 1.5px solid var(--teal);
+        border-radius: 4px;
+        padding: 6px 8px;
+        font: inherit;
+        font-size: 12.5px;
+        outline: none;
+        box-shadow: 0 0 0 3px var(--teal-glow);
+      }
+      .dt-dialog-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(28,25,23,0.18);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 20;
+      }
+      .dt-dialog {
+        width: 420px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-lg);
+        padding: 22px;
+      }
+      .dt-dialog-title {
+        font-size: 19px;
+        font-weight: 750;
+        margin-bottom: 18px;
+      }
+      .dt-dialog-label {
+        display: block;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-secondary);
+        margin-bottom: 7px;
+      }
+      .dt-dialog-input {
+        width: 100%;
+        height: 40px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg-shelf);
+        color: var(--text-primary);
+        padding: 0 11px;
+        font-family: "DM Sans", sans-serif;
+        font-size: 14px;
+      }
+      .dt-dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      .dt-dialog-btn {
+        padding: 8px 14px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        font-weight: 700;
+      }
+      .dt-dialog-cancel { background: var(--bg-surface); color: var(--text-secondary); }
+      .dt-dialog-confirm { background: var(--text-primary); color: var(--bg-surface); }
+
+      .page-shell {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 32px 24px;
+        overflow: hidden;
+      }
+      .page-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        margin-bottom: 28px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      .page-title {
+        font-size: 24px;
+        font-weight: 800;
+        color: var(--text-primary);
+      }
+      .page-subtitle {
+        margin-top: 6px;
+        font-size: 14px;
+        color: var(--text-secondary);
+        line-height: 1.45;
+      }
+      .fw-section { margin-bottom: 28px; }
+      .fw-section-title {
+        font-size: 18px;
+        font-weight: 750;
+        color: var(--text-primary);
+        margin-bottom: 16px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .fw-collapse { margin-bottom: 8px; }
+      .fw-collapse-summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 4px;
+        border-radius: var(--radius);
+      }
+      .fw-collapse-arrow {
+        display: inline-block;
+        width: 0;
+        height: 0;
+        border-left: 5px solid var(--text-muted);
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        transform: rotate(90deg);
+        flex-shrink: 0;
+      }
+      .fw-cluster-title {
+        font-size: 16px;
+        font-weight: 750;
+        color: var(--text-primary);
+      }
+      .fw-category-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-secondary);
+      }
+      .badge-muted,
+      .badge-version,
+      .badge-default {
+        background: var(--bg-deep);
+        color: var(--text-secondary);
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        min-height: 22px;
+        display: inline-flex;
+        align-items: center;
+      }
+      .badge-version { background: #E0F2F1; color: #00695C; font-weight: 750; }
+      .badge-default { background: #E3F2FD; color: #1565C0; font-weight: 750; }
+      .rho-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      .rho-table thead th {
+        text-align: left;
+        padding: 10px 12px;
+        font-size: 11px;
+        font-weight: 750;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
+      }
+      .rho-table tbody td {
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--bg-deep);
+        color: var(--text-primary);
+      }
+      .skill-expand-arrow {
+        display: inline-block;
+        width: 0;
+        height: 0;
+        border-left: 4.5px solid var(--text-muted);
+        border-top: 3.5px solid transparent;
+        border-bottom: 3.5px solid transparent;
+        margin-right: 8px;
+        transform: rotate(90deg);
+        vertical-align: middle;
+      }
+      .badge-draft { background: #FFF3E0; color: #A84800; font-size: 11px; font-weight: 750; padding: 3px 8px; border-radius: 999px; }
+      .proficiency-panel {
+        padding: 12px 24px;
+        background: var(--bg-deep);
+        border-top: 1px solid var(--border);
+      }
+      .proficiency-list {
+        display: grid;
+        grid-template-columns: 2rem 9rem 1fr;
+        gap: 0;
+        align-items: baseline;
+      }
+      .proficiency-item { display: contents; }
+      .proficiency-item > * {
+        padding: 7px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .proficiency-level {
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--teal-bright);
+        background: var(--teal-dim);
+        padding: 3px 6px;
+        border-radius: 4px;
+        justify-self: start;
+      }
+      .proficiency-name {
+        font-size: 13px;
+        font-weight: 750;
+        color: var(--text-primary);
+        padding-left: 8px;
+      }
+      .proficiency-desc {
+        font-size: 13px;
+        color: var(--text-secondary);
+        line-height: 1.42;
+        padding-left: 8px;
+      }
+
+      .focus-ring {
+        position: absolute;
+        border: 2px solid var(--teal);
+        border-radius: var(--radius);
+        box-shadow: 0 0 0 8px rgba(194, 133, 90, 0.1);
+        pointer-events: none;
+        opacity: 0;
+        z-index: 25;
+      }
+      .cursor {
+        position: absolute;
+        width: 30px;
+        height: 30px;
+        transform: rotate(-18deg);
+        border-left: 14px solid var(--text-primary);
+        border-top: 20px solid transparent;
+        border-bottom: 5px solid transparent;
+        filter: drop-shadow(0 4px 6px rgba(28, 25, 23, 0.22));
+        z-index: 26;
+        opacity: 0;
+      }
+      .source-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 4px 9px;
+        border-radius: 999px;
+        background: var(--violet-dim);
+        color: var(--violet);
+        font-size: 12px;
+        font-weight: 750;
+        margin-right: 6px;
+      }
+      .mini-progress {
+        position: absolute;
+        top: 30px;
+        right: 72px;
+        display: flex;
+        gap: 8px;
+        z-index: 40;
+      }
+      .mini-progress span {
+        width: 34px;
+        height: 4px;
+        border-radius: 999px;
+        background: var(--border-active);
+      }
+      .mini-progress span.active { background: var(--teal); }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="52"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="mini-progress" data-layout-ignore>
+        <span class="active"></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+
+      <section id="scene-upload" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav">
+              <div class="global-nav-left">
+                <a class="global-nav-logo">rho</a>
+                <div class="org-switcher"><span class="org-switcher-name">Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div>
+                <div class="global-nav-links">
+                  <a class="global-nav-link" aria-current="page">Chat</a>
+                  <a class="global-nav-link">Libraries</a>
+                  <a class="global-nav-link">Roles</a>
+                  <a class="global-nav-link">Settings</a>
+                  <a class="global-nav-link">Members</a>
+                </div>
+              </div>
+              <div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div>
+            </nav>
+            <div id="session-root" class="session-layout">
+              <div class="main-panels">
+                <div class="dt-chat-panel">
+                  <div class="dt-chat-header">
+                    <div class="dt-chat-context">
+                      <span class="dt-chat-title">Assistant</span>
+                      <span class="chat-active-agent">Spreadsheet</span>
+                      <span class="chat-session-id">rho_7F3A</span>
+                    </div>
+                    <div class="session-controls">
+                      <span class="header-tokens">0 ctx</span>
+                      <span class="header-cost">$0.0000</span>
+                      <span class="header-avatar">R</span>
+                    </div>
+                  </div>
+                  <div class="dt-chat-body">
+                    <div class="chat-rail">
+                      <div class="chat-rail-head"><span class="chat-rail-title">Chats</span><button class="chat-new-btn">+</button></div>
+                      <div id="chat-list" class="chat-list">
+                        <div class="chat-row active">
+                          <span class="chat-drag-handle">⋮⋮</span>
+                          <button class="chat-open-btn">
+                            <span class="chat-row-main">
+                              <span class="chat-row-title">New framework from uploads</span>
+                              <span class="chat-row-preview">Ready to parse source files...</span>
+                            </span>
+                            <span class="chat-row-meta"><span class="chat-row-agent">Spreadsheet</span><span>now</span></span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="dt-chat-main">
+                      <div class="chat-feed">
+                        <div class="message-wrapper">
+                          <div class="message message-assistant">
+                            <div class="message-avatar avatar-assistant">R</div>
+                            <div class="message-content"><div class="message-body">Upload the source material and tell me what framework you want to create.</div></div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="chat-input-area">
+                        <div class="chat-attach-strip">
+                          <div class="chat-attach-chip"><span class="chat-attach-icon">📄</span><span class="chat-attach-name">PM Job Description.pdf</span><span class="chat-attach-progress">100%</span><button class="chat-attach-remove">×</button></div>
+                          <div class="chat-attach-chip"><span class="chat-attach-icon">📊</span><span class="chat-attach-name">Competency Matrix.xlsx</span><span class="chat-attach-progress">100%</span><button class="chat-attach-remove">×</button></div>
+                          <div class="chat-attach-chip is-parsing"><span class="chat-attach-icon">⏳</span><span class="chat-attach-name">Interview Rubric.docx</span><span class="chat-attach-progress">parsing…</span></div>
+                        </div>
+                        <form id="chat-input-form" class="chat-input-form">
+                          <label class="chat-attach-button" title="Attach .xlsx / .csv / .pdf / .docx / text">📎<input type="file" class="sr-only" /></label>
+                          <textarea rows="1">Create a Product Management skill framework from these files.</textarea>
+                          <button type="button" class="btn-send">Send</button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="focus-ring upload-focus" style="left: 555px; bottom: 118px; width: 770px; height: 94px;"></div>
+              <div class="cursor upload-cursor" style="left: 1270px; bottom: 148px;"></div>
+            </div>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">1 / Upload intake</div>
+            <h2>Start with the files teams already have.</h2>
+            <p>Rho keeps uploaded PDFs, spreadsheets, and docs inside the same chat context that drives the skill-framework workflow.</p>
+          </aside>
+        </div>
+        <div class="caption">The source files enter through the real chat upload strip, then become context for the framework creation run.</div>
+      </section>
+
+      <section id="scene-parse" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav">
+              <div class="global-nav-left">
+                <a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div>
+                <div class="global-nav-links"><a class="global-nav-link" aria-current="page">Chat</a><a class="global-nav-link">Libraries</a><a class="global-nav-link">Roles</a></div>
+              </div>
+              <div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div>
+            </nav>
+            <div class="session-layout">
+              <div class="main-panels">
+                <div class="dt-chat-panel">
+                  <div class="dt-chat-header">
+                    <div class="dt-chat-context"><span class="dt-chat-title">Assistant</span><span class="chat-active-agent">Spreadsheet</span><span class="chat-session-id">rho_7F3A</span></div>
+                    <div class="session-controls"><span class="header-tokens">8.2k ctx</span><span class="header-cost">$0.0312</span><span class="header-avatar">R</span></div>
+                  </div>
+                  <div class="dt-chat-body">
+                    <div class="chat-rail">
+                      <div class="chat-rail-head"><span class="chat-rail-title">Chats</span><button class="chat-new-btn">+</button></div>
+                      <div class="chat-list">
+                        <div class="chat-row active"><span class="chat-drag-handle">⋮⋮</span><button class="chat-open-btn"><span class="chat-row-main"><span class="chat-row-title">New framework from uploads</span><span class="chat-row-preview">Parsed 3 files and found role signals...</span></span><span class="chat-row-meta"><span class="chat-row-agent">Spreadsheet</span><span>now</span></span></button></div>
+                      </div>
+                    </div>
+                    <div class="dt-chat-main">
+                      <div class="chat-feed">
+                        <div class="message-wrapper">
+                          <div class="message message-user"><div class="message-avatar avatar-user">Y</div><div class="message-content"><div class="message-body">Create a Product Management skill framework from these files.</div></div></div>
+                        </div>
+                        <div class="message-wrapper">
+                          <div class="message message-assistant"><div class="message-avatar avatar-assistant">R</div><div class="message-content"><div class="message-body">I parsed the uploads and found source material for responsibilities, outcomes, seniority expectations, and interview evidence.</div></div></div>
+                        </div>
+                        <div class="tool-call">
+                          <div class="tool-call-summary"><span class="tool-status"></span><span class="tool-name">observe_uploads</span></div>
+                          <div class="tool-call-detail">PM Job Description.pdf → role purpose + accountabilities<br />Competency Matrix.xlsx → 42 competency rows<br />Interview Rubric.docx → evaluation evidence and level hints</div>
+                        </div>
+                        <div class="message-wrapper">
+                          <div class="message message-assistant"><div class="message-avatar avatar-assistant">R</div><div class="message-content"><div class="message-body">Next I’ll seed the flow, compare similar roles, generate a framework skeleton, then open a review table.</div></div></div>
+                        </div>
+                      </div>
+                      <div class="chat-input-area">
+                        <form class="chat-input-form"><label class="chat-attach-button">📎</label><textarea rows="1" placeholder="Ask to generate skills, edit rows, etc..."></textarea><button class="btn-send">Send</button></form>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="focus-ring parse-focus" style="left: 620px; top: 430px; width: 650px; height: 116px;"></div>
+            </div>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">2 / Parse and plan</div>
+            <h2>Rho explains the path before it generates.</h2>
+            <p>The chat transcript shows parsed upload context, tool calls, costs, and the next workflow steps instead of hiding the work.</p>
+          </aside>
+        </div>
+        <div class="caption">The agent moves from raw file observations into an explicit framework creation plan.</div>
+      </section>
+
+      <section id="scene-flow-intake" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav">
+              <div class="global-nav-left">
+                <a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div>
+                <div class="global-nav-links"><a class="global-nav-link">Chat</a><a class="global-nav-link" aria-current="page">Libraries</a><a class="global-nav-link">Roles</a></div>
+              </div>
+              <div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div>
+            </nav>
+            <main>
+              <div class="flow-container">
+                <div class="flow-header">
+                  <h1 class="flow-title">Create Framework</h1>
+                  <div class="flow-mode-toggle" role="tablist" aria-label="Flow mode"><button class="flow-mode-button flow-mode-button-active">Guided</button><button class="flow-mode-button">Co-pilot</button><button class="flow-mode-button">Open</button></div>
+                </div>
+                <div class="flow-stepper">
+                  <div class="flow-step flow-step-active"><div class="flow-step-number">1</div><span class="flow-step-label">Intake</span></div>
+                  <div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">2</div><span class="flow-step-label">Find roles</span></div>
+                  <div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">3</div><span class="flow-step-label">Generate</span></div>
+                  <div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">…</div><span class="flow-step-label">More</span></div>
+                </div>
+                <div class="flow-step-content">
+                  <form class="flow-form">
+                    <div class="flow-field"><label class="flow-label">Name <span class="flow-required">*</span></label><input class="flow-input" value="Product Management Framework" /></div>
+                    <div class="flow-field"><label class="flow-label">Description</label><textarea class="flow-input flow-textarea">A skill framework for PM hiring, growth, and assessment, grounded in uploaded role documents.</textarea></div>
+                    <div class="flow-field"><label class="flow-label">Target roles</label><input class="flow-input" value="Product Manager, Product Owner, Technical Product Manager" /></div>
+                    <button type="button" class="btn-primary flow-submit">Continue</button>
+                  </form>
+                </div>
+              </div>
+            </main>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">3 / Guided flow</div>
+            <h2>The same domain workflow becomes a focused wizard.</h2>
+            <p>FlowLive wraps the agent use cases in a stepper so the user can see where they are: intake, role selection, generation, review, proficiency, and save.</p>
+          </aside>
+        </div>
+        <div class="caption">The chat request lands in the real framework flow, pre-seeded with the uploaded source context.</div>
+      </section>
+
+      <section id="scene-roles" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav">
+              <div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link">Chat</a><a class="global-nav-link" aria-current="page">Libraries</a><a class="global-nav-link">Roles</a></div></div>
+              <div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div>
+            </nav>
+            <main>
+              <div class="flow-container">
+                <div class="flow-header"><h1 class="flow-title">Create Framework</h1><div class="flow-mode-toggle"><button class="flow-mode-button flow-mode-button-active">Guided</button><button class="flow-mode-button">Co-pilot</button><button class="flow-mode-button">Open</button></div></div>
+                <div class="flow-stepper">
+                  <div class="flow-step flow-step-completed"><div class="flow-step-number">✓</div><span class="flow-step-label">Intake</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step flow-step-active"><div class="flow-step-number">2</div><span class="flow-step-label">Find roles</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">3</div><span class="flow-step-label">Generate</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">…</div><span class="flow-step-label">More</span></div>
+                </div>
+                <div class="flow-step-content">
+                  <div class="flow-select-step">
+                    <p class="flow-select-hint">Select roles to draw skills from, or skip to generate from scratch.</p>
+                    <div class="flow-select-grid">
+                      <div class="flow-select-card flow-select-card-active"><div class="flow-select-card-check"><div class="flow-checkbox flow-checkbox-checked">✓</div></div><div class="flow-select-card-body"><span class="flow-select-card-title">Product Manager</span><span class="flow-select-card-subtitle">Product and Design</span><span class="flow-select-card-detail">38 skills · close match to uploaded job description</span></div></div>
+                      <div class="flow-select-card flow-select-card-active"><div class="flow-select-card-check"><div class="flow-checkbox flow-checkbox-checked">✓</div></div><div class="flow-select-card-body"><span class="flow-select-card-title">Product Owner</span><span class="flow-select-card-subtitle">Agile delivery</span><span class="flow-select-card-detail">31 skills · strong overlap with matrix rows</span></div></div>
+                      <div class="flow-select-card"><div class="flow-select-card-check"><div class="flow-checkbox"></div></div><div class="flow-select-card-body"><span class="flow-select-card-title">Technical Product Manager</span><span class="flow-select-card-subtitle">Platform roles</span><span class="flow-select-card-detail">29 skills · partial match</span></div></div>
+                      <div class="flow-select-card"><div class="flow-select-card-check"><div class="flow-checkbox"></div></div><div class="flow-select-card-body"><span class="flow-select-card-title">Growth Product Manager</span><span class="flow-select-card-subtitle">Experimentation</span><span class="flow-select-card-detail">26 skills · optional seed</span></div></div>
+                    </div>
+                    <div class="flow-select-actions"><button class="btn-primary flow-submit">Continue with 2 selected</button><button class="btn-secondary flow-skip">Skip</button></div>
+                  </div>
+                </div>
+              </div>
+              <div class="focus-ring roles-focus" style="left: 555px; top: 315px; width: 810px; height: 300px;"></div>
+            </main>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">4 / Role seeds</div>
+            <h2>The user decides what counts.</h2>
+            <p>Rho can suggest similar role profiles, but the selected `flow-select-card-active` rows keep the framework grounded in human choice.</p>
+          </aside>
+        </div>
+        <div class="caption">Role seed selection turns the uploaded files into a clear source boundary for generation.</div>
+      </section>
+
+      <section id="scene-generate" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav">
+              <div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link">Chat</a><a class="global-nav-link" aria-current="page">Libraries</a><a class="global-nav-link">Roles</a></div></div>
+              <div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div>
+            </nav>
+            <main>
+              <div class="flow-container">
+                <div class="flow-header"><h1 class="flow-title">Create Framework</h1><div class="flow-mode-toggle"><button class="flow-mode-button">Guided</button><button class="flow-mode-button flow-mode-button-active">Co-pilot</button><button class="flow-mode-button">Open</button></div></div>
+                <div class="flow-stepper">
+                  <div class="flow-step flow-step-completed"><div class="flow-step-number">✓</div><span class="flow-step-label">Intake</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step flow-step-completed"><div class="flow-step-number">✓</div><span class="flow-step-label">Find roles</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step flow-step-active"><div class="flow-step-number">3</div><span class="flow-step-label">Generate</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">4</div><span class="flow-step-label">Review</span></div>
+                </div>
+                <div class="flow-step-content">
+                  <div class="flow-action-status">
+                    <div class="flow-action-running">
+                      <div class="flow-action-header"><div class="flow-spinner"></div><span>Generate framework skeleton...</span></div>
+                      <div class="flow-tool-log">
+                        <div class="flow-tool-event flow-tool-start"><span class="flow-tool-name">load_similar_roles</span><span class="flow-tool-phase flow-tool-ok">ok</span></div>
+                        <div class="flow-tool-event flow-tool-start"><span class="flow-tool-name">generate_framework_skeletons</span><span class="flow-tool-phase">calling...</span></div>
+                        <div class="flow-tool-event flow-tool-result"><span class="flow-tool-name">replace_rows</span><span class="flow-tool-phase">writing table...</span></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="step-chat">
+                    <div class="step-chat-header"><span class="step-chat-title">Step chat</span><span class="step-chat-status"><span class="flow-spinner-sm"></span> agent running</span></div>
+                    <ul class="step-chat-tool-log"><li class="step-chat-tool">generate_framework_skeletons · 5 categories</li><li class="step-chat-tool">DataTable.replace_all · table: library</li></ul>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">5 / Generation</div>
+            <h2>Tool activity stays visible.</h2>
+            <p>In co-pilot mode, the flow shows tool events and step chat, so the user can see the framework being written into a table.</p>
+          </aside>
+        </div>
+        <div class="caption">The use case is not just text generation; tools write structured rows into a named skill-library table.</div>
+      </section>
+
+      <section id="scene-table" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav">
+              <div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link" aria-current="page">Chat</a><a class="global-nav-link">Libraries</a><a class="global-nav-link">Roles</a></div></div>
+              <div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div>
+            </nav>
+            <div id="session-root-table" class="session-layout workspace-mode">
+              <div class="main-panels">
+                <div class="dt-panel active">
+                  <div class="dt-tab-strip"><button class="dt-tab dt-tab-active">library <span class="dt-tab-count">47</span></button><button class="dt-tab">role_candidates <span class="dt-tab-count">4</span></button></div>
+                  <div class="dt-toolbar">
+                    <h2 class="dt-title">Skill Library Draft</h2><span class="dt-row-count">47 rows</span><span class="dt-cost">$0.1284</span>
+                    <div class="dt-toolbar-actions"><button class="dt-action-btn dt-save-btn">Save</button><button class="dt-action-btn">Publish</button><button class="dt-action-btn">Fork</button><button class="dt-action-btn">Suggest</button><button class="dt-action-btn">Export ▾</button><button class="dt-add-row-btn">+ Add Row</button></div>
+                  </div>
+                  <div class="dt-table-wrap">
+                    <div class="dt-group dt-group-l1">
+                      <div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Product Strategy</span><span class="dt-group-count">9 rows</span></div>
+                      <div class="dt-group-content">
+                        <div class="dt-group dt-group-l2">
+                          <div class="dt-group-header dt-group-header-l2"><span class="dt-chevron"></span><span class="dt-group-name">Direction and viability</span><span class="dt-group-count">4 rows</span></div>
+                          <table class="dt-table">
+                            <thead><tr><th class="dt-th dt-th-select"><input class="dt-row-checkbox" type="checkbox" /></th><th class="dt-th dt-th-id">ID</th><th class="dt-th dt-th-source"></th><th class="dt-th dt-th-skill">Skill</th><th class="dt-th dt-th-desc">Description</th><th class="dt-th dt-col-levels">Levels</th><th class="dt-th"></th></tr></thead>
+                            <tbody>
+                              <tr class="dt-row dt-parent-row"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" /></td><td class="dt-td dt-td-id">1</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-agent">A</span></td><td class="dt-td dt-td-skill_name">Product Vision</td><td class="dt-td dt-td-skill_description">Defines a coherent direction grounded in customer and business outcomes.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                              <tr class="dt-row dt-parent-row"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" /></td><td class="dt-td dt-td-id">2</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-flow">F</span></td><td class="dt-td dt-td-skill_name">Opportunity Framing</td><td class="dt-td dt-td-skill_description">Turns market, user, and operational signals into actionable opportunities.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="dt-group dt-group-l1">
+                      <div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Discovery and Research</span><span class="dt-group-count">11 rows</span></div>
+                      <div class="dt-group-content">
+                        <div class="dt-group dt-group-l2">
+                          <div class="dt-group-header dt-group-header-l2"><span class="dt-chevron"></span><span class="dt-group-name">Customer evidence</span><span class="dt-group-count">5 rows</span></div>
+                          <table class="dt-table">
+                            <tbody>
+                              <tr class="dt-row dt-parent-row"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" /></td><td class="dt-td dt-td-id">10</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-agent">A</span></td><td class="dt-td dt-td-skill_name">User Interviewing</td><td class="dt-td dt-td-skill_description">Plans and runs interviews that reveal needs, motivations, and decision criteria.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                              <tr class="dt-row dt-parent-row"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" /></td><td class="dt-td dt-td-id">11</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-agent">A</span></td><td class="dt-td dt-td-skill_name">Experiment Design</td><td class="dt-td dt-td-skill_description">Builds tests that reduce uncertainty before major product investment.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel-resizer"></div>
+                <div class="dt-chat-panel">
+                  <div class="dt-chat-header"><div class="dt-chat-context"><span class="dt-chat-title">Assistant</span><span class="chat-active-agent">Spreadsheet</span></div><div class="session-controls"><span class="header-cost">$0.1284</span><span class="header-avatar">R</span></div></div>
+                  <div class="dt-chat-body"><div class="dt-chat-main"><div class="chat-feed"><div class="message-wrapper"><div class="message message-assistant"><div class="message-avatar avatar-assistant">R</div><div class="message-content"><div class="message-body">I opened the generated skeleton in the library table. Review rows, select anything you want me to revise, then save when ready.</div></div></div></div></div></div></div>
+                </div>
+              </div>
+              <div class="focus-ring table-focus" style="left: 40px; top: 142px; width: 865px; height: 770px;"></div>
+            </div>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">6 / Table review</div>
+            <h2>Generated skills land in the DataTable UI.</h2>
+            <p>The framework appears as grouped `dt-table` rows with provenance badges, categories, clusters, editable cells, toolbar actions, and row counts.</p>
+          </aside>
+        </div>
+        <div class="caption">This is the payoff: a structured skill framework, not a chat answer.</div>
+      </section>
+
+      <section id="scene-refine" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav"><div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link" aria-current="page">Chat</a><a class="global-nav-link">Libraries</a><a class="global-nav-link">Roles</a></div></div><div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div></nav>
+            <div class="session-layout workspace-mode">
+              <div class="main-panels">
+                <div class="dt-panel active">
+                  <div class="dt-selection-bar"><span class="dt-selection-count">3 rows selected</span><button class="dt-selection-clear">Clear</button></div>
+                  <div class="dt-toolbar"><h2 class="dt-title">Skill Library Draft</h2><span class="dt-row-count">47 rows</span><div class="dt-toolbar-actions"><button class="dt-action-btn dt-save-btn">Save</button><button class="dt-action-btn">Suggest</button><button class="dt-add-row-btn">+ Add Row</button></div></div>
+                  <div class="dt-table-wrap">
+                    <div class="dt-group dt-group-l1">
+                      <div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Stakeholder Alignment</span><span class="dt-group-count">8 rows</span></div>
+                      <table class="dt-table">
+                        <thead><tr><th class="dt-th dt-th-select"><input class="dt-row-checkbox" type="checkbox" checked /></th><th class="dt-th dt-th-id">ID</th><th class="dt-th dt-th-source"></th><th class="dt-th">Skill</th><th class="dt-th">Description</th><th class="dt-th">Levels</th><th class="dt-th"></th></tr></thead>
+                        <tbody>
+                          <tr class="dt-row dt-parent-row dt-row-selected"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" checked /></td><td class="dt-td dt-td-id">22</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-agent">A</span></td><td class="dt-td dt-td-skill_name">Stakeholder Communication</td><td class="dt-td dt-td-skill_description">Explains product work to stakeholders and surfaces risks.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                          <tr class="dt-row dt-parent-row dt-row-selected"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" checked /></td><td class="dt-td dt-td-id">23</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-flow">F</span></td><td class="dt-td dt-td-skill_name"><input class="dt-cell-input" value="Stakeholder Alignment" /></td><td class="dt-td dt-td-skill_description">Builds shared understanding across leadership, design, engineering, and GTM.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                          <tr class="dt-row dt-parent-row dt-row-selected"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" type="checkbox" checked /></td><td class="dt-td dt-td-id">24</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-user">U</span></td><td class="dt-td dt-td-skill_name">Decision Facilitation</td><td class="dt-td dt-td-skill_description">Helps teams choose, trade off, and commit under ambiguity.</td><td class="dt-td dt-col-levels">5</td><td class="dt-td"></td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel-resizer"></div>
+                <div class="dt-chat-panel">
+                  <div class="dt-chat-header"><div class="dt-chat-context"><span class="dt-chat-title">Assistant</span><span class="chat-active-agent">Spreadsheet</span></div><div class="session-controls"><span class="header-cost">$0.1519</span><span class="header-avatar">R</span></div></div>
+                  <div class="dt-chat-body"><div class="dt-chat-main"><div class="chat-feed">
+                    <div class="message-wrapper"><div class="message message-user"><div class="message-avatar avatar-user">Y</div><div class="message-content"><div class="message-body">Merge duplicate stakeholder skills and make the senior levels more strategic.</div></div></div></div>
+                    <div class="tool-call"><div class="tool-call-summary"><span class="tool-status"></span><span class="tool-name">update_cells</span></div><div class="tool-call-detail">table: "library"<br />rows: 22, 23, 24<br />source: selected row context</div></div>
+                  </div><div class="chat-input-area"><form class="chat-input-form"><label class="chat-attach-button">📎</label><textarea rows="1" placeholder="Ask to generate skills, edit rows, etc..."></textarea><button class="btn-send">Send</button></form></div></div></div>
+                </div>
+              </div>
+              <div class="focus-ring refine-focus" style="left: 40px; top: 190px; width: 865px; height: 366px;"></div>
+            </div>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">7 / Human review</div>
+            <h2>Selection gives the agent precise context.</h2>
+            <p>The `dt-selection-bar` and checked rows are the bridge between UI review and the next chat/tool instruction.</p>
+          </aside>
+        </div>
+        <div class="caption">The user can select rows, edit cells, and ask the agent to refine exactly what is visible.</div>
+      </section>
+
+      <section id="scene-proficiency" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav"><div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link">Chat</a><a class="global-nav-link" aria-current="page">Libraries</a><a class="global-nav-link">Roles</a></div></div><div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div></nav>
+            <main>
+              <div class="flow-container" style="max-width:1040px">
+                <div class="flow-header"><h1 class="flow-title">Create Framework</h1><div class="flow-mode-toggle"><button class="flow-mode-button flow-mode-button-active">Guided</button><button class="flow-mode-button">Co-pilot</button><button class="flow-mode-button">Open</button></div></div>
+                <div class="flow-stepper">
+                  <div class="flow-step flow-step-completed"><div class="flow-step-number">✓</div><span class="flow-step-label">Review</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step flow-step-active"><div class="flow-step-number">5</div><span class="flow-step-label">Proficiency</span></div><div class="flow-step-connector"></div>
+                  <div class="flow-step"><div class="flow-step-number">6</div><span class="flow-step-label">Save</span></div>
+                </div>
+                <div class="flow-step-content">
+                  <div class="flow-fan-out">
+                    <div class="flow-worker-grid">
+                      <div class="flow-progress-card flow-progress-completed"><div class="flow-progress-header"><span class="flow-progress-category">Product Strategy</span><span class="flow-progress-count">9 skills</span></div><div class="flow-progress-status"><span class="flow-status-dot flow-status-completed"></span> Done</div></div>
+                      <div class="flow-progress-card flow-progress-running"><div class="flow-progress-header"><span class="flow-progress-category">Discovery</span><span class="flow-progress-count">11 skills</span></div><div class="flow-progress-status"><div class="flow-spinner-sm"></div> Running</div></div>
+                      <div class="flow-progress-card flow-progress-completed"><div class="flow-progress-header"><span class="flow-progress-category">Delivery</span><span class="flow-progress-count">10 skills</span></div><div class="flow-progress-status"><span class="flow-status-dot flow-status-completed"></span> Done</div></div>
+                      <div class="flow-progress-card"><div class="flow-progress-header"><span class="flow-progress-category">Metrics</span><span class="flow-progress-count">8 skills</span></div><div class="flow-progress-status"><span class="flow-status-dot flow-status-pending"></span> Queued</div></div>
+                    </div>
+                    <div class="flow-table-review">
+                      <div class="flow-table-wrap">
+                        <div class="dt-panel">
+                          <div class="dt-toolbar"><h2 class="dt-title">Generated proficiency levels</h2><span class="dt-row-count">47 rows</span></div>
+                          <div class="dt-table-wrap" style="padding:0">
+                            <table class="dt-table">
+                              <tbody>
+                                <tr class="dt-row dt-parent-row dt-skill-expanded"><td class="dt-td dt-td-select"><input class="dt-row-checkbox" checked type="checkbox" /></td><td class="dt-td dt-td-id">11</td><td class="dt-td dt-td-source"><span class="dt-source-badge dt-source-agent">A</span></td><td class="dt-td dt-td-skill_name">Experiment Design</td><td class="dt-td dt-td-skill_description">Builds tests that reduce uncertainty before major product investment.</td><td class="dt-td dt-col-levels">5</td></tr>
+                                <tr class="dt-row dt-proficiency-row"><td colspan="6" style="padding:0"><div class="dt-proficiency-panel">
+                                  <div class="dt-proficiency-item"><span class="dt-proficiency-level">L1</span><span class="dt-proficiency-name">Participates</span><span class="dt-proficiency-desc">Helps run predefined experiments and records evidence accurately.</span><span></span></div>
+                                  <div class="dt-proficiency-item"><span class="dt-proficiency-level">L3</span><span class="dt-proficiency-name">Designs</span><span class="dt-proficiency-desc">Chooses experiment methods, success criteria, and sample strategy.</span><span></span></div>
+                                  <div class="dt-proficiency-item"><span class="dt-proficiency-level">L5</span><span class="dt-proficiency-name">Leads system</span><span class="dt-proficiency-desc">Builds an organization-wide experimentation discipline tied to strategy.</span><span></span></div>
+                                </div></td></tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">8 / Proficiency</div>
+            <h2>Skills become assessable levels.</h2>
+            <p>The fan-out step writes level rows back into the same framework table, shown through the actual `dt-proficiency-panel` layout.</p>
+          </aside>
+        </div>
+        <div class="caption">Rho does not stop at skill names; it creates proficiency language the team can review and use.</div>
+      </section>
+
+      <section id="scene-save" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav"><div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link" aria-current="page">Chat</a><a class="global-nav-link">Libraries</a><a class="global-nav-link">Roles</a></div></div><div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div></nav>
+            <div class="session-layout workspace-mode">
+              <div class="main-panels">
+                <div class="dt-panel active">
+                  <div class="dt-toolbar"><h2 class="dt-title">Skill Library Draft</h2><span class="dt-row-count">47 rows</span><div class="dt-toolbar-actions"><button class="dt-action-btn dt-save-btn">Save</button><button class="dt-action-btn">Publish</button><button class="dt-action-btn">Fork</button></div></div>
+                  <div class="dt-table-wrap">
+                    <div class="dt-group dt-group-l1"><div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Product Strategy</span><span class="dt-group-count">9 rows</span></div></div>
+                    <div class="dt-group dt-group-l1"><div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Discovery and Research</span><span class="dt-group-count">11 rows</span></div></div>
+                    <div class="dt-group dt-group-l1"><div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Delivery Planning</span><span class="dt-group-count">10 rows</span></div></div>
+                    <div class="dt-group dt-group-l1"><div class="dt-group-header dt-group-header-l1"><span class="dt-chevron"></span><span class="dt-group-name">Stakeholder Alignment</span><span class="dt-group-count">9 rows</span></div></div>
+                  </div>
+                  <div class="dt-dialog-backdrop">
+                    <div class="dt-dialog">
+                      <h3 class="dt-dialog-title">Save Library</h3>
+                      <form>
+                        <label class="dt-dialog-label">Library Name</label>
+                        <input class="dt-dialog-input" value="Product Management Framework" />
+                        <div class="dt-dialog-actions"><button type="button" class="dt-dialog-btn dt-dialog-cancel">Cancel</button><button type="button" class="dt-dialog-btn dt-dialog-confirm dt-save-btn">Save</button></div>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel-resizer"></div>
+                <div class="dt-chat-panel"><div class="dt-chat-header"><div class="dt-chat-context"><span class="dt-chat-title">Assistant</span><span class="chat-active-agent">Spreadsheet</span></div><div class="session-controls"><span class="header-avatar">R</span></div></div><div class="dt-chat-body"><div class="dt-chat-main"><div class="chat-feed"><div class="message-wrapper"><div class="message message-assistant"><div class="message-avatar avatar-assistant">R</div><div class="message-content"><div class="message-body">The framework is ready to save as an organization skill library.</div></div></div></div></div></div></div></div>
+              </div>
+              <div class="focus-ring save-focus" style="left: 364px; top: 260px; width: 420px; height: 230px;"></div>
+            </div>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">9 / Save</div>
+            <h2>The reviewed draft becomes durable app data.</h2>
+            <p>The same DataTable toolbar opens the real save dialog so the framework can become a named organization library.</p>
+          </aside>
+        </div>
+        <div class="caption">After review, the generated rows are saved as a reusable skill library.</div>
+      </section>
+
+      <section id="scene-final" class="scene">
+        <div class="scene-layout">
+          <div class="app-frame">
+            <nav class="global-nav"><div class="global-nav-left"><a class="global-nav-logo">rho</a><div class="org-switcher"><span>Acme Talent Ops</span><span class="org-switcher-arrow">▾</span></div><div class="global-nav-links"><a class="global-nav-link">Chat</a><a class="global-nav-link" aria-current="page">Libraries</a><a class="global-nav-link">Roles</a><a class="global-nav-link">Settings</a></div></div><div class="global-nav-right"><span class="global-nav-user">talent@acme.example</span></div></nav>
+            <main>
+              <div class="page-shell">
+                <div class="page-header">
+                  <div class="page-header-text"><h1 class="page-title">Product Management Framework</h1><p class="page-subtitle">A saved skill library created from uploaded role documents, selected role seeds, and reviewed proficiency levels.</p></div>
+                  <div class="page-header-actions"><span class="badge-version">v1</span><span class="badge-default">Default</span><a class="btn-secondary">Edit in Chat</a></div>
+                </div>
+                <div class="fw-section">
+                  <h2 class="fw-section-title">Skill Requirements</h2>
+                  <div class="fw-collapse is-open">
+                    <div class="fw-collapse-summary"><span class="fw-collapse-arrow"></span><span class="fw-cluster-title">Discovery and Research</span><span class="badge-muted">11 skills</span></div>
+                    <div class="fw-collapse-body">
+                      <div class="fw-collapse fw-collapse--nested is-open">
+                        <div class="fw-collapse-summary"><span class="fw-collapse-arrow"></span><span class="fw-category-title">Customer evidence</span><span class="badge-muted">5</span></div>
+                        <div class="fw-collapse-body">
+                          <table class="rho-table">
+                            <thead><tr><th>Skill</th><th>Description</th><th>Status</th><th>Levels</th></tr></thead>
+                            <tbody>
+                              <tr class="skill-row skill-expanded"><td><span class="skill-expand-arrow"></span>User Interviewing</td><td>Plans and runs interviews that reveal needs and decision criteria.</td><td><span class="badge-draft">draft</span></td><td>5</td></tr>
+                              <tr><td colspan="4" style="padding:0"><div class="proficiency-panel"><div class="proficiency-list"><div class="proficiency-item"><span class="proficiency-level">L1</span><span class="proficiency-name">Supports</span><span class="proficiency-desc">Takes notes and follows an interview guide.</span></div><div class="proficiency-item"><span class="proficiency-level">L3</span><span class="proficiency-name">Conducts</span><span class="proficiency-desc">Designs questions and synthesizes findings for product decisions.</span></div><div class="proficiency-item"><span class="proficiency-level">L5</span><span class="proficiency-name">Shapes practice</span><span class="proficiency-desc">Builds the discovery system for multiple product teams.</span></div></div></div></td></tr>
+                              <tr><td><span class="skill-expand-arrow"></span>Experiment Design</td><td>Builds tests that reduce uncertainty before product investment.</td><td><span class="badge-draft">draft</span></td><td>5</td></tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="flow-action-complete flow-final-complete" style="padding: 16px 0 0;"><span class="flow-action-headline">Create Framework complete</span><span class="flow-action-detail">Saved "Product Management Framework" — 47 skills + 3 research notes archived</span></div>
+              </div>
+            </main>
+          </div>
+          <aside class="scene-copy">
+            <div class="kicker">10 / Saved library</div>
+            <h2>From uploads to a reviewable framework.</h2>
+            <p>The final screen is the real library page shape: page header, collapsible framework sections, skill rows, and proficiency panels.</p>
+          </aside>
+        </div>
+        <div class="caption">Rho turns scattered source files into a saved, inspectable skill framework with human review in the loop.</div>
+      </section>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      const sceneIds = [
+        "#scene-upload",
+        "#scene-parse",
+        "#scene-flow-intake",
+        "#scene-roles",
+        "#scene-generate",
+        "#scene-table",
+        "#scene-refine",
+        "#scene-proficiency",
+        "#scene-save",
+        "#scene-final"
+      ];
+      const dots = gsap.utils.toArray(".mini-progress span");
+
+      gsap.set(".scene", { opacity: 0 });
+      gsap.set("#scene-upload", { opacity: 1 });
+
+      function showProgress(index, at) {
+        tl.call(() => {
+          dots.forEach((dot, i) => dot.classList.toggle("active", i === Math.min(index, dots.length - 1)));
+        }, [], at);
+      }
+
+      function sceneIn(selector, at) {
+        tl.to(selector, { opacity: 1, duration: 0.45, ease: "power2.out" }, at);
+        tl.from(selector + " .app-frame", { y: 42, scale: 0.988, opacity: 0, duration: 0.72, ease: "power3.out" }, at + 0.12);
+        tl.from(selector + " .scene-copy", { x: 28, opacity: 0, duration: 0.55, ease: "power2.out" }, at + 0.22);
+        tl.from(selector + " .caption", { y: 20, opacity: 0, duration: 0.4, ease: "power2.out" }, at + 0.48);
+      }
+
+      function sceneOut(selector, at) {
+        tl.to(selector, { opacity: 0, duration: 0.42, ease: "power2.in" }, at);
+      }
+
+      sceneIn("#scene-upload", 0);
+      tl.from("#scene-upload .chat-attach-chip", { y: 18, opacity: 0, duration: 0.42, stagger: 0.12, ease: "power2.out" }, 1.0);
+      tl.to("#scene-upload .upload-focus, #scene-upload .upload-cursor", { opacity: 1, duration: 0.25, stagger: 0.12 }, 2.2);
+      sceneOut("#scene-upload", 5.0);
+
+      showProgress(1, 5.05);
+      sceneIn("#scene-parse", 5.1);
+      tl.from("#scene-parse .message-wrapper, #scene-parse .tool-call", { y: 22, opacity: 0, duration: 0.42, stagger: 0.16, ease: "power2.out" }, 5.9);
+      tl.to("#scene-parse .parse-focus", { opacity: 1, duration: 0.25 }, 7.0);
+      sceneOut("#scene-parse", 10.1);
+
+      showProgress(2, 10.15);
+      sceneIn("#scene-flow-intake", 10.2);
+      tl.from("#scene-flow-intake .flow-step, #scene-flow-intake .flow-field", { y: 20, opacity: 0, duration: 0.42, stagger: 0.08, ease: "power2.out" }, 11.0);
+      sceneOut("#scene-flow-intake", 15.0);
+
+      showProgress(3, 15.05);
+      sceneIn("#scene-roles", 15.1);
+      tl.from("#scene-roles .flow-select-card", { y: 18, opacity: 0, duration: 0.42, stagger: 0.1, ease: "power2.out" }, 16.0);
+      tl.to("#scene-roles .roles-focus", { opacity: 1, duration: 0.25 }, 17.3);
+      sceneOut("#scene-roles", 20.3);
+
+      showProgress(4, 20.35);
+      sceneIn("#scene-generate", 20.4);
+      tl.from("#scene-generate .flow-tool-event, #scene-generate .step-chat-tool", { x: -24, opacity: 0, duration: 0.38, stagger: 0.12, ease: "power2.out" }, 21.25);
+      sceneOut("#scene-generate", 25.2);
+
+      showProgress(5, 25.25);
+      sceneIn("#scene-table", 25.3);
+      tl.from("#scene-table .dt-group-l1, #scene-table .dt-row", { y: 18, opacity: 0, duration: 0.4, stagger: 0.06, ease: "power2.out" }, 26.1);
+      tl.to("#scene-table .table-focus", { opacity: 1, duration: 0.25 }, 27.25);
+      sceneOut("#scene-table", 30.8);
+
+      showProgress(3, 30.85);
+      sceneIn("#scene-refine", 30.9);
+      tl.from("#scene-refine .dt-selection-bar, #scene-refine .dt-row-selected, #scene-refine .message-wrapper, #scene-refine .tool-call", { y: 16, opacity: 0, duration: 0.38, stagger: 0.1, ease: "power2.out" }, 31.7);
+      tl.to("#scene-refine .refine-focus", { opacity: 1, duration: 0.25 }, 32.7);
+      sceneOut("#scene-refine", 36.0);
+
+      showProgress(4, 36.05);
+      sceneIn("#scene-proficiency", 36.1);
+      tl.from("#scene-proficiency .flow-progress-card", { y: 18, opacity: 0, duration: 0.42, stagger: 0.08, ease: "power2.out" }, 37.0);
+      tl.from("#scene-proficiency .dt-proficiency-item > *", { y: 12, opacity: 0, duration: 0.36, stagger: 0.04, ease: "power2.out" }, 38.1);
+      sceneOut("#scene-proficiency", 41.3);
+
+      showProgress(5, 41.35);
+      sceneIn("#scene-save", 41.4);
+      tl.from("#scene-save .dt-dialog", { y: 30, scale: 0.98, opacity: 0, duration: 0.48, ease: "power2.out" }, 42.25);
+      tl.to("#scene-save .save-focus", { opacity: 1, duration: 0.25 }, 42.7);
+      sceneOut("#scene-save", 46.0);
+
+      showProgress(0, 46.05);
+      sceneIn("#scene-final", 46.1);
+      tl.from("#scene-final .fw-collapse, #scene-final .rho-table tr, #scene-final .flow-action-complete", { y: 16, opacity: 0, duration: 0.38, stagger: 0.06, ease: "power2.out" }, 47.0);
+      tl.to("#scene-final .app-frame", { scale: 1.012, duration: 3.5, ease: "power1.out" }, 48.3);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
