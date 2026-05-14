@@ -25,6 +25,7 @@ defmodule Rho.Stdlib do
     tape: Rho.Stdlib.Plugins.Tape,
     journal: Rho.Stdlib.Plugins.Tape,
     uploads: Rho.Stdlib.Plugins.Uploads,
+    debug_tape: Rho.Stdlib.Plugins.DebugTape,
     control: Rho.Stdlib.Plugins.Control
   }
 

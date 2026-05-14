@@ -213,6 +213,10 @@ defmodule RhoFrameworks.DataTableSchemas do
         %Column{name: :skill_description, type: :string, required?: false},
         %Column{name: :required_level, type: :integer, required?: true},
         %Column{name: :required, type: :boolean, required?: true},
+        %Column{name: :priority, type: :string, required?: false},
+        %Column{name: :source_quote, type: :string, required?: false},
+        %Column{name: :page_number, type: :integer, required?: false},
+        %Column{name: :verification, type: :string, required?: false},
         %Column{
           name: :_source,
           type: :string,

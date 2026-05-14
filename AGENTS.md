@@ -50,10 +50,22 @@ Key modules:
 - `Rho.Context` — ambient state struct for plugin/transformer callbacks
 - `Rho.PromptSection` — structured prompt section struct
 - `Rho.Tape.*` — append-only event history
+- `Rho.Conversation` / `.Index` / `.Thread` / `.Ref` — durable conversation and thread metadata; maps user-visible conversations to tape-backed threads.
+- `Rho.Trace.Projection` — derived chat/context/debug/cost/failure views over tape entries.
+- `Rho.Trace.Analyzer` — deterministic trace checks for agent debugging.
+- `Rho.Trace.Bundle` — writes portable debug bundles for coding-agent investigation.
 - `Rho.Agent.*` — Worker, Registry, Primary, Supervisor, EventLog
 - `Rho.Events` / `Rho.Events.Event` — PubSub-based event bus (session + lifecycle topics)
 - `Rho.Config` — core config (tape_module, agent_config, etc.)
-- `Mix.Tasks.Rho.{Run,Trace,Smoke,Verify}` — mix tasks (run an agent, trace a tape, smoke-test, verify config)
+- `Mix.Tasks.Rho.{Run,Trace,Debug,Smoke,Verify}` — mix tasks (run an agent, inspect traces, create debug bundles, smoke-test, verify config)
+
+### Conversation and Trace Invariants
+
+- Tape entries are the durable source of truth.
+- Conversations and threads are metadata over tapes, not separate message stores.
+- UI snapshots are cache only; chat must be rebuildable from tape projections.
+- Fork points are tape entry ids, never UI message indexes.
+- The debug context projection must use the same tape projection path as the runner.
 
 ### `apps/rho_stdlib/` — Built-in Tools & Plugins
 
@@ -271,6 +283,7 @@ mix test --app rho_stdlib                     # stdlib only
 | `:data_table` | `Rho.Stdlib.Plugins.DataTable` (thin wrapper over `Rho.Stdlib.DataTable` client API — see §Named tables) |
 | `:doc_ingest` | `Rho.Stdlib.Plugins.DocIngest` |
 | `:tape` / `:journal` | `Rho.Stdlib.Plugins.Tape` |
+| `:debug_tape` | `Rho.Stdlib.Plugins.DebugTape` |
 | `:control` | `Rho.Stdlib.Plugins.Control` |
 
 ## Future Directions
@@ -281,3 +294,5 @@ ceiling, audit logger, PII redactor), per-agent model A/B, parallel
 domain apps, publishable kernel, new TurnStrategy types, replay UI,
 non-MultiAgent inter-agent protocols. Reference when planning new
 capabilities.
+
+`docs/conversation-trace-system-plan.md` — canonical plan for unifying durable conversation threads and tape-based debugging.

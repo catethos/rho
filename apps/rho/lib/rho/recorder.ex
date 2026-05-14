@@ -139,19 +139,42 @@ defmodule Rho.Recorder do
 
   # -- Tape-write transformer pipeline --
 
-  defp append_with_tape_write(%Runtime{context: ctx}, mem, tape, kind, data)
+  defp append_with_tape_write(%Runtime{context: ctx} = runtime, mem, tape, kind, data)
        when not is_nil(ctx) do
-    entry = %{kind: kind, data: data}
+    meta = runtime_meta(runtime)
+    entry = %{kind: kind, data: data, meta: meta}
 
-    {:cont, %{kind: new_kind, data: new_data}} =
-      Rho.PluginRegistry.apply_stage(:tape_write, entry, ctx)
+    {:cont, transformed} = Rho.PluginRegistry.apply_stage(:tape_write, entry, ctx)
 
-    mem.append(tape, new_kind, new_data)
+    append_mem(mem, tape, transformed.kind, transformed.data, Map.get(transformed, :meta, meta))
   end
 
   defp append_with_tape_write(_runtime, mem, tape, kind, data) do
-    mem.append(tape, kind, data)
+    append_mem(mem, tape, kind, data, %{})
   end
+
+  defp append_mem(mem, tape, kind, data, meta) do
+    if function_exported?(mem, :append, 4) do
+      mem.append(tape, kind, data, meta)
+    else
+      mem.append(tape, kind, data)
+    end
+  end
+
+  defp runtime_meta(%Runtime{} = runtime) do
+    %{}
+    |> maybe_put_meta("conversation_id", runtime.context.conversation_id)
+    |> maybe_put_meta("thread_id", runtime.context.thread_id)
+    |> maybe_put_meta("session_id", runtime.context.session_id)
+    |> maybe_put_meta("agent_id", runtime.context.agent_id)
+    |> maybe_put_meta("turn_id", runtime.context.turn_id)
+    |> maybe_put_meta("model", runtime.model && to_string(runtime.model))
+    |> maybe_put_meta("strategy", inspect(runtime.turn_strategy))
+  end
+
+  defp maybe_put_meta(map, _key, nil), do: map
+  defp maybe_put_meta(map, _key, ""), do: map
+  defp maybe_put_meta(map, key, value), do: Map.put(map, key, value)
 
   # -- Text extraction --
 

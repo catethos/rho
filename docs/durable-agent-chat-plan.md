@@ -46,6 +46,13 @@ context rebuild). What's missing for "durable agent chat":
 This plan addresses 1–6 in four independent, shippable phases. Each phase is
 useful on its own.
 
+## Relationship to Conversation Metadata
+
+Durable HTTP/session resume should use `Rho.Conversation` as the listing and
+ownership index. The tape remains the message/event source of truth; the
+conversation index provides user, organization, title, archive, and active
+thread metadata.
+
 ---
 
 ## 2. Architectural shape

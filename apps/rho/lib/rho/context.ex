@@ -36,6 +36,12 @@ defmodule Rho.Context do
     # purpose: session namespace this agent belongs to; ties together
     # cooperating agents and their bus topic.
     :session_id,
+    # purpose: durable conversation metadata for joining tape entries to
+    # user-facing conversations and threads.
+    :conversation_id,
+    :thread_id,
+    # purpose: current turn id, when known. Used for trace metadata.
+    :turn_id,
     # purpose: `:markdown` | `:xml` — how `Runner` renders prompt
     # sections into the system prompt.
     :prompt_format,
@@ -55,6 +61,9 @@ defmodule Rho.Context do
           depth: non_neg_integer(),
           agent_id: String.t() | nil,
           session_id: String.t() | nil,
+          conversation_id: String.t() | nil,
+          thread_id: String.t() | nil,
+          turn_id: String.t() | nil,
           prompt_format: :markdown | :xml | nil,
           user_id: String.t() | nil,
           organization_id: String.t() | nil

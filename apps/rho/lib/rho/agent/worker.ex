@@ -51,6 +51,8 @@ defmodule Rho.Agent.Worker do
     last_activity_at: nil,
     user_id: nil,
     organization_id: nil,
+    conversation_id: nil,
+    thread_id: nil,
     last_result: nil,
     current_task_id: nil
   ]
@@ -250,7 +252,9 @@ defmodule Rho.Agent.Worker do
         tape_module: memory_mod,
         agent_name: agent_name,
         user_id: Keyword.get(opts, :user_id) || run_spec.user_id,
-        organization_id: Keyword.get(opts, :organization_id) || run_spec.organization_id
+        organization_id: Keyword.get(opts, :organization_id) || run_spec.organization_id,
+        conversation_id: Keyword.get(opts, :conversation_id) || run_spec.conversation_id,
+        thread_id: Keyword.get(opts, :thread_id) || run_spec.thread_id
     }
 
     state = %__MODULE__{
@@ -266,7 +270,9 @@ defmodule Rho.Agent.Worker do
       run_spec: run_spec,
       capabilities: capabilities,
       user_id: Keyword.get(opts, :user_id),
-      organization_id: Keyword.get(opts, :organization_id)
+      organization_id: Keyword.get(opts, :organization_id),
+      conversation_id: run_spec.conversation_id,
+      thread_id: run_spec.thread_id
     }
 
     # Register in agent registry
@@ -398,7 +404,9 @@ defmodule Rho.Agent.Worker do
       current_tool: state.current_tool,
       current_step: state.current_step,
       token_usage: state.token_usage,
-      last_activity_at: state.last_activity_at
+      last_activity_at: state.last_activity_at,
+      conversation_id: state.conversation_id,
+      thread_id: state.thread_id
     }
 
     {:reply, info, state}
@@ -632,7 +640,7 @@ defmodule Rho.Agent.Worker do
     emit = build_emit(state, turn_id)
     task_id = opts[:task_id]
     messages = [ReqLLM.Context.user(content)]
-    turn_spec = build_turn_spec(opts, state, emit)
+    turn_spec = build_turn_spec(opts, state, emit, turn_id)
 
     task =
       Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
@@ -659,7 +667,7 @@ defmodule Rho.Agent.Worker do
 
   # -- RunSpec path --
 
-  defp build_turn_spec(opts, state, emit) do
+  defp build_turn_spec(opts, state, emit, turn_id) do
     spec = state.run_spec
 
     tools =
@@ -670,6 +678,7 @@ defmodule Rho.Agent.Worker do
       spec
       | tools: tools,
         emit: emit,
+        turn_id: turn_id,
         system_prompt: opts[:system_prompt] || spec.system_prompt,
         max_steps: opts[:max_steps] || spec.max_steps,
         model: opts[:model] || spec.model
@@ -731,6 +740,8 @@ defmodule Rho.Agent.Worker do
       avatar: config.avatar,
       tools: opts[:tools],
       agent_name: agent_name,
+      conversation_id: opts[:conversation_id],
+      thread_id: opts[:thread_id],
       sandbox_enabled: Rho.Config.sandbox_enabled?()
     )
   end

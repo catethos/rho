@@ -128,10 +128,10 @@ defmodule RhoWeb.ChatComponents do
         <% end %>
       </div>
       <button
-        :if={@message_index != nil and @message.role == :user}
+        :if={@message.role == :user and @message[:tape_entry_id]}
         class="btn-fork-from-here"
         phx-click="fork_from_here"
-        phx-value-message_index={@message_index}
+        phx-value-entry_id={@message.tape_entry_id}
         title="Fork conversation from here"
       >
         Fork

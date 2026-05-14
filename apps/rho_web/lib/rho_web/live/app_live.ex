@@ -1955,7 +1955,7 @@ defmodule RhoWeb.AppLive do
         socket =
           case Snapshot.load(sid, workspace, thread_id: thread_id) do
             {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
-            _ -> socket
+            _ -> rebuild_chat_from_thread(socket, target)
           end
 
         {:noreply, refresh_threads(socket)}
@@ -1965,7 +1965,7 @@ defmodule RhoWeb.AppLive do
     end
   end
 
-  def handle_event("fork_from_here", %{"message_index" => idx_str}, socket) do
+  def handle_event("fork_from_here", %{"entry_id" => entry_id_str}, socket) do
     sid = socket.assigns.session_id
     workspace = user_workspace(socket)
     tape_module = Rho.Config.tape_module()
@@ -1981,7 +1981,7 @@ defmodule RhoWeb.AppLive do
     end
 
     fork_point =
-      case Integer.parse(idx_str) do
+      case Integer.parse(entry_id_str) do
         {n, _} when n >= 0 -> n
         _ -> nil
       end
@@ -1993,26 +1993,13 @@ defmodule RhoWeb.AppLive do
       Snapshot.save(sid, workspace, snapshot, thread_id: current_thread["id"])
     end
 
-    active_agent_id = socket.assigns.active_agent_id
-    current_msgs = Map.get(socket.assigns.agent_messages, active_agent_id, [])
-
-    forked_msgs =
-      if fork_point do
-        Enum.take(current_msgs, fork_point)
-      else
-        current_msgs
-      end
-
     case Threads.fork_thread(sid, workspace, tape_module, fork_point: fork_point) do
       {:ok, thread} ->
         Rho.Agent.Primary.stop(sid)
         socket = SessionCore.unsubscribe(socket)
         start_opts = [tape_ref: thread["tape_name"]]
         socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
-
-        new_agent_id = socket.assigns.active_agent_id
-        agent_messages = Map.put(socket.assigns.agent_messages, new_agent_id, forked_msgs)
-        socket = assign(socket, :agent_messages, agent_messages)
+        socket = rebuild_chat_from_thread(socket, thread)
 
         fork_snapshot = Snapshot.build_snapshot(socket)
         Snapshot.save(sid, workspace, fork_snapshot, thread_id: thread["id"])
@@ -2024,6 +2011,10 @@ defmodule RhoWeb.AppLive do
         Logger.warning("fork_from_here failed: #{inspect(reason)}")
         {:noreply, socket}
     end
+  end
+
+  def handle_event("fork_from_here", _params, socket) do
+    {:noreply, socket}
   end
 
   def handle_event("new_blank_thread", _params, socket) do
@@ -2049,7 +2040,7 @@ defmodule RhoWeb.AppLive do
         socket = SessionCore.unsubscribe(socket)
         start_opts = [tape_ref: tape_name]
         socket = SessionCore.subscribe_and_hydrate(socket, sid, start_opts)
-        {:noreply, refresh_threads(socket)}
+        {:noreply, socket |> rebuild_chat_from_thread(thread) |> refresh_threads()}
 
       {:error, _} ->
         {:noreply, socket}
@@ -2074,7 +2065,7 @@ defmodule RhoWeb.AppLive do
 
         case Snapshot.load(sid, workspace, thread_id: "thread_main") do
           {:ok, snap} -> Snapshot.apply_snapshot(socket, snap)
-          _ -> socket
+          _ -> rebuild_chat_from_thread(socket, main)
         end
       else
         socket
@@ -3403,7 +3394,7 @@ defmodule RhoWeb.AppLive do
           <% end %>
         </div>
         <form id="chat-input-form" phx-submit="send_message" phx-change="validate_upload" class="chat-input-form">
-          <label class="chat-attach-button" title="Attach .xlsx / .csv">
+          <label class="chat-attach-button" title="Attach .xlsx / .csv / .pdf / .docx / text">
             📎
             <.live_file_input upload={@uploads.files} class="sr-only" />
           </label>
@@ -3510,11 +3501,16 @@ defmodule RhoWeb.AppLive do
   defp debug_panel(assigns) do
     active_id = assigns.active_agent_id || SessionCore.primary_agent_id(assigns.session_id)
     projection = Map.get(assigns.projections, active_id)
+    conversation = if assigns.session_id, do: Rho.Conversation.get_by_session(assigns.session_id)
+    thread = conversation && Rho.Conversation.active_thread(conversation["id"])
 
     assigns =
       assigns
       |> assign(:projection, projection)
       |> assign(:debug_agent_id, active_id)
+      |> assign(:debug_conversation, conversation)
+      |> assign(:debug_thread, thread)
+      |> assign(:debug_command, debug_command(conversation, assigns.session_id))
 
     ~H"""
     <div class="debug-panel">
@@ -3525,6 +3521,16 @@ defmodule RhoWeb.AppLive do
         </span>
       </div>
       <div class="debug-body">
+        <div :if={@debug_conversation} class="debug-section">
+          <div class="debug-section-title">Trace</div>
+          <div class="debug-tools-list">
+            <span class="debug-tool-badge"><%= @debug_conversation["id"] %></span>
+            <span :if={@debug_thread} class="debug-tool-badge"><%= @debug_thread["id"] %></span>
+            <span :if={@debug_thread} class="debug-tool-badge"><%= @debug_thread["tape_name"] %></span>
+          </div>
+          <pre class="debug-msg-content"><%= @debug_command %></pre>
+        </div>
+
         <%= if @projection do %>
           <div class="debug-section">
             <div class="debug-section-title">Tools (<%= length(@projection.tools) %>)</div>
@@ -3559,6 +3565,14 @@ defmodule RhoWeb.AppLive do
 
   defp debug_content_string(content) when is_binary(content), do: content
   defp debug_content_string(other), do: inspect(other, limit: :infinity)
+
+  defp debug_command(%{"id" => conversation_id}, _session_id),
+    do: "mix rho.debug #{conversation_id}"
+
+  defp debug_command(nil, session_id) when is_binary(session_id),
+    do: "mix rho.debug #{session_id}"
+
+  defp debug_command(_conversation, _session_id), do: "mix rho.debug <ref>"
 
   # ══════════════════════════════════════════════════════════════════
   # Private Helpers
@@ -3633,11 +3647,39 @@ defmodule RhoWeb.AppLive do
           |> tail_replay(sid, snapshot[:snapshot_at])
 
         _no_snapshot ->
-          socket
+          rebuild_chat_from_active_thread(socket)
       end
     else
       socket
     end
+  end
+
+  defp rebuild_chat_from_active_thread(socket) do
+    sid = socket.assigns[:session_id]
+
+    if sid do
+      sid
+      |> Threads.active(user_workspace(socket))
+      |> then(&rebuild_chat_from_thread(socket, &1))
+    else
+      socket
+    end
+  end
+
+  defp rebuild_chat_from_thread(socket, nil), do: socket
+
+  defp rebuild_chat_from_thread(socket, %{"tape_name" => tape_name}) when is_binary(tape_name) do
+    sid = socket.assigns[:session_id]
+    primary_id = Rho.Agent.Primary.agent_id(sid)
+    messages = Rho.Trace.Projection.chat(tape_name)
+
+    agent_messages =
+      socket.assigns.agent_messages
+      |> Map.put(primary_id, messages)
+
+    socket
+    |> assign(:agent_messages, agent_messages)
+    |> assign(:active_agent_id, primary_id)
   end
 
   defp tail_replay(socket, _sid, nil), do: socket
@@ -4405,7 +4447,10 @@ defmodule RhoWeb.AppLive do
   end
 
   defp upload_error_msg(:too_large), do: "File too large (max 10MB)"
-  defp upload_error_msg(:not_accepted), do: "Only .xlsx / .csv supported"
+
+  defp upload_error_msg(:not_accepted),
+    do: "Only .xlsx / .csv / .pdf / .docx / text files supported"
+
   defp upload_error_msg(:too_many_files), do: "Too many files (max 5)"
   defp upload_error_msg(other), do: "Upload error: #{inspect(other)}"
 end

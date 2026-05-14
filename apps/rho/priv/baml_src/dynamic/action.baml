@@ -26,7 +26,7 @@ class AwaitTaskAction {
 }
 
 class IngestDocumentAction {
-  tool "ingest_document" @description("Extract text or table data from an external file (Excel .xlsx, PDF .pdf, Word .docx). Returns the extracted content as text or structured table data. Use the extracted content to populate the spreadsheet with add_rows.")
+  tool "ingest_document" @description("Extract table data from Excel/CSV or lightweight text from TXT/MD/HTML files. PDF/DOCX inputs return stored-only summaries. Use the extracted content to populate the spreadsheet with add_rows.")
   file_path string
   format string?
 }
@@ -36,7 +36,7 @@ class ListUploadsAction {
 }
 
 class ObserveUploadAction {
-  tool "observe_upload" @description("Get a structured summary of an uploaded file: sheets, columns, sample rows, detected hints.")
+  tool "observe_upload" @description("Get a summary of an uploaded file. Structured files include sheets, columns, sample rows, and detected hints.")
   upload_id string
 }
 
@@ -170,6 +170,14 @@ class ImportLibraryFromUploadAction {
   sheet string?
 }
 
+class ExtractRoleFromJdAction {
+  tool "extract_role_from_jd" @description("Extract skills from a job description into a skill library and role_profile table. Pass either upload_id or text.")
+  upload_id string?
+  text string?
+  role_name string?
+  library_name string?
+}
+
 class SeedFrameworkFromRolesAction {
   tool "seed_framework_from_roles" @description("Create a new skill library by unioning the skills from one or more existing role profiles. Use after `analyze_role(action: \"find_similar\")` to combine ESCO occupations (or any saved roles) into a fresh framework. Two ways to specify roles: (a) pass UUIDs in role_profile_ids_json, or (b) set from_selected_candidates: \"true\" to read the user's checked rows from the `role_candidates` table (the typical chat path — agent calls find_similar to populate the picker, user checks rows in the UI, then this tool reads the picks). The new library is created as a draft with skills deduplicated by exact skill ID; the tool surfaces the actual skills that appeared in multiple picked roles. No semantic dedup runs — call `dedup_library(library_id: ...)` explicitly if you want a review tab. Call `save_framework` afterwards to persist further edits.")
   name string
@@ -227,7 +235,7 @@ class DeleteRowsAction {
   table string?
 }
 
-function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ListUploadsAction | ObserveUploadAction | ReadUploadAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | BrowseLibraryAction | CombineLibrariesAction | DedupLibraryAction | LibraryVersionsAction | ManageRoleAction | AnalyzeRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ImportLibraryFromUploadAction | SeedFrameworkFromRolesAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
+function AgentTurn(messages: string) -> RespondAction | ThinkAction | DelegateTaskAction | AwaitTaskAction | IngestDocumentAction | ListUploadsAction | ObserveUploadAction | ReadUploadAction | ManageLibraryAction | LoadLibraryAction | ForkLibraryAction | BrowseLibraryAction | CombineLibrariesAction | DedupLibraryAction | LibraryVersionsAction | ManageRoleAction | AnalyzeRoleAction | LoadSimilarRolesAction | GenerateFrameworkSkeletonsAction | GenerateProficiencyAction | SaveFrameworkAction | ImportLibraryFromUploadAction | ExtractRoleFromJdAction | SeedFrameworkFromRolesAction | SkillAction | QueryTableAction | UpdateCellsAction | EditRowAction | AddRowsAction | DeleteRowsAction {
   client Openrouter
   prompt #"
     {{ messages }}

@@ -26,31 +26,76 @@ defmodule RhoWeb.Session.Threads do
   def init(session_id, workspace, opts \\ []) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      {:ok, read_state(path)}
-    else
-      tape_name = Keyword.fetch!(opts, :tape_name)
-      now = DateTime.utc_now() |> DateTime.to_iso8601()
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        state = state_from_conversation(conversation)
+        write_state(path, state)
+        {:ok, state}
 
-      main_thread = %{
-        "id" => "thread_main",
-        "name" => "Main",
-        "tape_name" => tape_name,
-        "created_at" => now,
-        "forked_from" => nil,
-        "fork_point" => nil,
-        "summary" => nil,
-        "status" => "active"
-      }
+      File.exists?(path) ->
+        {:ok, read_state(path)}
 
-      state = %{
-        "active_thread_id" => "thread_main",
-        "threads" => [main_thread]
-      }
+      true ->
+        tape_name = Keyword.fetch!(opts, :tape_name)
+        now = DateTime.utc_now() |> DateTime.to_iso8601()
 
-      write_state(path, state)
-      {:ok, state}
+        main_thread = %{
+          "id" => "thread_main",
+          "name" => "Main",
+          "tape_name" => tape_name,
+          "created_at" => now,
+          "forked_from" => nil,
+          "fork_point" => nil,
+          "summary" => nil,
+          "status" => "active"
+        }
+
+        state = %{
+          "active_thread_id" => "thread_main",
+          "threads" => [main_thread]
+        }
+
+        write_state(path, state)
+        {:ok, state}
     end
+  end
+
+  @doc """
+  Import an existing `threads.json` registry into core conversation metadata.
+
+  This is the lazy migration path for sessions created before
+  `Rho.Conversation` existed. The legacy file is left in place; subsequent
+  calls mirror the conversation back into `threads.json` for compatibility.
+  """
+  @spec import_legacy(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def import_legacy(session_id, workspace, opts \\ []) do
+    path = threads_path(session_id, workspace)
+
+    if File.exists?(path) do
+      state = read_state(path)
+      default_tape = Keyword.get(opts, :tape_name)
+      threads = conversation_threads_from_legacy(state, default_tape)
+
+      active_thread_id =
+        case Enum.find(threads, &(&1["id"] == state["active_thread_id"])) do
+          %{"id" => id} -> id
+          _ -> threads |> List.first() |> Map.fetch!("id")
+        end
+
+      Rho.Conversation.create(%{
+        session_id: session_id,
+        user_id: Keyword.get(opts, :user_id),
+        organization_id: Keyword.get(opts, :organization_id),
+        workspace: workspace,
+        title: Keyword.get(opts, :title, "New conversation"),
+        active_thread_id: active_thread_id,
+        threads: threads
+      })
+    else
+      {:error, :not_found}
+    end
+  rescue
+    error -> {:error, error}
   end
 
   # -------------------------------------------------------------------
@@ -62,10 +107,15 @@ defmodule RhoWeb.Session.Threads do
   def list(session_id, workspace) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      read_state(path) |> Map.get("threads", [])
-    else
-      []
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        Enum.map(conversation["threads"] || [], &legacy_thread/1)
+
+      File.exists?(path) ->
+        read_state(path) |> Map.get("threads", [])
+
+      true ->
+        []
     end
   end
 
@@ -74,10 +124,19 @@ defmodule RhoWeb.Session.Threads do
   def active(session_id, workspace) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      state = read_state(path)
-      active_id = state["active_thread_id"]
-      Enum.find(state["threads"] || [], &(&1["id"] == active_id))
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        conversation
+        |> active_from_conversation()
+        |> maybe_legacy_thread()
+
+      File.exists?(path) ->
+        state = read_state(path)
+        active_id = state["active_thread_id"]
+        Enum.find(state["threads"] || [], &(&1["id"] == active_id))
+
+      true ->
+        nil
     end
   end
 
@@ -86,9 +145,18 @@ defmodule RhoWeb.Session.Threads do
   def get(session_id, workspace, thread_id) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      state = read_state(path)
-      Enum.find(state["threads"] || [], &(&1["id"] == thread_id))
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        conversation["threads"]
+        |> Enum.find(&(&1["id"] == thread_id))
+        |> maybe_legacy_thread()
+
+      File.exists?(path) ->
+        state = read_state(path)
+        Enum.find(state["threads"] || [], &(&1["id"] == thread_id))
+
+      true ->
+        nil
     end
   end
 
@@ -209,26 +277,40 @@ defmodule RhoWeb.Session.Threads do
   def create(session_id, workspace, attrs) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      state = read_state(path)
-      now = DateTime.utc_now() |> DateTime.to_iso8601()
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        attrs = Map.put_new(attrs, "fork_point_entry_id", Map.get(attrs, "fork_point"))
 
-      thread = %{
-        "id" => generate_id(),
-        "name" => Map.fetch!(attrs, "name"),
-        "tape_name" => Map.fetch!(attrs, "tape_name"),
-        "created_at" => now,
-        "forked_from" => Map.get(attrs, "forked_from"),
-        "fork_point" => Map.get(attrs, "fork_point"),
-        "summary" => Map.get(attrs, "summary"),
-        "status" => "active"
-      }
+        case Rho.Conversation.create_thread(conversation["id"], attrs) do
+          {:ok, thread} ->
+            mirror_conversation(session_id, workspace)
+            {:ok, legacy_thread(thread)}
 
-      state = Map.update!(state, "threads", &(&1 ++ [thread]))
-      write_state(path, state)
-      {:ok, thread}
-    else
-      {:error, :no_registry}
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      File.exists?(path) ->
+        state = read_state(path)
+        now = DateTime.utc_now() |> DateTime.to_iso8601()
+
+        thread = %{
+          "id" => generate_id(),
+          "name" => Map.fetch!(attrs, "name"),
+          "tape_name" => Map.fetch!(attrs, "tape_name"),
+          "created_at" => now,
+          "forked_from" => Map.get(attrs, "forked_from"),
+          "fork_point" => Map.get(attrs, "fork_point"),
+          "summary" => Map.get(attrs, "summary"),
+          "status" => "active"
+        }
+
+        state = Map.update!(state, "threads", &(&1 ++ [thread]))
+        write_state(path, state)
+        {:ok, thread}
+
+      true ->
+        {:error, :no_registry}
     end
   end
 
@@ -239,18 +321,30 @@ defmodule RhoWeb.Session.Threads do
   def switch(session_id, workspace, thread_id) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      state = read_state(path)
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        case Rho.Conversation.switch_thread(conversation["id"], thread_id) do
+          :ok ->
+            mirror_conversation(session_id, workspace)
+            :ok
 
-      if Enum.any?(state["threads"] || [], &(&1["id"] == thread_id)) do
-        state = Map.put(state, "active_thread_id", thread_id)
-        write_state(path, state)
-        :ok
-      else
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      File.exists?(path) ->
+        state = read_state(path)
+
+        if Enum.any?(state["threads"] || [], &(&1["id"] == thread_id)) do
+          state = Map.put(state, "active_thread_id", thread_id)
+          write_state(path, state)
+          :ok
+        else
+          {:error, :not_found}
+        end
+
+      true ->
         {:error, :not_found}
-      end
-    else
-      {:error, :not_found}
     end
   end
 
@@ -263,23 +357,35 @@ defmodule RhoWeb.Session.Threads do
   def delete(session_id, workspace, thread_id) do
     path = threads_path(session_id, workspace)
 
-    if File.exists?(path) do
-      state = read_state(path)
+    cond do
+      conversation = conversation_for(session_id, workspace) ->
+        case Rho.Conversation.delete_thread(conversation["id"], thread_id) do
+          :ok ->
+            mirror_conversation(session_id, workspace)
+            :ok
 
-      cond do
-        state["active_thread_id"] == thread_id ->
-          {:error, :active_thread}
+          {:error, reason} ->
+            {:error, reason}
+        end
 
-        Enum.any?(state["threads"] || [], &(&1["id"] == thread_id)) ->
-          threads = Enum.reject(state["threads"], &(&1["id"] == thread_id))
-          write_state(path, Map.put(state, "threads", threads))
-          :ok
+      File.exists?(path) ->
+        state = read_state(path)
 
-        true ->
-          {:error, :not_found}
-      end
-    else
-      {:error, :not_found}
+        cond do
+          state["active_thread_id"] == thread_id ->
+            {:error, :active_thread}
+
+          Enum.any?(state["threads"] || [], &(&1["id"] == thread_id)) ->
+            threads = Enum.reject(state["threads"], &(&1["id"] == thread_id))
+            write_state(path, Map.put(state, "threads", threads))
+            :ok
+
+          true ->
+            {:error, :not_found}
+        end
+
+      true ->
+        {:error, :not_found}
     end
   end
 
@@ -301,6 +407,77 @@ defmodule RhoWeb.Session.Threads do
     tmp = path <> ".tmp"
     File.write!(tmp, Jason.encode!(state, pretty: true))
     File.rename!(tmp, path)
+  end
+
+  defp conversation_for(session_id, workspace) do
+    case Rho.Conversation.get_by_session(session_id) do
+      %{"workspace" => ^workspace} = conversation -> conversation
+      _ -> nil
+    end
+  end
+
+  defp mirror_conversation(session_id, workspace) do
+    if conversation = conversation_for(session_id, workspace) do
+      write_state(threads_path(session_id, workspace), state_from_conversation(conversation))
+    end
+  end
+
+  defp conversation_threads_from_legacy(state, default_tape) do
+    now = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    case state["threads"] || [] do
+      [] ->
+        [
+          %{
+            "id" => "thread_main",
+            "name" => "Main",
+            "tape_name" => default_tape,
+            "forked_from" => nil,
+            "fork_point_entry_id" => nil,
+            "summary" => nil,
+            "created_at" => now,
+            "updated_at" => now,
+            "status" => "active"
+          }
+        ]
+
+      threads ->
+        Enum.map(threads, &conversation_thread_from_legacy(&1, default_tape, now))
+    end
+  end
+
+  defp conversation_thread_from_legacy(thread, default_tape, now) do
+    %{
+      "id" => thread["id"] || generate_id(),
+      "name" => thread["name"] || "New Thread",
+      "tape_name" => thread["tape_name"] || default_tape,
+      "forked_from" => thread["forked_from"],
+      "fork_point_entry_id" => thread["fork_point_entry_id"] || thread["fork_point"],
+      "summary" => thread["summary"],
+      "created_at" => thread["created_at"] || now,
+      "updated_at" => thread["updated_at"] || thread["created_at"] || now,
+      "status" => thread["status"] || "active"
+    }
+  end
+
+  defp state_from_conversation(conversation) do
+    %{
+      "active_thread_id" => conversation["active_thread_id"],
+      "threads" => Enum.map(conversation["threads"] || [], &legacy_thread/1)
+    }
+  end
+
+  defp active_from_conversation(conversation) do
+    Enum.find(conversation["threads"] || [], &(&1["id"] == conversation["active_thread_id"]))
+  end
+
+  defp maybe_legacy_thread(nil), do: nil
+  defp maybe_legacy_thread(thread), do: legacy_thread(thread)
+
+  defp legacy_thread(thread) do
+    thread
+    |> Map.put_new("fork_point", thread["fork_point_entry_id"])
+    |> Map.put("fork_point", thread["fork_point"] || thread["fork_point_entry_id"])
   end
 
   defp generate_id do

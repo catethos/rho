@@ -1,5 +1,10 @@
 # Conversation Threads — Implementation Plan
 
+> Superseded by `docs/conversation-trace-system-plan.md`.
+> The original `RhoWeb.Session.Threads` registry is now treated as a web-layer
+> compatibility shim while durable conversation/thread metadata moves to
+> `Rho.Conversation` in the core app.
+
 ## Scope
 
 Step 3.5 from workspace-unification-tasks.md. This plan covers the **pure data layer** (`Rho.Session.Threads`) and its tests. LiveView wiring and UI are deferred to a follow-up.

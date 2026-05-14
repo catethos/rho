@@ -22,6 +22,8 @@ defmodule Rho.Session do
     * `:emit` — `(map() -> :ok)` event callback
     * `:user_id` — for multi-tenant scoping
     * `:organization_id` — for multi-tenant scoping
+    * `:conversation_id` — durable conversation id for trace metadata
+    * `:thread_id` — durable thread id for trace metadata
     * `:tape_ref` — explicit tape reference
     * `:run_spec` — explicit `%Rho.RunSpec{}` (skips config loading)
 
@@ -40,6 +42,8 @@ defmodule Rho.Session do
       |> maybe_put(:workspace, opts[:workspace])
       |> maybe_put(:user_id, opts[:user_id])
       |> maybe_put(:organization_id, opts[:organization_id])
+      |> maybe_put(:conversation_id, opts[:conversation_id])
+      |> maybe_put(:thread_id, opts[:thread_id])
       |> maybe_put(:tape_ref, opts[:tape_ref])
       |> maybe_put(:run_spec, run_spec)
 

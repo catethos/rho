@@ -15,6 +15,18 @@ Four primitives, three invariants, one write strategy.
 
 Additionally, **Index** is a derived structure (e.g., anchor graph, search index) that accelerates queries but is never a source of truth.
 
+## Conversation and Trace Projections
+
+The tape is the source of truth for both user conversation history and agent
+debugging. Conversations and threads are metadata that point to tapes. Chat UI,
+LLM context, trace timelines, failure reports, and debug bundles are all
+projections over the same append-only entries.
+
+`Rho.Tape.View` remains the LLM context primitive.
+`Rho.Trace.Projection.context/1` delegates to the canonical tape projection
+path used by the runner. UI snapshots are cache only; a chat must be
+rebuildable from tape projections.
+
 ### Invariants
 
 1. **History is append-only, never overwritten** — corrections are new entries that reference old ones, not mutations.

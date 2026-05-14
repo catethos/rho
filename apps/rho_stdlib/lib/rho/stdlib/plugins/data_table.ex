@@ -804,7 +804,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
           {:ok, rows} when is_list(rows) ->
             case DataTable.add_rows(session_id, rows, table: table) do
               {:ok, inserted} -> {:ok, "Added #{length(inserted)} row(s)"}
-              {:error, reason} -> {:error, "add_rows failed: #{inspect(reason)}"}
+              {:error, reason} -> {:error, "add_rows failed: #{format_table_error(reason)}"}
             end
 
           {:ok, _other} ->
@@ -815,6 +815,31 @@ defmodule Rho.Stdlib.Plugins.DataTable do
         end
       end
     }
+  end
+
+  defp format_table_error({:unknown_fields, fields, meta}) when is_list(meta) do
+    allowed = Keyword.get(meta, :allowed, [])
+    required = Keyword.get(meta, :required, [])
+
+    "unknown field(s): #{join_fields(fields)}. " <>
+      "Allowed fields: #{Enum.join(allowed, ", ")}. " <>
+      "Required fields: #{Enum.join(required, ", ")}."
+  end
+
+  defp format_table_error({:missing_required, fields, meta}) when is_list(meta) do
+    allowed = Keyword.get(meta, :allowed, [])
+
+    "missing required field(s): #{join_fields(fields)}. " <>
+      "Allowed fields: #{Enum.join(allowed, ", ")}."
+  end
+
+  defp format_table_error(reason), do: inspect(reason)
+
+  defp join_fields(fields) do
+    fields
+    |> List.wrap()
+    |> Enum.map(&to_string/1)
+    |> Enum.join(", ")
   end
 
   defp delete_rows_tool(session_id) do

@@ -22,6 +22,10 @@ under a single Rust-based engine (`baml_elixir`) that works with any model,
 replacing both `ReqLLM.generate_object` (frameworks) and `StructuredOutput` +
 `SchemaCoerce` (TypedStructured).
 
+For conversation durability and debugging, see
+`docs/conversation-trace-system-plan.md`. It applies the same simplification
+principle: one source of truth, many projections.
+
 ---
 
 ## BAML Spike Results (2026-04-25)

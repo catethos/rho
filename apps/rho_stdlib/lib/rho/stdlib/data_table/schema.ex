@@ -105,11 +105,15 @@ defmodule Rho.Stdlib.DataTable.Schema do
         do: MapSet.put(declared, children_key),
         else: declared
 
+    required = required_column_names(schema.columns)
+    allowed_list = allowed |> Enum.sort() |> Enum.map(&Atom.to_string/1)
+    required_list = Enum.map(required, &Atom.to_string/1)
+
     with {:ok, atomized} <- atomize_known_keys(row, allowed),
-         :ok <- reject_unknown(atomized, allowed),
+         :ok <- reject_unknown(atomized, allowed, allowed_list, required_list),
          {:ok, coerced} <- coerce_columns(atomized, schema.columns),
          {:ok, with_children} <- validate_children(coerced, schema),
-         :ok <- check_required(with_children, schema.columns) do
+         :ok <- check_required(with_children, required, allowed_list) do
       {:ok, with_children}
     end
   end
@@ -145,7 +149,7 @@ defmodule Rho.Stdlib.DataTable.Schema do
     ArgumentError -> nil
   end
 
-  defp reject_unknown(row, allowed) do
+  defp reject_unknown(row, allowed, allowed_list, required_list) do
     unknown =
       row
       |> Map.keys()
@@ -156,7 +160,7 @@ defmodule Rho.Stdlib.DataTable.Schema do
 
     case unknown do
       [] -> :ok
-      bad -> {:error, {:unknown_fields, bad}}
+      bad -> {:error, {:unknown_fields, bad, allowed: allowed_list, required: required_list}}
     end
   end
 
@@ -242,22 +246,26 @@ defmodule Rho.Stdlib.DataTable.Schema do
     end
   end
 
-  defp check_required(row, columns) do
+  defp check_required(row, required, allowed_list) do
     missing =
-      columns
-      |> Enum.filter(fn col ->
-        col.required? and
-          case Map.get(row, col.name) do
-            nil -> true
-            "" -> true
-            _ -> false
-          end
+      required
+      |> Enum.filter(fn name ->
+        case Map.get(row, name) do
+          nil -> true
+          "" -> true
+          _ -> false
+        end
       end)
-      |> Enum.map(& &1.name)
 
     case missing do
       [] -> :ok
-      fields -> {:error, {:missing_required, fields}}
+      fields -> {:error, {:missing_required, fields, allowed: allowed_list}}
     end
+  end
+
+  defp required_column_names(columns) do
+    columns
+    |> Enum.filter(& &1.required?)
+    |> Enum.map(& &1.name)
   end
 end

@@ -118,15 +118,26 @@ defmodule Rho.Stdlib.DataTableTest do
         bogus: "nope"
       }
 
-      assert {:error, {:unknown_fields, _}} =
+      assert {:error, {:unknown_fields, [:bogus], meta}} =
                DataTable.add_rows(sid, [row], table: "library")
+
+      assert Keyword.get(meta, :allowed) == [
+               "category",
+               "proficiency_levels",
+               "skill_description",
+               "skill_name"
+             ]
+
+      assert Keyword.get(meta, :required) == ["category", "skill_name"]
     end
 
     test "rejects missing required fields", %{session_id: sid} do
       DataTable.ensure_table(sid, "library", library_schema())
 
-      assert {:error, {:missing_required, _}} =
+      assert {:error, {:missing_required, [:skill_name], meta}} =
                DataTable.add_rows(sid, [%{category: "Engineering"}], table: "library")
+
+      assert "skill_name" in Keyword.fetch!(meta, :allowed)
     end
 
     test "coerces primitive types", %{session_id: sid} do

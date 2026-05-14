@@ -185,8 +185,9 @@ defmodule RhoWeb.PrismLiveTest do
 
       {:ok, _} = Roles.save_role_profile(org_id, %{name: "Backend Dev"}, rows, library_id: lib.id)
 
-      # Verify it exists
-      assert length(Roles.list_role_profiles(org_id)) == 1
+      # Verify the org-owned role exists. `list_role_profiles/1` includes public
+      # roles by default, so full umbrella order can make visible rows > 1.
+      assert [%{name: "Backend Dev"}] = Roles.list_role_profiles(org_id, include_public: false)
 
       socket =
         build_socket(%{
@@ -199,7 +200,8 @@ defmodule RhoWeb.PrismLiveTest do
       {:noreply, socket} =
         RhoWeb.RoleProfileListLive.handle_event("delete", %{"name" => "Backend Dev"}, socket)
 
-      assert socket.assigns.profiles == []
+      refute Enum.any?(socket.assigns.profiles, &(&1.name == "Backend Dev"))
+      assert Roles.list_role_profiles(org_id, include_public: false) == []
     end
   end
 

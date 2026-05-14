@@ -25,6 +25,7 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   alias RhoFrameworks.UseCases.{
     GenerateFrameworkSkeletons,
     GenerateProficiency,
+    ExtractFromJD,
     ImportFromUpload,
     LoadSimilarRoles,
     PickTemplate,
@@ -36,7 +37,8 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     GenerateFrameworkSkeletons => "generate_framework_skeletons",
     GenerateProficiency => "generate_proficiency",
     SaveFramework => "save_framework",
-    ImportFromUpload => "import_library_from_upload"
+    ImportFromUpload => "import_library_from_upload",
+    ExtractFromJD => "extract_role_from_jd"
   }
 
   @doc """
@@ -452,6 +454,88 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       end)
 
     "Imported #{length(libs)} libraries with #{total} skills total: #{per_lib}."
+  end
+
+  # ── extract_role_from_jd ───────────────────────────────────────────────
+
+  tool :extract_role_from_jd,
+       "Extract skills from a job description into a skill library and role_profile table. Pass either upload_id or text." do
+    param(:upload_id, :string, doc: "Upload handle id, e.g. upl_abc")
+    param(:text, :string, doc: "Raw JD text. Mutually exclusive with upload_id.")
+    param(:role_name, :string, doc: "Override detected role title.")
+    param(:library_name, :string, doc: "Override library name. Defaults to role_name.")
+
+    run(fn args, ctx ->
+      scope = Scope.from_context(ctx)
+
+      input = %{
+        upload_id: args[:upload_id],
+        text: args[:text],
+        role_name: args[:role_name],
+        library_name: args[:library_name]
+      }
+
+      case ExtractFromJD.run(input, scope) do
+        {:ok, result} ->
+          text = build_jd_extraction_text(result)
+
+          %Rho.ToolResponse{
+            text: text,
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: result.library_table,
+                schema_key: :skill_library,
+                mode_label: "Skill Library — #{result.library_name}",
+                rows: [],
+                skip_write?: true
+              },
+              %Rho.Effect.Table{
+                table_name: result.role_table,
+                schema_key: :role_profile,
+                mode_label: "Role Profile — #{result.role_name}",
+                rows: [],
+                skip_write?: true
+              }
+            ]
+          }
+
+        {:error, :missing_input} ->
+          {:error, "Pass either upload_id or text."}
+
+        {:error, :too_many_inputs} ->
+          {:error, "Pass either upload_id or text, not both."}
+
+        {:error, {:upload_not_found, upload_id}} ->
+          {:error, "Upload '#{upload_id}' was not found."}
+
+        {:error, {:missing_llm_api_key, client, env_var}} ->
+          {:error, "#{client} JD extraction requires #{env_var} to be set."}
+
+        {:error, {:unsupported_upload_kind, filename, mime}} ->
+          {:error,
+           "Unsupported JD upload '#{filename}' (#{mime}). Use a PDF or paste the job description text."}
+
+        {:error, {:library_exists, name}} ->
+          {:error, "A library named '#{name}' already exists. Pick a different library_name."}
+
+        {:error, {:role_profile_exists, name}} ->
+          {:error, "A role profile named '#{name}' already exists. Pick a different role_name."}
+
+        {:error, :no_skills} ->
+          {:error, "No supported skills were extracted from the job description."}
+
+        {:error, reason} ->
+          {:error, "extract_role_from_jd failed: #{inspect(reason)}"}
+      end
+    end)
+  end
+
+  defp build_jd_extraction_text(result) do
+    "Extracted #{result.skill_count} skill(s) from \"#{result.role_name}\". " <>
+      "Created library table \"#{result.library_table}\" and role profile table \"#{result.role_table}\". " <>
+      "Required: #{result.required_count}. Nice-to-have: #{result.nice_to_have_count}. " <>
+      "Dropped unverified: #{result.dropped_unverified}."
   end
 
   # ── seed_framework_from_roles ─────────────────────────────────────────

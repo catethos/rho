@@ -10,8 +10,8 @@ defmodule Rho.Tape.Fork do
   alias Rho.Tape.{Service, Store}
 
   @doc """
-  Creates a fork: a new tape that starts with a `fork_origin` anchor
-  referencing the source tape and entry ID.
+  Creates a fork: a new tape materialized with entries up to the fork point,
+  followed by a `fork_origin` anchor referencing the source tape and entry ID.
 
   Returns `{:ok, fork_tape_name}`.
 
@@ -24,7 +24,22 @@ defmodule Rho.Tape.Fork do
 
     fork_name = opts[:name] || "#{source_tape}_fork_#{:erlang.unique_integer([:positive])}"
 
-    # Write fork_origin anchor to the new tape
+    source_entries =
+      source_tape
+      |> Store.read()
+      |> Enum.filter(&(&1.id <= at_id))
+      |> drop_incomplete_tool_calls()
+
+    Enum.each(source_entries, fn entry ->
+      meta =
+        entry.meta
+        |> Map.put("copied_from_tape", source_tape)
+        |> Map.put("copied_from_entry_id", entry.id)
+
+      Service.append(fork_name, entry.kind, entry.payload, meta)
+    end)
+
+    # Write fork_origin anchor to the new tape after the inherited entries.
     Service.append(fork_name, :anchor, %{
       "name" => "fork_origin",
       "state" => %{
@@ -83,9 +98,9 @@ defmodule Rho.Tape.Fork do
   Returns fork metadata if the tape is a fork, nil otherwise.
   """
   def fork_info(tape_name) do
-    case Store.get(tape_name, 1) do
-      %{kind: :anchor, payload: %{"name" => "fork_origin", "fork" => fork_data}} ->
-        count = max(Store.last_id(tape_name) - 1, 0)
+    case find_fork_origin(tape_name) do
+      %{id: origin_id, payload: %{"fork" => fork_data}} ->
+        count = max(Store.last_id(tape_name) - origin_id, 0)
 
         %{
           source_tape: fork_data["source_tape"],
@@ -96,5 +111,26 @@ defmodule Rho.Tape.Fork do
       _ ->
         nil
     end
+  end
+
+  defp find_fork_origin(tape_name) do
+    tape_name
+    |> Store.read()
+    |> Enum.find(fn entry -> entry.kind == :anchor and entry.payload["name"] == "fork_origin" end)
+  end
+
+  defp drop_incomplete_tool_calls(entries) do
+    result_ids =
+      entries
+      |> Enum.filter(&(&1.kind == :tool_result))
+      |> MapSet.new(& &1.payload["call_id"])
+
+    Enum.reject(entries, fn
+      %{kind: :tool_call, payload: %{"call_id" => call_id}} ->
+        not MapSet.member?(result_ids, call_id)
+
+      _ ->
+        false
+    end)
   end
 end

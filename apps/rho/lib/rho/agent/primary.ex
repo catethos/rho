@@ -179,7 +179,9 @@ defmodule Rho.Agent.Primary do
         agent_name: opts[:agent_name] || :default,
         role: :primary,
         user_id: opts[:user_id],
-        organization_id: opts[:organization_id]
+        organization_id: opts[:organization_id],
+        conversation_id: opts[:conversation_id],
+        thread_id: opts[:thread_id]
       ]
       |> then(fn wo ->
         if opts[:tape_ref], do: Keyword.put(wo, :tape_ref, opts[:tape_ref]), else: wo

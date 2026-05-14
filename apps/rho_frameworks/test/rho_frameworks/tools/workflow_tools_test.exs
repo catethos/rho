@@ -20,6 +20,7 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
   alias RhoFrameworks.UseCases.{
     GenerateFrameworkSkeletons,
     GenerateProficiency,
+    ExtractFromJD,
     ImportFromUpload,
     LoadSimilarRoles,
     PickTemplate,
@@ -116,6 +117,9 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
     test "returns the tool def for ImportFromUpload" do
       assert %{tool: %{name: "import_library_from_upload"}, execute: _} =
                WorkflowTools.tool_for_use_case(ImportFromUpload)
+
+      assert %{tool: %{name: "extract_role_from_jd"}, execute: _} =
+               WorkflowTools.tool_for_use_case(ExtractFromJD)
     end
   end
 
@@ -167,6 +171,136 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
     end
   end
 
+  describe "extract_role_from_jd tool" do
+    setup do
+      old_text = Application.get_env(:rho_frameworks, :extract_from_jd_text_fn)
+      old_pdf = Application.get_env(:rho_frameworks, :extract_from_jd_pdf_fn)
+
+      on_exit(fn ->
+        restore_env(:extract_from_jd_text_fn, old_text)
+        restore_env(:extract_from_jd_pdf_fn, old_pdf)
+      end)
+
+      :ok
+    end
+
+    test "returns ToolResponse with both table effects for text input" do
+      sid = "wft_jd_#{System.unique_integer([:positive])}"
+      org_id = "org_test_#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        Uploads.stop(sid)
+        Rho.Stdlib.DataTable.stop(sid)
+      end)
+
+      Application.put_env(:rho_frameworks, :extract_from_jd_text_fn, fn _args ->
+        {:ok, jd_output()}
+      end)
+
+      ctx = %Rho.Context{
+        agent_name: :test,
+        session_id: sid,
+        agent_id: "agent-test-jd",
+        organization_id: org_id,
+        user_id: "u_test"
+      }
+
+      [tool] =
+        WorkflowTools.__tools__()
+        |> Enum.filter(&(&1.tool.name == "extract_role_from_jd"))
+
+      response = tool.execute.(%{text: "We require SQL."}, ctx)
+
+      assert %Rho.ToolResponse{text: text, effects: effects} = response
+      assert text =~ "Extracted 1 skill(s)"
+      assert text =~ "Senior Backend Engineer"
+      assert text =~ ~s(library table "library:Senior Backend Engineer")
+      assert Enum.any?(effects, &match?(%Rho.Effect.OpenWorkspace{key: :data_table}, &1))
+
+      assert Enum.any?(
+               effects,
+               &match?(
+                 %Rho.Effect.Table{
+                   table_name: "library:Senior Backend Engineer",
+                   schema_key: :skill_library
+                 },
+                 &1
+               )
+             )
+
+      assert Enum.any?(
+               effects,
+               &match?(
+                 %Rho.Effect.Table{table_name: "role_profile", schema_key: :role_profile},
+                 &1
+               )
+             )
+    end
+
+    test "returns clear error for unsupported upload kind" do
+      sid = "wft_jd_upload_#{System.unique_integer([:positive])}"
+      org_id = "org_test_#{System.unique_integer([:positive])}"
+      on_exit(fn -> Uploads.stop(sid) end)
+
+      {:ok, _pid} = Uploads.ensure_started(sid)
+      src = fixture_path(@complete)
+
+      {:ok, h} =
+        Uploads.put(sid, %{
+          filename: "complete_framework_import.xlsx",
+          mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          tmp_path: src,
+          size: File.stat!(src).size
+        })
+
+      ctx = %Rho.Context{
+        agent_name: :test,
+        session_id: sid,
+        agent_id: "agent-test-jd",
+        organization_id: org_id,
+        user_id: "u_test"
+      }
+
+      [tool] =
+        WorkflowTools.__tools__()
+        |> Enum.filter(&(&1.tool.name == "extract_role_from_jd"))
+
+      assert {:error, msg} = tool.execute.(%{upload_id: h.id}, ctx)
+      assert msg =~ "Unsupported JD upload"
+      assert msg =~ "Use a PDF or paste"
+    end
+
+    test "returns clear error for missing OpenRouter key" do
+      sid = "wft_jd_key_#{System.unique_integer([:positive])}"
+      org_id = "org_test_#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        Uploads.stop(sid)
+        Rho.Stdlib.DataTable.stop(sid)
+      end)
+
+      Application.put_env(:rho_frameworks, :extract_from_jd_text_fn, fn _args ->
+        {:error,
+         "LLM client 'OpenRouterHaiku' requires environment variable 'OPENROUTER_API_KEY' to be set"}
+      end)
+
+      ctx = %Rho.Context{
+        agent_name: :test,
+        session_id: sid,
+        agent_id: "agent-test-jd",
+        organization_id: org_id,
+        user_id: "u_test"
+      }
+
+      [tool] =
+        WorkflowTools.__tools__()
+        |> Enum.filter(&(&1.tool.name == "extract_role_from_jd"))
+
+      assert {:error, msg} = tool.execute.(%{text: "We require SQL."}, ctx)
+      assert msg == "OpenRouterHaiku JD extraction requires OPENROUTER_API_KEY to be set."
+    end
+  end
+
   defp fixture_path(rel) do
     candidates = [
       Path.expand(rel),
@@ -178,4 +312,22 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
     Enum.find(candidates, &File.exists?/1) ||
       raise "Could not find fixture #{rel}; tried: #{Enum.join(candidates, ", ")}"
   end
+
+  defp jd_output do
+    %{
+      role_title: "Senior Backend Engineer",
+      skills: [
+        %{
+          skill_name: "SQL",
+          skill_description: "Writes SQL queries.",
+          category_hint: "Data",
+          priority: "required",
+          source_quote: "SQL"
+        }
+      ]
+    }
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:rho_frameworks, key)
+  defp restore_env(key, value), do: Application.put_env(:rho_frameworks, key, value)
 end

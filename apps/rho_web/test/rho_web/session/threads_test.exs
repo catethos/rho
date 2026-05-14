@@ -10,7 +10,7 @@ defmodule FakeTapeModule do
 end
 
 defmodule RhoWeb.Session.ThreadsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias RhoWeb.Session.Threads
 
@@ -23,7 +23,22 @@ defmodule RhoWeb.Session.ThreadsTest do
 
     File.mkdir_p!(workspace)
 
-    on_exit(fn -> File.rm_rf!(workspace) end)
+    data_dir =
+      Path.join(System.tmp_dir!(), "rho_threads_data_#{:erlang.unique_integer([:positive])}")
+
+    old_data_dir = System.get_env("RHO_DATA_DIR")
+    System.put_env("RHO_DATA_DIR", data_dir)
+
+    on_exit(fn ->
+      if old_data_dir do
+        System.put_env("RHO_DATA_DIR", old_data_dir)
+      else
+        System.delete_env("RHO_DATA_DIR")
+      end
+
+      File.rm_rf!(workspace)
+      File.rm_rf!(data_dir)
+    end)
 
     %{workspace: workspace}
   end
@@ -62,6 +77,68 @@ defmodule RhoWeb.Session.ThreadsTest do
       assert_raise KeyError, fn ->
         Threads.init(@session_id, ws, [])
       end
+    end
+  end
+
+  describe "import_legacy/3" do
+    test "imports existing threads.json into core conversation metadata", %{workspace: ws} do
+      sid = "legacy-import-#{System.unique_integer([:positive])}"
+      path = Path.join([ws, "_rho", "sessions", sid, "threads.json"])
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(
+        path,
+        Jason.encode!(%{
+          "active_thread_id" => "thread_fork",
+          "threads" => [
+            %{
+              "id" => "thread_main",
+              "name" => "Main",
+              "tape_name" => "legacy_main",
+              "created_at" => "2026-05-14T00:00:00Z",
+              "forked_from" => nil,
+              "fork_point" => nil,
+              "summary" => nil,
+              "status" => "active"
+            },
+            %{
+              "id" => "thread_fork",
+              "name" => "Forked",
+              "tape_name" => "legacy_fork",
+              "created_at" => "2026-05-14T00:01:00Z",
+              "forked_from" => "thread_main",
+              "fork_point" => 7,
+              "summary" => "Old branch",
+              "status" => "active"
+            }
+          ]
+        })
+      )
+
+      assert {:ok, conversation} =
+               Threads.import_legacy(sid, ws,
+                 user_id: 123,
+                 organization_id: 456,
+                 tape_name: "fallback_tape"
+               )
+
+      assert conversation["session_id"] == sid
+      assert conversation["user_id"] == "123"
+      assert conversation["organization_id"] == "456"
+      assert conversation["active_thread_id"] == "thread_fork"
+
+      assert [
+               %{"id" => "thread_main", "tape_name" => "legacy_main"},
+               %{
+                 "id" => "thread_fork",
+                 "tape_name" => "legacy_fork",
+                 "fork_point_entry_id" => 7
+               }
+             ] = conversation["threads"]
+
+      assert Rho.Conversation.get_by_session(sid)["id"] == conversation["id"]
+      assert Threads.active(sid, ws)["id"] == "thread_fork"
+      assert File.exists?(path)
     end
   end
 

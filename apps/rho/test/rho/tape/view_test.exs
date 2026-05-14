@@ -116,5 +116,21 @@ defmodule Rho.Tape.ViewTest do
       # Second should be tool result
       assert %{role: :tool} = Enum.at(msgs, 1)
     end
+
+    test "drops tool_calls without matching tool_result" do
+      Service.append(@test_tape, :message, %{"role" => "user", "content" => "hello"})
+
+      Service.append(@test_tape, :tool_call, %{
+        "name" => "bash",
+        "args" => %{"cmd" => "ls"},
+        "call_id" => "dangling_call"
+      })
+
+      view = View.default(@test_tape)
+      msgs = View.to_messages(view)
+
+      assert length(msgs) == 1
+      assert %{role: :user} = hd(msgs)
+    end
   end
 end

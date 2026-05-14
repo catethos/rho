@@ -120,26 +120,35 @@ defmodule Rho.Tape.View do
 
   defp entries_to_messages(entries) do
     entries
-    |> drop_orphaned_tool_results()
+    |> drop_invalid_tool_pairs()
     |> group_tool_calls()
     |> Enum.flat_map(&convert_group/1)
   end
 
-  # Remove tool_result entries whose call_id has no matching tool_call in the
-  # current view.  This prevents invalid messages when an anchor or compaction
-  # boundary splits a tool_call/tool_result pair.
-  defp drop_orphaned_tool_results(entries) do
+  # Remove incomplete tool pairs whose call/result partner is outside the
+  # current view. This prevents invalid messages when an anchor, compaction
+  # boundary, or fork point splits a tool_call/tool_result pair.
+  defp drop_invalid_tool_pairs(entries) do
     known_call_ids =
       entries
       |> Enum.filter(&(&1.kind == :tool_call))
       |> MapSet.new(& &1.payload["call_id"])
 
-    Enum.filter(entries, fn
+    result_call_ids =
+      entries
+      |> Enum.filter(&(&1.kind == :tool_result))
+      |> MapSet.new(& &1.payload["call_id"])
+
+    entries
+    |> Enum.filter(fn
       %Entry{kind: :tool_result, payload: %{"call_id" => cid}} ->
         MapSet.member?(known_call_ids, cid)
 
       %Entry{kind: :tool_result} ->
         false
+
+      %Entry{kind: :tool_call, payload: %{"call_id" => cid}} ->
+        MapSet.member?(result_call_ids, cid)
 
       _ ->
         true

@@ -24,13 +24,17 @@ defmodule Rho.Tape.ForkTest do
       on_exit(fn -> Store.clear(fork_name) end)
 
       entries = Store.read(fork_name)
-      assert length(entries) == 1
+      assert length(entries) == 3
 
-      origin = hd(entries)
+      origin = List.last(entries)
       assert origin.kind == :anchor
       assert origin.payload["name"] == "fork_origin"
       assert origin.payload["fork"]["source_tape"] == @main_tape
       assert origin.payload["fork"]["at_id"] == e1.id
+
+      copied = Enum.find(entries, &(&1.payload["content"] == "hello"))
+      assert copied.meta["copied_from_tape"] == @main_tape
+      assert copied.meta["copied_from_entry_id"] == e1.id
     end
 
     test "supports custom fork name" do
@@ -51,8 +55,51 @@ defmodule Rho.Tape.ForkTest do
       {:ok, fork_name} = Fork.fork(@main_tape, at: e1.id)
       on_exit(fn -> Store.clear(fork_name) end)
 
-      origin = hd(Store.read(fork_name))
+      origin =
+        Store.read(fork_name)
+        |> Enum.find(&(&1.kind == :anchor and &1.payload["name"] == "fork_origin"))
+
       assert origin.payload["fork"]["at_id"] == e1.id
+    end
+
+    test "materializes only entries up to the fork point" do
+      Service.ensure_bootstrap_anchor(@main_tape)
+      {:ok, e1} = Service.append(@main_tape, :message, %{"role" => "user", "content" => "first"})
+      Service.append(@main_tape, :message, %{"role" => "assistant", "content" => "second"})
+
+      {:ok, fork_name} = Fork.fork(@main_tape, at: e1.id)
+      on_exit(fn -> Store.clear(fork_name) end)
+
+      contents =
+        fork_name
+        |> Store.read()
+        |> Enum.map(& &1.payload["content"])
+
+      assert "first" in contents
+      refute "second" in contents
+    end
+
+    test "drops incomplete tool calls at the fork point" do
+      Service.ensure_bootstrap_anchor(@main_tape)
+
+      {:ok, call} =
+        Service.append(@main_tape, :tool_call, %{
+          "name" => "bash",
+          "args" => %{},
+          "call_id" => "call_incomplete"
+        })
+
+      Service.append(@main_tape, :tool_result, %{
+        "name" => "bash",
+        "output" => "late",
+        "status" => "ok",
+        "call_id" => "call_incomplete"
+      })
+
+      {:ok, fork_name} = Fork.fork(@main_tape, at: call.id)
+      on_exit(fn -> Store.clear(fork_name) end)
+
+      refute Enum.any?(Store.read(fork_name), &(&1.kind == :tool_call))
     end
   end
 

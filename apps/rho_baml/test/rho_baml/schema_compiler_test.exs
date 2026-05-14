@@ -169,5 +169,19 @@ defmodule RhoBaml.SchemaCompilerTest do
       assert result =~ "{{ ctx.output_format }}"
       assert result =~ "\"#"
     end
+
+    test "renders media params" do
+      result =
+        SchemaCompiler.build_function_baml(
+          "class ExtractOutput {\n  ok bool\n}\n",
+          "ExtractFromJDPdf",
+          "ExtractOutput",
+          [jd: :pdf],
+          "AnthropicPdf",
+          "{{ jd }}"
+        )
+
+      assert result =~ "function ExtractFromJDPdf(jd: pdf) -> ExtractOutput {"
+    end
   end
 end

@@ -167,6 +167,9 @@ defmodule RhoBaml.SchemaCompiler do
   defp param_type(:int), do: "int"
   defp param_type(:float), do: "float"
   defp param_type(:bool), do: "bool"
+  defp param_type(:pdf), do: "pdf"
+  defp param_type(:image), do: "image"
+  defp param_type(:audio), do: "audio"
 
   defp indent_prompt(prompt) do
     prompt

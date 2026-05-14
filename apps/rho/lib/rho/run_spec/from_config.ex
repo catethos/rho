@@ -27,6 +27,8 @@ defmodule Rho.RunSpec.FromConfig do
     * `:workspace` — working directory
     * `:session_id` — session namespace
     * `:agent_id` — unique agent process id
+    * `:conversation_id` — durable conversation id
+    * `:thread_id` — durable thread id
     * `:user_id` — multi-tenant scoping
     * `:organization_id` — multi-tenant scoping
     * `:emit` — event callback
@@ -56,6 +58,9 @@ defmodule Rho.RunSpec.FromConfig do
       workspace: opts[:workspace],
       session_id: opts[:session_id],
       agent_id: opts[:agent_id],
+      conversation_id: opts[:conversation_id],
+      thread_id: opts[:thread_id],
+      turn_id: opts[:turn_id],
       user_id: opts[:user_id],
       organization_id: opts[:organization_id],
       emit: opts[:emit],

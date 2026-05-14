@@ -84,6 +84,18 @@ defmodule RhoWeb.Session.SessionCore do
   def subscribe_and_hydrate(socket, session_id, opts \\ []) do
     user_id = current_user_id(socket)
     opts = Keyword.put_new(opts, :user_id, user_id)
+    workspace = Keyword.get(opts, :workspace, user_workspace_for(user_id, session_id))
+    {conversation, active_thread} = ensure_conversation(session_id, workspace, opts)
+
+    opts =
+      opts
+      |> Keyword.put_new(:workspace, workspace)
+      |> Keyword.put(:conversation_id, conversation["id"])
+      |> Keyword.put(:thread_id, active_thread["id"])
+      |> Keyword.put_new(:tape_ref, active_thread["tape_name"])
+
+    tape_module = Rho.Config.tape_module()
+    tape_module.bootstrap(opts[:tape_ref])
 
     case Rho.Agent.Primary.ensure_started(session_id, opts) do
       {:ok, _pid} ->
@@ -167,7 +179,7 @@ defmodule RhoWeb.Session.SessionCore do
     id_prefix = Keyword.get(opts, :id_prefix, "lv")
     user_id = current_user_id(socket)
 
-    session_start_opts =
+    base_session_opts =
       session_opts(socket)
       |> then(fn o -> if agent_name, do: Keyword.put(o, :agent, agent_name), else: o end)
 
@@ -176,6 +188,16 @@ defmodule RhoWeb.Session.SessionCore do
         "#{id_prefix}_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
 
     workspace = Keyword.get(opts, :workspace, user_workspace_for(user_id, sid))
+    {conversation, active_thread} = ensure_conversation(sid, workspace, base_session_opts)
+
+    session_start_opts =
+      base_session_opts
+      |> Keyword.put(:conversation_id, conversation["id"])
+      |> Keyword.put(:thread_id, active_thread["id"])
+      |> Keyword.put(:tape_ref, active_thread["tape_name"])
+
+    tape_module = Rho.Config.tape_module()
+    tape_module.bootstrap(active_thread["tape_name"])
 
     {:ok, _handle} =
       Rho.Session.start([session_id: sid, workspace: workspace] ++ session_start_opts)
@@ -492,6 +514,61 @@ defmodule RhoWeb.Session.SessionCore do
       _ ->
         :ok
     end
+  end
+
+  defp ensure_conversation(session_id, workspace, opts) do
+    tape_module = Rho.Config.tape_module()
+    default_tape = tape_module.memory_ref(session_id, workspace)
+
+    conversation =
+      case Rho.Conversation.get_by_session(session_id) do
+        %{"workspace" => ^workspace} = existing ->
+          existing
+
+        %{"workspace" => nil} = existing ->
+          existing
+
+        _ ->
+          case RhoWeb.Session.Threads.import_legacy(session_id, workspace,
+                 user_id: opts[:user_id],
+                 organization_id: opts[:organization_id],
+                 tape_name: default_tape
+               ) do
+            {:ok, imported} ->
+              imported
+
+            {:error, _reason} ->
+              {:ok, created} =
+                Rho.Conversation.create(%{
+                  session_id: session_id,
+                  user_id: opts[:user_id],
+                  organization_id: opts[:organization_id],
+                  workspace: workspace,
+                  tape_name: default_tape
+                })
+
+              created
+          end
+      end
+
+    active_thread =
+      Rho.Conversation.active_thread(conversation["id"]) ||
+        List.first(conversation["threads"] || []) ||
+        ensure_main_thread(conversation["id"], default_tape)
+
+    {conversation, active_thread}
+  end
+
+  defp ensure_main_thread(conversation_id, tape_name) do
+    {:ok, thread} =
+      Rho.Conversation.create_thread(conversation_id, %{
+        "id" => "thread_main",
+        "name" => "Main",
+        "tape_name" => tape_name
+      })
+
+    :ok = Rho.Conversation.switch_thread(conversation_id, thread["id"])
+    thread
   end
 
   defp session_opts(socket) do

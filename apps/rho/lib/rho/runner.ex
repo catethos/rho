@@ -175,6 +175,9 @@ defmodule Rho.Runner do
       depth: spec.depth || 0,
       agent_id: spec.agent_id,
       session_id: spec.session_id,
+      conversation_id: spec.conversation_id,
+      thread_id: spec.thread_id,
+      turn_id: spec.turn_id,
       prompt_format: spec.prompt_format || :markdown,
       user_id: spec.user_id,
       organization_id: spec.organization_id
@@ -189,7 +192,7 @@ defmodule Rho.Runner do
       build_system_prompt(base_prompt, context, strategy, tool_defs)
 
     raw_emit = if is_function(spec.emit), do: spec.emit, else: fn _event -> :ok end
-    emit = wrap_emit_with_tape(raw_emit, tape_name, memory_mod)
+    emit = wrap_emit_with_tape(raw_emit, tape_name, memory_mod, context, spec.model, strategy)
 
     %Runtime{
       model: spec.model,
@@ -225,7 +228,8 @@ defmodule Rho.Runner do
     {stable_prompt, volatile_prompt} =
       build_system_prompt(base_prompt, context, strategy, tool_defs)
 
-    emit = wrap_emit_with_tape(resolve_emit(opts), tape_name, memory_mod)
+    emit =
+      wrap_emit_with_tape(resolve_emit(opts), tape_name, memory_mod, context, model, strategy)
 
     %Runtime{
       model: model,
@@ -253,6 +257,9 @@ defmodule Rho.Runner do
       depth: opts[:depth] || 0,
       agent_id: opts[:agent_id],
       session_id: opts[:session_id],
+      conversation_id: opts[:conversation_id],
+      thread_id: opts[:thread_id],
+      turn_id: opts[:turn_id],
       prompt_format: opts[:prompt_format] || :markdown,
       user_id: opts[:user_id],
       organization_id: opts[:organization_id]
@@ -268,19 +275,27 @@ defmodule Rho.Runner do
     }
   end
 
-  defp wrap_emit_with_tape(raw_emit, nil, _memory_mod), do: raw_emit
+  defp wrap_emit_with_tape(raw_emit, nil, _memory_mod, _context, _model, _strategy),
+    do: raw_emit
 
-  defp wrap_emit_with_tape(raw_emit, tape_name, memory_mod) do
+  defp wrap_emit_with_tape(raw_emit, tape_name, memory_mod, context, model, strategy) do
     fn event ->
-      maybe_append_to_tape(event, tape_name, memory_mod)
+      maybe_append_to_tape(event, tape_name, memory_mod, context, model, strategy)
       raw_emit.(event)
     end
   end
 
-  defp maybe_append_to_tape(event, tape_name, memory_mod) do
+  defp maybe_append_to_tape(event, tape_name, memory_mod, context, model, strategy) do
     if event.type not in [:llm_text, :tool_start, :tool_result] do
       t_tape = System.monotonic_time(:millisecond)
-      memory_mod.append_from_event(tape_name, event)
+
+      append_event_with_meta(
+        memory_mod,
+        tape_name,
+        event,
+        event_meta(context, model, strategy, event)
+      )
+
       tape_ms = System.monotonic_time(:millisecond) - t_tape
 
       warn_if_slow(
@@ -290,6 +305,76 @@ defmodule Rho.Runner do
       )
     end
   end
+
+  defp append_event_with_meta(memory_mod, tape_name, event, meta) do
+    case event_to_entry(event) do
+      nil -> :ok
+      {kind, payload} -> append_mem(memory_mod, tape_name, kind, payload, meta)
+    end
+  end
+
+  defp append_mem(memory_mod, tape_name, kind, payload, meta) do
+    if function_exported?(memory_mod, :append, 4) do
+      memory_mod.append(tape_name, kind, payload, meta)
+    else
+      memory_mod.append(tape_name, kind, payload)
+    end
+  end
+
+  defp event_to_entry(%{type: :llm_usage} = event) do
+    usage = event[:usage] || %{}
+
+    {:event,
+     %{
+       "name" => "llm_usage",
+       "step" => event[:step],
+       "model" => to_string(event[:model] || ""),
+       "input_tokens" => get_usage(usage, :input_tokens),
+       "output_tokens" => get_usage(usage, :output_tokens),
+       "reasoning_tokens" => get_usage(usage, :reasoning_tokens),
+       "cached_tokens" => get_usage(usage, :cached_tokens),
+       "cache_creation_tokens" => get_usage(usage, :cache_creation_tokens),
+       "total_tokens" => get_usage(usage, :total_tokens),
+       "total_cost" => get_usage(usage, :total_cost),
+       "input_cost" => get_usage(usage, :input_cost),
+       "output_cost" => get_usage(usage, :output_cost),
+       "reasoning_cost" => get_usage(usage, :reasoning_cost)
+     }}
+  end
+
+  defp event_to_entry(%{type: :error, reason: reason}) do
+    {:event, %{"name" => "error", "reason" => inspect(reason)}}
+  end
+
+  defp event_to_entry(%{type: :compact} = event) do
+    {:event, %{"name" => "compact", "tape_name" => event[:tape_name]}}
+  end
+
+  defp event_to_entry(_event), do: nil
+
+  defp get_usage(usage, key) do
+    Map.get(usage, key) || Map.get(usage, to_string(key), 0)
+  end
+
+  defp event_meta(context, model, strategy, event) do
+    base_meta(context, model, strategy)
+    |> maybe_put_meta("turn_id", event[:turn_id] || context.turn_id)
+    |> maybe_put_meta("step", event[:step])
+  end
+
+  defp base_meta(context, model, strategy) do
+    %{}
+    |> maybe_put_meta("conversation_id", context.conversation_id)
+    |> maybe_put_meta("thread_id", context.thread_id)
+    |> maybe_put_meta("session_id", context.session_id)
+    |> maybe_put_meta("agent_id", context.agent_id)
+    |> maybe_put_meta("model", model && to_string(model))
+    |> maybe_put_meta("strategy", inspect(strategy))
+  end
+
+  defp maybe_put_meta(map, _key, nil), do: map
+  defp maybe_put_meta(map, _key, ""), do: map
+  defp maybe_put_meta(map, key, value), do: Map.put(map, key, value)
 
   # -- System prompt assembly --
 
