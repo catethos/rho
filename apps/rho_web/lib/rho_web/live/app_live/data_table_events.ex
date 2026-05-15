@@ -7,6 +7,7 @@ defmodule RhoWeb.AppLive.DataTableEvents do
 
   alias RhoWeb.Session.SignalRouter
   alias RhoWeb.Session.Shell
+  alias RhoWeb.WorkbenchDisplay
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   def handle_info({:data_table_refresh, table_name}, socket) do
@@ -41,7 +42,7 @@ defmodule RhoWeb.AppLive.DataTableEvents do
   def handle_info({:data_table_close_tab, name}, socket) when is_binary(name) do
     sid = socket.assigns[:session_id]
 
-    if is_nil(sid) or name == "main" do
+    if is_nil(sid) or not WorkbenchDisplay.closable_table?(name) do
       {:noreply, socket}
     else
       state = read_state(socket)
@@ -51,10 +52,13 @@ defmodule RhoWeb.AppLive.DataTableEvents do
           socket = refresh_tables(socket)
 
           if state.active_table == name do
-            send(
-              self(),
-              {:data_table_switch_tab, pick_fallback_active_table(read_state(socket))}
-            )
+            socket = apply_display_after_close(socket, name)
+            state = read_state(socket)
+
+            case WorkbenchDisplay.mode_after_close(state, name) do
+              {:table, table_name} -> send(self(), {:data_table_switch_tab, table_name})
+              :home -> send(self(), {:workbench_home_open, true})
+            end
           end
 
           {:noreply, socket}
@@ -231,7 +235,11 @@ defmodule RhoWeb.AppLive.DataTableEvents do
 
     if state.active_table == removed do
       new_state = read_state(socket)
-      send(self(), {:data_table_switch_tab, pick_fallback_active_table(new_state)})
+
+      case WorkbenchDisplay.mode_after_close(new_state, removed) do
+        {:table, table_name} -> send(self(), {:data_table_switch_tab, table_name})
+        :home -> send(self(), {:workbench_home_open, true})
+      end
     end
 
     socket
@@ -309,11 +317,14 @@ defmodule RhoWeb.AppLive.DataTableEvents do
     else
       case Rho.Stdlib.DataTable.get_session_snapshot(sid) do
         %{tables: tables, table_order: order} ->
-          SignalRouter.write_ws_state(socket, :data_table, %{
-            state
-            | tables: tables,
-              table_order: order
-          })
+          socket =
+            SignalRouter.write_ws_state(socket, :data_table, %{
+              state
+              | tables: tables,
+                table_order: order
+            })
+
+          WorkbenchDisplay.refresh_from_tables(socket, read_state(socket))
 
         _ ->
           socket
@@ -404,7 +415,8 @@ defmodule RhoWeb.AppLive.DataTableEvents do
           publish_view_focus(sid, state.active_table)
         end
 
-        SignalRouter.write_ws_state(socket, :data_table, state)
+        socket = SignalRouter.write_ws_state(socket, :data_table, state)
+        WorkbenchDisplay.refresh_from_tables(socket, state)
 
       {:error, :not_running} ->
         SignalRouter.write_ws_state(socket, :data_table, %{state | error: :not_running})
@@ -470,6 +482,7 @@ defmodule RhoWeb.AppLive.DataTableEvents do
 
     socket
     |> open_workspace()
+    |> WorkbenchDisplay.show_table(table_name)
     |> SignalRouter.write_ws_state(:data_table, new_state)
     |> refresh_session()
   rescue
@@ -510,16 +523,15 @@ defmodule RhoWeb.AppLive.DataTableEvents do
     end
   end
 
-  defp pick_fallback_active_table(%{table_order: order}) do
-    cond do
-      "main" in order -> "main"
-      order != [] -> hd(order)
-      true -> "main"
-    end
-  end
-
   defp stale_version?(version, current) do
     not (is_integer(version) and is_integer(current) and version <= current)
+  end
+
+  defp apply_display_after_close(socket, closed_table) do
+    case WorkbenchDisplay.mode_after_close(read_state(socket), closed_table) do
+      {:table, table_name} -> WorkbenchDisplay.show_table(socket, table_name)
+      :home -> WorkbenchDisplay.show_home(socket)
+    end
   end
 
   defp update_selection(socket, state, table, %MapSet{} = new_set) do

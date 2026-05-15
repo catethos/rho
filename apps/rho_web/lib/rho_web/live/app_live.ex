@@ -32,6 +32,7 @@ defmodule RhoWeb.AppLive do
   alias RhoWeb.AppLive.PageLoader
   alias RhoWeb.AppLive.PageSearchEvents
   alias RhoWeb.AppLive.SmartEntry
+  alias RhoWeb.AppLive.WorkbenchDisplayState
   alias RhoWeb.AppLive.WorkbenchEvents
   alias RhoWeb.AppLive.WorkspaceChromeComponents
   alias RhoWeb.AppLive.WorkspaceEvents
@@ -83,7 +84,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:workbench_action_busy?, false)
       |> assign(:workbench_action_libraries, [])
       |> assign(:workbench_home_libraries, [])
-      |> assign(:workbench_home_open?, false)
+      |> WorkbenchDisplayState.initial_assigns()
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 5,
@@ -271,16 +272,13 @@ defmodule RhoWeb.AppLive do
       Enum.map(overlay_keys, fn key -> {key, WorkspaceRegistry.get(key)} end)
       |> Enum.reject(fn {_key, mod} -> is_nil(mod) end)
 
-    shared_ws_assigns = %{
-      session_id: assigns.session_id,
-      agents: assigns.agents,
-      active_agent_name: agent_name(active_agent),
-      workbench_libraries: workbench_libraries(assigns),
-      chat_mode: chat_mode,
-      workbench_home_open?: assigns.workbench_home_open?,
-      streaming: any_agent_busy?(assigns.agents),
-      total_cost: assigns.total_cost
-    }
+    shared_ws_assigns =
+      WorkbenchDisplayState.shared_assigns(assigns,
+        active_agent_name: agent_name(active_agent),
+        workbench_libraries: workbench_libraries(assigns),
+        chat_mode: chat_mode,
+        streaming: any_agent_busy?(assigns.agents)
+      )
 
     workbench_context = active_workbench_context(assigns, shared_ws_assigns)
 
@@ -771,9 +769,8 @@ defmodule RhoWeb.AppLive do
     WorkbenchEvents.handle_info({:workbench_library_open, library_id}, socket)
   end
 
-  def handle_info({:workbench_home_open, open?}, socket) do
-    {:noreply, assign(socket, :workbench_home_open?, open?)}
-  end
+  def handle_info({:workbench_home_open, open?}, socket),
+    do: {:noreply, WorkbenchDisplayState.put_home(socket, open?)}
 
   def handle_info({:lens_detail_request, _} = msg, socket) do
     dispatch_to_workspace(socket, RhoWeb.Workspaces.LensDashboard, msg)
@@ -805,7 +802,7 @@ defmodule RhoWeb.AppLive do
 
   def handle_info({:data_table_switch_tab, name}, socket) do
     socket
-    |> assign(:workbench_home_open?, false)
+    |> WorkbenchDisplayState.put_table(name)
     |> then(&DataTableEvents.handle_info({:data_table_switch_tab, name}, &1))
   end
 

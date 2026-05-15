@@ -3,6 +3,7 @@ defmodule RhoWeb.AppLiveWorkspaceEventsTest do
 
   alias RhoWeb.AppLive.WorkspaceEvents
   alias RhoWeb.Session.Shell
+  alias RhoWeb.WorkbenchDisplay
 
   test "opening Workbench actions also keeps chat visible" do
     socket = %Phoenix.LiveView.Socket{
@@ -20,6 +21,7 @@ defmodule RhoWeb.AppLiveWorkspaceEventsTest do
     assert {:noreply, socket} = WorkspaceEvents.handle_event("open_workbench_home", %{}, socket)
     assert socket.assigns.active_workspace_id == :data_table
     assert socket.assigns.workbench_home_open?
+    assert %WorkbenchDisplay{mode: :home} = socket.assigns.workbench_display
     assert socket.assigns.shell.chat_mode == :expanded
     assert Map.has_key?(socket.assigns.workspaces, :data_table)
   end

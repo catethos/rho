@@ -12,6 +12,7 @@ defmodule RhoWeb.AppLive.WorkspaceEvents do
   alias RhoWeb.AppLive.ChatEvents
   alias RhoWeb.AppLive.DataTableEvents
   alias RhoWeb.Session.Shell
+  alias RhoWeb.WorkbenchDisplay
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
   def handle_event("switch_workspace", %{"workspace" => ws}, socket) do
@@ -114,7 +115,7 @@ defmodule RhoWeb.AppLive.WorkspaceEvents do
           socket
           |> ensure_workspace(key, ws_mod)
           |> assign(:active_workspace_id, key)
-          |> assign(:workbench_home_open?, true)
+          |> WorkbenchDisplay.show_home()
 
         socket =
           if added? do
@@ -146,7 +147,7 @@ defmodule RhoWeb.AppLive.WorkspaceEvents do
         |> assign(:workspaces, new_workspaces)
         |> assign(:ws_states, new_ws_states)
         |> assign(:active_workspace_id, active)
-        |> assign(:workbench_home_open?, false)
+        |> WorkbenchDisplay.hide_home()
         |> assign(:shell, Shell.remove_workspace(socket.assigns.shell, key))
 
       {:noreply, socket}

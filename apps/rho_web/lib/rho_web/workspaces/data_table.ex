@@ -10,6 +10,7 @@ defmodule RhoWeb.Workspaces.DataTable do
 
   alias Rho.Stdlib.DataTable.WorkbenchContext
   alias RhoWeb.DataTable.Schemas
+  alias RhoWeb.WorkbenchDisplay
 
   @impl true
   def key, do: :data_table
@@ -76,7 +77,8 @@ defmodule RhoWeb.Workspaces.DataTable do
       agent_name: Map.get(shared, :active_agent_name),
       libraries: Map.get(shared, :workbench_libraries, []),
       chat_mode: Map.get(shared, :chat_mode),
-      show_workbench_home?: Map.get(shared, :workbench_home_open?, false),
+      workbench_display:
+        Map.get(shared, :workbench_display) || WorkbenchDisplay.from_data_state(state),
       selected_ids: selected_ids
     }
   end

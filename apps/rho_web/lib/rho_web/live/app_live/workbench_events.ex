@@ -10,6 +10,7 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
   alias RhoWeb.AppLive.DataTableEvents
   alias RhoWeb.Session.SessionCore
   alias RhoWeb.Session.SignalRouter
+  alias RhoWeb.WorkbenchDisplay
   alias RhoWeb.WorkbenchActions
   alias RhoWeb.WorkbenchActionRunner
 
@@ -98,7 +99,7 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
     socket =
       socket
       |> assign(:workbench_action_busy?, true)
-      |> assign(:workbench_home_open?, false)
+      |> WorkbenchDisplay.hide_home()
       |> DataTableEvents.load_library_into_data_table(form["library_id"])
       |> close_action()
 

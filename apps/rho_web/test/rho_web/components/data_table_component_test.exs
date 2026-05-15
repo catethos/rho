@@ -15,6 +15,7 @@ defmodule RhoWeb.DataTableComponentTest do
   alias Rho.Stdlib.DataTable.WorkbenchContext
   alias RhoWeb.DataTableComponent
   alias RhoWeb.DataTable.Schemas
+  alias RhoWeb.WorkbenchDisplay
 
   describe "empty state" do
     test "renders Workbench home when no artifact tables exist" do
@@ -180,7 +181,15 @@ defmodule RhoWeb.DataTableComponentTest do
           total_cost: 0.0,
           session_id: "s1",
           agent_name: :spreadsheet,
-          show_workbench_home?: true,
+          workbench_display:
+            WorkbenchDisplay.from_data_state(
+              %{
+                table_order: ["library:Core"],
+                tables: [%{name: "library:Core", row_count: 1}],
+                active_table: "library:Core"
+              },
+              :home
+            ),
           class: ""
         )
 
