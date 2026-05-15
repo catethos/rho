@@ -4,9 +4,9 @@ class MatchFlowIntentOutput {
   description string @description("One-sentence framework description. Empty string when flow_id is \"unknown\".")
   reasoning string @description("One-sentence justification.")
   confidence float @description("0.0 (no match) to 1.0 (clearly this flow).")
+  flow_id string @description("Matched flow id, or \"unknown\".")
   target_roles string @description("Title-case singular role names. Empty string when flow_id is \"unknown\".")
   starting_point string @description("One of \"from_template\", \"scratch\", \"extend_existing\", \"merge\", or \"\" when no signal.")
-  flow_id string @description("Matched flow id, or \"unknown\".")
   library_hints string[] @description("Name fragments of existing libraries: singleton for \"extend_existing\", two for \"merge\", empty list otherwise.")
 }
 

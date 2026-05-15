@@ -22,6 +22,8 @@ defmodule RhoWeb.DataTableComponent do
 
   alias Rho.Stdlib.DataTable
   alias Rho.Stdlib.DataTable.WorkbenchContext
+  alias RhoWeb.WorkbenchActions
+  alias RhoWeb.WorkbenchActionComponent
   alias RhoWeb.WorkbenchPresenter
 
   # Compile-time pool of atoms used as Phoenix LiveView stream names.
@@ -340,6 +342,11 @@ defmodule RhoWeb.DataTableComponent do
   @impl true
   def handle_event("select_tab", %{"table" => name}, socket) do
     send(self(), {:data_table_switch_tab, name})
+    {:noreply, socket}
+  end
+
+  def handle_event("workbench_action_open", %{"action" => action_id}, socket) do
+    send(self(), {:workbench_action_open, action_id})
     {:noreply, socket}
   end
 
@@ -1090,6 +1097,8 @@ defmodule RhoWeb.DataTableComponent do
     ~H"""
     <div class={["dt-panel", @class]}>
       <% active_artifact = active_artifact(@workbench_context) %>
+      <% display_table_order = display_table_order(@table_order, @tables) %>
+      <% home? = workbench_home?(@workbench_context, @table_order, @active_table, @rows) %>
       <%= if @error do %>
         <div class="dt-error-banner">
           <strong>Data table unavailable:</strong> <%= inspect(@error) %>
@@ -1097,9 +1106,15 @@ defmodule RhoWeb.DataTableComponent do
         </div>
       <% end %>
 
-      <%= if length(@table_order || []) > 1 do %>
+      <%= if home? do %>
+        <WorkbenchActionComponent.workbench_home
+          actions={WorkbenchActions.home_actions()}
+          target={@myself}
+        />
+      <% else %>
+      <%= if length(display_table_order) > 1 do %>
         <div class="dt-tab-strip">
-          <%= for name <- @table_order do %>
+          <%= for name <- display_table_order do %>
             <% count = table_row_count(@tables, name) %>
             <% artifact = artifact_for_table(@workbench_context, name) %>
             <button
@@ -1383,6 +1398,7 @@ defmodule RhoWeb.DataTableComponent do
           <% end %>
         <% end %>
       </div>
+      <% end %>
     </div>
     """
   end
@@ -2539,11 +2555,59 @@ defmodule RhoWeb.DataTableComponent do
   defp active_artifact(%WorkbenchContext{active_artifact: artifact}), do: artifact
   defp active_artifact(_), do: nil
 
+  defp workbench_home?(
+         %WorkbenchContext{active_artifact: artifact, artifacts: artifacts},
+         order,
+         active,
+         rows
+       ) do
+    no_non_main_tables? =
+      case order do
+        [] -> true
+        list when is_list(list) -> Enum.all?(list, &(&1 == "main"))
+        _ -> true
+      end
+
+    no_artifacts? =
+      artifacts in [nil, []] or
+        Enum.all?(artifacts, &(empty_main_artifact?(&1) or row_count(&1) == 0))
+
+    active_main? =
+      active in [nil, "main"] or is_nil(artifact) or empty_main_artifact?(artifact) or
+        row_count(artifact) == 0
+
+    empty? = Enum.empty?(rows || []) and row_count(artifact) == 0
+
+    no_non_main_tables? and no_artifacts? and active_main? and empty?
+  end
+
+  defp workbench_home?(_, order, active, rows) do
+    no_non_main_tables? =
+      case order do
+        [] -> true
+        list when is_list(list) -> Enum.all?(list, &(&1 == "main"))
+        _ -> true
+      end
+
+    no_non_main_tables? and active in [nil, "main"] and Enum.empty?(rows || [])
+  end
+
+  defp row_count(%{row_count: count}) when is_integer(count), do: count
+  defp row_count(_), do: 0
+
+  defp empty_main_artifact?(%{table_name: table_name, row_count: count}) do
+    table_name in [nil, "main"] and count in [nil, 0]
+  end
+
+  defp empty_main_artifact?(_), do: false
+
   defp artifact_for_table(%WorkbenchContext{artifacts: artifacts}, table_name) do
     Enum.find(artifacts, &(&1.table_name == table_name))
   end
 
   defp artifact_for_table(_, _), do: nil
+
+  defp artifact_tab_label(nil, "main"), do: "Scratch Table"
 
   defp artifact_tab_label(artifact, fallback),
     do: WorkbenchPresenter.tab_label(artifact, fallback)
@@ -2603,13 +2667,32 @@ defmodule RhoWeb.DataTableComponent do
 
   # --- Tab strip helpers ---
 
+  defp display_table_order(order, tables) when is_list(order) do
+    if hide_empty_default_main?(order, tables) do
+      Enum.reject(order, &(&1 == "main"))
+    else
+      order
+    end
+  end
+
+  defp display_table_order(_, _), do: []
+
+  defp hide_empty_default_main?(order, tables) do
+    "main" in order and Enum.any?(order, &(&1 != "main")) and table_row_count(tables, "main") == 0
+  end
+
   defp table_row_count(tables, name) when is_list(tables) do
-    case Enum.find(tables, fn t -> t.name == name end) do
+    case Enum.find(tables, &(table_name(&1) == name)) do
       nil -> 0
       %{row_count: n} -> n
+      %{"row_count" => n} -> n
       _ -> 0
     end
   end
 
   defp table_row_count(_, _), do: 0
+
+  defp table_name(%{name: name}), do: name
+  defp table_name(%{"name" => name}), do: name
+  defp table_name(_), do: nil
 end

@@ -3,8 +3,8 @@ class ExtractFromJDPdfOutputSkills {
   skill_name string @description("Skill name close to source wording.")
   skill_description string? @description("One-sentence skill description.")
   source_quote string? @description("Short supporting quote from the JD.")
-  category_hint string? @description("Short grouping hint.")
   page_number int? @description("1-based PDF page number when inferable.")
+  category_hint string? @description("Short grouping hint.")
 }
 
 class ExtractFromJDPdfOutput {

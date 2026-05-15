@@ -285,4 +285,30 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContextTest do
     assert ctx.active_artifact.title == "Research Notes"
     assert ctx.active_artifact.metrics.rows == 3
   end
+
+  test "treats default main as workbench plumbing until it has scratch rows" do
+    empty_ctx =
+      WorkbenchContext.build(%{
+        tables: [%{name: "main", schema: Schema.dynamic("main"), row_count: 0}],
+        table_order: ["main"],
+        active_table: "main",
+        active_snapshot: %{rows: []}
+      })
+
+    assert empty_ctx.active_artifact.kind == :generic_table
+    assert empty_ctx.active_artifact.title == "Artifact Workbench"
+    assert empty_ctx.active_artifact.subtitle =~ "Start a workflow"
+
+    scratch_ctx =
+      WorkbenchContext.build(%{
+        tables: [%{name: "main", schema: Schema.dynamic("main"), row_count: 1}],
+        table_order: ["main"],
+        active_table: "main",
+        active_snapshot: %{rows: [%{id: "r1", note: "Ad hoc"}]}
+      })
+
+    assert scratch_ctx.active_artifact.kind == :generic_table
+    assert scratch_ctx.active_artifact.title == "Scratch Table"
+    assert scratch_ctx.active_artifact.subtitle =~ "Ad hoc rows"
+  end
 end

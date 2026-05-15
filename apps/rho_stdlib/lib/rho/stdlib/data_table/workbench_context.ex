@@ -200,8 +200,8 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
     %ArtifactSummary{
       table_name: name,
       kind: kind,
-      title: title(kind, name, metadata),
-      subtitle: subtitle(kind, metadata),
+      title: title(kind, name, metadata, row_count),
+      subtitle: subtitle(kind, name, metadata, row_count),
       source_label:
         first_metadata(metadata, [:source_label, :source_document_name, :source_upload_id]),
       workflow: metadata[:workflow],
@@ -451,7 +451,7 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
     }
   end
 
-  defp title(:skill_library, name, metadata) do
+  defp title(:skill_library, name, metadata, _row_count) do
     cond do
       present?(metadata[:title]) -> metadata[:title]
       present?(metadata[:library_name]) -> "#{metadata[:library_name]} Skill Framework"
@@ -460,7 +460,7 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
     end
   end
 
-  defp title(:role_profile, _name, metadata) do
+  defp title(:role_profile, _name, metadata, _row_count) do
     cond do
       present?(metadata[:title]) -> metadata[:title]
       present?(metadata[:role_name]) -> "#{metadata[:role_name]} Role Requirements"
@@ -468,28 +468,47 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
     end
   end
 
-  defp title(:role_candidates, _name, metadata), do: metadata[:title] || "Candidate Roles"
-  defp title(:combine_preview, _name, metadata), do: metadata[:title] || "Combine Libraries"
-  defp title(:dedup_preview, _name, metadata), do: metadata[:title] || "Duplicate Review"
-  defp title(:analysis_result, _name, metadata), do: metadata[:title] || "Gap Review"
-  defp title(_kind, name, metadata), do: metadata[:title] || humanize_name(name || "data_table")
+  defp title(:role_candidates, _name, metadata, _row_count), do: metadata[:title] || "Candidate Roles"
+  defp title(:combine_preview, _name, metadata, _row_count), do: metadata[:title] || "Combine Libraries"
+  defp title(:dedup_preview, _name, metadata, _row_count), do: metadata[:title] || "Duplicate Review"
+  defp title(:analysis_result, _name, metadata, _row_count), do: metadata[:title] || "Gap Review"
 
-  defp subtitle(:skill_library, metadata), do: metadata[:subtitle] || "Reusable skill taxonomy"
-  defp subtitle(:role_profile, metadata), do: metadata[:subtitle] || "Demand profile for a role"
+  defp title(:generic_table, "main", metadata, row_count) do
+    cond do
+      present?(metadata[:title]) -> metadata[:title]
+      row_count > 0 -> "Scratch Table"
+      true -> "Artifact Workbench"
+    end
+  end
 
-  defp subtitle(:role_candidates, metadata),
+  defp title(_kind, name, metadata, _row_count),
+    do: metadata[:title] || humanize_name(name || "data_table")
+
+  defp subtitle(:skill_library, _name, metadata, _row_count),
+    do: metadata[:subtitle] || "Reusable skill taxonomy"
+
+  defp subtitle(:role_profile, _name, metadata, _row_count),
+    do: metadata[:subtitle] || "Demand profile for a role"
+
+  defp subtitle(:role_candidates, _name, metadata, _row_count),
     do: metadata[:subtitle] || "Picker for selecting source roles"
 
-  defp subtitle(:combine_preview, metadata),
+  defp subtitle(:combine_preview, _name, metadata, _row_count),
     do: metadata[:subtitle] || "Review conflicts before creating a merged library"
 
-  defp subtitle(:dedup_preview, metadata),
+  defp subtitle(:dedup_preview, _name, metadata, _row_count),
     do: metadata[:subtitle] || "Review likely duplicate skills"
 
-  defp subtitle(:analysis_result, metadata),
+  defp subtitle(:analysis_result, _name, metadata, _row_count),
     do: metadata[:subtitle] || "Review recommendations before applying changes"
 
-  defp subtitle(_kind, metadata), do: metadata[:subtitle]
+  defp subtitle(:generic_table, "main", metadata, 0),
+    do: metadata[:subtitle] || "Start a workflow to create a skill framework or review artifact"
+
+  defp subtitle(:generic_table, "main", metadata, _row_count),
+    do: metadata[:subtitle] || "Ad hoc rows that are not attached to a named workflow artifact"
+
+  defp subtitle(_kind, _name, metadata, _row_count), do: metadata[:subtitle]
 
   defp selected_preview(_kind, _rows, []), do: []
 

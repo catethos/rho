@@ -5,8 +5,8 @@ class SummarizeDuplicatesOutputClusters {
 }
 
 class SummarizeDuplicatesOutput {
-  summary_text string @description("1-2 paragraph digest of the dedup situation: cluster shape, suggested review order, expected consolidation impact")
   clusters SummarizeDuplicatesOutputClusters[]
+  summary_text string @description("1-2 paragraph digest of the dedup situation: cluster shape, suggested review order, expected consolidation impact")
 }
 
 function SummarizeDuplicates(pairs: string, library_context: string) -> SummarizeDuplicatesOutput {

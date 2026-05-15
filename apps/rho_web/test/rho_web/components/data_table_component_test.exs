@@ -17,7 +17,7 @@ defmodule RhoWeb.DataTableComponentTest do
   alias RhoWeb.DataTable.Schemas
 
   describe "empty state" do
-    test "renders empty message when rows is []" do
+    test "renders Workbench home when no artifact tables exist" do
       html =
         render_component(DataTableComponent,
           id: "dt1",
@@ -35,7 +35,16 @@ defmodule RhoWeb.DataTableComponentTest do
           class: ""
         )
 
-      assert html =~ "No data"
+      assert html =~ "Workbench"
+      assert html =~ "Start a skills project from what you already have."
+      refute html =~ "Ready for first artifact"
+      refute html =~ "Use chat when language helps"
+      assert html =~ "Create Framework"
+      assert html =~ "Extract JD"
+      assert html =~ "Import Library"
+      assert html =~ "Load Library"
+      assert html =~ "Find Roles"
+      refute html =~ "dt-table-wrap"
     end
   end
 
@@ -88,9 +97,63 @@ defmodule RhoWeb.DataTableComponentTest do
         )
 
       assert html =~ "dt-tab-strip"
-      assert html =~ "main"
+      assert html =~ "Scratch Table"
       assert html =~ "library"
       assert html =~ "dt-tab-active"
+    end
+
+    test "hides empty default main tab when workflow artifacts exist" do
+      combine_schema = %StorageSchema{
+        name: "combine_preview",
+        columns: [
+          %StorageColumn{name: :skill_a_name, type: :string},
+          %StorageColumn{name: :skill_b_name, type: :string},
+          %StorageColumn{name: :resolution, type: :string}
+        ],
+        key_fields: [:skill_a_name, :skill_b_name]
+      }
+
+      rows = [
+        %{id: "c1", skill_a_name: "Hiring", skill_b_name: "Talent Acquisition", resolution: ""}
+      ]
+
+      tables = [
+        %{name: "main", schema: nil, row_count: 0, version: 1},
+        %{name: "combine_preview", schema: combine_schema, row_count: 1, version: 2}
+      ]
+
+      workbench_context =
+        WorkbenchContext.build(%{
+          tables: tables,
+          table_order: ["main", "combine_preview"],
+          active_table: "combine_preview",
+          active_snapshot: %{rows: rows}
+        })
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.combine_conflicts(),
+          workbench_context: workbench_context,
+          tables: tables,
+          table_order: ["main", "combine_preview"],
+          active_table: "combine_preview",
+          view_key: :combine_conflicts,
+          mode_label: nil,
+          error: nil,
+          version: 2,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          selected_ids: MapSet.new(),
+          class: ""
+        )
+
+      refute html =~ ">Main<"
+      refute html =~ "0 rows"
+      assert html =~ "Combine Libraries"
+      assert html =~ "1 unresolved"
     end
 
     test "renders semantic artifact tab badges from workbench context" do

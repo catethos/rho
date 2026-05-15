@@ -23,6 +23,9 @@ defmodule RhoWeb.AppLive do
   alias RhoWeb.Session.Snapshot
   alias RhoWeb.Session.Threads
   alias RhoWeb.Session.Welcome
+  alias RhoWeb.WorkbenchActions
+  alias RhoWeb.WorkbenchActionComponent
+  alias RhoWeb.WorkbenchActionRunner
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
   @impl true
   def mount(params, _session, socket) do
@@ -61,8 +64,14 @@ defmodule RhoWeb.AppLive do
       |> assign(:debug_mode, false)
       |> assign(:debug_projections, %{})
       |> assign(:command_palette_open, false)
+      |> assign(:chat_rail_collapsed, true)
       |> assign(:chat_context, %{})
       |> assign(:fork_pending?, false)
+      |> assign(:workbench_action_modal, nil)
+      |> assign(:workbench_action_form, %{})
+      |> assign(:workbench_action_error, nil)
+      |> assign(:workbench_action_busy?, false)
+      |> assign(:workbench_action_libraries, [])
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 5,
@@ -521,6 +530,7 @@ defmodule RhoWeb.AppLive do
           connected={@connected}
           conversations={@conversations}
           editing_conversation_id={@editing_conversation_id}
+          chat_rail_collapsed={@chat_rail_collapsed}
           files_parsing={@files_parsing}
         />
 
@@ -565,6 +575,16 @@ defmodule RhoWeb.AppLive do
         open={@command_palette_open}
         workspaces={@workspaces}
         shell={@shell}
+      />
+
+      <WorkbenchActionComponent.action_modal
+        action={@workbench_action_modal}
+        form={@workbench_action_form}
+        error={@workbench_action_error}
+        busy?={@workbench_action_busy?}
+        libraries={@workbench_action_libraries}
+        uploads={@uploads}
+        org_slug={@current_organization && @current_organization.slug}
       />
 
       <button
@@ -1620,6 +1640,49 @@ defmodule RhoWeb.AppLive do
     end
   end
 
+  def handle_event("toggle_chat_rail", _params, socket) do
+    {:noreply, assign(socket, :chat_rail_collapsed, !socket.assigns.chat_rail_collapsed)}
+  end
+
+  def handle_event("workbench_action_cancel", _params, socket) do
+    {:noreply, close_workbench_action(socket)}
+  end
+
+  def handle_event("workbench_action_change", params, socket) do
+    {:noreply,
+     socket
+     |> assign(:workbench_action_form, normalize_workbench_action_params(params))
+     |> assign(:workbench_action_error, nil)}
+  end
+
+  def handle_event("workbench_action_submit", params, socket) do
+    action_id = workbench_action_id(params)
+    form = normalize_workbench_action_params(params)
+
+    with %{} = action <- WorkbenchActions.get(action_id),
+         {:ok, form, socket} <- prepare_workbench_action_form(socket, action.id, form),
+         :ok <- WorkbenchActionRunner.validate(action.id, form) do
+      run_workbench_action(socket, action, form)
+    else
+      nil ->
+        {:noreply, assign(socket, :workbench_action_error, "Unknown Workbench action.")}
+
+      {:error, %Phoenix.LiveView.Socket{} = socket, message} ->
+        {:noreply,
+         socket
+         |> assign(:workbench_action_form, form)
+         |> assign(:workbench_action_error, message)
+         |> assign(:workbench_action_busy?, false)}
+
+      {:error, message} ->
+        {:noreply,
+         socket
+         |> assign(:workbench_action_form, form)
+         |> assign(:workbench_action_error, message)
+         |> assign(:workbench_action_busy?, false)}
+    end
+  end
+
   def handle_event("select_tab", %{"agent-id" => agent_id}, socket) do
     {:noreply, assign(socket, :active_agent_id, agent_id)}
   end
@@ -2316,6 +2379,222 @@ defmodule RhoWeb.AppLive do
     RhoWeb.AppLive.MemberEvents.handle_event(event, params, socket)
   end
 
+  defp run_workbench_action(socket, %{id: id}, form)
+       when id in [:create_framework, :extract_jd, :import_library] do
+    prompt = WorkbenchActionRunner.build_prompt(id, form)
+    send_workbench_prompt(socket, prompt)
+  end
+
+  defp run_workbench_action(socket, %{id: :load_library}, form) do
+    {sid, socket} = ensure_workbench_session(socket)
+    _ = Rho.Stdlib.DataTable.ensure_started(sid)
+
+    socket =
+      socket
+      |> assign(:workbench_action_busy?, true)
+      |> load_library_into_data_table(form["library_id"])
+      |> close_workbench_action()
+
+    {:noreply, socket}
+  end
+
+  defp run_workbench_action(socket, %{id: :find_roles}, form) do
+    case run_find_roles(socket, form) do
+      {:ok, socket} ->
+        {:noreply, close_workbench_action(socket)}
+
+      {:error, socket, message} ->
+        {:noreply,
+         socket
+         |> assign(:workbench_action_form, form)
+         |> assign(:workbench_action_error, message)
+         |> assign(:workbench_action_busy?, false)}
+    end
+  end
+
+  defp send_workbench_prompt(socket, prompt) do
+    {_sid, socket} = ensure_workbench_session(socket)
+    socket = socket |> open_data_table_workspace() |> assign(:workbench_action_busy?, true)
+
+    case SessionCore.send_message(socket, prompt) do
+      {:noreply, socket} ->
+        socket =
+          socket
+          |> touch_active_conversation()
+          |> refresh_conversations()
+          |> close_workbench_action()
+
+        {:noreply, socket}
+    end
+  end
+
+  defp run_find_roles(socket, form) do
+    org = socket.assigns[:current_organization]
+    user = socket.assigns[:current_user]
+
+    if is_nil(org) do
+      {:error, socket, "Find Roles needs an active organization."}
+    else
+      {sid, socket} = ensure_workbench_session(socket)
+      {:ok, _pid} = Rho.Stdlib.DataTable.ensure_started(sid)
+
+      queries = WorkbenchActionRunner.role_queries(form)
+      limit = WorkbenchActionRunner.role_limit(form)
+      library_id = blank_to_nil(form["library_id"])
+
+      opts =
+        [limit: limit]
+        |> maybe_put_opt(:library_id, library_id)
+
+      groups =
+        Enum.map(queries, fn query ->
+          {query, RhoFrameworks.Roles.find_similar_roles(org.id, query, opts)}
+        end)
+
+      scope = %RhoFrameworks.Scope{
+        organization_id: org.id,
+        session_id: sid,
+        user_id: user && user.id,
+        source: :user,
+        reason: "workbench find_roles action"
+      }
+
+      case RhoFrameworks.Workbench.write_role_candidates(scope, groups) do
+        {:ok, %{table_name: table_name, total: total, per_query: per_query}} ->
+          metadata = WorkbenchActionRunner.role_candidates_metadata(per_query, total, queries)
+
+          state =
+            read_dt_state(socket)
+            |> Map.merge(%{
+              active_table: table_name,
+              view_key: :role_candidates,
+              mode_label: "Candidate Roles",
+              metadata: metadata,
+              error: nil
+            })
+
+          publish_view_focus(sid, table_name)
+
+          socket =
+            socket
+            |> open_data_table_workspace()
+            |> SignalRouter.write_ws_state(:data_table, state)
+            |> refresh_data_table_session()
+            |> refresh_data_table_active(table_name)
+
+          {:ok, socket}
+
+        {:error, reason} ->
+          {:error, socket, "Find Roles failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp prepare_workbench_action_form(socket, action_id, form)
+       when action_id in [:extract_jd, :import_library] do
+    case register_workbench_uploads(socket, action_id) do
+      {:ok, socket, []} ->
+        {:ok, form, socket}
+
+      {:ok, socket, [handle | _]} ->
+        {:ok, Map.put(form, "upload_id", handle.id), socket}
+
+      {:error, socket, message} ->
+        {:error, socket, message}
+    end
+  end
+
+  defp prepare_workbench_action_form(socket, _action_id, form), do: {:ok, form, socket}
+
+  defp register_workbench_uploads(socket, action_id) do
+    {sid, socket} = ensure_workbench_session(socket)
+    {:ok, _pid} = Rho.Stdlib.Uploads.ensure_started(sid)
+
+    results =
+      consume_uploaded_entries(socket, :files, fn %{path: tmp_path}, entry ->
+        if accepted_workbench_upload?(action_id, entry.client_name) do
+          case Rho.Stdlib.Uploads.put(sid, %{
+                 filename: entry.client_name,
+                 mime: entry.client_type || "application/octet-stream",
+                 tmp_path: tmp_path,
+                 size: entry.client_size
+               }) do
+            {:ok, handle} -> {:ok, {:ok, handle}}
+            {:error, reason} -> {:ok, {:error, "#{entry.client_name}: #{inspect(reason)}"}}
+          end
+        else
+          {:ok, {:error, "#{entry.client_name} is not a supported file for this action."}}
+        end
+      end)
+
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      {:error, message} ->
+        {:error, socket, message}
+
+      nil ->
+        handles =
+          Enum.flat_map(results, fn
+            {:ok, handle} -> [handle]
+            _ -> []
+          end)
+
+        {:ok, socket, handles}
+    end
+  end
+
+  defp accepted_workbench_upload?(:extract_jd, filename) do
+    (filename |> Path.extname() |> String.downcase()) in ~w(.pdf .docx .txt .md .markdown)
+  end
+
+  defp accepted_workbench_upload?(:import_library, filename) do
+    (filename |> Path.extname() |> String.downcase()) in ~w(.csv .xlsx)
+  end
+
+  defp accepted_workbench_upload?(_, _), do: true
+
+  defp ensure_workbench_session(socket) do
+    if socket.assigns.session_id do
+      {socket.assigns.session_id, socket}
+    else
+      ensure_opts = session_ensure_opts(:data_table)
+      {sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+      socket = SessionCore.subscribe_and_hydrate(socket, sid, ensure_opts)
+      socket = maybe_push_new_session_patch(socket, sid, true)
+      {sid, socket}
+    end
+  end
+
+  defp close_workbench_action(socket) do
+    socket
+    |> assign(:workbench_action_modal, nil)
+    |> assign(:workbench_action_form, %{})
+    |> assign(:workbench_action_error, nil)
+    |> assign(:workbench_action_busy?, false)
+  end
+
+  defp default_workbench_action_form(:create_framework), do: %{"skill_count" => "12"}
+  defp default_workbench_action_form(:find_roles), do: %{"limit" => "10"}
+  defp default_workbench_action_form(_), do: %{}
+
+  defp normalize_workbench_action_params(params) do
+    params
+    |> Map.drop(["_target", "action"])
+    |> Map.new(fn {key, value} -> {key, value} end)
+  end
+
+  defp workbench_action_id(%{"action" => action}), do: action
+  defp workbench_action_id(_), do: nil
+
+  defp list_workbench_libraries(socket) do
+    case socket.assigns[:current_organization] do
+      %{id: org_id} -> RhoFrameworks.Library.list_libraries(org_id)
+      _ -> []
+    end
+  end
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
   @inline_total_preview_chars 16000
   defp submit_to_session(socket, content, image_parts, has_text) do
     submit_content = build_submit_content(content, image_parts, has_text)
@@ -2726,6 +3005,22 @@ defmodule RhoWeb.AppLive do
 
   def handle_info({:ws_state_update, key, new_state}, socket) do
     {:noreply, SignalRouter.write_ws_state(socket, key, new_state)}
+  end
+
+  def handle_info({:workbench_action_open, action_id}, socket) do
+    case WorkbenchActions.get(action_id) do
+      nil ->
+        {:noreply, socket}
+
+      action ->
+        {:noreply,
+         socket
+         |> assign(:workbench_action_modal, action)
+         |> assign(:workbench_action_form, default_workbench_action_form(action.id))
+         |> assign(:workbench_action_error, nil)
+         |> assign(:workbench_action_busy?, false)
+         |> assign(:workbench_action_libraries, list_workbench_libraries(socket))}
+    end
   end
 
   def handle_info({:lens_detail_request, _} = msg, socket) do
@@ -3260,12 +3555,16 @@ defmodule RhoWeb.AppLive do
 
   attr(:chats, :list, default: [])
   attr(:editing_conversation_id, :string, default: nil)
+  attr(:collapsed, :boolean, default: false)
 
   defp chat_rail(assigns) do
     ~H"""
-    <div class="chat-rail">
+    <div class={["chat-rail", @collapsed && "is-collapsed"]}>
       <div class="chat-rail-head">
         <span class="chat-rail-title">Chats</span>
+        <button class="chat-rail-collapse-btn" phx-click="toggle_chat_rail" title="Collapse chats">
+          &lsaquo;
+        </button>
         <button class="chat-new-btn" phx-click="toggle_new_chat" title="New chat">
           +
         </button>
@@ -3353,6 +3652,23 @@ defmodule RhoWeb.AppLive do
     """
   end
 
+  attr(:collapsed, :boolean, default: false)
+  attr(:count, :integer, default: 0)
+
+  defp chat_rail_toggle(assigns) do
+    ~H"""
+    <button
+      type="button"
+      class={["chat-rail-tab", @collapsed && "is-collapsed"]}
+      phx-click="toggle_chat_rail"
+      title={if @collapsed, do: "Show chats", else: "Hide chats"}
+    >
+      <span>Chats</span>
+      <strong><%= @count %></strong>
+    </button>
+    """
+  end
+
   attr(:chat_mode, :atom, default: :expanded)
   attr(:messages, :list, required: true)
   attr(:session_id, :string, required: true)
@@ -3378,6 +3694,7 @@ defmodule RhoWeb.AppLive do
   attr(:connected, :boolean, default: true)
   attr(:conversations, :list, default: [])
   attr(:editing_conversation_id, :string, default: nil)
+  attr(:chat_rail_collapsed, :boolean, default: false)
   attr(:files_parsing, :map, default: %{})
 
   defp chat_side_panel(assigns) do
@@ -3425,9 +3742,14 @@ defmodule RhoWeb.AppLive do
       </div>
 
       <div class="dt-chat-body">
+        <.chat_rail_toggle
+          collapsed={@chat_rail_collapsed}
+          count={length(@conversations)}
+        />
         <.chat_rail
           chats={@conversations}
           editing_conversation_id={@editing_conversation_id}
+          collapsed={@chat_rail_collapsed}
         />
 
         <div class="dt-chat-main">
@@ -4669,7 +4991,7 @@ defmodule RhoWeb.AppLive do
   end
 
   defp determine_workspaces(_live_action) do
-    %{}
+    %{data_table: RhoWeb.Workspaces.DataTable}
   end
 
   defp chat_panel_mode(assigns) do

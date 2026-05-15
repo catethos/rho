@@ -15,7 +15,7 @@ defmodule RhoWeb.Workspaces.DataTable do
   def key, do: :data_table
 
   @impl true
-  def label, do: "Skills Editor"
+  def label, do: "Workbench"
 
   @impl true
   def icon, do: "table"
