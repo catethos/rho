@@ -9,100 +9,18 @@ defmodule RhoFrameworks.Library do
     Skill,
     RoleProfile,
     RoleSkill,
-    DuplicateDismissal,
     ResearchNote
   }
 
-  def list_libraries(org_id, opts \\ []) do
-    type = Keyword.get(opts, :type)
-    exclude_immutable = Keyword.get(opts, :exclude_immutable, false)
-    only = Keyword.get(opts, :only)
-    include_public = Keyword.get(opts, :include_public, true)
+  alias RhoFrameworks.Library.{Dedup, Queries, Versioning}
 
-    from(l in Library,
-      left_join: s in Skill,
-      on: s.library_id == l.id,
-      group_by: l.id,
-      order_by: [desc: l.updated_at],
-      select: %{
-        id: l.id,
-        name: l.name,
-        description: l.description,
-        type: l.type,
-        immutable: l.immutable,
-        derived_from_id: l.derived_from_id,
-        source_key: l.source_key,
-        version: l.version,
-        published_at: l.published_at,
-        is_default: l.is_default,
-        visibility: l.visibility,
-        skill_count: count(s.id),
-        updated_at: l.updated_at
-      }
-    )
-    |> maybe_include_public(org_id, include_public)
-    |> maybe_filter_type(type)
-    |> maybe_exclude_immutable(exclude_immutable)
-    |> maybe_filter_version_scope(only)
-    |> Repo.all()
-  end
+  defdelegate list_libraries(org_id, opts \\ []), to: Queries
 
   @doc """
   Returns a compact summary of all libraries and their skill names for an org.
   Designed for prompt injection — lightweight query, no proficiency data.
   """
-  def library_summary(org_id) do
-    libraries =
-      from(l in Library,
-        where: l.organization_id == ^org_id,
-        order_by: [desc: l.updated_at],
-        select: %{
-          id: l.id,
-          name: l.name,
-          immutable: l.immutable,
-          version: l.version,
-          published_at: l.published_at
-        }
-      )
-      |> Repo.all()
-
-    if libraries == [] do
-      []
-    else
-      library_ids = Enum.map(libraries, & &1.id)
-
-      skills_by_library =
-        from(s in Skill,
-          where: s.library_id in ^library_ids,
-          order_by: [s.category, s.cluster, s.name],
-          select: %{library_id: s.library_id, category: s.category, name: s.name}
-        )
-        |> Repo.all()
-        |> Enum.group_by(& &1.library_id)
-
-      build_library_summary(libraries, skills_by_library)
-    end
-  end
-
-  defp build_library_summary(library_rows, skills_by_library) do
-    Enum.map(library_rows, fn lib ->
-      skills = Map.get(skills_by_library, lib.id, [])
-      by_category = Enum.group_by(skills, & &1.category)
-
-      %{
-        id: lib.id,
-        name: lib.name,
-        skill_count: length(skills),
-        immutable: lib.immutable,
-        version: lib.version,
-        published_at: lib.published_at,
-        categories:
-          Enum.map(by_category, fn {cat, cat_skills} ->
-            %{category: cat, skills: Enum.map(cat_skills, & &1.name)}
-          end)
-      }
-    end)
-  end
+  defdelegate library_summary(org_id), to: Queries
 
   @doc """
   List archived research notes for a library, newest first.
@@ -115,36 +33,15 @@ defmodule RhoFrameworks.Library do
     |> Repo.all()
   end
 
-  def get_library_by_name(org_id, name) do
-    from(l in Library,
-      where: l.organization_id == ^org_id and l.name == ^name,
-      order_by: [desc: l.inserted_at],
-      limit: 1
-    )
-    |> Repo.one()
-  end
-
-  def get_library(_org_id, nil) do
-    nil
-  end
-
-  def get_library(org_id, id) when is_binary(id) do
-    Repo.get_by(Library, id: id, organization_id: org_id)
-  end
-
-  def get_library!(org_id, id) do
-    Repo.get_by!(Library, id: id, organization_id: org_id)
-  end
+  defdelegate get_library_by_name(org_id, name), to: Queries
+  defdelegate get_library(org_id, id), to: Queries
+  defdelegate get_library!(org_id, id), to: Queries
 
   @doc "Fetch a library visible to the org: own library or any public library."
-  def get_visible_library!(org_id, id) do
-    get_library(org_id, id) || get_public_library!(id)
-  end
+  defdelegate get_visible_library!(org_id, id), to: Queries
 
   @doc "Fetch a public library by id (no org scoping). Raises if not found or not public."
-  def get_public_library!(id) do
-    Repo.get_by!(Library, id: id, visibility: "public")
-  end
+  defdelegate get_public_library!(id), to: Queries
 
   def rename_library(org_id, library_id, new_name) do
     with lib when not is_nil(lib) <- get_library(org_id, library_id),
@@ -202,62 +99,14 @@ defmodule RhoFrameworks.Library do
   end
 
   @doc "Compute the next version tag for a library: YYYY.N where N increments per year."
-  def next_version_tag(org_id, library_name) do
-    year = Date.utc_today().year
-    pattern = "#{year}.%"
-
-    latest_n =
-      from(l in Library,
-        where:
-          l.organization_id == ^org_id and l.name == ^library_name and like(l.version, ^pattern),
-        select: max(fragment("CAST(split_part(?, '.', 2) AS INTEGER)", l.version))
-      )
-      |> Repo.one()
-
-    "#{year}.#{(latest_n || 0) + 1}"
-  end
+  defdelegate next_version_tag(org_id, library_name), to: Versioning
 
   @doc """
   Publish the current draft as a versioned snapshot.
   Freezes the library (immutable: true), stamps version + published_at.
   If version_tag is nil, auto-generates the next YYYY.N version.
   """
-  def publish_version(org_id, library_id, version_tag \\ nil, opts \\ []) do
-    notes = Keyword.get(opts, :notes)
-
-    with %Library{} = lib <- get_library(org_id, library_id),
-         true <- Library.draft?(lib) || {:error, :already_published, lib},
-         version_tag <- version_tag || next_version_tag(org_id, lib.name),
-         :ok <- validate_version_unique(org_id, lib.name, version_tag) do
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-      metadata =
-        if notes do
-          Map.put(lib.metadata || %{}, "publish_notes", notes)
-        else
-          lib.metadata
-        end
-
-      lib
-      |> Library.changeset(%{
-        version: version_tag,
-        published_at: now,
-        immutable: true,
-        metadata: metadata
-      })
-      |> Repo.update()
-    else
-      nil ->
-        {:error, :not_found}
-
-      {:error, :already_published, lib} ->
-        {:error, :already_published,
-         "Library is already published (version: #{lib.version}). Create a new draft to make changes."}
-
-      {:error, _} = err ->
-        err
-    end
-  end
+  defdelegate publish_version(org_id, library_id, version_tag \\ nil, opts \\ []), to: Versioning
 
   @doc """
   Create a new draft from the latest published version.
@@ -306,181 +155,35 @@ defmodule RhoFrameworks.Library do
   end
 
   @doc "List all published versions of a library by name, newest first."
-  def list_versions(org_id, library_name) do
-    from(l in Library,
-      where: l.organization_id == ^org_id and l.name == ^library_name and not is_nil(l.version),
-      left_join: s in Skill,
-      on: s.library_id == l.id,
-      group_by: l.id,
-      order_by: [desc: l.published_at],
-      select: %{
-        id: l.id,
-        version: l.version,
-        published_at: l.published_at,
-        skill_count: count(s.id),
-        superseded_by_id: l.superseded_by_id,
-        is_default: l.is_default
-      }
-    )
-    |> Repo.all()
-  end
+  defdelegate list_versions(org_id, library_name), to: Queries
 
   @doc "Get the latest published version of a library by name."
-  def get_latest_version(org_id, library_name) do
-    from(l in Library,
-      where: l.organization_id == ^org_id and l.name == ^library_name and not is_nil(l.version),
-      order_by: [desc: l.published_at],
-      limit: 1
-    )
-    |> Repo.one()
-  end
+  defdelegate get_latest_version(org_id, library_name), to: Queries
 
   @doc "Get the default published version of a library by name, or nil."
-  def get_default_version(org_id, library_name) do
-    from(l in Library,
-      where:
-        l.organization_id == ^org_id and l.name == ^library_name and l.is_default == true and
-          not is_nil(l.version),
-      limit: 1
-    )
-    |> Repo.one()
-  end
+  defdelegate get_default_version(org_id, library_name), to: Queries
 
   @doc """
   Set a published version as the default for its library name.
   Clears any previous default for the same (org, name).
   """
-  def set_default_version(org_id, library_id) do
-    with %Library{} = lib <- get_library(org_id, library_id),
-         true <- Library.published?(lib) || {:error, :not_published} do
-      Ecto.Multi.new()
-      |> Ecto.Multi.update_all(
-        :clear_previous,
-        from(l in Library,
-          where:
-            l.organization_id == ^org_id and l.name == ^lib.name and l.is_default == true and
-              l.id != ^lib.id
-        ),
-        set: [is_default: false]
-      )
-      |> Ecto.Multi.update(:set_default, Library.changeset(lib, %{is_default: true}))
-      |> Repo.transaction()
-      |> case do
-        {:ok, %{set_default: lib}} -> {:ok, lib}
-        {:error, _step, reason, _} -> {:error, reason}
-      end
-    else
-      nil ->
-        {:error, :not_found}
-
-      {:error, :not_published} ->
-        {:error, :not_published, "Only published versions can be set as default."}
-    end
-  end
+  defdelegate set_default_version(org_id, library_id), to: Versioning
 
   @doc "Get the current draft for a library name, or nil."
-  def get_draft(org_id, library_name) do
-    from(l in Library,
-      where: l.organization_id == ^org_id and l.name == ^library_name and is_nil(l.version),
-      limit: 1
-    )
-    |> Repo.one()
-  end
+  defdelegate get_draft(org_id, library_name), to: Queries
 
   @doc """
   Resolve a library by name + optional version.
   nil version → draft if exists, else default version, else latest published.
   """
-  def resolve_library(org_id, library_name, version \\ nil)
-
-  def resolve_library(org_id, library_name, nil) do
-    from(l in Library,
-      where: l.organization_id == ^org_id and l.name == ^library_name,
-      order_by: [desc: is_nil(l.version), desc: l.is_default, desc: l.published_at],
-      limit: 1
-    )
-    |> Repo.one()
-  end
-
-  def resolve_library(org_id, library_name, version) do
-    Repo.get_by(Library, organization_id: org_id, name: library_name, version: version)
-  end
+  defdelegate resolve_library(org_id, library_name, version \\ nil), to: Queries
 
   @doc "Diff two versions of the same library. Returns added/removed/modified skills."
-  def diff_versions(org_id, library_name, version_a, version_b) do
-    lib_a = resolve_library(org_id, library_name, version_a)
-    lib_b = resolve_library(org_id, library_name, version_b)
+  defdelegate diff_versions(org_id, library_name, version_a, version_b), to: Versioning
 
-    cond do
-      is_nil(lib_a) ->
-        {:error, :not_found, "Version '#{version_a || "draft"}' not found"}
-
-      is_nil(lib_b) ->
-        {:error, :not_found, "Version '#{version_b || "draft"}' not found"}
-
-      true ->
-        skills_a = list_skills(lib_a.id) |> Map.new(&{&1.slug, &1})
-        skills_b = list_skills(lib_b.id) |> Map.new(&{&1.slug, &1})
-        slugs_a = Map.keys(skills_a) |> MapSet.new()
-        slugs_b = Map.keys(skills_b) |> MapSet.new()
-        added = MapSet.difference(slugs_b, slugs_a) |> Enum.map(&skills_b[&1].name)
-        removed = MapSet.difference(slugs_a, slugs_b) |> Enum.map(&skills_a[&1].name)
-
-        modified =
-          MapSet.intersection(slugs_a, slugs_b)
-          |> Enum.filter(fn slug -> skill_modified?(skills_a[slug], skills_b[slug]) end)
-          |> Enum.map(&skills_a[&1].name)
-
-        {:ok,
-         %{
-           version_a: version_a || "draft",
-           version_b: version_b || "draft",
-           added: added,
-           removed: removed,
-           modified: modified,
-           unchanged_count: MapSet.size(MapSet.intersection(slugs_a, slugs_b)) - length(modified)
-         }}
-    end
-  end
-
-  defp validate_version_unique(org_id, name, version_tag) do
-    case resolve_library(org_id, name, version_tag) do
-      nil ->
-        :ok
-
-      _exists ->
-        {:error, :version_exists, "Version '#{version_tag}' already exists for '#{name}'."}
-    end
-  end
-
-  def list_skills(library_id, opts \\ [])
-
-  def list_skills(nil, _opts) do
-    []
-  end
-
-  def list_skills(library_id, opts) when is_binary(library_id) do
-    category = Keyword.get(opts, :category)
-    categories = Keyword.get(opts, :categories)
-    status = Keyword.get(opts, :status)
-
-    from(s in Skill,
-      where: s.library_id == ^library_id,
-      order_by: [s.category, s.cluster, s.sort_order, s.name]
-    )
-    |> maybe_filter(:category, category)
-    |> maybe_filter(:categories, categories)
-    |> maybe_filter(:status, status)
-    |> Repo.all()
-  end
-
-  def get_skill(library_id, id) do
-    Repo.get_by(Skill, id: id, library_id: library_id)
-  end
-
-  def get_skill!(library_id, id) do
-    Repo.get_by!(Skill, id: id, library_id: library_id)
-  end
+  defdelegate list_skills(library_id, opts \\ []), to: Queries
+  defdelegate get_skill(library_id, id), to: Queries
+  defdelegate get_skill!(library_id, id), to: Queries
 
   def upsert_skill(library_id, attrs, opts \\ []) do
     library = Repo.get!(Library, library_id)
@@ -709,226 +412,43 @@ defmodule RhoFrameworks.Library do
   end
 
   @doc "Load a library as structured skill maps (with nested proficiency_levels)."
-  def load_library_rows(library_id, opts \\ []) do
-    category = Keyword.get(opts, :category)
-    categories = Keyword.get(opts, :categories)
-    status = Keyword.get(opts, :status)
-
-    from(s in Skill,
-      where: s.library_id == ^library_id,
-      order_by: [s.category, s.cluster, s.sort_order, s.name],
-      select: %{
-        category: coalesce(s.category, ""),
-        cluster: coalesce(s.cluster, ""),
-        skill_name: s.name,
-        skill_description: coalesce(s.description, ""),
-        proficiency_levels: s.proficiency_levels
-      }
-    )
-    |> maybe_filter(:category, category)
-    |> maybe_filter(:categories, categories)
-    |> maybe_filter(:status, status)
-    |> Repo.all()
-    |> Enum.map(fn row -> %{row | proficiency_levels: row.proficiency_levels || []} end)
-  end
+  defdelegate load_library_rows(library_id, opts \\ []), to: Queries
 
   @doc "Total number of skills in a library. Cheap aggregate query."
-  def skill_count(library_id) when is_binary(library_id) do
-    from(s in Skill, where: s.library_id == ^library_id, select: count(s.id))
-    |> Repo.one()
-    |> Kernel.||(0)
-  end
+  defdelegate skill_count(library_id), to: Queries
 
   @doc """
   Returns one row per (category, cluster) with a skill count, ordered for UI rendering.
   Used to render a collapsed library tree without loading every skill row.
   """
-  def list_skill_index(library_id, opts \\ []) when is_binary(library_id) do
-    status = Keyword.get(opts, :status)
-
-    from(s in Skill,
-      where: s.library_id == ^library_id,
-      group_by: [s.category, s.cluster],
-      order_by: [s.category, s.cluster],
-      select: %{category: s.category, cluster: s.cluster, count: count(s.id)}
-    )
-    |> maybe_filter(:status, status)
-    |> Repo.all()
-  end
+  defdelegate list_skill_index(library_id, opts \\ []), to: Queries
 
   @doc """
   Loads skills in one (category, cluster) cell of a library, ordered for display.
   `category` and `cluster` may be nil to match rows with no value.
   """
-  def list_cluster_skills(library_id, category, cluster, opts \\ []) when is_binary(library_id) do
-    status = Keyword.get(opts, :status)
-
-    from(s in Skill,
-      where: s.library_id == ^library_id,
-      order_by: [s.sort_order, s.name],
-      select: %{
-        id: s.id,
-        name: s.name,
-        slug: s.slug,
-        category: s.category,
-        cluster: s.cluster,
-        status: s.status,
-        description: s.description,
-        proficiency_levels: s.proficiency_levels
-      }
-    )
-    |> where_match(:category, category)
-    |> where_match(:cluster, cluster)
-    |> maybe_filter(:status, status)
-    |> Repo.all()
-  end
+  defdelegate list_cluster_skills(library_id, category, cluster, opts \\ []), to: Queries
 
   @doc """
   Returns matching skills (with proficiency) across an entire library for the
   search bar. No limit — assumes the user-supplied query narrows the set enough.
   """
-  def search_in_library(library_id, query, opts \\ []) when is_binary(library_id) do
-    status = Keyword.get(opts, :status)
-    pattern = "%#{sanitize_query(query)}%"
-
-    from(s in Skill,
-      where: s.library_id == ^library_id,
-      where:
-        like(s.name, ^pattern) or like(s.description, ^pattern) or like(s.category, ^pattern) or
-          like(s.cluster, ^pattern),
-      order_by: [s.category, s.cluster, s.sort_order, s.name],
-      select: %{
-        id: s.id,
-        name: s.name,
-        slug: s.slug,
-        category: s.category,
-        cluster: s.cluster,
-        status: s.status,
-        description: s.description,
-        proficiency_levels: s.proficiency_levels
-      }
-    )
-    |> maybe_filter(:status, status)
-    |> Repo.all()
-  end
+  defdelegate search_in_library(library_id, query, opts \\ []), to: Queries
 
   @doc """
   Returns `{category, cluster}` for the given skill in a library, or nil.
   Used to pre-load the right cluster when deep-linking to a single skill.
   """
-  def cluster_for_skill(library_id, skill_id)
-      when is_binary(library_id) and is_binary(skill_id) do
-    from(s in Skill,
-      where: s.library_id == ^library_id and s.id == ^skill_id,
-      select: {s.category, s.cluster}
-    )
-    |> Repo.one()
-  end
-
-  defp where_match(query, field, nil) do
-    from(s in query, where: is_nil(field(s, ^field)))
-  end
-
-  defp where_match(query, field, value) do
-    from(s in query, where: field(s, ^field) == ^value)
-  end
-
-  def browse_library(library_id, opts \\ []) do
-    list_skills(library_id, opts)
-    |> Enum.map(fn s ->
-      %{
-        id: s.id,
-        name: s.name,
-        slug: s.slug,
-        category: s.category,
-        cluster: s.cluster,
-        status: s.status,
-        description: s.description,
-        proficiency_levels: s.proficiency_levels
-      }
-    end)
-  end
-
-  def search_skills(library_id, query, opts \\ []) do
-    category = Keyword.get(opts, :category)
-    limit = Keyword.get(opts, :limit, 50)
-    pattern = "%#{sanitize_query(query)}%"
-
-    from(s in Skill,
-      where: s.library_id == ^library_id,
-      where:
-        like(s.name, ^pattern) or like(s.description, ^pattern) or like(s.category, ^pattern) or
-          like(s.cluster, ^pattern),
-      limit: ^limit,
-      order_by: s.name
-    )
-    |> maybe_filter(:category, category)
-    |> Repo.all()
-  end
-
-  def search_skills_across(org_id, query, opts \\ []) do
-    category = Keyword.get(opts, :category)
-    limit = Keyword.get(opts, :limit, 50)
-    include_public = Keyword.get(opts, :include_public, true)
-    pattern = "%#{sanitize_query(query)}%"
-
-    base =
-      from(s in Skill,
-        join: l in Library,
-        on: s.library_id == l.id,
-        where:
-          like(s.name, ^pattern) or like(s.description, ^pattern) or like(s.category, ^pattern),
-        limit: ^limit,
-        order_by: s.name,
-        select: %{
-          id: s.id,
-          name: s.name,
-          category: s.category,
-          cluster: s.cluster,
-          status: s.status,
-          library_id: l.id,
-          library_name: l.name
-        }
-      )
-
-    base
-    |> scope_skills_to_visible_libraries(org_id, include_public)
-    |> maybe_filter(:category, category)
-    |> Repo.all()
-  end
-
-  defp scope_skills_to_visible_libraries(query, org_id, true) do
-    from([_s, l] in query, where: l.organization_id == ^org_id or l.visibility == "public")
-  end
-
-  defp scope_skills_to_visible_libraries(query, org_id, false) do
-    from([_s, l] in query, where: l.organization_id == ^org_id)
-  end
+  defdelegate cluster_for_skill(library_id, skill_id), to: Queries
+  defdelegate browse_library(library_id, opts \\ []), to: Queries
+  defdelegate search_skills(library_id, query, opts \\ []), to: Queries
+  defdelegate search_skills_across(org_id, query, opts \\ []), to: Queries
 
   def fork_library(org_id, source_library_id, new_name, opts \\ []) do
     derive_library(org_id, [source_library_id], new_name, opts)
   end
 
-  def list_role_profiles_for_library(library_id, opts \\ []) do
-    category = Keyword.get(opts, :category)
-    categories = Keyword.get(opts, :categories)
-
-    skill_query =
-      from(s in Skill, where: s.library_id == ^library_id)
-      |> maybe_filter(:category, category)
-      |> maybe_filter(:categories, categories)
-
-    skill_ids = Repo.all(from(s in skill_query, select: s.id))
-
-    from(rp in RoleProfile,
-      join: rs in RoleSkill,
-      on: rs.role_profile_id == rp.id,
-      where: rs.skill_id in ^skill_ids,
-      distinct: true,
-      preload: [role_skills: :skill]
-    )
-    |> Repo.all()
-  end
+  defdelegate list_role_profiles_for_library(library_id, opts \\ []), to: Queries
 
   defp copy_all_skills(source_id, draft_id) do
     pairs = list_skills(source_id) |> Enum.map(fn s -> {s, s.name} end)
@@ -1580,25 +1100,7 @@ defmodule RhoFrameworks.Library do
     rp
   end
 
-  def find_duplicates(library_id, opts \\ []) do
-    depth = Keyword.get(opts, :depth, :standard)
-    skills = list_skills(library_id)
-    dismissed = list_dismissed_pairs(library_id)
-    candidates = find_slug_prefix_overlaps(skills) ++ find_word_overlap_in_category(skills)
-
-    candidates =
-      if depth == :deep do
-        candidates ++ find_semantic_duplicates_via_llm(library_id, skills)
-      else
-        candidates
-      end
-
-    candidates
-    |> deduplicate_pairs()
-    |> reject_dismissed(dismissed)
-    |> enrich_with_role_references()
-    |> Enum.sort_by(fn c -> -confidence_score(c.confidence) end)
-  end
+  defdelegate find_duplicates(library_id, opts \\ []), to: Dedup
 
   def merge_skills(source_id, target_id, opts \\ []) do
     case {Repo.get(Skill, source_id), Repo.get(Skill, target_id)} do
@@ -1738,109 +1240,8 @@ defmodule RhoFrameworks.Library do
     skill |> Skill.changeset(%{name: new_name}) |> Repo.update()
   end
 
-  def dismiss_duplicate(library_id, skill_a_id, skill_b_id) do
-    {id_a, id_b} =
-      if skill_a_id < skill_b_id do
-        {skill_a_id, skill_b_id}
-      else
-        {skill_b_id, skill_a_id}
-      end
-
-    %DuplicateDismissal{}
-    |> DuplicateDismissal.changeset(%{library_id: library_id, skill_a_id: id_a, skill_b_id: id_b})
-    |> Repo.insert(on_conflict: :nothing)
-  end
-
-  def consolidation_report(library_id) do
-    report_skills = list_skills(library_id) |> Repo.preload(:role_skills)
-    duplicates = find_duplicates(library_id)
-
-    {drafts, orphans} = consolidation_buckets(report_skills)
-
-    %{
-      total_skills: length(report_skills),
-      duplicate_pairs: duplicates,
-      drafts: drafts,
-      orphans: orphans
-    }
-  end
-
-  defp consolidation_buckets(report_skills) do
-    {drafts, orphans} =
-      Enum.reduce(report_skills, {[], []}, fn skill, {drafts, orphans} ->
-        next_drafts =
-          if skill.status == "draft" do
-            [%{id: skill.id, name: skill.name, role_count: length(skill.role_skills)} | drafts]
-          else
-            drafts
-          end
-
-        next_orphans =
-          if skill.role_skills == [] do
-            [%{id: skill.id, name: skill.name, status: skill.status} | orphans]
-          else
-            orphans
-          end
-
-        {next_drafts, next_orphans}
-      end)
-
-    {Enum.sort_by(drafts, &(-&1.role_count)), Enum.reverse(orphans)}
-  end
-
-  @semantic_distance_threshold 0.4
-  @semantic_high_distance_threshold 0.2
-  @semantic_medium_distance_threshold 0.3
-  @semantic_knn_top_k 200
-  @semantic_jaro_fallback_threshold 0.6
-  defp find_semantic_duplicates_via_llm(_library_id, []), do: []
-  defp find_semantic_duplicates_via_llm(_library_id, [_]), do: []
-
-  defp find_semantic_duplicates_via_llm(library_id, semantic_rows) do
-    embedding_pairs = candidate_pairs_via_embedding_with_distance(library_id)
-
-    fallback_pairs =
-      semantic_rows
-      |> candidate_pairs_via_jaro_fallback()
-      |> Enum.map(fn {a, b} -> {a, b, nil} end)
-
-    (embedding_pairs ++ fallback_pairs)
-    |> Enum.uniq_by(fn {a, b, _} -> sorted_pair_key(a.id, b.id) end)
-    |> Enum.map(&build_semantic_pair_with_distance/1)
-  end
-
-  defp build_semantic_pair_with_distance({a, b, distance}) do
-    {sa, sb} =
-      if a.id < b.id do
-        {a, b}
-      else
-        {b, a}
-      end
-
-    %{
-      skill_a: %{id: sa.id, name: sa.name, category: sa.category},
-      skill_b: %{id: sb.id, name: sb.name, category: sb.category},
-      cosine_distance: distance,
-      confidence: confidence_from_distance(distance),
-      detection_method: :semantic
-    }
-  end
-
-  defp confidence_from_distance(nil) do
-    :low
-  end
-
-  defp confidence_from_distance(d) when d < @semantic_high_distance_threshold do
-    :high
-  end
-
-  defp confidence_from_distance(d) when d < @semantic_medium_distance_threshold do
-    :medium
-  end
-
-  defp confidence_from_distance(_) do
-    :low
-  end
+  defdelegate dismiss_duplicate(library_id, skill_a_id, skill_b_id), to: Dedup
+  defdelegate consolidation_report(library_id), to: Dedup
 
   defp sorted_pair_key(id_a, id_b) do
     if id_a < id_b do
@@ -1848,62 +1249,6 @@ defmodule RhoFrameworks.Library do
     else
       {id_b, id_a}
     end
-  end
-
-  defp candidate_pairs_via_embedding_with_distance(library_id) do
-    threshold = @semantic_distance_threshold
-    top_k = @semantic_knn_top_k
-    sql = "SELECT s1.id AS a_id, s2.id AS b_id, s2.dist AS dist
-FROM skills s1
-CROSS JOIN LATERAL (
-  SELECT s.id, (s.embedding <=> s1.embedding) AS dist
-  FROM skills s
-  WHERE s.library_id = s1.library_id
-    AND s.id > s1.id
-    AND s.embedding IS NOT NULL
-    AND (s.embedding <=> s1.embedding) < $2
-  ORDER BY s.embedding <=> s1.embedding
-  LIMIT $3
-) s2
-WHERE s1.library_id = $1
-  AND s1.embedding IS NOT NULL
-"
-
-    %{rows: db_rows} =
-      Repo.query!(sql, [Ecto.UUID.dump!(library_id), threshold, top_k],
-        timeout: :timer.minutes(2)
-      )
-
-    case db_rows do
-      [] ->
-        []
-
-      _ ->
-        triples =
-          Enum.map(db_rows, fn [a_uuid, b_uuid, dist] ->
-            {Ecto.UUID.cast!(a_uuid), Ecto.UUID.cast!(b_uuid), dist}
-          end)
-
-        ids = triples |> Enum.flat_map(fn {a, b, _} -> [a, b] end) |> Enum.uniq()
-
-        skills_by_id =
-          from(s in Skill, where: s.id in ^ids) |> Repo.all() |> Map.new(&{&1.id, &1})
-
-        Enum.map(triples, fn {a_id, b_id, dist} ->
-          {Map.fetch!(skills_by_id, a_id), Map.fetch!(skills_by_id, b_id), dist}
-        end)
-    end
-  end
-
-  defp candidate_pairs_via_jaro_fallback(jaro_rows) do
-    threshold = @semantic_jaro_fallback_threshold
-
-    jaro_rows
-    |> unordered_pairs()
-    |> Enum.filter(fn {a, b} ->
-      (is_nil(a.embedding) or is_nil(b.embedding)) and
-        String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold
-    end)
   end
 
   defp add_embedding_attrs(attrs, existing) do
@@ -2049,111 +1394,6 @@ WHERE s1.library_id = $1
       {:error, :not_running}
   end
 
-  defp enrich_with_role_references(candidates) do
-    skill_ids = Enum.flat_map(candidates, fn c -> [c.skill_a.id, c.skill_b.id] end) |> Enum.uniq()
-
-    role_refs =
-      from(rs in RoleSkill,
-        join: rp in RoleProfile,
-        on: rs.role_profile_id == rp.id,
-        where: rs.skill_id in ^skill_ids,
-        select: {rs.skill_id, rp.name, rs.min_expected_level}
-      )
-      |> Repo.all()
-      |> Enum.group_by(&elem(&1, 0), fn {_, name, level} -> {name, level} end)
-
-    Enum.map(candidates, &enrich_candidate(&1, role_refs))
-  end
-
-  defp enrich_candidate(c, role_refs) do
-    refs_a = Map.get(role_refs, c.skill_a.id, [])
-    refs_b = Map.get(role_refs, c.skill_b.id, [])
-    role_names_a = Enum.map(refs_a, &elem(&1, 0))
-    role_names_b = Enum.map(refs_b, &elem(&1, 0))
-    levels_a = Map.new(refs_a)
-    levels_b = Map.new(refs_b)
-    shared_roles = MapSet.intersection(MapSet.new(role_names_a), MapSet.new(role_names_b))
-
-    level_conflict =
-      Enum.any?(shared_roles, fn role ->
-        Map.fetch!(levels_a, role) != Map.fetch!(levels_b, role)
-      end)
-
-    Map.merge(c, %{roles_a: role_names_a, roles_b: role_names_b, level_conflict: level_conflict})
-  end
-
-  defp list_dismissed_pairs(library_id) do
-    from(d in DuplicateDismissal, where: d.library_id == ^library_id)
-    |> Repo.all()
-    |> Enum.map(fn d -> {d.skill_a_id, d.skill_b_id} end)
-    |> MapSet.new()
-  end
-
-  defp find_slug_prefix_overlaps(prefix_rows) do
-    prefix_rows
-    |> Enum.map(fn s -> {s.id, s.slug, s.name, s.category} end)
-    |> slug_prefix_overlaps()
-  end
-
-  defp slug_prefix_overlaps(slug_rows) do
-    slug_rows
-    |> unordered_pairs()
-    |> Enum.flat_map(fn {{id_a, slug_a, name_a, cat_a}, {id_b, slug_b, name_b, cat_b}} ->
-      if shared_prefix_length(slug_a, slug_b) >= 3 do
-        {summary_a, summary_b} =
-          ordered_skill_summary_pair({id_a, name_a, cat_a}, {id_b, name_b, cat_b})
-
-        [
-          %{
-            skill_a: summary_a,
-            skill_b: summary_b,
-            confidence: :high,
-            detection_method: :slug_prefix
-          }
-        ]
-      else
-        []
-      end
-    end)
-  end
-
-  defp find_word_overlap_in_category(category_rows) do
-    by_cat = Enum.group_by(category_rows, & &1.category)
-
-    Enum.flat_map(by_cat, fn {_cat, cat_skills} ->
-      cat_skills
-      |> unordered_pairs()
-      |> Enum.flat_map(fn {a, b} ->
-        if jaccard_similarity(a.name, b.name) >= 0.5 do
-          {summary_a, summary_b} =
-            ordered_skill_summary_pair({a.id, a.name, a.category}, {b.id, b.name, b.category})
-
-          [
-            %{
-              skill_a: summary_a,
-              skill_b: summary_b,
-              confidence: :medium,
-              detection_method: :word_overlap
-            }
-          ]
-        else
-          []
-        end
-      end)
-    end)
-  end
-
-  defp ordered_skill_summary_pair({id_a, name_a, cat_a}, {id_b, name_b, cat_b}) do
-    summary_a = %{id: id_a, name: name_a, category: cat_a}
-    summary_b = %{id: id_b, name: name_b, category: cat_b}
-
-    if id_a < id_b do
-      {summary_a, summary_b}
-    else
-      {summary_b, summary_a}
-    end
-  end
-
   defp unordered_pairs(rows) do
     rows |> collect_unordered_pairs([]) |> Enum.reverse()
   end
@@ -2164,15 +1404,6 @@ WHERE s1.library_id = $1
   defp collect_unordered_pairs([first | rest], acc) do
     next_acc = Enum.reduce(rest, acc, fn item, pairs -> [{first, item} | pairs] end)
     collect_unordered_pairs(rest, next_acc)
-  end
-
-  defp shared_prefix_length(a, b) do
-    a
-    |> String.graphemes()
-    |> Enum.zip(String.graphemes(b))
-    |> Enum.reduce_while(0, fn {x, y}, acc ->
-      if x == y, do: {:cont, acc + 1}, else: {:halt, acc}
-    end)
   end
 
   defp jaccard_similarity(a, b) do
@@ -2190,31 +1421,6 @@ WHERE s1.library_id = $1
 
   defp deduplicate_pairs(candidates) do
     Enum.uniq_by(candidates, fn c -> sorted_pair_key(c.skill_a.id, c.skill_b.id) end)
-  end
-
-  defp reject_dismissed(candidates, dismissed) do
-    Enum.reject(candidates, fn c ->
-      {id_a, id_b} =
-        if c.skill_a.id < c.skill_b.id do
-          {c.skill_a.id, c.skill_b.id}
-        else
-          {c.skill_b.id, c.skill_a.id}
-        end
-
-      MapSet.member?(dismissed, {id_a, id_b})
-    end)
-  end
-
-  defp confidence_score(:high) do
-    3
-  end
-
-  defp confidence_score(:medium) do
-    2
-  end
-
-  defp confidence_score(:low) do
-    1
   end
 
   defp resolve_conflict(source_rs, target_rs, :keep_higher) do
@@ -2259,62 +1465,6 @@ WHERE s1.library_id = $1
     %{filled: gaps, total: map_size(merged)}
   end
 
-  defp maybe_include_public(query, org_id, true) do
-    from(l in query, where: l.organization_id == ^org_id or l.visibility == "public")
-  end
-
-  defp maybe_include_public(query, org_id, false) do
-    from(l in query, where: l.organization_id == ^org_id)
-  end
-
-  defp maybe_filter_type(query, nil) do
-    query
-  end
-
-  defp maybe_filter_type(query, type) do
-    from(l in query, where: l.type == ^type)
-  end
-
-  defp maybe_exclude_immutable(query, false) do
-    query
-  end
-
-  defp maybe_exclude_immutable(query, true) do
-    from(l in query, where: l.immutable == false)
-  end
-
-  defp maybe_filter_version_scope(query, nil) do
-    query
-  end
-
-  defp maybe_filter_version_scope(query, :drafts) do
-    from(l in query, where: is_nil(l.version))
-  end
-
-  defp maybe_filter_version_scope(query, :published) do
-    from(l in query, where: not is_nil(l.version))
-  end
-
-  defp maybe_filter_version_scope(query, :latest) do
-    from(l in query, where: is_nil(l.version) or is_nil(l.superseded_by_id))
-  end
-
-  defp maybe_filter(query, _field, nil) do
-    query
-  end
-
-  defp maybe_filter(query, :category, value) do
-    from(s in query, where: s.category == ^value)
-  end
-
-  defp maybe_filter(query, :categories, values) when is_list(values) do
-    from(s in query, where: s.category in ^values)
-  end
-
-  defp maybe_filter(query, :status, value) do
-    from(s in query, where: s.status == ^value)
-  end
-
   defp skills_filter_opts(:all) do
     []
   end
@@ -2325,9 +1475,5 @@ WHERE s1.library_id = $1
 
   defp skills_filter_opts(_) do
     []
-  end
-
-  defp sanitize_query(query) do
-    query |> String.replace(~r/[^\w\s]/, "") |> String.trim()
   end
 end

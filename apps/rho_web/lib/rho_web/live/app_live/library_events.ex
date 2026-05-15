@@ -4,6 +4,7 @@ defmodule RhoWeb.AppLive.LibraryEvents do
   import Phoenix.LiveView
   import Phoenix.Component, only: [assign: 2, assign: 3]
   use Phoenix.VerifiedRoutes, endpoint: RhoWeb.Endpoint, router: RhoWeb.Router
+  alias RhoWeb.AppLive.PageSearchEvents
 
   def handle_event("set_default_version", %{"id" => id}, socket) do
     org = socket.assigns.current_organization
@@ -55,7 +56,7 @@ defmodule RhoWeb.AppLive.LibraryEvents do
     library_id = socket.assigns.library.id
     opts = if status, do: [status: status], else: []
     index = RhoFrameworks.Library.list_skill_index(library_id, opts)
-    grouped_index = RhoWeb.AppLive.group_skill_index(index)
+    grouped_index = PageSearchEvents.group_skill_index(index)
     total = Enum.reduce(index, 0, fn row, acc -> acc + row.count end)
 
     socket =
@@ -69,7 +70,7 @@ defmodule RhoWeb.AppLive.LibraryEvents do
         open_categories: MapSet.new(),
         status_filter: status
       )
-      |> RhoWeb.AppLive.refresh_skill_search()
+      |> PageSearchEvents.refresh_skill_search()
 
     {:noreply, socket}
   end

@@ -4,6 +4,12 @@
 
 Rho is an Elixir-based AI agent framework structured as an **umbrella** with seven apps. Agents are configured with plugins (tools, prompt sections, bindings), transformers (in-flight mutation + policy), tapes (append-only event history), skills, sandbox support, Python-backed tools, embeddings, and signal-based multi-agent coordination.
 
+## Architecture Reference
+
+Before larger coding tasks, consult `docs/codex-codebase-map.md` for the compact Codex-oriented module map, `docs/rho-architecture-map.html` for the interactive architecture visualization, and `docs/rho-architecture-detailed.md` for the deeper current architecture guide.
+
+For ongoing refactor/improvement work, start with `docs/current-improvement-backlog.md`. The current velocity/refactor plan lives in `docs/future-improvement-velocity-plan.md`; use it to understand the intended module boundaries and verification pattern.
+
 ## Umbrella Structure
 
 ```
@@ -38,9 +44,12 @@ Key modules:
 - `Rho.Session` — programmatic session API (single entry point for mix tasks, web, tests)
 - `Rho.AgentConfig` — `.rho.exs` loader; normalizes legacy keys and exposes per-agent config queries
 - `Rho.RunSpec` / `Rho.RunSpec.FromConfig` — explicit agent configuration struct (built from `AgentConfig`)
-- `Rho.Runner` — outer agent loop (step budget, compaction, tape recording)
-- `Rho.Runner.Runtime` — immutable run config struct (inlined in runner.ex)
-- `Rho.Runner.TapeConfig` — tape configuration struct (inlined in runner.ex)
+- `Rho.Runner` — public runner entry point and top-level dispatch
+- `Rho.Runner.Runtime` — immutable run config struct
+- `Rho.Runner.TapeConfig` — tape configuration struct
+- `Rho.Runner.RuntimeBuilder` — builds runtime/context/tape config from `RunSpec` and legacy opts
+- `Rho.Runner.Emit` — wraps runner events and converts them to tape entries
+- `Rho.Runner.LiteLoop` / `Rho.Runner.Loop` — lite and normal step-loop implementations
 - `Rho.Recorder` — unified tape recording for the agent loop
 - `Rho.ToolExecutor` — shared tool dispatch (transformer pipeline, timeout, normalization)
 - `Rho.TurnStrategy` — behaviour for inner turn (LLM call, response classification)
@@ -56,7 +65,7 @@ Key modules:
 - `Rho.Trace.Projection` — derived chat/context/debug/cost/failure views over tape entries.
 - `Rho.Trace.Analyzer` — deterministic trace checks for agent debugging.
 - `Rho.Trace.Bundle` — writes portable debug bundles for coding-agent investigation.
-- `Rho.Agent.*` — Worker, Registry, Primary, Supervisor, EventLog, LiteTracker
+- `Rho.Agent.*` — Worker, Ask, Bootstrap, TurnTask, Mailbox, Registry, Primary, Supervisor, EventLog, LiteTracker
 - `Rho.Events` / `Rho.Events.Event` — PubSub-based event bus (session + lifecycle topics)
 - `Rho.SessionOwners` — tracks session ownership for agent/session lifecycle coordination
 - `Rho.Config` — core config (tape_module, agent_config, etc.)
@@ -126,6 +135,10 @@ Adding a new static LLM function = add a module to a consumer app, not to `rho_b
 Deps include `rho`, `rho_stdlib`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_live_view`, `bandit`, `hammer`, `elixlsx`, and `remote_ip`.
 
 - `RhoWeb.*` — endpoint, router, LiveViews, components
+- `RhoWeb.AppLive` — root workspace LiveView; orchestration stays here while page loading, chat/workspace/data-table/agent/workbench/smart-entry/live-event handlers, chat rail, and render-only page/chat/workspace components live under `RhoWeb.AppLive.*`.
+- `RhoWeb.TutorialLive` — tutorial LiveView; static tutorial support content and CSS live in `RhoWeb.TutorialLive.Content`.
+- `RhoWeb.DataTableComponent` — data-table LiveComponent lifecycle and table-level markup. Pure export, command, stream, artifact, optimistic edit, row, row-component, and tab helpers live under `RhoWeb.DataTable.*`.
+- `RhoWeb.InlineCSS` — public CSS API; grouped CSS source modules live under `RhoWeb.InlineCSS.*`.
 - `RhoWeb.Application` — starts PubSub, Endpoint
 
 ### `apps/rho_frameworks/` — Skill Assessment Domain
@@ -136,6 +149,7 @@ Deps include `rho`, `rho_stdlib`, `rho_baml`, `rho_embeddings` (in_umbrella), `e
 - `RhoFrameworks.Accounts` / `.Accounts.User` / `.Accounts.UserToken` / `.Accounts.Organization` / `.Accounts.Membership`
 - `RhoFrameworks.Frameworks` / `.Frameworks.Library` / `.Frameworks.Skill` / role, lens, score, and research-note schemas
 - `RhoFrameworks.Plugin` — tool plugin for framework persistence
+- `RhoFrameworks.Library` — public facade for library CRUD/read/version/dedup behavior. Query/read-model, versioning, and duplicate-detection internals live in `RhoFrameworks.Library.Queries`, `.Versioning`, and `.Dedup`.
 - `RhoFrameworks.DataTableSchemas` — declared `Rho.Stdlib.DataTable.Schema` values for the `"library"` and `"role_profile"` named tables. Domain tools pass these to `DataTable.ensure_table/4`.
 - `RhoFrameworks.Tools.LibraryTools` / `.Tools.RoleTools` / `.Tools.SharedTools` / `.Tools.LensTools` — `Rho.Tool` DSL modules. Library/role tools load into their respective named tables and return `:not_running`/empty errors actionably. `save_library` was removed; use `save_framework` in `RhoFrameworks.Tools.WorkflowTools`.
 - `RhoFrameworks.Tools.WorkflowTools` — `Rho.Tool` wrappers around `RhoFrameworks.UseCases.*`. Adds chat-side tools including `load_similar_roles`, `generate_framework_skeletons`, `generate_proficiency`, `save_framework`, and workflow helpers. These are the same UseCases the wizard's `RhoFrameworks.FlowRunner` invokes for `RhoFrameworks.Flows.CreateFramework` / `EditFramework` / `FinalizeSkeleton`.
@@ -211,16 +225,24 @@ The final system prompt = agent `system_prompt` + all plugin `prompt_sections` +
 
 ## Runner + TurnStrategy
 
-- **`Rho.Runner`** — outer loop: step budget, compaction, tape recording, tool execution (via `ToolExecutor`), transformer dispatch
+- **`Rho.Runner`** — public entry point for normal and lite runner execution
 - **`Rho.TurnStrategy`** — inner turn: LLM call, response classification into intents
 - `Rho.Runner.Runtime` — immutable run config struct (fields: `model`, `turn_strategy`, `context`, `tape`, etc.)
 - `Rho.Runner.TapeConfig` — tape configuration (name, module, compact threshold)
+- `Rho.Runner.RuntimeBuilder` — RunSpec/legacy opts normalization, context construction, provider gen opts, and prompt assembly
+- `Rho.Runner.Emit` — event/tape metadata wrapping
+- `Rho.Runner.LiteLoop` — lightweight loop path
+- `Rho.Runner.Loop` — normal loop orchestration, compaction, transformer dispatch, strategy result handling, and tool execution
 - `Rho.Recorder` — tape writes during the agent loop (messages, tool calls, results)
 - `Rho.ToolExecutor` — shared tool dispatch with transformer pipeline integration
 
 ## Agent System
 
-- `Rho.Agent.Worker` — unified GenServer for all agents
+- `Rho.Agent.Worker` — unified GenServer owner for all agents; keeps public API and process ownership
+- `Rho.Agent.Ask` — bus-based submit/await/reply unwrapping for synchronous asks
+- `Rho.Agent.Bootstrap` — RunSpec finalization, tape/sandbox bootstrap, capability derivation, and lifecycle event data
+- `Rho.Agent.TurnTask` — supervised runner task start/monitor/cancel/watchdog behavior
+- `Rho.Agent.Mailbox` — busy submit queueing, delayed signal queueing, and next-item selection
 - `Rho.Agent.Registry` — ETS-backed discovery
 - `Rho.Agent.Primary` — session namespace helper
 - `Rho.Agent.Supervisor` — DynamicSupervisor for all agents
@@ -291,16 +313,17 @@ mix test                                      # full suite
 mix test --app rho                            # core only
 mix test --app rho_stdlib                     # stdlib only
 mix test --app rho_frameworks                 # framework domain only
-mix test --app rho_web                        # Phoenix/web only
+mix test apps/rho_web/test                    # Phoenix/web only
 ```
 
 ## Post-Change Quality Gates
 
-After code changes, run both lint gates before considering the work complete:
+After code changes, run lint and architecture gates before considering the work complete:
 
 ```bash
 mix rho.slop.strict --format oneline
 mix rho.credence
+mix rho.arch
 ```
 
 For broader changes, prefer the umbrella quality alias:

@@ -376,7 +376,7 @@
     <aside>
       <p class="eyebrow">Rho umbrella atlas</p>
       <h2>Explore by app, dependency, or runtime path.</h2>
-      <p>This standalone map captures the module boundaries and handoff points Codex found while reading the repository.</p>
+      <p>This standalone map captures the current module boundaries and handoff points after the 2026-05 velocity refactor. For the full deep map, read <code>docs/rho-architecture-detailed.md</code>.</p>
       <div class="controls">
         <input class="search" id="search" type="search" placeholder="Search modules, behaviours, flows">
         <div class="filters" id="filters"></div>
@@ -437,7 +437,8 @@
         clusters: ["Session", "Agent", "Runner", "ToolExecutor", "PluginRegistry", "TransformerRegistry", "Tape", "Trace", "Events"],
         details: [
           "`Rho.Session` is the public entry point for web, CLI, and tests.",
-          "`Rho.Runner` owns the outer loop; `Rho.TurnStrategy.*` owns the inner LLM turn.",
+          "`Rho.Runner` is the public entry point; `RuntimeBuilder`, `Emit`, `LiteLoop`, and `Loop` own the extracted runner internals.",
+          "`Rho.Agent.Worker` remains the GenServer owner; `Ask`, `Bootstrap`, `TurnTask`, and `Mailbox` own synchronous asks, startup, task lifecycle, and queueing.",
           "`Rho.ToolExecutor` is the shared tool dispatch and transformer boundary.",
           "Conversations and threads are metadata over tape entries."
         ]
@@ -447,7 +448,7 @@
         name: "rho_stdlib",
         color: "var(--moss)",
         kind: "tools",
-        modules: 51,
+        modules: 50,
         tests: 24,
         role: "Built-in tools, plugins, data tables, uploads, skills, and effect dispatching.",
         deps: ["rho", "rho_python"],
@@ -495,7 +496,7 @@
         name: "rho_embeddings",
         color: "var(--berry)",
         kind: "service",
-        modules: 5,
+        modules: 6,
         tests: 1,
         role: "Embedding service and backend abstraction.",
         deps: ["rho_python"],
@@ -511,13 +512,14 @@
         name: "rho_frameworks",
         color: "var(--brass)",
         kind: "domain",
-        modules: 98,
+        modules: 103,
         tests: 39,
         role: "Skill assessment domain: org/accounts, libraries, roles, lenses, flows, use cases, persistence, and domain tools.",
         deps: ["rho", "rho_stdlib", "rho_baml", "rho_embeddings"],
-        clusters: ["Accounts", "Frameworks", "Library", "Roles", "Lenses", "UseCases", "Flows", "Tools", "LLM"],
+        clusters: ["Accounts", "Frameworks", "Library", "Library.Queries", "Library.Versioning", "Library.Dedup", "Roles", "Lenses", "UseCases", "Flows", "Tools", "LLM"],
         details: [
           "`RhoFrameworks.Plugin` aggregates library, role, lens, shared, and workflow tools.",
+          "`RhoFrameworks.Library` is a stable facade; `Queries`, `Versioning`, and `Dedup` own read-model, publish/version, and duplicate workflows.",
           "`UseCases.*` are shared by chat tools and deterministic/hybrid flow UI.",
           "`FlowRunner` runs flow nodes and delegates next-edge choice to a policy.",
           "Domain table writes use explicit named tables such as `library:<name>`."
@@ -528,13 +530,15 @@
         name: "rho_web",
         color: "var(--teal)",
         kind: "edge",
-        modules: 70,
+        modules: 101,
         tests: 19,
         role: "Phoenix/LiveView edge: sessions, workspaces, projections, pages, components, auth, and workbench actions.",
         deps: ["rho", "rho_stdlib", "rho_frameworks"],
-        clusters: ["AppLive", "SessionCore", "SignalRouter", "SessionEffects", "Workspace", "Projection", "Components", "Auth"],
+        clusters: ["AppLive", "AppLive.*", "DataTable.*", "TutorialLive.Content", "InlineCSS.*", "SessionCore", "SignalRouter", "SessionEffects", "Workspace", "Projection", "Components", "Auth"],
         details: [
-          "`RhoWeb.AppLive` is the org-scoped root LiveView and preserves session state across live navigation.",
+          "`RhoWeb.AppLive` is the org-scoped root LiveView; page loading, chat, workspace, data-table, agent, workbench, smart-entry, live-event, chat-rail, and render chrome behavior live under `RhoWeb.AppLive.*`.",
+          "`RhoWeb.DataTableComponent` keeps lifecycle/table markup while `RhoWeb.DataTable.*` owns export, commands, streams, artifacts, optimistic overlays, row shaping, row components, and tabs.",
+          "`RhoWeb.TutorialLive.Content` owns tutorial support content and CSS; `RhoWeb.InlineCSS.*` owns grouped CSS sections behind `RhoWeb.InlineCSS.css/0`.",
           "`SessionCore` ensures sessions, conversations, active threads, subscriptions, and hydration.",
           "`SessionEffects` is the impure side-effect boundary for pure session reducers.",
           "Workspace surfaces are pluggable through `RhoWeb.Workspace` and projection modules."
@@ -544,12 +548,12 @@
 
     const flows = [
       ["1. Session API", "`Rho.Session.start/1` builds or accepts a `RunSpec`, then delegates lifecycle to `Rho.Agent.Primary`."],
-      ["2. Worker boot", "`Rho.Agent.Worker` resolves tape memory, sandbox, context, plugins, capabilities, and durable IDs."],
-      ["3. Runner loop", "`Rho.Runner` records input, builds prompt material, calls the strategy, enforces step budget, and writes tape entries."],
+      ["2. Worker boot", "`Rho.Agent.Worker` owns the process; `Bootstrap` resolves tape memory, sandbox, context, plugins, capabilities, and durable IDs."],
+      ["3. Runner loop", "`Rho.Runner` dispatches to `RuntimeBuilder`, `Emit`, `LiteLoop`, and `Loop` for runtime construction, event wrapping, step orchestration, compaction, and tape writes."],
       ["4. Inner turn", "`Direct` streams via `ReqLLM`; `TypedStructured` writes BAML action unions and parses one selected action."],
       ["5. Tool dispatch", "`Rho.ToolExecutor` applies transformer stages, prepares args, runs tools, normalizes results, and emits events."],
       ["6. Effects", "`Rho.ToolResponse.effects` reach `Rho.Stdlib.EffectDispatcher`, which updates data tables or opens workspaces."],
-      ["7. UI projection", "`Rho.Events` and tapes feed `RhoWeb.SessionState` and workspace projections for chat, table, and lens views."],
+      ["7. UI projection", "`Rho.Events` and tapes feed `RhoWeb.SessionState`, `RhoWeb.AppLive.*` handlers, `RhoWeb.DataTable.*` helpers, and workspace projections for chat, table, and lens views."],
       ["8. Domain flows", "`RhoFrameworks.FlowRunner` and chat workflow tools share `UseCases.*`, keeping UI and agent routes aligned."]
     ];
 
@@ -559,9 +563,9 @@
       ["Named tables", "The data table active table is UI context only. Tools must pass `table:` explicitly after loading named tables."],
       ["Domain path", "For framework generation/editing, change `UseCases.*` first, then expose through tools or flow nodes."],
       ["Extension points", "New tools usually use `Rho.Tool`; cross-cutting policy should be a `Rho.Transformer` at a named stage."],
-      ["Web boundary", "Keep reducers/projections pure; side effects belong in `SessionEffects` or explicit dispatcher modules."],
+      ["Web boundary", "Keep root LiveViews as orchestrators. Move page/event/render helpers into `RhoWeb.AppLive.*`, data-table pure helpers into `RhoWeb.DataTable.*`, and side effects into `SessionEffects` or explicit dispatcher modules."],
       ["BAML ownership", "`rho_baml` owns generators. Consumer apps own their generated or hand-written `priv/baml_src` trees."],
-      ["Quality gates", "After code changes run `mix rho.slop.strict --format oneline` and `mix rho.credence`; broaden to `mix rho.quality` for boundary changes."]
+      ["Quality gates", "After code changes run `mix rho.slop.strict --format oneline`, `mix rho.credence`, and `mix rho.arch`; broaden to `mix rho.quality` for boundary changes."]
     ];
 
     const filterNames = ["all", "runtime", "tools", "domain", "edge", "llm", "service"];

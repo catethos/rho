@@ -36,6 +36,7 @@ defmodule Rho.Umbrella.MixProject do
     [
       preferred_envs: [
         "rho.credence": :test,
+        "rho.arch": :test,
         "rho.quality": :test,
         "rho.slop": :test,
         "rho.slop.strict": :test,
@@ -59,7 +60,8 @@ defmodule Rho.Umbrella.MixProject do
       "rho.quality": [
         "format --check-formatted",
         "compile --warnings-as-errors",
-        "rho.credence"
+        "rho.credence",
+        "rho.arch"
       ],
       "rho.slop": ["credo --strict --checks ExSlop --mute-exit-status"],
       "rho.slop.strict": ["credo --strict --checks ExSlop"],

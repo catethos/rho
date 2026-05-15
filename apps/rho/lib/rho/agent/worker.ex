@@ -19,11 +19,11 @@ defmodule Rho.Agent.Worker do
 
   require Logger
 
-  @ask_inactivity_timeout 120_000
-  @turn_watchdog_interval 30_000
-  @turn_inactivity_limit 60_000
-
+  alias Rho.Agent.Ask
+  alias Rho.Agent.Bootstrap
+  alias Rho.Agent.Mailbox
   alias Rho.Agent.Registry, as: AgentRegistry
+  alias Rho.Agent.TurnTask
 
   defstruct [
     :agent_id,
@@ -132,67 +132,8 @@ defmodule Rho.Agent.Worker do
   topic, not a direct-pid message.
   """
   def ask(pid, content, opts \\ []) when is_pid(pid) do
-    session_id = info(pid).session_id
-    Rho.Events.subscribe(session_id)
-    {:ok, turn_id} = submit(pid, content, opts)
-    await_mode = Keyword.get(opts, :await, :turn)
-    result = await_reply(turn_id, await_mode)
-    Rho.Events.unsubscribe(session_id)
-    result
+    Ask.ask(pid, content, opts, &info/1, &submit/3)
   end
-
-  # Default: return after first turn completes
-  defp await_reply(turn_id, :turn) do
-    await_reply_turn(turn_id, System.monotonic_time(:millisecond))
-  end
-
-  # Simulation mode: wait until the agent calls `finish` or goes idle
-  # with no pending work.
-  defp await_reply(_turn_id, :finish), do: await_reply_finish(nil)
-
-  defp await_reply_turn(turn_id, last_activity_at) do
-    remaining = @ask_inactivity_timeout - (System.monotonic_time(:millisecond) - last_activity_at)
-    remaining = max(remaining, 0)
-
-    receive do
-      %Rho.Events.Event{kind: :turn_finished, data: %{turn_id: ^turn_id} = data} ->
-        unwrap_result(Map.get(data, :result))
-
-      %Rho.Events.Event{} ->
-        # Any event is proof of life — reset the inactivity timer
-        await_reply_turn(turn_id, System.monotonic_time(:millisecond))
-    after
-      remaining ->
-        {:error, "ask timed out: no activity for #{div(@ask_inactivity_timeout, 1000)}s"}
-    end
-  end
-
-  defp await_reply_finish(last_result) do
-    timeout =
-      if last_result do
-        30_000
-      else
-        @ask_inactivity_timeout
-      end
-
-    receive do
-      %Rho.Events.Event{kind: :turn_finished, data: data} ->
-        case Map.get(data, :result) do
-          {:final, value} -> {:ok, value}
-          {:ok, _text} = ok -> await_reply_finish(ok)
-          {:error, _} = err -> err
-          other -> await_reply_finish(other)
-        end
-
-      %Rho.Events.Event{} ->
-        await_reply_finish(last_result)
-    after
-      timeout -> last_result || {:error, "ask timed out: no activity for #{div(timeout, 1000)}s"}
-    end
-  end
-
-  defp unwrap_result({:final, value}), do: {:ok, value}
-  defp unwrap_result(other), do: other
 
   @doc "Look up a worker pid by agent_id."
   def whereis(agent_id) do
@@ -208,101 +149,44 @@ defmodule Rho.Agent.Worker do
   def init(opts) do
     Process.flag(:trap_exit, true)
 
-    agent_id = Keyword.fetch!(opts, :agent_id)
-    session_id = Keyword.fetch!(opts, :session_id)
-    workspace = Keyword.get(opts, :workspace, File.cwd!())
-    agent_name = Keyword.get(opts, :agent_name, :default)
-    role = Keyword.get(opts, :role, :primary)
-    capabilities = Keyword.get(opts, :capabilities, [])
-
-    depth = Rho.Agent.Primary.depth_of(agent_id)
-
-    # Accept an explicit RunSpec, or synthesize one from agent_config + opts.
-    # state.run_spec is always non-nil from this point on.
-    run_spec = opts[:run_spec] || build_default_run_spec(opts, agent_name)
-
-    memory_mod = run_spec.tape_module || Rho.Tape.Projection.JSONL
-    sandbox_enabled = run_spec.sandbox_enabled
-
-    {memory_ref, effective_workspace, sandbox} =
-      if opts[:tape_ref] do
-        # Delegated agent with pre-configured memory
-        {opts[:tape_ref], workspace, nil}
-      else
-        # Primary agent — bootstrap memory and maybe sandbox
-        ref = memory_mod.memory_ref(session_id, workspace)
-        memory_mod.bootstrap(ref)
-        {eff_ws, sb} = maybe_start_sandbox(session_id, workspace, sandbox_enabled)
-        {ref, eff_ws, sb}
-      end
-
-    config_capabilities = derive_capabilities(run_spec.plugins)
-    capabilities = (config_capabilities ++ capabilities) |> Enum.uniq()
-    description = run_spec.description
-    skills = run_spec.skills || []
-
-    # Finalize the RunSpec with runtime-resolved fields
-    run_spec = %{
-      run_spec
-      | agent_id: agent_id,
-        session_id: session_id,
-        workspace: effective_workspace,
-        depth: depth,
-        tape_name: memory_ref,
-        tape_module: memory_mod,
-        agent_name: agent_name,
-        user_id: Keyword.get(opts, :user_id) || run_spec.user_id,
-        organization_id: Keyword.get(opts, :organization_id) || run_spec.organization_id,
-        conversation_id: Keyword.get(opts, :conversation_id) || run_spec.conversation_id,
-        thread_id: Keyword.get(opts, :thread_id) || run_spec.thread_id
-    }
+    seed = Bootstrap.prepare(opts)
 
     state = %__MODULE__{
-      agent_id: agent_id,
-      session_id: session_id,
-      role: role,
-      workspace: effective_workspace,
-      real_workspace: workspace,
-      sandbox: sandbox,
-      tape_module: memory_mod,
-      tape_ref: memory_ref,
-      agent_name: agent_name,
-      run_spec: run_spec,
-      capabilities: capabilities,
-      user_id: Keyword.get(opts, :user_id),
-      organization_id: Keyword.get(opts, :organization_id),
-      conversation_id: run_spec.conversation_id,
-      thread_id: run_spec.thread_id
+      agent_id: seed.agent_id,
+      session_id: seed.session_id,
+      role: seed.role,
+      workspace: seed.workspace,
+      real_workspace: seed.real_workspace,
+      sandbox: seed.sandbox,
+      tape_module: seed.tape_module,
+      tape_ref: seed.tape_ref,
+      agent_name: seed.agent_name,
+      run_spec: seed.run_spec,
+      capabilities: seed.capabilities,
+      user_id: seed.user_id,
+      organization_id: seed.organization_id,
+      conversation_id: seed.conversation_id,
+      thread_id: seed.thread_id
     }
 
     # Register in agent registry
-    AgentRegistry.register(agent_id, %{
-      session_id: session_id,
-      role: role,
-      agent_name: agent_name,
-      capabilities: capabilities,
-      pid: self(),
-      status: :idle,
-      depth: depth,
-      description: Keyword.get(opts, :description) || description,
-      skills: Keyword.get(opts, :skills) || skills,
-      tape_ref: memory_ref
-    })
+    AgentRegistry.register(seed.agent_id, Bootstrap.registry_entry(seed))
 
     # Publish agent started event
     started_event =
-      Rho.Events.event(:agent_started, session_id, agent_id, %{
-        role: role,
-        agent_name: agent_name,
-        capabilities: capabilities,
-        depth: depth,
-        model: run_spec.model
-      })
+      Rho.Events.event(
+        :agent_started,
+        seed.session_id,
+        seed.agent_id,
+        Bootstrap.started_event_data(seed)
+      )
 
-    Rho.Events.broadcast(session_id, started_event)
+    Rho.Events.broadcast(seed.session_id, started_event)
     Rho.Events.broadcast_lifecycle(started_event)
 
-    Logger.debug("Agent worker started: #{agent_id} (session: #{session_id}, role: #{role})")
+    Logger.debug(
+      "Agent worker started: #{seed.agent_id} (session: #{seed.session_id}, role: #{seed.role})"
+    )
 
     # If there's an initial task, start it immediately
     case Keyword.get(opts, :initial_task) do
@@ -349,15 +233,7 @@ defmodule Rho.Agent.Worker do
 
   def handle_call({:submit, content, opts}, _from, state) do
     turn_id = new_turn_id()
-    queue_size = :queue.len(state.queue)
-
-    Logger.warning(
-      "[worker] Submit while busy: agent=#{state.agent_id} status=#{state.status} " <>
-        "current_turn=#{state.current_turn_id} task_alive=#{is_pid(state.task_pid) and Process.alive?(state.task_pid)} " <>
-        "queue_size=#{queue_size} idle_ms=#{System.monotonic_time(:millisecond) - (state.last_activity_at || 0)}"
-    )
-
-    state = %{state | queue: :queue.in({content, opts, turn_id}, state.queue)}
+    state = Mailbox.enqueue_submit(state, content, opts, turn_id)
     {:reply, {:ok, turn_id}, state}
   end
 
@@ -431,9 +307,8 @@ defmodule Rho.Agent.Worker do
     {:noreply, state}
   end
 
-  def handle_cast(:cancel, %{status: :busy, task_pid: pid} = state) when is_pid(pid) do
-    Process.exit(pid, :shutdown)
-    {:noreply, %{state | status: :cancelling}}
+  def handle_cast(:cancel, state) do
+    {:noreply, TurnTask.cancel(state)}
   end
 
   # --- Signal delivery ---
@@ -445,8 +320,7 @@ defmodule Rho.Agent.Worker do
   end
 
   def handle_cast({:deliver_signal, signal}, state) do
-    # Queue for later
-    {:noreply, %{state | mailbox: :queue.in(signal, state.mailbox)}}
+    {:noreply, Mailbox.enqueue_signal(state, signal)}
   end
 
   def handle_cast({:set_persistent_tools, tools}, state) do
@@ -583,26 +457,8 @@ defmodule Rho.Agent.Worker do
   end
 
   # Turn-level watchdog: kills stuck runner tasks
-  def handle_info(:turn_watchdog, %{status: :busy, task_pid: pid} = state) when is_pid(pid) do
-    idle_ms = System.monotonic_time(:millisecond) - (state.last_activity_at || 0)
-
-    if idle_ms >= @turn_inactivity_limit do
-      Logger.warning(
-        "[worker] Turn watchdog fired: no activity for #{div(idle_ms, 1000)}s, " <>
-          "killing runner task (step=#{state.current_step}, tool=#{state.current_tool})"
-      )
-
-      Process.exit(pid, :turn_inactive)
-    else
-      schedule_turn_watchdog()
-    end
-
-    {:noreply, state}
-  end
-
   def handle_info(:turn_watchdog, state) do
-    # Not busy — ignore stale timer
-    {:noreply, state}
+    {:noreply, TurnTask.handle_watchdog(state)}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -637,34 +493,18 @@ defmodule Rho.Agent.Worker do
 
   # --- Private ---
 
-  defp start_turn(content, opts, state) do
-    turn_id = new_turn_id()
+  defp start_turn(content, opts, state, turn_id \\ nil) do
+    turn_id = turn_id || new_turn_id()
     emit = build_emit(state, turn_id)
     task_id = opts[:task_id]
     messages = [ReqLLM.Context.user(content)]
     turn_spec = build_turn_spec(opts, state, emit, turn_id)
 
-    task =
-      Task.Supervisor.async_nolink(Rho.TaskSupervisor, fn ->
-        run_turn_spec(emit, state, turn_id, messages, turn_spec)
-      end)
-
-    AgentRegistry.update_status(state.agent_id, :busy)
-    maybe_publish_task_accepted(state, task_id)
-
     persistent = if opts[:tools], do: opts[:tools], else: state.persistent_tools
-    schedule_turn_watchdog()
 
-    %{
-      state
-      | status: :busy,
-        task_ref: task.ref,
-        task_pid: task.pid,
-        current_turn_id: turn_id,
-        persistent_tools: persistent,
-        current_task_id: task_id,
-        last_activity_at: System.monotonic_time(:millisecond)
-    }
+    TurnTask.start(state, turn_id, task_id, persistent, fn ->
+      run_turn_spec(emit, state, turn_id, messages, turn_spec)
+    end)
   end
 
   # -- RunSpec path --
@@ -721,59 +561,16 @@ defmodule Rho.Agent.Worker do
     result
   end
 
-  # Build a default RunSpec for callers that didn't pass `:run_spec`.
-  # Reads `.rho.exs` config for the role and folds in legacy spawn-time
-  # opts (`:tools`, `:system_prompt`, `:model`, `:max_steps`).
-  defp build_default_run_spec(opts, agent_name) do
-    config = Rho.Config.agent_config(agent_name)
-
-    Rho.RunSpec.build(
-      model: opts[:model] || config.model,
-      system_prompt: opts[:system_prompt] || config.system_prompt,
-      max_steps: opts[:max_steps] || config.max_steps,
-      max_tokens: config.max_tokens,
-      plugins: config.plugins,
-      transformers: [],
-      turn_strategy: config.turn_strategy,
-      prompt_format: config[:prompt_format] || :markdown,
-      provider: config.provider,
-      description: config.description,
-      skills: config.skills || [],
-      avatar: config.avatar,
-      tools: opts[:tools],
-      agent_name: agent_name,
-      conversation_id: opts[:conversation_id],
-      thread_id: opts[:thread_id],
-      sandbox_enabled: Rho.Config.sandbox_enabled?()
-    )
-  end
-
-  defp maybe_publish_task_accepted(_state, nil), do: :ok
-
-  defp maybe_publish_task_accepted(state, task_id) do
-    Rho.Events.broadcast(
-      state.session_id,
-      Rho.Events.event(:task_accepted, state.session_id, state.agent_id, %{task_id: task_id})
-    )
-  end
-
   defp process_queue(state) do
-    # First check mailbox for signals
-    case :queue.out(state.mailbox) do
-      {{:value, signal}, rest} ->
-        state = %{state | mailbox: rest}
+    case Mailbox.next(state) do
+      {:signal, state, signal} ->
         process_signal(signal, state)
 
-      {:empty, _} ->
-        # Then check regular queue
-        case :queue.out(state.queue) do
-          {{:value, {content, opts, _turn_id}}, rest} ->
-            state = %{state | queue: rest}
-            start_turn(content, opts, state)
+      {:submit, state, content, opts, turn_id} ->
+        start_turn(content, opts, state, turn_id)
 
-          {:empty, _} ->
-            state
-        end
+      {:empty, state} ->
+        state
     end
   end
 
@@ -871,10 +668,6 @@ defmodule Rho.Agent.Worker do
     :ok
   end
 
-  defp schedule_turn_watchdog do
-    Process.send_after(self(), :turn_watchdog, @turn_watchdog_interval)
-  end
-
   defp new_turn_id do
     System.unique_integer([:positive]) |> Integer.to_string()
   end
@@ -898,39 +691,10 @@ defmodule Rho.Agent.Worker do
     }
   end
 
-  defp maybe_start_sandbox(session_id, workspace, sandbox_enabled) do
-    if sandbox_enabled do
-      case Rho.Sandbox.start(session_id, workspace) do
-        {:ok, sandbox} ->
-          {sandbox.mount_path, sandbox}
-
-        {:error, reason} ->
-          Logger.error("[Sandbox] Failed to start: #{reason}. Falling back to direct workspace.")
-          {workspace, nil}
-      end
-    else
-      {workspace, nil}
-    end
-  end
-
   defp maybe_put_field(map, _key, nil), do: map
   defp maybe_put_field(map, key, value), do: Map.put(map, key, value)
 
   defp agent_depth(%__MODULE__{agent_id: agent_id}) do
     Rho.Agent.Primary.depth_of(agent_id)
   end
-
-  # Derive capability atoms from plugin config entries.
-  # Mirrors Rho.Stdlib.capabilities_from_plugins/1 but without
-  # requiring the stdlib dependency at compile time.
-  defp derive_capabilities(plugins) when is_list(plugins) do
-    if Code.ensure_loaded?(Rho.Stdlib) and
-         function_exported?(Rho.Stdlib, :capabilities_from_plugins, 1) do
-      Rho.Stdlib.capabilities_from_plugins(plugins)
-    else
-      []
-    end
-  end
-
-  defp derive_capabilities(_), do: []
 end
