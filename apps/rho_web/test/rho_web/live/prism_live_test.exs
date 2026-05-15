@@ -62,6 +62,35 @@ defmodule RhoWeb.PrismLiveTest do
       assert socket.assigns.active_page == :libraries
     end
 
+    test "open in chat link navigates to the main chat page with library context", %{
+      org_id: org_id,
+      org: org
+    } do
+      {:ok, lib} = Library.create_library(org_id, %{name: "Chat Link Lib"})
+
+      assigns = %{
+        __changed__: %{},
+        current_organization: org,
+        library: lib,
+        skills: [],
+        grouped: %{},
+        show_fork_modal: false,
+        fork_name: "",
+        show_diff: false,
+        diff_result: nil,
+        status_filter: nil
+      }
+
+      html =
+        assigns
+        |> RhoWeb.SkillLibraryShowLive.render()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "/orgs/#{org.slug}/chat?library_id=#{lib.id}"
+      refute html =~ "?chat=1"
+    end
+
     test "filter_status event filters skills", %{org_id: org_id, org: org} do
       {:ok, lib} = Library.create_library(org_id, %{name: "Filter Lib"})
 

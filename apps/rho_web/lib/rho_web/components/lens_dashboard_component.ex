@@ -21,7 +21,7 @@ defmodule RhoWeb.LensDashboardComponent do
 
     axis_count =
       if lens do
-        axes = lens[:axes] || lens["axes"] || []
+        axes = Rho.MapAccess.get(lens, :axes) || []
         length(axes)
       else
         0

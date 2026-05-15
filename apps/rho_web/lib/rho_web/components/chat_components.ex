@@ -15,6 +15,7 @@ defmodule RhoWeb.ChatComponents do
   attr(:pending, :boolean, default: false)
   attr(:active_step, :integer, default: nil)
   attr(:active_max_steps, :integer, default: nil)
+  attr(:debug_mode, :boolean, default: false)
 
   def chat_feed(assigns) do
     assigns = assign(assigns, :messages, normalize_messages(assigns.messages))
@@ -31,7 +32,13 @@ defmodule RhoWeb.ChatComponents do
 
       <div id={"messages-#{@active_agent_id}"}>
         <div :for={{msg, idx} <- Enum.with_index(@messages)} id={msg.id} class="message-wrapper">
-          <.message_row message={msg} user_avatar={@user_avatar} agent_avatar={@agent_avatar} message_index={idx} />
+          <.message_row
+            message={msg}
+            user_avatar={@user_avatar}
+            agent_avatar={@agent_avatar}
+            message_index={idx}
+            debug_mode={@debug_mode}
+          />
         </div>
       </div>
 
@@ -247,6 +254,7 @@ defmodule RhoWeb.ChatComponents do
   attr(:user_avatar, :string, default: nil)
   attr(:agent_avatar, :string, default: nil)
   attr(:message_index, :integer, default: nil)
+  attr(:debug_mode, :boolean, default: false)
 
   def message_row(assigns) do
     ~H"""
@@ -272,7 +280,7 @@ defmodule RhoWeb.ChatComponents do
       <div class="message-body">
         <%= case @message.type do %>
           <% :tool_call -> %>
-            <.tool_call_row call={@message} />
+            <.tool_call_row call={@message} debug_mode={@debug_mode} />
           <% :thinking -> %>
             <.thinking_block content={@message.content} msg_id={@message.id} />
           <% :delegation -> %>
@@ -309,38 +317,54 @@ defmodule RhoWeb.ChatComponents do
   end
 
   attr(:call, :map, required: true)
+  attr(:debug_mode, :boolean, default: false)
 
   def tool_call_row(assigns) do
     assigns =
-      assign(assigns, :formatted_args, format_tool_args(assigns.call.name, assigns.call[:args]))
+      assigns
+      |> assign(:formatted_args, format_tool_args(assigns.call.name, assigns.call[:args]))
+      |> assign(:preview, tool_output_preview(assigns.call[:output]))
 
     ~H"""
-    <details class="tool-call">
-      <summary class="tool-call-summary">
+    <%= if @debug_mode do %>
+      <details class="tool-call tool-call-debug">
+        <summary class="tool-call-summary">
+          <span class={"tool-status tool-status-#{@call[:status] || :pending}"}>
+            <%= tool_icon(@call[:status]) %>
+          </span>
+          <span class="tool-name"><%= @call.name %></span>
+        </summary>
+        <div class="tool-call-detail">
+          <div :if={@call[:args]} class="tool-args">
+            <%= for {label, code, lang} <- @formatted_args do %>
+              <div :if={label} class="tool-args-label" style="font-size:0.6875rem;color:var(--text-secondary);margin-bottom:0.25rem;margin-top:0.5rem;"><%= label %></div>
+              <pre class={"tool-args-code#{if lang, do: " language-#{lang}", else: ""}"}><%= code %></pre>
+            <% end %>
+          </div>
+          <div :if={@call[:output]} class="tool-output">
+            <%= for segment <- split_image_segments(@call.output) do %>
+              <%= case segment do %>
+                <% {:image, data_uri} -> %>
+                  <img src={data_uri} class="tool-output-image" style="max-width:100%;border-radius:6px;margin:8px 0;" />
+                <% {:text, text} -> %>
+                  <pre><%= truncate(text, 2000) %></pre>
+              <% end %>
+            <% end %>
+          </div>
+        </div>
+      </details>
+    <% else %>
+      <div class="tool-call tool-call-compact">
         <span class={"tool-status tool-status-#{@call[:status] || :pending}"}>
           <%= tool_icon(@call[:status]) %>
         </span>
         <span class="tool-name"><%= @call.name %></span>
-      </summary>
-      <div class="tool-call-detail">
-        <div :if={@call[:args]} class="tool-args">
-          <%= for {label, code, lang} <- @formatted_args do %>
-            <div :if={label} class="tool-args-label" style="font-size:0.6875rem;color:var(--text-secondary);margin-bottom:0.25rem;margin-top:0.5rem;"><%= label %></div>
-            <pre class={"tool-args-code#{if lang, do: " language-#{lang}", else: ""}"}><%= code %></pre>
-          <% end %>
-        </div>
-        <div :if={@call[:output]} class="tool-output">
-          <%= for segment <- split_image_segments(@call.output) do %>
-            <%= case segment do %>
-              <% {:image, data_uri} -> %>
-                <img src={data_uri} class="tool-output-image" style="max-width:100%;border-radius:6px;margin:8px 0;" />
-              <% {:text, text} -> %>
-                <pre><%= truncate(text, 2000) %></pre>
-            <% end %>
-          <% end %>
+        <span class="tool-compact-label"><%= tool_status_label(@call[:status]) %></span>
+        <div :if={@preview} class="tool-output-preview">
+          <%= @preview %>
         </div>
       </div>
-    </details>
+    <% end %>
     """
   end
 
@@ -490,6 +514,10 @@ defmodule RhoWeb.ChatComponents do
   defp tool_icon(:error), do: "✗"
   defp tool_icon(_), do: "⋯"
 
+  defp tool_status_label(:ok), do: "completed"
+  defp tool_status_label(:error), do: "needs attention"
+  defp tool_status_label(_), do: "running"
+
   attr(:envelope, :map, required: true)
   attr(:stream_id, :string, required: true)
 
@@ -536,7 +564,7 @@ defmodule RhoWeb.ChatComponents do
 
   # Format tool args with special handling for tools with code fields
   defp format_tool_args(tool_name, args) when is_map(args) and tool_name in ["python", "bash"] do
-    code = args["code"] || args[:code] || args["command"] || args[:command]
+    code = Rho.MapAccess.get(args, :code) || Rho.MapAccess.get(args, :command)
     rest = args |> Map.drop(["code", :code, "command", :command])
 
     code_parts = if code, do: [{nil, code, tool_name}], else: []
@@ -573,6 +601,20 @@ defmodule RhoWeb.ChatComponents do
   end
 
   defp truncate(text, _max_value), do: text
+
+  defp tool_output_preview(output) when is_binary(output) do
+    output
+    |> String.replace(~r/!\[.*?\]\(data:image\/[^)]+\)/, "[image]")
+    |> String.replace(~r/\[Plot saved: [^\]]+\]/, "[image]")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      text -> truncate(text, 180)
+    end
+  end
+
+  defp tool_output_preview(_), do: nil
 
   @image_pattern ~r/!\[.*?\]\((data:image\/[^;]+;base64,[A-Za-z0-9+\/=]+)\)/
   @file_image_pattern ~r/\[Plot saved: ([^\]]+\.png)\]/

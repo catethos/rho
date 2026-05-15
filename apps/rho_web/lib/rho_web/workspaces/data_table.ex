@@ -8,6 +8,7 @@ defmodule RhoWeb.Workspaces.DataTable do
   """
   use RhoWeb.Workspace
 
+  alias Rho.Stdlib.DataTable.WorkbenchContext
   alias RhoWeb.DataTable.Schemas
 
   @impl true
@@ -45,9 +46,21 @@ defmodule RhoWeb.Workspaces.DataTable do
       |> Map.get(:selections, %{})
       |> Map.get(state.active_table, MapSet.new())
 
+    workbench_context =
+      WorkbenchContext.build(%{
+        tables: state.tables,
+        table_order: state.table_order,
+        active_table: state.active_table,
+        active_snapshot: state.active_snapshot,
+        selections: Map.get(state, :selections, %{}),
+        metadata: state.metadata || %{},
+        view_key: state.view_key
+      })
+
     %{
       rows: rows,
       schema: schema,
+      workbench_context: workbench_context,
       tables: state.tables,
       table_order: state.table_order,
       active_table: state.active_table,

@@ -38,7 +38,7 @@ defmodule RhoFrameworks.UseCases.LoadExistingFramework do
 
   @impl true
   def run(input, %Scope{} = scope) do
-    library_id = Map.get(input, :library_id) || Map.get(input, "library_id")
+    library_id = Rho.MapAccess.get(input, :library_id)
 
     if is_nil(library_id) or library_id == "" do
       {:error, :missing_library_id}

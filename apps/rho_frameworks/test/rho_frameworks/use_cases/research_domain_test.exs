@@ -92,13 +92,13 @@ defmodule RhoFrameworks.UseCases.ResearchDomainTest do
       assert :ok =
                DataTable.update_cells(
                  scope.session_id,
-                 [%{id: row[:id] || row["id"], field: :pinned, value: true}],
+                 [%{id: Rho.MapAccess.get(row, :id), field: :pinned, value: true}],
                  table: "research_notes"
                )
 
       pinned =
         DataTable.get_rows(scope.session_id, table: "research_notes")
-        |> Enum.filter(fn r -> Map.get(r, :pinned) || Map.get(r, "pinned") end)
+        |> Enum.filter(fn r -> Rho.MapAccess.get(r, :pinned) end)
 
       assert match?([_], pinned)
     end

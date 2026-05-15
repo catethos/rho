@@ -21,6 +21,8 @@ defmodule RhoWeb.DataTableComponent do
   use Phoenix.LiveComponent
 
   alias Rho.Stdlib.DataTable
+  alias Rho.Stdlib.DataTable.WorkbenchContext
+  alias RhoWeb.WorkbenchPresenter
 
   # Compile-time pool of atoms used as Phoenix LiveView stream names.
   # Stream names must be atoms (Phoenix LiveView API), but group ids are
@@ -57,6 +59,7 @@ defmodule RhoWeb.DataTableComponent do
       |> assign_new(:collapsed, fn -> :all_collapsed end)
       |> assign_new(:optimistic_edits, fn -> %{} end)
       |> assign_new(:metadata, fn -> %{} end)
+      |> assign_new(:workbench_context, fn -> nil end)
       |> assign_new(:sort_by, fn -> nil end)
       |> assign_new(:sort_dir, fn -> :asc end)
       |> assign_new(:confirm_delete, fn -> nil end)
@@ -954,8 +957,8 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   defp stream_for_row(socket, row) do
-    cat = Map.get(row, :category) || Map.get(row, "category")
-    clu = Map.get(row, :cluster) || Map.get(row, "cluster")
+    cat = Rho.MapAccess.get(row, :category)
+    clu = Rho.MapAccess.get(row, :cluster)
 
     group_id =
       cond do
@@ -999,8 +1002,8 @@ defmodule RhoWeb.DataTableComponent do
         :group
 
       row ->
-        cat = Map.get(row, :category) || Map.get(row, "category")
-        clu = Map.get(row, :cluster) || Map.get(row, "cluster")
+        cat = Rho.MapAccess.get(row, :category)
+        clu = Rho.MapAccess.get(row, :cluster)
 
         parent_group_id =
           cond do
@@ -1086,6 +1089,7 @@ defmodule RhoWeb.DataTableComponent do
   def render(assigns) do
     ~H"""
     <div class={["dt-panel", @class]}>
+      <% active_artifact = active_artifact(@workbench_context) %>
       <%= if @error do %>
         <div class="dt-error-banner">
           <strong>Data table unavailable:</strong> <%= inspect(@error) %>
@@ -1097,15 +1101,17 @@ defmodule RhoWeb.DataTableComponent do
         <div class="dt-tab-strip">
           <%= for name <- @table_order do %>
             <% count = table_row_count(@tables, name) %>
+            <% artifact = artifact_for_table(@workbench_context, name) %>
             <button
               type="button"
               phx-click="select_tab"
               phx-target={@myself}
               phx-value-table={name}
               class={"dt-tab" <> if(name == @active_table, do: " dt-tab-active", else: "")}
+              title={name}
             >
-              <%= name %>
-              <span class="dt-tab-count"><%= count %></span>
+              <%= artifact_tab_label(artifact, name) %>
+              <span class="dt-tab-count"><%= artifact_tab_meta(artifact, count) %></span>
             </button>
           <% end %>
         </div>
@@ -1114,7 +1120,7 @@ defmodule RhoWeb.DataTableComponent do
       <%= if MapSet.size(@selected_ids) > 0 do %>
         <div class="dt-selection-bar">
           <span class="dt-selection-count">
-            <%= MapSet.size(@selected_ids) %> <%= if MapSet.size(@selected_ids) == 1, do: "row", else: "rows" %> selected
+            <%= MapSet.size(@selected_ids) %> <%= selection_noun(active_artifact, MapSet.size(@selected_ids)) %> selected
           </span>
           <button
             type="button"
@@ -1127,15 +1133,28 @@ defmodule RhoWeb.DataTableComponent do
         </div>
       <% end %>
 
-      <div class="dt-toolbar">
-        <h2 class="dt-title"><%= @schema.title %></h2>
-        <span class="dt-row-count"><%= length(@rows) %> rows</span>
-        <span :if={@streaming} class="dt-streaming">
-          streaming...
-        </span>
-        <span :if={@total_cost > 0} class="dt-cost">
-          $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
-        </span>
+      <div class="dt-artifact-header">
+        <div class="dt-artifact-main">
+          <div class="dt-artifact-kicker"><%= artifact_kind_label(active_artifact, @schema.title) %></div>
+          <h2 class="dt-title"><%= artifact_title(active_artifact, @schema.title) %></h2>
+          <div class="dt-artifact-subtitle">
+            <span><%= artifact_subtitle(active_artifact, @mode_label) %></span>
+            <span :if={active_artifact && active_artifact.source_label} class="dt-artifact-source">
+              <%= active_artifact.source_label %>
+            </span>
+          </div>
+          <div class="dt-metric-strip">
+            <span :for={metric <- artifact_metric_labels(active_artifact, length(@rows))} class="dt-metric-pill">
+              <%= metric %>
+            </span>
+            <span :if={@streaming} class="dt-streaming">
+              streaming...
+            </span>
+            <span :if={@total_cost > 0} class="dt-cost">
+              $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
+            </span>
+          </div>
+        </div>
         <span
           :if={@flash_message}
           id={"dt-flash-" <> Integer.to_string(:erlang.phash2(@flash_message))}
@@ -1228,6 +1247,12 @@ defmodule RhoWeb.DataTableComponent do
           </button>
         </div>
       </div>
+
+      <.workbench_surface_notice
+        artifact={active_artifact}
+        surface={artifact_surface(active_artifact)}
+        selected_count={MapSet.size(@selected_ids)}
+      />
 
       <%= if @action_dialog do %>
         <div class="dt-dialog-backdrop" phx-click="close_dialog" phx-target={@myself}>
@@ -1358,6 +1383,69 @@ defmodule RhoWeb.DataTableComponent do
           <% end %>
         <% end %>
       </div>
+    </div>
+    """
+  end
+
+  attr(:artifact, :any, default: nil)
+  attr(:surface, :atom, default: :artifact_summary)
+  attr(:selected_count, :integer, default: 0)
+
+  defp workbench_surface_notice(assigns) do
+    assigns = assign(assigns, :metrics, surface_metrics(assigns.artifact))
+
+    ~H"""
+    <div :if={surface_notice?(@surface)} class={"dt-surface-notice dt-surface-#{@surface}"}>
+      <%= case @surface do %>
+        <% :linked_artifacts -> %>
+          <div class="dt-surface-copy">
+            <span class="dt-surface-label">Linked artifacts</span>
+            <strong>Review the related workbench artifacts together</strong>
+            <span><%= linked_artifact_summary(@artifact) %></span>
+          </div>
+        <% :role_candidate_picker -> %>
+          <div class="dt-surface-copy">
+            <span class="dt-surface-label">Picker</span>
+            <strong>Choose source roles for the next framework</strong>
+            <span><%= @metrics[:candidates] || 0 %> candidates across <%= @metrics[:queries] || 0 %> queries</span>
+          </div>
+          <div class="dt-surface-count">
+            <strong><%= @selected_count %></strong>
+            <span>selected</span>
+          </div>
+        <% :conflict_review -> %>
+          <div class="dt-surface-copy">
+            <span class="dt-surface-label">Decision queue</span>
+            <strong>Resolve combine conflicts before creating the merged library</strong>
+            <span><%= @metrics[:unresolved] || 0 %> unresolved, <%= @metrics[:resolved] || 0 %> resolved</span>
+          </div>
+          <div class={"dt-surface-state #{if (@metrics[:unresolved] || 0) == 0, do: "is-ready", else: "needs-work"}"}>
+            <%= if (@metrics[:unresolved] || 0) == 0, do: "Ready to merge", else: "Needs decisions" %>
+          </div>
+        <% :dedup_review -> %>
+          <div class="dt-surface-copy">
+            <span class="dt-surface-label">Review queue</span>
+            <strong>Decide which duplicate candidates should be merged or kept</strong>
+            <span><%= @metrics[:unresolved] || 0 %> unresolved, <%= @metrics[:resolved] || 0 %> resolved</span>
+          </div>
+          <div class={"dt-surface-state #{if (@metrics[:unresolved] || 0) == 0, do: "is-ready", else: "needs-work"}"}>
+            <%= if (@metrics[:unresolved] || 0) == 0, do: "Ready to apply", else: "Needs review" %>
+          </div>
+        <% :gap_review -> %>
+          <div class="dt-surface-copy">
+            <span class="dt-surface-label">Recommendations</span>
+            <strong>Review proposed changes before applying them to the artifact</strong>
+            <span>
+              <%= @metrics[:recommendations] || @metrics[:rows] || 0 %> findings,
+              <%= @metrics[:high_priority] || 0 %> high priority,
+              <%= @metrics[:unresolved] || 0 %> unresolved
+            </span>
+          </div>
+          <div class={"dt-surface-state #{if (@metrics[:unresolved] || 0) == 0, do: "is-ready", else: "needs-work"}"}>
+            <%= if (@metrics[:unresolved] || 0) == 0, do: "Ready to apply", else: "Needs review" %>
+          </div>
+        <% _ -> %>
+      <% end %>
     </div>
     """
   end
@@ -2015,7 +2103,7 @@ defmodule RhoWeb.DataTableComponent do
   # --- Lookup helpers ---
 
   defp row_id(row) do
-    Map.get(row, :id) || Map.get(row, "id")
+    Rho.MapAccess.get(row, :id)
   end
 
   # Visible rows = the active table's rows (post-filter, post-sort) that the
@@ -2055,7 +2143,7 @@ defmodule RhoWeb.DataTableComponent do
   end
 
   defp get_child_level(child) do
-    (Map.get(child, :level) || Map.get(child, "level") || 0)
+    (Rho.MapAccess.get(child, :level) || 0)
     |> to_integer()
   end
 
@@ -2445,6 +2533,73 @@ defmodule RhoWeb.DataTableComponent do
         row
     end
   end
+
+  # --- Workbench presentation helpers ---
+
+  defp active_artifact(%WorkbenchContext{active_artifact: artifact}), do: artifact
+  defp active_artifact(_), do: nil
+
+  defp artifact_for_table(%WorkbenchContext{artifacts: artifacts}, table_name) do
+    Enum.find(artifacts, &(&1.table_name == table_name))
+  end
+
+  defp artifact_for_table(_, _), do: nil
+
+  defp artifact_tab_label(artifact, fallback),
+    do: WorkbenchPresenter.tab_label(artifact, fallback)
+
+  defp artifact_tab_meta(artifact, count), do: WorkbenchPresenter.tab_meta(artifact, count)
+
+  defp artifact_title(artifact, fallback), do: WorkbenchPresenter.title(artifact, fallback)
+  defp artifact_subtitle(artifact, fallback), do: WorkbenchPresenter.subtitle(artifact, fallback)
+
+  defp artifact_kind_label(nil, fallback), do: fallback
+  defp artifact_kind_label(artifact, _fallback), do: WorkbenchPresenter.kind_label(artifact)
+
+  defp artifact_metric_labels(nil, row_count), do: ["#{row_count} rows"]
+
+  defp artifact_metric_labels(artifact, _row_count),
+    do: WorkbenchPresenter.metric_labels(artifact)
+
+  defp selection_noun(artifact, count), do: WorkbenchPresenter.selection_noun(artifact, count)
+  defp artifact_surface(nil), do: :artifact_summary
+  defp artifact_surface(artifact), do: WorkbenchPresenter.surface(artifact)
+
+  defp surface_notice?(surface),
+    do:
+      surface in [
+        :linked_artifacts,
+        :role_candidate_picker,
+        :conflict_review,
+        :dedup_review,
+        :gap_review
+      ]
+
+  defp surface_metrics(%WorkbenchContext.ArtifactSummary{metrics: metrics, row_count: row_count}) do
+    Map.put(metrics || %{}, :rows, row_count || 0)
+  end
+
+  defp surface_metrics(_), do: %{}
+
+  defp linked_artifact_summary(%WorkbenchContext.ArtifactSummary{linked: linked}) do
+    labels =
+      []
+      |> maybe_linked_label("skill framework", linked[:linked_library_table])
+      |> maybe_linked_label("role requirements", linked[:linked_role_table])
+      |> maybe_linked_label("source upload", linked[:source_upload_id])
+      |> maybe_linked_label("source libraries", linked[:source_library_ids])
+      |> maybe_linked_label("source roles", linked[:source_role_profile_ids])
+
+    case labels do
+      [] -> "Related artifacts are available in the artifact strip."
+      labels -> Enum.join(Enum.reverse(labels), ", ")
+    end
+  end
+
+  defp linked_artifact_summary(_), do: "Related artifacts are available in the artifact strip."
+
+  defp maybe_linked_label(labels, _label, value) when value in [nil, "", []], do: labels
+  defp maybe_linked_label(labels, label, _value), do: [label | labels]
 
   # --- Tab strip helpers ---
 

@@ -192,7 +192,7 @@ defmodule Rho.Stdlib.DataTable.Table do
         key = resolve_column_key(row, col)
         {col, Map.get(row, key)}
       end)
-      |> Map.put("id", Map.get(row, :id) || Map.get(row, "id"))
+      |> Map.put("id", Rho.MapAccess.get(row, :id))
     end)
   end
 

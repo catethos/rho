@@ -83,6 +83,12 @@ defmodule RhoFrameworks.Tools.LibraryTools do
               table_name: spec.name,
               schema_key: spec.schema_key,
               mode_label: spec.mode_label,
+              metadata:
+                library_metadata(lib.name, spec.name, :edit_existing,
+                  library_id: lib.id,
+                  persisted?: true,
+                  dirty?: false
+                ),
               rows: []
             }
           ]
@@ -211,6 +217,14 @@ defmodule RhoFrameworks.Tools.LibraryTools do
                   table_name: table_name,
                   schema_key: :skill_library,
                   mode_label: "Skill Library — #{lib.name}#{version_label}",
+                  metadata:
+                    library_metadata(lib.name, table_name, :edit_existing,
+                      library_id: lib.id,
+                      source_label: "Loaded #{version_label |> String.trim()}",
+                      persisted?: true,
+                      published?: lib.immutable,
+                      dirty?: false
+                    ),
                   rows: [],
                   skip_write?: true
                 }
@@ -461,6 +475,10 @@ defmodule RhoFrameworks.Tools.LibraryTools do
               table_name: "combine_preview",
               schema_key: :combine_conflicts,
               mode_label: "Combine: #{args[:new_name]}",
+              metadata:
+                combine_metadata(args[:new_name], ids, preview.sources, stats,
+                  source_label: source_summary
+                ),
               rows: conflict_rows
             }
           ]
@@ -530,7 +548,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
             %Rho.ToolResponse{
               text:
                 "No duplicate candidates found in '#{lib.name}'. (Empty `#{tbl}` table opened.)",
-              effects: build_dedup_effects(lib.name, tbl, false)
+              effects: build_dedup_effects(lib, tbl, 0)
             }
 
           {:ok, %{pair_count: n, table_name: tbl, summary: summary}} ->
@@ -542,7 +560,7 @@ defmodule RhoFrameworks.Tools.LibraryTools do
 
             %Rho.ToolResponse{
               text: text,
-              effects: build_dedup_effects(lib.name, tbl, true)
+              effects: build_dedup_effects(lib, tbl, n)
             }
 
           {:error, reason} ->
@@ -609,13 +627,14 @@ defmodule RhoFrameworks.Tools.LibraryTools do
     )
   end
 
-  defp build_dedup_effects(lib_name, table_name, _has_pairs?) do
+  defp build_dedup_effects(lib, table_name, pair_count) do
     [
       %Rho.Effect.OpenWorkspace{key: :data_table},
       %Rho.Effect.Table{
         table_name: table_name,
         schema_key: :dedup_preview,
-        mode_label: "Duplicate review — #{lib_name}",
+        mode_label: "Duplicate review — #{lib.name}",
+        metadata: dedup_metadata(lib, table_name, pair_count),
         rows: [],
         skip_write?: true
       }
@@ -877,6 +896,75 @@ defmodule RhoFrameworks.Tools.LibraryTools do
   defp maybe_opt(opts, _key, nil), do: opts
   defp maybe_opt(opts, _key, ""), do: opts
   defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp library_metadata(name, table_name, workflow, opts) do
+    %{
+      workflow: workflow,
+      artifact_kind: :skill_library,
+      title: "#{name} Skill Framework",
+      library_name: name,
+      output_table: table_name,
+      persisted?: Keyword.get(opts, :persisted?, false),
+      published?: Keyword.get(opts, :published?, false),
+      dirty?: Keyword.get(opts, :dirty?, true)
+    }
+    |> maybe_put(:library_id, Keyword.get(opts, :library_id))
+    |> maybe_put(:source_label, Keyword.get(opts, :source_label))
+  end
+
+  defp combine_metadata(target_name, ids, sources, stats, opts) do
+    source_names = Enum.map(sources, & &1.name)
+    source_ids = Enum.map(sources, &Map.get(&1, :id)) |> Enum.reject(&is_nil/1)
+
+    %{
+      workflow: :combine_libraries,
+      artifact_kind: :combine_preview,
+      title: "Combine Libraries",
+      source_library_ids: if(source_ids == [], do: ids, else: source_ids),
+      source_library_names: source_names,
+      output_table: "combine_preview",
+      library_name: target_name,
+      clean_count: Map.get(stats, :clean),
+      conflict_count: Map.get(stats, :conflicted),
+      unresolved_count: Map.get(stats, :conflicted),
+      source_label: Keyword.get(opts, :source_label),
+      ui_intent: %{
+        surface: :conflict_review,
+        artifact_table: "combine_preview",
+        allowed_actions: [:resolve_conflicts, :create_merged_library],
+        props: %{
+          decision_modes: [:merge_a, :merge_b, :keep_both]
+        }
+      }
+    }
+  end
+
+  defp dedup_metadata(lib, table_name, pair_count) do
+    %{
+      workflow: :dedup_library,
+      artifact_kind: :dedup_preview,
+      title: "Duplicate Review",
+      library_id: lib.id,
+      library_name: lib.name,
+      linked_library_table: library_table_name(lib.name),
+      output_table: table_name,
+      conflict_count: pair_count,
+      unresolved_count: pair_count,
+      source_label: lib.name,
+      ui_intent: %{
+        surface: :dedup_review,
+        artifact_table: table_name,
+        allowed_actions: [:resolve_duplicates, :apply_cleanup, :save_cleaned_framework],
+        props: %{
+          decision_modes: [:merge_a, :merge_b, :keep_both]
+        }
+      }
+    }
+  end
 
   defp resolve_library_for_browse(org_id, args) do
     id = blank_to_nil(args[:library_id])

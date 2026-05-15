@@ -142,7 +142,7 @@ defmodule RhoFrameworks.Flows.EditFramework do
   def build_input(:load_existing_library, %{summaries: summaries}, %Scope{}) do
     pick = Map.get(summaries, :pick_existing_library, %{})
     [first | _] = Map.get(pick, :selected, []) ++ [%{}]
-    %{library_id: Map.get(first, :id) || Map.get(first, "id")}
+    %{library_id: Rho.MapAccess.get(first, :id)}
   end
 
   def build_input(_, _state, _scope), do: %{}

@@ -42,7 +42,7 @@ defmodule RhoWeb.Workspaces.LensDashboard do
         try do
           RhoFrameworks.Lenses.score_detail(score_id)
         rescue
-          _ -> nil
+          Ecto.NoResultsError -> nil
         end
       end
 

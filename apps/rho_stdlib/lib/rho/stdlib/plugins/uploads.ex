@@ -54,7 +54,7 @@ defmodule Rho.Stdlib.Plugins.Uploads do
           callback: fn _ -> :ok end
         ),
       execute: fn args, _ctx ->
-        id = args[:upload_id] || args["upload_id"]
+        id = Rho.MapAccess.get(args, :upload_id)
 
         case Observer.observe(sid, id) do
           {:ok, obs} -> {:ok, render_observation(obs)}
@@ -80,12 +80,12 @@ defmodule Rho.Stdlib.Plugins.Uploads do
           callback: fn _ -> :ok end
         ),
       execute: fn args, _ctx ->
-        id = args[:upload_id] || args["upload_id"]
-        sheet = args[:sheet] || args["sheet"]
+        id = Rho.MapAccess.get(args, :upload_id)
+        sheet = Rho.MapAccess.get(args, :sheet)
 
         opts = [
-          offset: args[:offset] || args["offset"] || 0,
-          limit: args[:limit] || args["limit"] || 200
+          offset: Rho.MapAccess.get(args, :offset) || 0,
+          limit: Rho.MapAccess.get(args, :limit) || 200
         ]
 
         case Observer.read_sheet(sid, id, sheet, opts) do

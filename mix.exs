@@ -36,6 +36,9 @@ defmodule Rho.Umbrella.MixProject do
     [
       preferred_envs: [
         "rho.credence": :test,
+        "rho.quality": :test,
+        "rho.slop": :test,
+        "rho.slop.strict": :test,
         "rho.smoke": :test,
         "rho.verify": :test
       ]
@@ -44,7 +47,8 @@ defmodule Rho.Umbrella.MixProject do
 
   defp deps do
     [
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -52,6 +56,13 @@ defmodule Rho.Umbrella.MixProject do
     [
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
+      "rho.quality": [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "rho.credence"
+      ],
+      "rho.slop": ["credo --strict --checks ExSlop --mute-exit-status"],
+      "rho.slop.strict": ["credo --strict --checks ExSlop"],
       test: ["test"]
     ]
   end

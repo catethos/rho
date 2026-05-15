@@ -45,7 +45,7 @@ defmodule RhoFrameworks.UseCases.ResolveConflicts do
   end
 
   defp resolved?(row) do
-    case Map.get(row, :resolution) || Map.get(row, "resolution") do
+    case Rho.MapAccess.get(row, :resolution) do
       v when v in ["merge_a", "merge_b", "keep_both"] -> true
       _ -> false
     end

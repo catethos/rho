@@ -120,9 +120,9 @@ defmodule RhoFrameworks.UseCases.IdentifyFrameworkGaps do
   defp format_existing_skills(rows) do
     rows
     |> Enum.map_join("\n", fn row ->
-      name = row[:skill_name] || row["skill_name"] || "?"
-      cat = row[:category] || row["category"] || ""
-      desc = row[:skill_description] || row["skill_description"] || ""
+      name = Rho.MapAccess.get(row, :skill_name) || "?"
+      cat = Rho.MapAccess.get(row, :category) || ""
+      desc = Rho.MapAccess.get(row, :skill_description) || ""
 
       "- #{name} [#{cat}]" <> if(desc == "", do: "", else: " — #{desc}")
     end)

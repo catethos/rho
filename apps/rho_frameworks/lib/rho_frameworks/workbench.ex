@@ -374,8 +374,8 @@ defmodule RhoFrameworks.Workbench do
 
   defp build_cluster_lookup(clusters) do
     Enum.reduce(clusters, %{}, fn cluster, acc ->
-      label = Map.get(cluster, :label) || Map.get(cluster, "label") || ""
-      indices = Map.get(cluster, :pair_indices) || Map.get(cluster, "pair_indices") || []
+      label = Rho.MapAccess.get(cluster, :label) || ""
+      indices = Rho.MapAccess.get(cluster, :pair_indices) || []
 
       Enum.reduce(indices, acc, fn idx, inner ->
         Map.put(inner, idx, label)
@@ -431,9 +431,9 @@ defmodule RhoFrameworks.Workbench do
   defp clusters_to_maps(clusters) when is_list(clusters) do
     Enum.map(clusters, fn c ->
       %{
-        label: Map.get(c, :label) || Map.get(c, "label") || "",
-        pair_indices: Map.get(c, :pair_indices) || Map.get(c, "pair_indices") || [],
-        strategy: Map.get(c, :strategy) || Map.get(c, "strategy") || ""
+        label: Rho.MapAccess.get(c, :label) || "",
+        pair_indices: Rho.MapAccess.get(c, :pair_indices) || [],
+        strategy: Rho.MapAccess.get(c, :strategy) || ""
       }
     end)
   end
@@ -770,7 +770,7 @@ defmodule RhoFrameworks.Workbench do
             selected_ids
             |> Enum.map(fn row_id ->
               case Map.get(rows_map, row_id) do
-                %{} = row -> Map.get(row, :role_id) || Map.get(row, "role_id")
+                %{} = row -> Rho.MapAccess.get(row, :role_id)
                 _ -> nil
               end
             end)

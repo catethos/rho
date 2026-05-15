@@ -72,10 +72,10 @@ defmodule RhoFrameworks.UseCases.SuggestSkillsTest do
       assert {:ok, %{requested: 5, returned: 2}} = SuggestSkills.run(%{n: 5}, scope)
 
       rows = library_rows(session_id)
-      names = Enum.map(rows, &(&1[:skill_name] || &1["skill_name"]))
+      names = Enum.map(rows, &Rho.MapAccess.get(&1, :skill_name))
       assert names == ["Vim", "Tmux"]
 
-      sources = Enum.map(rows, &(&1[:_source] || &1["_source"]))
+      sources = Enum.map(rows, &Rho.MapAccess.get(&1, :_source))
       assert Enum.all?(sources, &(&1 == "agent"))
     end
 
@@ -95,7 +95,7 @@ defmodule RhoFrameworks.UseCases.SuggestSkillsTest do
       names =
         session_id
         |> library_rows()
-        |> Enum.map(&(&1[:skill_name] || &1["skill_name"]))
+        |> Enum.map(&Rho.MapAccess.get(&1, :skill_name))
 
       assert names == ["Vim", "Tmux"]
     end
@@ -120,7 +120,7 @@ defmodule RhoFrameworks.UseCases.SuggestSkillsTest do
       names =
         session_id
         |> library_rows()
-        |> Enum.map(&(&1[:skill_name] || &1["skill_name"]))
+        |> Enum.map(&Rho.MapAccess.get(&1, :skill_name))
 
       assert names == ["Tmux"]
     end
@@ -176,7 +176,7 @@ defmodule RhoFrameworks.UseCases.SuggestSkillsTest do
 
       rows = DataTable.get_rows(session_id, table: "library:Eng")
       assert [row] = rows
-      assert (row[:skill_name] || row["skill_name"]) == "Vim"
+      assert (Rho.MapAccess.get(row, :skill_name)) == "Vim"
     end
   end
 end

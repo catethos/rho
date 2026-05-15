@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Rho.Credence do
 
       print_report(files, issues_by_file, issue_count, opts)
 
-      if issue_count > 0 and not opts[:no_exit] do
+      if issue_count > 0 and opts[:no_exit] != true do
         Mix.raise("Credence found #{issue_count} issue(s).")
       end
     end

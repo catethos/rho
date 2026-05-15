@@ -97,15 +97,15 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletonsTest do
       assert Enum.map(summary.added, & &1.name) == ["Vim", "Tmux"]
 
       rows = library_rows(session_id, "library:Engineering")
-      names = Enum.map(rows, &(&1[:skill_name] || &1["skill_name"]))
+      names = Enum.map(rows, &Rho.MapAccess.get(&1, :skill_name))
       assert names == ["Vim", "Tmux"]
 
-      sources = Enum.map(rows, &(&1[:_source] || &1["_source"]))
+      sources = Enum.map(rows, &Rho.MapAccess.get(&1, :_source))
       assert Enum.all?(sources, &(&1 == "flow"))
 
       [meta] = meta_rows(session_id)
-      assert (meta[:name] || meta["name"]) == "Engineering"
-      assert (meta[:description] || meta["description"]) == "Eng framework"
+      assert (Rho.MapAccess.get(meta, :name)) == "Engineering"
+      assert (Rho.MapAccess.get(meta, :description)) == "Eng framework"
     end
 
     test "duplicate skill_name partials are skipped silently", %{
@@ -129,7 +129,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletonsTest do
       names =
         session_id
         |> library_rows("library:Eng")
-        |> Enum.map(&(&1[:skill_name] || &1["skill_name"]))
+        |> Enum.map(&Rho.MapAccess.get(&1, :skill_name))
 
       assert names == ["Vim", "Tmux"]
     end
@@ -171,7 +171,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletonsTest do
 
       assert [meta] = meta_rows(session_id)
       # First write wins; second :meta call is a noop.
-      assert (meta[:description] || meta["description"]) == "X"
+      assert (Rho.MapAccess.get(meta, :description)) == "X"
     end
 
     test "scope source is honoured (chat callers stamp :agent)", %{
@@ -189,7 +189,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletonsTest do
                )
 
       [row] = library_rows(session_id, "library:Eng")
-      assert (row[:_source] || row["_source"]) == "agent"
+      assert (Rho.MapAccess.get(row, :_source)) == "agent"
     end
 
     test "persists final result skills even when seam emits no partials", %{
@@ -220,7 +220,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletonsTest do
       names =
         session_id
         |> library_rows("library:Eng")
-        |> Enum.map(&(&1[:skill_name] || &1["skill_name"]))
+        |> Enum.map(&Rho.MapAccess.get(&1, :skill_name))
 
       assert names == ["Vim", "Tmux"]
     end
@@ -352,7 +352,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletonsTest do
       assert summary.table_name == "library:Backend Eng"
 
       rows = library_rows(session_id, "library:Backend Eng")
-      names = Enum.map(rows, &(&1[:skill_name] || &1["skill_name"]))
+      names = Enum.map(rows, &Rho.MapAccess.get(&1, :skill_name))
       assert "Caching" in names
 
       assert_received {:seam_input, seam_input}

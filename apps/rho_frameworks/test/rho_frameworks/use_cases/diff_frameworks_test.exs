@@ -97,9 +97,9 @@ defmodule RhoFrameworks.UseCases.DiffFrameworksTest do
 
       # Every row starts unresolved and carries both skill ids.
       for row <- rows do
-        assert (row[:resolution] || row["resolution"]) == "unresolved"
-        assert is_binary(row[:skill_a_id] || row["skill_a_id"])
-        assert is_binary(row[:skill_b_id] || row["skill_b_id"])
+        assert (Rho.MapAccess.get(row, :resolution)) == "unresolved"
+        assert is_binary(Rho.MapAccess.get(row, :skill_a_id))
+        assert is_binary(Rho.MapAccess.get(row, :skill_b_id))
       end
     end
   end

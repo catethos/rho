@@ -42,14 +42,14 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
   end
 
   defp reduce_dashboard_init(_state, data) do
-    lens = data[:lens] || data["lens"]
-    scores = data[:scores] || data["scores"] || []
-    summary = data[:summary] || data["summary"] || %{}
+    lens = Rho.MapAccess.get(data, :lens)
+    scores = Rho.MapAccess.get(data, :scores) || []
+    summary = Rho.MapAccess.get(data, :summary) || %{}
 
     scores_map =
       scores
       |> Enum.map(fn s ->
-        id = s[:score_id] || s["score_id"]
+        id = Rho.MapAccess.get(s, :score_id)
         {id, s}
       end)
       |> Map.new()
@@ -59,13 +59,13 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
       scores: scores_map,
       summary: normalize_summary(summary),
       selected_score_id: nil,
-      active_lens_slug: get_in(lens, [:slug]) || get_in(lens, ["slug"])
+      active_lens_slug: Rho.MapAccess.get(lens, :slug)
     }
   end
 
   defp reduce_score_update(state, data) do
-    score = data[:score] || data["score"] || %{}
-    score_id = score[:score_id] || score["score_id"]
+    score = Rho.MapAccess.get(data, :score) || %{}
+    score_id = Rho.MapAccess.get(score, :score_id)
 
     scores = Map.put(state.scores, score_id, score)
     summary = recompute_summary(scores, state.lens)
@@ -80,9 +80,9 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
 
   defp normalize_summary(summary) when is_map(summary) do
     %{
-      total: summary[:total] || summary["total"] || 0,
-      by_classification: summary[:by_classification] || summary["by_classification"] || %{},
-      axis_averages: summary[:axis_averages] || summary["axis_averages"] || []
+      total: Rho.MapAccess.get(summary, :total) || 0,
+      by_classification: Rho.MapAccess.get(summary, :by_classification) || %{},
+      axis_averages: Rho.MapAccess.get(summary, :axis_averages) || []
     }
   end
 
@@ -95,7 +95,7 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
 
     by_classification =
       score_list
-      |> Enum.group_by(fn s -> s[:classification] || s["classification"] end)
+      |> Enum.group_by(fn s -> Rho.MapAccess.get(s, :classification) end)
       |> Map.new(fn {label, items} -> {label, length(items)} end)
 
     axis_averages = compute_axis_averages(score_list, lens)
@@ -106,14 +106,14 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
   defp compute_axis_averages(_scores, nil), do: []
 
   defp compute_axis_averages(scores, lens) do
-    axes = lens[:axes] || lens["axes"] || []
+    axes = Rho.MapAccess.get(lens, :axes) || []
     Enum.map(axes, fn axis -> compute_single_axis_average(axis, scores) end)
   end
 
   defp compute_single_axis_average(axis, scores) do
-    name = axis[:name] || axis["name"]
-    short_name = axis[:short_name] || axis["short_name"]
-    sort_order = axis[:sort_order] || axis["sort_order"]
+    name = Rho.MapAccess.get(axis, :name)
+    short_name = Rho.MapAccess.get(axis, :short_name)
+    sort_order = Rho.MapAccess.get(axis, :sort_order)
 
     composites = collect_composites_for_axis(scores, sort_order)
 
@@ -127,9 +127,9 @@ defmodule RhoWeb.Projections.LensDashboardProjection do
 
   defp collect_composites_for_axis(scores, sort_order) do
     Enum.flat_map(scores, fn s ->
-      (s[:axes] || s["axes"] || [])
-      |> Enum.filter(fn a -> (a[:sort_order] || a["sort_order"]) == sort_order end)
-      |> Enum.map(fn a -> a[:composite] || a["composite"] || 0.0 end)
+      (Rho.MapAccess.get(s, :axes) || [])
+      |> Enum.filter(fn a -> (Rho.MapAccess.get(a, :sort_order)) == sort_order end)
+      |> Enum.map(fn a -> Rho.MapAccess.get(a, :composite) || 0.0 end)
     end)
   end
 end

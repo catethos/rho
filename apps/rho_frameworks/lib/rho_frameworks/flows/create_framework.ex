@@ -435,7 +435,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   def build_input(:load_existing_library, %{summaries: summaries}, %Scope{}) do
     pick = Map.get(summaries, :pick_existing_library, %{})
     [first | _] = Map.get(pick, :selected, []) ++ [%{}]
-    %{library_id: Map.get(first, :id) || Map.get(first, "id")}
+    %{library_id: Rho.MapAccess.get(first, :id)}
   end
 
   def build_input(:identify_gaps, %{intake: intake, summaries: summaries}, %Scope{}) do
@@ -459,7 +459,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
 
     template_role_ids =
       selected
-      |> Enum.map(fn role -> Map.get(role, :id) || Map.get(role, "id") end)
+      |> Enum.map(fn role -> Rho.MapAccess.get(role, :id) end)
       |> Enum.reject(&is_nil/1)
 
     %{
@@ -552,9 +552,9 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   defp format_seed_skills(roles) when is_list(roles) do
     roles
     |> Enum.map_join("\n", fn role ->
-      name = Map.get(role, :name) || Map.get(role, "name") || "Unknown"
-      family = Map.get(role, :role_family) || Map.get(role, "role_family") || ""
-      count = Map.get(role, :skill_count) || Map.get(role, "skill_count") || 0
+      name = Rho.MapAccess.get(role, :name) || "Unknown"
+      family = Rho.MapAccess.get(role, :role_family) || ""
+      count = Rho.MapAccess.get(role, :skill_count) || 0
       "- #{name} (#{family}, #{count} skills)"
     end)
   end
@@ -578,7 +578,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   end
 
   defp pinned?(row) do
-    case Map.get(row, :pinned) || Map.get(row, "pinned") do
+    case Rho.MapAccess.get(row, :pinned) do
       true -> true
       "true" -> true
       _ -> false
@@ -586,9 +586,9 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   end
 
   defp format_research_row(row) do
-    fact = Map.get(row, :fact) || Map.get(row, "fact") || ""
-    source = Map.get(row, :source) || Map.get(row, "source") || ""
-    tag = Map.get(row, :tag) || Map.get(row, "tag")
+    fact = Rho.MapAccess.get(row, :fact) || ""
+    source = Rho.MapAccess.get(row, :source) || ""
+    tag = Rho.MapAccess.get(row, :tag)
     tag_part = if tag in [nil, ""], do: "", else: " [#{tag}]"
     "- #{fact}#{tag_part} (source: #{source})"
   end
@@ -621,7 +621,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   defp first_two_ids(selected) when is_list(selected) do
     ids =
       selected
-      |> Enum.map(fn item -> Map.get(item, :id) || Map.get(item, "id") end)
+      |> Enum.map(fn item -> Rho.MapAccess.get(item, :id) end)
       |> Enum.reject(&is_nil/1)
 
     case ids do

@@ -227,11 +227,11 @@ Don't repeat UI content in text after rendering.",
   end
 
   defp validate_components(spec, catalog) do
-    elements = spec["elements"] || spec[:elements] || %{}
+    elements = Rho.MapAccess.get(spec, :elements, %{})
 
     unknown =
       elements
-      |> Enum.map(fn {_id, el} -> el["type"] || el[:type] end)
+      |> Enum.map(fn {_id, el} -> Rho.MapAccess.get(el, :type) end)
       |> Enum.filter(fn type -> type && is_nil(catalog.get(type)) end)
       |> Enum.uniq()
 
@@ -268,7 +268,7 @@ Don't repeat UI content in text after rendering.",
 
   defp normalize_spec(spec) do
     spec
-    |> Map.put_new("root", spec[:root] || spec["root"])
-    |> Map.put_new("elements", spec[:elements] || spec["elements"])
+    |> Map.put_new("root", Rho.MapAccess.get(spec, :root))
+    |> Map.put_new("elements", Rho.MapAccess.get(spec, :elements))
   end
 end

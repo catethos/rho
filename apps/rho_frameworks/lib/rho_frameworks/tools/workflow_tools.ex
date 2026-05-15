@@ -148,6 +148,11 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
                 table_name: tbl,
                 schema_key: :skill_library,
                 mode_label: "Skill Library — #{args[:name]}",
+                metadata:
+                  library_metadata(args[:name], tbl, :create_framework,
+                    generated?: true,
+                    source_label: args[:description]
+                  ),
                 rows: [],
                 skip_write?: true
               }
@@ -185,6 +190,11 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
             table_name: table_name,
             schema_key: :skill_library,
             mode_label: "Skill Library — #{name}",
+            metadata:
+              library_metadata(name, table_name, :create_framework,
+                generated?: true,
+                source_label: "Generating framework skeleton"
+              ),
             rows: [],
             skip_write?: true
           }
@@ -412,6 +422,12 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
                   table_name: lib.table_name,
                   schema_key: :skill_library,
                   mode_label: "Skill Library — #{lib.library_name}",
+                  metadata:
+                    library_metadata(lib.library_name, lib.table_name, :import_upload,
+                      imported?: true,
+                      source_upload_id: args[:upload_id],
+                      source_label: args[:sheet] || args[:upload_id]
+                    ),
                   rows: [],
                   skip_write?: true
                 }
@@ -488,6 +504,13 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
                 table_name: result.library_table,
                 schema_key: :skill_library,
                 mode_label: "Skill Library — #{result.library_name}",
+                metadata:
+                  library_metadata(result.library_name, result.library_table, :jd_extraction,
+                    role_name: result.role_name,
+                    source_upload_id: args[:upload_id],
+                    source_label: args[:upload_id] || "Pasted job description",
+                    linked_role_table: result.role_table
+                  ),
                 rows: [],
                 skip_write?: true
               },
@@ -495,6 +518,13 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
                 table_name: result.role_table,
                 schema_key: :role_profile,
                 mode_label: "Role Profile — #{result.role_name}",
+                metadata:
+                  role_profile_metadata(result.role_name, result.role_table, :jd_extraction,
+                    library_name: result.library_name,
+                    source_upload_id: args[:upload_id],
+                    source_label: args[:upload_id] || "Pasted job description",
+                    linked_library_table: result.library_table
+                  ),
                 rows: [],
                 skip_write?: true
               }
@@ -704,6 +734,12 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
       table_name: library_table,
       schema_key: :skill_library,
       mode_label: "Skill Library — #{name}",
+      metadata:
+        library_metadata(name, library_table, :seed_from_roles,
+          generated?: true,
+          source_role_profile_ids: role_ids,
+          source_label: "Built from #{role_count} selected role(s)"
+        ),
       rows: [],
       skip_write?: true
     }
@@ -756,6 +792,41 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     "- \"#{name}\" — in #{role_text}"
   end
 
+  defp library_metadata(name, table_name, workflow, opts) do
+    %{
+      workflow: workflow,
+      artifact_kind: :skill_library,
+      title: "#{name} Skill Framework",
+      library_name: name,
+      output_table: table_name,
+      persisted?: Keyword.get(opts, :persisted?, false),
+      published?: Keyword.get(opts, :published?, false),
+      dirty?: Keyword.get(opts, :dirty?, true)
+    }
+    |> maybe_put(:source_label, Keyword.get(opts, :source_label))
+    |> maybe_put(:source_upload_id, Keyword.get(opts, :source_upload_id))
+    |> maybe_put(:source_role_profile_ids, Keyword.get(opts, :source_role_profile_ids))
+    |> maybe_put(:role_name, Keyword.get(opts, :role_name))
+    |> maybe_put(:linked_role_table, Keyword.get(opts, :linked_role_table))
+    |> maybe_put(:generated?, Keyword.get(opts, :generated?))
+    |> maybe_put(:imported?, Keyword.get(opts, :imported?))
+  end
+
+  defp role_profile_metadata(name, table_name, workflow, opts) do
+    %{
+      workflow: workflow,
+      artifact_kind: :role_profile,
+      title: "#{name} Role Requirements",
+      role_name: name,
+      output_table: table_name,
+      dirty?: Keyword.get(opts, :dirty?, true)
+    }
+    |> maybe_put(:library_name, Keyword.get(opts, :library_name))
+    |> maybe_put(:linked_library_table, Keyword.get(opts, :linked_library_table))
+    |> maybe_put(:source_label, Keyword.get(opts, :source_label))
+    |> maybe_put(:source_upload_id, Keyword.get(opts, :source_upload_id))
+  end
+
   # ── clarify ────────────────────────────────────────────────────────────
 
   tool :clarify,
@@ -791,10 +862,10 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   defp format_matches(matches) do
     lines =
       Enum.map(matches, fn r ->
-        name = Map.get(r, :name) || Map.get(r, "name")
-        id = Map.get(r, :id) || Map.get(r, "id")
-        family = Map.get(r, :role_family) || Map.get(r, "role_family") || "?"
-        count = Map.get(r, :skill_count) || Map.get(r, "skill_count") || 0
+        name = Rho.MapAccess.get(r, :name)
+        id = Rho.MapAccess.get(r, :id)
+        family = Rho.MapAccess.get(r, :role_family) || "?"
+        count = Rho.MapAccess.get(r, :skill_count) || 0
         "- #{name} (#{id}) — #{family}, #{count} skills"
       end)
 

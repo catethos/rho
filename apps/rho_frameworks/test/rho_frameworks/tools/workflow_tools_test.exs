@@ -168,6 +168,13 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
       table_effects = Enum.filter(effects, &match?(%Rho.Effect.Table{}, &1))
       assert match?([_, _], table_effects)
       assert Enum.any?(effects, &match?(%Rho.Effect.OpenWorkspace{key: :data_table}, &1))
+
+      assert Enum.all?(table_effects, fn effect ->
+               effect.metadata[:workflow] == :import_upload and
+                 effect.metadata[:artifact_kind] == :skill_library and
+                 effect.metadata[:imported?] == true and
+                 is_binary(effect.metadata[:library_name])
+             end)
     end
   end
 
@@ -235,6 +242,21 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
                  &1
                )
              )
+
+      library_effect =
+        Enum.find(effects, &match?(%Rho.Effect.Table{schema_key: :skill_library}, &1))
+
+      role_effect =
+        Enum.find(effects, &match?(%Rho.Effect.Table{schema_key: :role_profile}, &1))
+
+      assert library_effect.metadata[:workflow] == :jd_extraction
+      assert library_effect.metadata[:artifact_kind] == :skill_library
+      assert library_effect.metadata[:role_name] == "Senior Backend Engineer"
+      assert library_effect.metadata[:linked_role_table] == "role_profile"
+
+      assert role_effect.metadata[:workflow] == :jd_extraction
+      assert role_effect.metadata[:artifact_kind] == :role_profile
+      assert role_effect.metadata[:linked_library_table] == "library:Senior Backend Engineer"
     end
 
     test "returns clear error for unsupported upload kind" do

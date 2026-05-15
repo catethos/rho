@@ -52,8 +52,8 @@ defmodule RhoFrameworks.UseCases.ExtractFromJD do
   end
 
   defp resolve_source(input, scope) do
-    upload_id = blank_to_nil(Map.get(input, :upload_id) || Map.get(input, "upload_id"))
-    text = blank_to_nil(Map.get(input, :text) || Map.get(input, "text"))
+    upload_id = blank_to_nil(Rho.MapAccess.get(input, :upload_id))
+    text = blank_to_nil(Rho.MapAccess.get(input, :text))
 
     case {upload_id, text} do
       {nil, nil} ->
@@ -148,16 +148,14 @@ defmodule RhoFrameworks.UseCases.ExtractFromJD do
 
   defp resolve_names(input, result) do
     role_name =
-      Map.get(input, :role_name) ||
-        Map.get(input, "role_name") ||
+      Rho.MapAccess.get(input, :role_name) ||
         get(result, :role_title) ||
         "Job Description"
 
     role_name = role_name |> to_string() |> String.trim()
 
     library_name =
-      Map.get(input, :library_name) ||
-        Map.get(input, "library_name") ||
+      Rho.MapAccess.get(input, :library_name) ||
         role_name
 
     library_name = library_name |> to_string() |> String.trim()

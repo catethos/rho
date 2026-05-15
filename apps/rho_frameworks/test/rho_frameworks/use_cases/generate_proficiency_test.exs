@@ -75,7 +75,7 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
 
   defp by_skill_name(rows) do
     Enum.into(rows, %{}, fn row ->
-      {row[:skill_name] || row["skill_name"], row}
+      {Rho.MapAccess.get(row, :skill_name), row}
     end)
   end
 
@@ -176,7 +176,7 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
       rows = by_skill_name(library_rows(session_id))
 
       for name <- ["Vim", "Tmux", "Figma"] do
-        levels = rows[name][:proficiency_levels] || rows[name]["proficiency_levels"]
+        levels = Rho.MapAccess.get(rows[name], :proficiency_levels)
 
         assert is_list(levels) and match?([_, _], levels),
                "expected #{name} to have 2 levels (row=#{inspect(rows[name])})"
@@ -262,11 +262,11 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
 
       # Design worker still persisted its skill.
       rows = by_skill_name(library_rows(session_id))
-      figma_levels = rows["Figma"][:proficiency_levels] || rows["Figma"]["proficiency_levels"]
+      figma_levels = Rho.MapAccess.get(rows["Figma"], :proficiency_levels)
       assert is_list(figma_levels) and match?([_, _], figma_levels)
 
       # Eng worker did not — its row's proficiency_levels stayed at the seed value (nil/[]).
-      vim_levels = rows["Vim"][:proficiency_levels] || rows["Vim"]["proficiency_levels"]
+      vim_levels = Rho.MapAccess.get(rows["Vim"], :proficiency_levels)
       assert vim_levels in [nil, []]
     end
 
@@ -306,11 +306,10 @@ defmodule RhoFrameworks.UseCases.GenerateProficiencyTest do
 
       rows = by_skill_name(library_rows(session_id))
 
-      assert (rows["Tmux"][:proficiency_levels] || rows["Tmux"]["proficiency_levels"]) |> length() ==
-               2
+      assert rows["Tmux"] |> Rho.MapAccess.get(:proficiency_levels) |> length() == 2
 
       # Vim never got persisted since both attempts were skipped.
-      assert (rows["Vim"][:proficiency_levels] || rows["Vim"]["proficiency_levels"]) in [nil, []]
+      assert Rho.MapAccess.get(rows["Vim"], :proficiency_levels) in [nil, []]
     end
 
     test "passes category, levels, and formatted skill bullets to the seam", %{

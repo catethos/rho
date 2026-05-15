@@ -84,8 +84,8 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
 
   @impl true
   def run(input, %Scope{} = scope) do
-    name = input[:name] || input["name"] || ""
-    description = input[:description] || input["description"] || ""
+    name = Rho.MapAccess.get(input, :name) || ""
+    description = Rho.MapAccess.get(input, :description) || ""
 
     cond do
       blank?(name) ->
@@ -101,10 +101,10 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
 
   defp do_run(name, description, input, %Scope{session_id: session_id} = scope)
        when is_binary(session_id) do
-    requested = parse_skill_count(input[:skill_count] || input["skill_count"])
-    scope_mode = parse_scope(input[:scope] || input["scope"])
+    requested = parse_skill_count(Rho.MapAccess.get(input, :skill_count))
+    scope_mode = parse_scope(Rho.MapAccess.get(input, :scope))
     table_name = resolve_table_name(name, input, scope_mode)
-    agent_id = input[:agent_id] || input["agent_id"]
+    agent_id = Rho.MapAccess.get(input, :agent_id)
 
     with :ok <- ensure_session_tables(session_id, table_name),
          seam_input <- build_seam_input(name, description, input, requested, scope_mode),
@@ -244,9 +244,9 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
       rows when is_list(rows) ->
         Enum.map(rows, fn row ->
           %{
-            name: row[:skill_name] || row["skill_name"],
-            category: row[:category] || row["category"],
-            cluster: row[:cluster] || row["cluster"]
+            name: Rho.MapAccess.get(row, :skill_name),
+            category: Rho.MapAccess.get(row, :category),
+            cluster: Rho.MapAccess.get(row, :cluster)
           }
         end)
 
@@ -291,13 +291,13 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
     %{
       name: name,
       description: description,
-      target_roles: blank_to_dash(input[:target_roles] || input["target_roles"]),
+      target_roles: blank_to_dash(Rho.MapAccess.get(input, :target_roles)),
       seeds:
         blank_to_dash(
-          input[:seeds] || input["seeds"] ||
-            input[:similar_role_skills] || input["similar_role_skills"]
+          Rho.MapAccess.get(input, :seeds) ||
+            Rho.MapAccess.get(input, :similar_role_skills)
         ),
-      research: blank_to_dash(input[:research] || input["research"]),
+      research: blank_to_dash(Rho.MapAccess.get(input, :research)),
       existing_skills: render_existing_skills(input, scope_mode),
       gaps: render_gaps(input, scope_mode),
       skill_count: Integer.to_string(requested)
@@ -307,7 +307,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
   defp render_existing_skills(_input, :full), do: "(none)"
 
   defp render_existing_skills(input, :gaps_only) do
-    seed_skills = input[:seed_skills] || input["seed_skills"]
+    seed_skills = Rho.MapAccess.get(input, :seed_skills)
 
     case seed_skills do
       list when is_list(list) and list != [] -> format_seed_skills(list)
@@ -318,7 +318,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
   defp render_gaps(_input, :full), do: "(none)"
 
   defp render_gaps(input, :gaps_only) do
-    gaps = input[:gaps] || input["gaps"]
+    gaps = Rho.MapAccess.get(input, :gaps)
 
     case gaps do
       list when is_list(list) and list != [] -> format_gaps(list)
@@ -353,7 +353,7 @@ defmodule RhoFrameworks.UseCases.GenerateFrameworkSkeletons do
   defp parse_scope(_), do: :full
 
   defp resolve_table_name(name, input, _scope_mode) do
-    case input[:table_name] || input["table_name"] do
+    case Rho.MapAccess.get(input, :table_name) do
       tbl when is_binary(tbl) and tbl != "" -> tbl
       _ -> Editor.table_name(name)
     end

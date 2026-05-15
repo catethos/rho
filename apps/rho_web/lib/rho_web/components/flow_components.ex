@@ -616,7 +616,7 @@ defmodule RhoWeb.FlowComponents do
   end
 
   defp item_id(item) do
-    to_string(item[:id] || item["id"] || :erlang.phash2(item))
+    to_string(Rho.MapAccess.get(item, :id) || :erlang.phash2(item))
   end
 
   defp format_detail(item, field) do

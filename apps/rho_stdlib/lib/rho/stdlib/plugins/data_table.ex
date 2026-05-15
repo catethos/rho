@@ -13,6 +13,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
   @behaviour Rho.Plugin
 
   alias Rho.Stdlib.DataTable
+  alias Rho.Stdlib.DataTable.WorkbenchContext
 
   @default_table "main"
 
@@ -49,13 +50,23 @@ defmodule Rho.Stdlib.Plugins.DataTable do
             _ -> nil
           end
 
-        selections = collect_selections(sid, tables, active)
+        workbench =
+          WorkbenchContext.build(%{
+            tables: tables,
+            table_order: Enum.map(tables, & &1.name),
+            active_table: active,
+            active_snapshot: active_snapshot(sid, active),
+            selections: collect_selections(sid, tables),
+            view_key: nil
+          })
 
         [
           %Rho.PromptSection{
             key: :data_table_index,
-            heading: "Active data tables",
-            body: render_table_index(sid, tables, active, selections, ctx),
+            heading: "Workbench context",
+            body:
+              WorkbenchContext.render_prompt(workbench, prompt_format(ctx)) <>
+                "\n\n" <> render_editing_contract(tables, active),
             kind: :reference,
             priority: :normal,
             volatile: true
@@ -69,59 +80,47 @@ defmodule Rho.Stdlib.Plugins.DataTable do
 
   def prompt_sections(_mount_opts, _context), do: []
 
-  # Cap detail rendering: only the active table gets full per-row preview.
-  # Other tables collapse to `Selected (N)` with no preview, capping the
-  # cost of `fetch_preview_rows` at one query per turn.
-  @selection_preview_cap 10
+  defp active_snapshot(_sid, nil), do: nil
 
-  defp collect_selections(sid, tables, active) do
+  defp active_snapshot(sid, table) do
+    case DataTable.get_table_snapshot(sid, table) do
+      {:ok, snapshot} -> snapshot
+      _ -> nil
+    end
+  end
+
+  defp collect_selections(sid, tables) do
     Enum.reduce(tables, %{}, fn t, acc ->
       case DataTable.get_selection(sid, t.name) do
-        ids when is_list(ids) and ids != [] -> Map.put(acc, t.name, {t, ids, t.name == active})
+        ids when is_list(ids) and ids != [] -> Map.put(acc, t.name, ids)
         _ -> acc
       end
     end)
   end
 
-  defp render_table_index(sid, tables, active, selections, ctx) do
-    lines =
-      Enum.map(tables, fn t ->
-        marker = if t.name == active, do: " ← currently open in panel", else: ""
-        base = "- #{t.name} (#{t.row_count} rows)#{marker}"
-        cols = render_columns_line(t, t.name == active)
-        block = render_selection_block(sid, Map.get(selections, t.name), ctx)
-        base <> cols <> block
-      end)
+  defp prompt_format(%{prompt_format: :xml}), do: :xml
+  defp prompt_format(_), do: :markdown
 
-    """
-    #{Enum.join(lines, "\n")}
+  defp render_editing_contract(tables, active) do
+    active_table = Enum.find(tables, &(&1.name == active))
 
-    Default `table:` argument is "main". When the user refers to "the table"
-    or "this row", they mean the table marked "currently open in panel".
-    Selected rows above are the user's explicit picks — prefer their IDs
-    over locator inference for edits. The `columns:` line lists the exact
-    field names — use them verbatim in `update_cells`/`edit_row`; never
-    guess from the UI column header.\
-    """
-  end
+    schema_lines =
+      case active_table do
+        %{schema: %Rho.Stdlib.DataTable.Schema{} = schema} ->
+          render_child_columns_line(schema)
 
-  # Show the column names ONLY for the active table — that's the one the
-  # agent is most likely to write to, and the one the user is referring to
-  # with "this row" / "the table". For other tables the header line
-  # remains compact.
-  defp render_columns_line(_t, false), do: ""
-
-  defp render_columns_line(%{schema: %Rho.Stdlib.DataTable.Schema{} = schema}, true) do
-    base =
-      case Rho.Stdlib.DataTable.Schema.column_names(schema) do
-        [] -> ""
-        cols -> "\n  columns: " <> Enum.map_join(cols, ", ", &Atom.to_string/1)
+        _ ->
+          ""
       end
 
-    base <> render_child_columns_line(schema)
+    """
+    Default `table:` argument is "main". When the user refers to "the table"
+    or "this row", they mean the artifact marked currently open. Selected rows
+    above are the user's explicit picks — prefer their IDs over locator
+    inference for edits. Use column names exactly as listed; never guess from
+    UI column headers.#{schema_lines}\
+    """
   end
-
-  defp render_columns_line(_, _), do: ""
 
   defp render_child_columns_line(%Rho.Stdlib.DataTable.Schema{children_key: nil}), do: ""
 
@@ -139,109 +138,11 @@ defmodule Rho.Stdlib.Plugins.DataTable do
         col_str = Enum.map_join(cols, ", ", &Atom.to_string/1)
         key_str = Enum.map_join(key_fields, ", ", &Atom.to_string/1)
 
-        "\n  child columns (#{Atom.to_string(key)}[]): #{col_str}" <>
-          "\n  child key: #{key_str} — address one child via " <>
+        "\nchild columns (#{Atom.to_string(key)}[]): #{col_str}" <>
+          "\nchild key: #{key_str} — address one child via " <>
           "child_key={\"#{List.first(key_fields)}\":<value>}"
     end
   end
-
-  defp render_selection_block(_sid, nil, _ctx), do: ""
-
-  defp render_selection_block(sid, {table_summary, ids, active?}, ctx) do
-    count = length(ids)
-
-    if not active? do
-      # Non-active tables: collapsed count only. Avoids the per-table
-      # query cost when the user has selections in multiple tabs.
-      if xml?(ctx),
-        do: "\n  <selected table=\"#{table_summary.name}\" count=\"#{count}\" />",
-        else: "\n  Selected (#{count})"
-    else
-      shown = Enum.take(ids, @selection_preview_cap)
-      rest = count - length(shown)
-      rows = fetch_preview_rows(sid, table_summary.name, shown)
-      previews = Enum.map(shown, &row_preview(&1, rows, table_summary))
-      rest_line = if rest > 0, do: ["    … + #{rest} more selected"], else: []
-
-      if xml?(ctx) do
-        inner =
-          previews
-          |> Enum.map(fn line -> "  " <> line end)
-          |> Enum.concat(rest_line)
-          |> Enum.join("\n")
-
-        "\n  <selected table=\"#{table_summary.name}\" count=\"#{count}\">\n" <>
-          inner <> "\n  </selected>"
-      else
-        "\n  Selected (#{count}):\n" <>
-          Enum.join(previews ++ rest_line, "\n")
-      end
-    end
-  end
-
-  defp xml?(%{prompt_format: :xml}), do: true
-  defp xml?(_), do: false
-
-  # Look up the selected rows by id directly, so the preview works even
-  # when selections sit past any limit-based window. Returns a
-  # `%{id => row}` map for O(1) lookup during render.
-  defp fetch_preview_rows(_sid, _table, []), do: %{}
-
-  defp fetch_preview_rows(sid, table, ids) do
-    case DataTable.get_rows_by_ids(sid, ids, table: table) do
-      {:ok, rows_by_id} -> rows_by_id
-      _ -> %{}
-    end
-  end
-
-  # Full row id, not a slice — agents need to copy these into tool args
-  # verbatim. The 10-row cap keeps the section bounded.
-  defp row_preview(id, rows, table_summary) do
-    row = Map.get(rows, id)
-    field_part = key_field_preview(row, table_summary)
-    "    - #{id}#{field_part}"
-  end
-
-  defp key_field_preview(nil, _), do: ""
-
-  defp key_field_preview(row, %{schema: %Rho.Stdlib.DataTable.Schema{} = schema}) do
-    case pick_preview_field(schema, row) do
-      nil ->
-        ""
-
-      field ->
-        case fetch_field(row, field) do
-          nil -> ""
-          val -> "  " <> Atom.to_string(field) <> "=" <> trim_value(val)
-        end
-    end
-  end
-
-  defp key_field_preview(_, _), do: ""
-
-  defp pick_preview_field(%Rho.Stdlib.DataTable.Schema{key_fields: [first | _]}, _row), do: first
-
-  defp pick_preview_field(%Rho.Stdlib.DataTable.Schema{columns: cols}, _row) do
-    case Enum.find(cols, fn col -> col.name not in [:id] end) do
-      nil -> nil
-      col -> col.name
-    end
-  end
-
-  defp pick_preview_field(_, _), do: nil
-
-  defp fetch_field(row, field) when is_atom(field) do
-    Map.get(row, field) || Map.get(row, Atom.to_string(field))
-  end
-
-  defp trim_value(val) when is_binary(val) do
-    val
-    |> String.replace("\n", " ")
-    |> String.slice(0, 60)
-    |> Kernel.then(fn s -> "\"" <> s <> "\"" end)
-  end
-
-  defp trim_value(val), do: inspect(val, limit: 5, printable_limit: 60)
 
   defp mark_deferred(tools, mount_opts) do
     case Keyword.get(mount_opts, :deferred) do
@@ -385,7 +286,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
         key = resolve_column_key(row, col)
         {col, Map.get(row, key)}
       end)
-      |> Map.put("id", Map.get(row, :id) || Map.get(row, "id"))
+      |> Map.put("id", Rho.MapAccess.get(row, :id))
     end)
   end
 
@@ -768,7 +669,7 @@ defmodule Rho.Stdlib.Plugins.DataTable do
 
   defp row_id(%{id: id}) when is_binary(id), do: id
   defp row_id(%{"id" => id}) when is_binary(id), do: id
-  defp row_id(row), do: to_string(Map.get(row, :id) || Map.get(row, "id") || "")
+  defp row_id(row), do: to_string(Rho.MapAccess.get(row, :id) || "")
 
   defp decode_object(nil, name), do: {:error, "#{name} is required"}
   defp decode_object("", name), do: {:error, "#{name} is required"}

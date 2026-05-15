@@ -25,8 +25,8 @@ defmodule RhoWeb.LensChartComponents do
       <% end %>
       <%= for avg <- @summary.axis_averages || [] do %>
         <div class="lens-summary-card">
-          <div class="lens-summary-value"><%= avg[:average] || avg["average"] %></div>
-          <div class="lens-summary-label">Avg <%= avg[:short_name] || avg["short_name"] %></div>
+          <div class="lens-summary-value"><%= Rho.MapAccess.get(avg, :average) %></div>
+          <div class="lens-summary-label">Avg <%= Rho.MapAccess.get(avg, :short_name) %></div>
         </div>
       <% end %>
     </div>
@@ -42,9 +42,9 @@ defmodule RhoWeb.LensChartComponents do
     lens = assigns.lens
 
     axes =
-      (lens[:axes] || lens["axes"] || []) |> Enum.sort_by(&(&1[:sort_order] || &1["sort_order"]))
+      (Rho.MapAccess.get(lens, :axes) || []) |> Enum.sort_by(&Rho.MapAccess.get(&1, :sort_order))
 
-    classifications = lens[:classifications] || lens["classifications"] || []
+    classifications = Rho.MapAccess.get(lens, :classifications) || []
 
     {x_axis, y_axis} =
       case axes do
@@ -52,14 +52,14 @@ defmodule RhoWeb.LensChartComponents do
         _ -> {nil, nil}
       end
 
-    x_bands = if x_axis, do: x_axis[:band_labels] || x_axis["band_labels"] || [], else: []
-    y_bands = if y_axis, do: y_axis[:band_labels] || y_axis["band_labels"] || [], else: []
+    x_bands = if x_axis, do: Rho.MapAccess.get(x_axis, :band_labels) || [], else: []
+    y_bands = if y_axis, do: Rho.MapAccess.get(y_axis, :band_labels) || [], else: []
 
     # Build classification lookup: {axis_0_band, axis_1_band} => classification
     class_lookup =
       Map.new(classifications, fn c ->
-        b0 = c[:axis_0_band] || c["axis_0_band"]
-        b1 = c[:axis_1_band] || c["axis_1_band"]
+        b0 = Rho.MapAccess.get(c, :axis_0_band)
+        b1 = Rho.MapAccess.get(c, :axis_1_band)
         {{b0, b1}, c}
       end)
 
@@ -86,8 +86,8 @@ defmodule RhoWeb.LensChartComponents do
           <%= for {_x_label, x_idx} <- Enum.with_index(@x_bands) do %>
             <% classification = Map.get(@class_lookup, {x_idx, y_idx}) %>
             <% count = Map.get(@score_counts, {x_idx, y_idx}, 0) %>
-            <% color = if classification, do: classification[:color] || classification["color"], else: "#e5e5e5" %>
-            <% label = if classification, do: classification[:label] || classification["label"], else: "" %>
+            <% color = if classification, do: Rho.MapAccess.get(classification, :color), else: "#e5e5e5" %>
+            <% label = if classification, do: Rho.MapAccess.get(classification, :label), else: "" %>
             <div
               class="lens-matrix-cell"
               style={"background: #{color}18; border-color: #{color}40;"}
@@ -124,21 +124,21 @@ defmodule RhoWeb.LensChartComponents do
     points =
       Enum.map(assigns.scores, fn score ->
         score_axes =
-          (score[:axes] || score["axes"] || [])
-          |> Enum.sort_by(&(&1[:sort_order] || &1["sort_order"]))
+          (Rho.MapAccess.get(score, :axes) || [])
+          |> Enum.sort_by(&Rho.MapAccess.get(&1, :sort_order))
 
         {x_val, y_val} =
           case score_axes do
             [a0, a1 | _] ->
-              {a0[:composite] || a0["composite"] || 0, a1[:composite] || a1["composite"] || 0}
+              {Rho.MapAccess.get(a0, :composite) || 0, Rho.MapAccess.get(a1, :composite) || 0}
 
             _ ->
               {0, 0}
           end
 
-        target = score[:target] || score["target"] || %{}
-        classification = score[:classification] || score["classification"]
-        score_id = score[:score_id] || score["score_id"]
+        target = Rho.MapAccess.get(score, :target) || %{}
+        classification = Rho.MapAccess.get(score, :classification)
+        score_id = Rho.MapAccess.get(score, :score_id)
 
         cx = margin + x_val / 100 * plot_w
         cy = margin + (100 - y_val) / 100 * plot_h
@@ -149,7 +149,7 @@ defmodule RhoWeb.LensChartComponents do
     lens = assigns.lens
 
     axes =
-      (lens[:axes] || lens["axes"] || []) |> Enum.sort_by(&(&1[:sort_order] || &1["sort_order"]))
+      (Rho.MapAccess.get(lens, :axes) || []) |> Enum.sort_by(&Rho.MapAccess.get(&1, :sort_order))
 
     {x_axis, y_axis} =
       case axes do
@@ -214,17 +214,17 @@ defmodule RhoWeb.LensChartComponents do
     sorted_scores =
       assigns.scores
       |> Enum.map(fn score ->
-        score_axes = score[:axes] || score["axes"] || []
+        score_axes = Rho.MapAccess.get(score, :axes) || []
 
         composite =
           case score_axes do
-            [a | _] -> a[:composite] || a["composite"] || 0
+            [a | _] -> Rho.MapAccess.get(a, :composite) || 0
             _ -> 0
           end
 
-        target = score[:target] || score["target"] || %{}
-        classification = score[:classification] || score["classification"]
-        score_id = score[:score_id] || score["score_id"]
+        target = Rho.MapAccess.get(score, :target) || %{}
+        classification = Rho.MapAccess.get(score, :classification)
+        score_id = Rho.MapAccess.get(score, :score_id)
 
         %{
           composite: composite,
@@ -299,22 +299,22 @@ defmodule RhoWeb.LensChartComponents do
         <%= for axis <- @detail[:axes] || @detail["axes"] || [] do %>
           <div class="lens-detail-axis">
             <div class="lens-detail-axis-header">
-              <span class="lens-detail-axis-name"><%= axis[:axis_name] || axis["axis_name"] %></span>
-              <span class="lens-detail-axis-composite"><%= axis[:composite] || axis["composite"] %></span>
-              <span class="lens-detail-axis-band"><%= axis[:band_label] || axis["band_label"] %></span>
+              <span class="lens-detail-axis-name"><%= Rho.MapAccess.get(axis, :axis_name) %></span>
+              <span class="lens-detail-axis-composite"><%= Rho.MapAccess.get(axis, :composite) %></span>
+              <span class="lens-detail-axis-band"><%= Rho.MapAccess.get(axis, :band_label) %></span>
             </div>
             <div class="lens-detail-variables">
-              <%= for var <- axis[:variables] || axis["variables"] || [] do %>
+              <%= for var <- Rho.MapAccess.get(axis, :variables) || [] do %>
                 <div class="lens-detail-var">
                   <div class="lens-detail-var-header">
-                    <span class="lens-detail-var-name"><%= var[:name] || var["name"] %></span>
-                    <span class="lens-detail-var-score"><%= var[:raw_score] || var["raw_score"] %> → <%= var[:weighted_score] || var["weighted_score"] %></span>
+                    <span class="lens-detail-var-name"><%= Rho.MapAccess.get(var, :name) %></span>
+                    <span class="lens-detail-var-score"><%= Rho.MapAccess.get(var, :raw_score) %> → <%= Rho.MapAccess.get(var, :weighted_score) %></span>
                   </div>
-                  <div :if={var[:rationale] || var["rationale"]} class="lens-detail-var-rationale">
-                    <%= var[:rationale] || var["rationale"] %>
+                  <div :if={Rho.MapAccess.get(var, :rationale)} class="lens-detail-var-rationale">
+                    <%= Rho.MapAccess.get(var, :rationale) %>
                   </div>
                   <div class="lens-detail-var-bar">
-                    <div class="lens-detail-var-bar-fill" style={"width: #{var[:raw_score] || var["raw_score"] || 0}%;"}></div>
+                    <div class="lens-detail-var-bar-fill" style={"width: #{Rho.MapAccess.get(var, :raw_score) || 0}%;"}></div>
                   </div>
                 </div>
               <% end %>
@@ -329,16 +329,16 @@ defmodule RhoWeb.LensChartComponents do
   # ── Helpers ────────────────────────────────────────────────────────────
 
   defp axis_name(nil), do: ""
-  defp axis_name(axis), do: axis[:name] || axis["name"] || ""
+  defp axis_name(axis), do: Rho.MapAccess.get(axis, :name) || ""
 
   defp axis_thresholds(nil), do: []
-  defp axis_thresholds(axis), do: axis[:band_thresholds] || axis["band_thresholds"] || []
+  defp axis_thresholds(axis), do: Rho.MapAccess.get(axis, :band_thresholds) || []
 
   defp target_label(nil), do: "—"
 
   defp target_label(target) when is_map(target) do
-    target[:name] || target["name"] || target[:label] || target["label"] ||
-      "#{target[:type] || target["type"]} ##{target[:id] || target["id"]}"
+    Rho.MapAccess.get(target, :name) || Rho.MapAccess.get(target, :label) ||
+      "#{Rho.MapAccess.get(target, :type)} ##{Rho.MapAccess.get(target, :id)}"
   end
 
   defp target_label(_), do: "—"

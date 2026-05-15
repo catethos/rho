@@ -120,7 +120,7 @@ defmodule Rho.Agent.EventLog do
   def handle_info(%Event{kind: kind, data: data} = event, state) do
     # Filter out high-frequency reconstructable events
     # Drop events that belong to a different session (lifecycle topic is global)
-    event_session = data[:session_id] || data["session_id"]
+    event_session = Rho.MapAccess.get(data, :session_id)
     foreign? = is_binary(event_session) and event_session != state.session_id
 
     if kind in @filtered_kinds or foreign? do
@@ -155,13 +155,13 @@ defmodule Rho.Agent.EventLog do
   defp write_event(state, %Event{kind: kind, data: data, agent_id: agent_id, timestamp: ts}) do
     seq = state.seq + 1
 
-    turn_id = data[:turn_id] || data["turn_id"]
+    turn_id = Rho.MapAccess.get(data, :turn_id)
 
     event = %{
       seq: seq,
       ts: DateTime.utc_now() |> DateTime.to_iso8601(),
       type: Atom.to_string(kind),
-      agent_id: agent_id || data[:agent_id] || data["agent_id"],
+      agent_id: agent_id || Rho.MapAccess.get(data, :agent_id),
       session_id: state.session_id,
       turn_id: turn_id,
       emitted_at: ts,

@@ -68,9 +68,9 @@ defmodule RhoFrameworks.UseCases.GenerateProficiency do
 
   @impl true
   def run(input, %Scope{} = scope) do
-    table_name = Map.get(input, :table_name) || Map.get(input, "table_name")
-    raw_levels = Map.get(input, :levels) || Map.get(input, "levels")
-    parent_agent_id = Map.get(input, :agent_id) || Map.get(input, "agent_id")
+    table_name = Rho.MapAccess.get(input, :table_name)
+    raw_levels = Rho.MapAccess.get(input, :levels)
+    parent_agent_id = Rho.MapAccess.get(input, :agent_id)
 
     cond do
       # Skip silently when no levels were explicitly chosen. This is the

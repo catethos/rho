@@ -149,7 +149,7 @@ defmodule Rho.ActionSchema do
             dispatch_respond(args, fields, thinking)
 
           %{builtin: true, name: "think"} ->
-            thought = thinking || Map.get(args, "thought") || Map.get(args, :thought) || ""
+            thought = thinking || Rho.MapAccess.get(args, :thought) || ""
             {:think, thought}
 
           %{builtin: false, name: name} ->

@@ -97,8 +97,7 @@ defmodule RhoWeb.AppLive do
           if session_id do
             socket |> SessionCore.subscribe_and_hydrate(session_id, ensure_opts)
           else
-            {sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
-            SessionCore.subscribe_and_hydrate(socket, sid, ensure_opts)
+            resume_chat_session(socket, ensure_opts)
           end
 
         socket
@@ -167,16 +166,12 @@ defmodule RhoWeb.AppLive do
       |> assign(:libraries, libraries)
       |> assign(:library_groups, group_libraries(libraries))
       |> assign(:library_search_query, "")
-      |> assign_new(:chat_overlay_open, fn -> false end)
-      |> assign_new(:overlay_session_id, fn -> nil end)
       |> assign_new(:smart_entry_pending?, fn -> false end)
     else
       socket
       |> assign(:libraries, [])
       |> assign(:library_groups, [])
       |> assign(:library_search_query, "")
-      |> assign_new(:chat_overlay_open, fn -> false end)
-      |> assign_new(:overlay_session_id, fn -> nil end)
       |> assign_new(:smart_entry_pending?, fn -> false end)
     end
   end
@@ -245,9 +240,6 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
       |> assign_new(:skill_search_query, fn -> "" end)
-      |> assign_new(:chat_overlay_open, fn -> false end)
-      |> assign_new(:overlay_session_id, fn -> nil end)
-      |> maybe_open_chat_for_library(params["chat"])
       |> refresh_skill_search()
     else
       socket
@@ -267,8 +259,6 @@ defmodule RhoWeb.AppLive do
       |> assign_new(:show_diff, fn -> false end)
       |> assign_new(:diff_result, fn -> nil end)
       |> assign_new(:skill_search_query, fn -> "" end)
-      |> assign_new(:chat_overlay_open, fn -> false end)
-      |> assign_new(:overlay_session_id, fn -> nil end)
     end
   end
 
@@ -360,14 +350,6 @@ defmodule RhoWeb.AppLive do
     push_event(socket, "scroll_to_skill", %{skill_id: skill_id})
   end
 
-  defp maybe_open_chat_for_library(socket, "1") do
-    assign(socket, :chat_overlay_open, true)
-  end
-
-  defp maybe_open_chat_for_library(socket, _) do
-    socket
-  end
-
   defp cleanup_previous_page(socket, new_page) do
     prev = socket.assigns[:active_page]
 
@@ -417,15 +399,9 @@ defmodule RhoWeb.AppLive do
   end
 
   defp cleanup_libraries_page(socket) do
-    if overlay_sid = socket.assigns[:overlay_session_id] do
-      Rho.Events.unsubscribe(overlay_sid)
-    end
-
     socket
     |> assign(:libraries, nil)
     |> assign(:library_search_query, "")
-    |> assign(:chat_overlay_open, false)
-    |> assign(:overlay_session_id, nil)
   end
 
   @impl true
@@ -474,6 +450,8 @@ defmodule RhoWeb.AppLive do
       total_cost: assigns.total_cost
     }
 
+    workbench_context = active_workbench_context(assigns, shared_ws_assigns)
+
     assigns =
       assigns
       |> assign(:active_messages, active_messages)
@@ -484,6 +462,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:overlays, overlays)
       |> assign(:available_workspaces, available_workspaces(assigns))
       |> assign(:shared_ws_assigns, shared_ws_assigns)
+      |> assign(:workbench_context, workbench_context)
 
     ~H"""
     <div id="session-root" phx-hook="CommandPalette" class={"session-layout #{if @has_workspaces, do: "workspace-mode", else: ""} #{if @drawer_open, do: "drawer-pinned", else: ""} #{if @debug_mode, do: "debug-mode", else: ""} #{if @shell.focus_workspace_id, do: "focus-mode", else: ""}"}>
@@ -518,7 +497,6 @@ defmodule RhoWeb.AppLive do
 
         <.chat_side_panel
           chat_mode={@chat_mode}
-          compact={@has_workspaces}
           messages={@active_messages}
           session_id={@session_id || ""}
           inflight={@active_inflight}
@@ -539,6 +517,7 @@ defmodule RhoWeb.AppLive do
           uploads={@uploads}
           debug_mode={@debug_mode}
           active_agent={@active_agent}
+          workbench_context={@workbench_context}
           connected={@connected}
           conversations={@conversations}
           editing_conversation_id={@editing_conversation_id}
@@ -617,9 +596,9 @@ defmodule RhoWeb.AppLive do
           >
             Create with Wizard
           </.link>
-          <button phx-click="open_chat_overlay" class="btn-primary">
+          <.link patch={~p"/orgs/#{@current_organization.slug}/chat"} class="btn-primary">
             + New Library
-          </button>
+          </.link>
         </:actions>
       </.page_header>
 
@@ -809,15 +788,6 @@ defmodule RhoWeb.AppLive do
         <% end %>
       </div>
 
-      <.live_component
-        module={RhoWeb.ChatOverlayComponent}
-        id="chat-overlay"
-        open={@chat_overlay_open}
-        agent_name={:spreadsheet}
-        intent="I'd like to create a new skill library for this organization. Please help me define it."
-        current_user={@current_user}
-        current_organization={@current_organization}
-      />
     </.page_shell>
     """
   end
@@ -880,15 +850,12 @@ defmodule RhoWeb.AppLive do
           <button :if={@library.derived_from_id} phx-click={if @show_diff, do: "hide_diff", else: "show_diff"} class="btn-secondary">
             <%= if @show_diff, do: "Hide Diff", else: "Compare to Source" %>
           </button>
-          <%= if @library.immutable do %>
-            <button phx-click="open_chat_overlay" class="btn-secondary">
-              Open in Chat
-            </button>
-          <% else %>
-            <.link patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"} class="btn-secondary">
-              Open in Chat
-            </.link>
-          <% end %>
+          <.link
+            patch={~p"/orgs/#{@current_organization.slug}/chat?library_id=#{@library.id}"}
+            class="btn-secondary"
+          >
+            Open in Chat
+          </.link>
         </:actions>
       </.page_header>
 
@@ -1064,27 +1031,8 @@ defmodule RhoWeb.AppLive do
         <% end %>
       <% end %>
 
-      <.live_component
-        module={RhoWeb.ChatOverlayComponent}
-        id="chat-overlay"
-        open={@chat_overlay_open}
-        agent_name={:spreadsheet}
-        intent={library_chat_intent(@library)}
-        current_user={@current_user}
-        current_organization={@current_organization}
-      />
     </.page_shell>
     """
-  end
-
-  defp library_chat_intent(nil) do
-    nil
-  end
-
-  defp library_chat_intent(%{name: name, id: id}) do
-    "I'm browsing the \"#{name}\" library (id: #{id}). " <>
-      "Help me explore it. Use browse_library, find_skill, or find_similar_skills " <>
-      "with this library_id when you need to look things up."
   end
 
   defp skill_table(assigns) do
@@ -1612,16 +1560,17 @@ defmodule RhoWeb.AppLive do
     if not has_text and not has_images and not has_pending_files do
       {:noreply, socket}
     else
-      {sid, socket} =
+      {sid, socket, created?} =
         if socket.assigns.session_id do
-          {socket.assigns.session_id, socket}
+          {socket.assigns.session_id, socket, false}
         else
           ensure_opts = session_ensure_opts(socket.assigns.live_action)
           {new_sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
           socket = SessionCore.subscribe_and_hydrate(socket, new_sid, ensure_opts)
-          {new_sid, socket}
+          {new_sid, socket, true}
         end
 
+      socket = maybe_push_new_session_patch(socket, sid, created?)
       {:ok, _pid} = Rho.Stdlib.Uploads.ensure_started(sid)
 
       file_handles =
@@ -1641,6 +1590,32 @@ defmodule RhoWeb.AppLive do
         submit_to_session(socket, content, image_parts, has_text)
       else
         arm_parse_tasks(socket, content, image_parts, has_text, file_handles)
+      end
+    end
+  end
+
+  def handle_event("send_workbench_suggestion", %{"content" => content}, socket) do
+    content = String.trim(content || "")
+
+    if content == "" do
+      {:noreply, socket}
+    else
+      {sid, socket, created?} =
+        if socket.assigns.session_id do
+          {socket.assigns.session_id, socket, false}
+        else
+          ensure_opts = session_ensure_opts(socket.assigns.live_action)
+          {new_sid, socket} = SessionCore.ensure_session(socket, nil, ensure_opts)
+          socket = SessionCore.subscribe_and_hydrate(socket, new_sid, ensure_opts)
+          {new_sid, socket, true}
+        end
+
+      socket = maybe_push_new_session_patch(socket, sid, created?)
+
+      case SessionCore.send_message(socket, content) do
+        {:noreply, socket} ->
+          touch_active_conversation(socket)
+          {:noreply, refresh_conversations(socket)}
       end
     end
   end
@@ -1937,26 +1912,25 @@ defmodule RhoWeb.AppLive do
     active_conversation_id = socket.assigns[:active_conversation_id]
     active_thread_id = socket.assigns[:active_thread_id]
 
+    active? =
+      chat_row_active?(conversation_id, thread_id, active_conversation_id, active_thread_id)
+
     with %{} = conversation <- Rho.Conversation.get(conversation_id),
          true <- can_access_conversation?(socket, conversation),
-         false <-
-           chat_row_active?(conversation_id, thread_id, active_conversation_id, active_thread_id),
          :ok <- archive_chat_row(socket, conversation, thread_id) do
-      {:noreply, refresh_conversations(socket)}
+      {:noreply, after_archive_chat(socket, conversation, active?)}
     else
-      {:ok, _conversation} -> {:noreply, refresh_conversations(socket)}
       _ -> {:noreply, socket}
     end
   end
 
   def handle_event("archive_conversation", %{"conversation_id" => conversation_id}, socket) do
-    active_id = socket.assigns[:active_conversation_id]
+    active? = conversation_id == socket.assigns[:active_conversation_id]
 
-    with true <- conversation_id != active_id,
-         %{} = conversation <- Rho.Conversation.get(conversation_id),
+    with %{} = conversation <- Rho.Conversation.get(conversation_id),
          true <- can_access_conversation?(socket, conversation),
          {:ok, _} <- Rho.Conversation.archive(conversation_id) do
-      {:noreply, refresh_conversations(socket)}
+      {:noreply, after_archive_chat(socket, conversation, active?)}
     else
       _ -> {:noreply, socket}
     end
@@ -2205,14 +2179,6 @@ defmodule RhoWeb.AppLive do
     end
 
     {:noreply, socket}
-  end
-
-  def handle_event("open_chat_overlay", _params, socket) do
-    {:noreply, assign(socket, :chat_overlay_open, true)}
-  end
-
-  def handle_event("close_chat_overlay", _params, socket) do
-    {:noreply, close_overlay(socket)}
   end
 
   def handle_event("smart_entry_submit", %{"message" => msg}, socket)
@@ -2862,16 +2828,14 @@ defmodule RhoWeb.AppLive do
     {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
   end
 
-  def handle_info({:library_load_complete, table_name, lib_name, lib_version}, socket) do
+  def handle_info(
+        {:library_load_complete, table_name, lib_name, lib_version, lib_immutable?},
+        socket
+      ) do
     state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
 
     if state.active_table == table_name do
-      version_label =
-        if lib_version do
-          " v#{lib_version}"
-        else
-          " (draft)"
-        end
+      version_label = library_version_label(lib_version, lib_immutable?)
 
       new_state = %{state | mode_label: "Skill Library — #{lib_name}#{version_label}"}
       {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
@@ -2972,16 +2936,6 @@ defmodule RhoWeb.AppLive do
     end
   end
 
-  def handle_info({:chat_overlay_started, session_id}, socket) do
-    Rho.Events.subscribe(session_id)
-    Rho.Stdlib.DataTable.ensure_started(session_id)
-    {:noreply, socket |> assign(:overlay_session_id, session_id)}
-  end
-
-  def handle_info({:chat_overlay_closed, _session_id}, socket) do
-    {:noreply, close_overlay(socket)}
-  end
-
   def handle_info({:ui_spec_tick, message_id}, socket) do
     SessionCore.handle_ui_spec_tick(socket, message_id)
   end
@@ -3049,11 +3003,6 @@ defmodule RhoWeb.AppLive do
   def handle_info(%LiveEvent{} = event, socket) do
     sid = socket.assigns.session_id
 
-    if socket.assigns.active_page in [:libraries, :library_show] &&
-         socket.assigns[:chat_overlay_open] do
-      send_update(RhoWeb.ChatOverlayComponent, id: "chat-overlay", signal: event)
-    end
-
     if sid do
       cond do
         event.kind == :data_table ->
@@ -3101,10 +3050,6 @@ defmodule RhoWeb.AppLive do
 
   @impl true
   def terminate(_reason, socket) do
-    if overlay_sid = socket.assigns[:overlay_session_id] do
-      Rho.Events.unsubscribe(overlay_sid)
-    end
-
     if sid = socket.assigns[:session_id] do
       snapshot = Snapshot.build_snapshot(socket)
       Snapshot.save(sid, user_workspace(socket), snapshot)
@@ -3128,19 +3073,19 @@ defmodule RhoWeb.AppLive do
   defp session_controls(assigns) do
     ~H"""
     <div class="session-controls">
-      <span class="header-tokens" title="Total input / output tokens (last step input / output)">
+      <span :if={@debug_mode} class="header-tokens" title="Total input / output tokens (last step input / output)">
         <%= format_tokens(@total_input_tokens) %> in / <%= format_tokens(@total_output_tokens) %> out
         <span :if={@step_input_tokens > 0} class="header-step-tokens">
           (step: <%= format_tokens(@step_input_tokens) %> in / <%= format_tokens(@step_output_tokens) %> out)
         </span>
       </span>
-      <span :if={@total_cached_tokens > 0} class="header-tokens header-cached" title="Cached tokens">
+      <span :if={@debug_mode and @total_cached_tokens > 0} class="header-tokens header-cached" title="Cached tokens">
         cached: <%= format_tokens(@total_cached_tokens) %>
       </span>
-      <span :if={@total_reasoning_tokens > 0} class="header-tokens header-reasoning" title="Reasoning tokens">
+      <span :if={@debug_mode and @total_reasoning_tokens > 0} class="header-tokens header-reasoning" title="Reasoning tokens">
         reasoning: <%= format_tokens(@total_reasoning_tokens) %>
       </span>
-      <span :if={@total_cost > 0} class="header-cost">
+      <span :if={@debug_mode and @total_cost > 0} class="header-cost">
         $<%= :erlang.float_to_binary(@total_cost / 1, decimals: 4) %>
       </span>
       <button class={"header-action-btn #{if @debug_mode, do: "debug-active"}"} phx-click="toggle_debug" title="Toggle debug mode">
@@ -3388,7 +3333,6 @@ defmodule RhoWeb.AppLive do
             Edit
           </button>
           <button
-            :if={!chat.active}
             class="chat-archive-btn"
             phx-click="archive_chat"
             phx-value-conversation_id={chat.conversation_id}
@@ -3410,7 +3354,6 @@ defmodule RhoWeb.AppLive do
   end
 
   attr(:chat_mode, :atom, default: :expanded)
-  attr(:compact, :boolean, default: false)
   attr(:messages, :list, required: true)
   attr(:session_id, :string, required: true)
   attr(:inflight, :map, required: true)
@@ -3431,6 +3374,7 @@ defmodule RhoWeb.AppLive do
   attr(:uploads, :any, required: true)
   attr(:debug_mode, :boolean, default: false)
   attr(:active_agent, :map, default: nil)
+  attr(:workbench_context, :any, default: nil)
   attr(:connected, :boolean, default: true)
   attr(:conversations, :list, default: [])
   attr(:editing_conversation_id, :string, default: nil)
@@ -3444,7 +3388,12 @@ defmodule RhoWeb.AppLive do
         :hidden -> "dt-chat-panel is-hidden"
       end
 
-    assigns = assign(assigns, :panel_class, panel_class)
+    suggestions = workbench_suggestions(assigns.workbench_context)
+
+    assigns =
+      assigns
+      |> assign(:panel_class, panel_class)
+      |> assign(:workbench_suggestions, suggestions)
 
     ~H"""
     <div class={@panel_class}>
@@ -3454,7 +3403,7 @@ defmodule RhoWeb.AppLive do
           <span :if={@active_agent} class="chat-active-agent">
             <%= active_agent_label(@active_agent) %>
           </span>
-          <span :if={@session_id != ""} class="chat-session-id" title={@session_id}>
+          <span :if={@debug_mode and @session_id != ""} class="chat-session-id" title={@session_id}>
             <%= truncate_id(@session_id) %>
           </span>
           <.status_dot :if={@chat_status != :idle} status={@chat_status} />
@@ -3476,7 +3425,10 @@ defmodule RhoWeb.AppLive do
       </div>
 
       <div class="dt-chat-body">
-        <.chat_rail chats={@conversations} editing_conversation_id={@editing_conversation_id} />
+        <.chat_rail
+          chats={@conversations}
+          editing_conversation_id={@editing_conversation_id}
+        />
 
         <div class="dt-chat-main">
           <.tab_bar
@@ -3497,9 +3449,22 @@ defmodule RhoWeb.AppLive do
             pending={@pending}
             active_step={@active_agent && @active_agent[:step]}
             active_max_steps={@active_agent && @active_agent[:max_steps]}
+            debug_mode={@debug_mode}
           />
 
           <div class="chat-input-area">
+            <div :if={@workbench_suggestions != []} class="workbench-suggestion-strip">
+              <button
+                :for={suggestion <- @workbench_suggestions}
+                type="button"
+                class="workbench-suggestion-chip"
+                phx-click="send_workbench_suggestion"
+                phx-value-content={suggestion.content}
+                title={suggestion.content}
+              >
+                <%= suggestion.label %>
+              </button>
+            </div>
             <div :if={@uploads.files.entries != [] or @files_parsing != %{}} class="chat-attach-strip">
               <%= for entry <- @uploads.files.entries do %>
                 <% entry_errors = upload_errors(@uploads.files, entry) %>
@@ -3998,12 +3963,34 @@ defmodule RhoWeb.AppLive do
         {:error, _reason} -> Rho.Conversation.delete_thread(conversation["id"], thread_id)
       end
     else
-      Rho.Conversation.archive(conversation["id"])
+      archive_conversation_ok(conversation["id"])
     end
   end
 
   defp archive_chat_row(_socket, conversation, _thread_id) do
-    Rho.Conversation.archive(conversation["id"])
+    archive_conversation_ok(conversation["id"])
+  end
+
+  defp archive_conversation_ok(conversation_id) do
+    case Rho.Conversation.archive(conversation_id) do
+      {:ok, _conversation} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp after_archive_chat(socket, conversation, true) do
+    if conversation["session_id"] == socket.assigns[:session_id] do
+      socket
+      |> clear_active_chat_session()
+      |> refresh_conversations()
+      |> maybe_push_chat_index_patch()
+    else
+      refresh_conversations(socket)
+    end
+  end
+
+  defp after_archive_chat(socket, _conversation, _active?) do
+    refresh_conversations(socket)
   end
 
   defp chat_row_active?(conversation_id, thread_id, active_id, active_thread_id)
@@ -4045,6 +4032,62 @@ defmodule RhoWeb.AppLive do
     |> refresh_data_table_session()
   end
 
+  defp resume_chat_session(socket, ensure_opts) do
+    case latest_resumable_conversation(socket) do
+      %{"session_id" => sid} = conversation when is_binary(sid) ->
+        workspace = conversation["workspace"] || workspace_for_session(socket, sid)
+        target_thread_id = chat_target_thread_id(conversation, nil)
+        maybe_switch_conversation_thread(conversation["id"], target_thread_id)
+
+        ensure_opts =
+          Keyword.merge(ensure_opts,
+            workspace: workspace,
+            agent_name: conversation_agent_name(conversation)
+          )
+
+        socket
+        |> assign(:session_id, sid)
+        |> SessionCore.subscribe_and_hydrate(sid, ensure_opts)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp latest_resumable_conversation(socket) do
+    socket
+    |> conversation_list_opts()
+    |> Rho.Conversation.list()
+    |> Enum.find(&(is_binary(&1["session_id"]) and can_access_conversation?(socket, &1)))
+  end
+
+  defp clear_active_chat_session(socket) do
+    sid = socket.assigns[:session_id]
+
+    socket =
+      socket
+      |> persist_current_thread_snapshot()
+      |> SessionCore.unsubscribe()
+
+    if sid do
+      Rho.Agent.Primary.stop(sid)
+    end
+
+    socket
+    |> assign(:session_id, nil)
+    |> assign(:agents, %{})
+    |> assign(:active_agent_id, nil)
+    |> assign(:agent_tab_order, [])
+    |> assign(:agent_messages, %{})
+    |> assign(:threads, [])
+    |> assign(:active_thread_id, nil)
+    |> assign(:active_conversation_id, nil)
+    |> assign(:selected_agent_id, nil)
+    |> assign(:editing_conversation_id, nil)
+    |> assign(:show_new_chat, false)
+    |> reset_session_runtime_assigns()
+  end
+
   defp persist_current_thread_snapshot(socket) do
     sid = socket.assigns[:session_id]
 
@@ -4083,6 +4126,29 @@ defmodule RhoWeb.AppLive do
       slug when is_binary(slug) -> push_patch(socket, to: ~p"/orgs/#{slug}/chat/#{sid}")
       _ -> socket
     end
+  end
+
+  defp maybe_push_chat_index_patch(socket) do
+    if socket.assigns[:active_page] == :chat do
+      case get_in(socket.assigns, [:current_organization, Access.key(:slug)]) do
+        slug when is_binary(slug) -> push_patch(socket, to: ~p"/orgs/#{slug}/chat")
+        _ -> socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp maybe_push_new_session_patch(socket, sid, true) do
+    if socket.assigns[:active_page] == :chat do
+      push_chat_session_patch(socket, sid)
+    else
+      socket
+    end
+  end
+
+  defp maybe_push_new_session_patch(socket, _sid, false) do
+    socket
   end
 
   defp tail_replay(socket, _sid, nil) do
@@ -4421,22 +4487,16 @@ defmodule RhoWeb.AppLive do
       RhoFrameworks.Library.get_library(org_id, library_id) ||
         RhoFrameworks.Library.get_visible_library!(org_id, library_id)
 
-    cond do
-      is_nil(lib) ->
-        socket
-
-      lib.immutable ->
-        slug = get_in(socket.assigns, [:current_organization, Access.key(:slug)])
-        push_navigate(socket, to: ~p"/orgs/#{slug}/libraries/#{lib.id}?chat=1")
-
-      true ->
-        load_mutable_library_into_data_table(socket, sid, lib)
+    if is_nil(lib) do
+      socket
+    else
+      load_library_rows_into_data_table(socket, sid, lib)
     end
   rescue
     _ -> socket
   end
 
-  defp load_mutable_library_into_data_table(socket, sid, lib) do
+  defp load_library_rows_into_data_table(socket, sid, lib) do
     table_name = "library:" <> lib.name
     schema = RhoFrameworks.DataTableSchemas.library_schema()
     _ = Rho.Stdlib.DataTable.ensure_started(sid)
@@ -4450,15 +4510,10 @@ defmodule RhoWeb.AppLive do
         Rho.Stdlib.DataTable.replace_all(sid, rows, table: table_name)
       end
 
-      send(parent, {:library_load_complete, table_name, lib.name, lib.version})
+      send(parent, {:library_load_complete, table_name, lib.name, lib.version, lib.immutable})
     end)
 
-    version_label =
-      if lib.version do
-        " v#{lib.version}"
-      else
-        " (draft)"
-      end
+    version_label = library_version_label(lib.version, lib.immutable)
 
     state = ensure_dt_keys(SignalRouter.read_ws_state(socket, :data_table) || dt_initial_state())
 
@@ -4466,7 +4521,8 @@ defmodule RhoWeb.AppLive do
       state
       | active_table: table_name,
         view_key: :skill_library,
-        mode_label: "Skill Library — #{lib.name}#{version_label} (loading…)"
+        mode_label: "Skill Library — #{lib.name}#{version_label} (loading…)",
+        metadata: library_workbench_metadata(lib, table_name)
     }
 
     if state.active_table != table_name do
@@ -4480,6 +4536,31 @@ defmodule RhoWeb.AppLive do
   rescue
     _ -> socket
   end
+
+  defp library_version_label(version, _immutable?) when not is_nil(version), do: " v#{version}"
+  defp library_version_label(_version, true), do: ""
+  defp library_version_label(_version, _immutable?), do: " (draft)"
+
+  defp library_workbench_metadata(lib, table_name) do
+    %{
+      workflow: :edit_existing,
+      artifact_kind: :skill_library,
+      title: "#{lib.name} Skill Framework",
+      library_name: lib.name,
+      output_table: table_name,
+      library_id: lib.id,
+      persisted?: true,
+      published?: lib.immutable,
+      dirty?: false,
+      source_label: library_source_label(lib.version, lib.immutable)
+    }
+  end
+
+  defp library_source_label(version, _immutable?) when not is_nil(version),
+    do: "Loaded v#{version}"
+
+  defp library_source_label(_version, true), do: "Loaded standard"
+  defp library_source_label(_version, _immutable?), do: "Loaded draft"
 
   defp open_data_table_workspace(socket) do
     key = :data_table
@@ -4597,6 +4678,109 @@ defmodule RhoWeb.AppLive do
       map_size(assigns.workspaces) == 0 -> :expanded
       true -> assigns.shell.chat_mode
     end
+  end
+
+  defp active_workbench_context(assigns, shared_ws_assigns) do
+    case Map.fetch(assigns.workspaces, :data_table) do
+      {:ok, _workspace} ->
+        assigns.ws_states
+        |> Map.get(:data_table)
+        |> RhoWeb.Workspaces.DataTable.component_assigns(shared_ws_assigns)
+        |> Map.get(:workbench_context)
+
+      :error ->
+        nil
+    end
+  end
+
+  defp workbench_suggestions(%Rho.Stdlib.DataTable.WorkbenchContext{
+         active_artifact: %Rho.Stdlib.DataTable.WorkbenchContext.ArtifactSummary{} = artifact
+       }) do
+    artifact.actions
+    |> Enum.map(&workbench_suggestion(&1, artifact))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.take(3)
+  end
+
+  defp workbench_suggestions(_), do: []
+
+  defp workbench_suggestion(:generate_levels, artifact) do
+    suggestion(
+      :generate_levels,
+      "Generate proficiency levels for skills missing levels in #{artifact.table_name}."
+    )
+  end
+
+  defp workbench_suggestion(:save_draft, artifact) do
+    suggestion(:save_draft, "Save #{artifact.title} as a draft.")
+  end
+
+  defp workbench_suggestion(:publish, artifact) do
+    suggestion(:publish, "Publish #{artifact.title} when it is ready.")
+  end
+
+  defp workbench_suggestion(:suggest_skills, artifact) do
+    suggestion(:suggest_skills, "Suggest additional skills for #{artifact.title}.")
+  end
+
+  defp workbench_suggestion(:seed_framework_from_selected, _artifact) do
+    suggestion(
+      :seed_framework_from_selected,
+      "Create a new skill framework from the selected role candidates."
+    )
+  end
+
+  defp workbench_suggestion(:clone_selected_role, _artifact) do
+    suggestion(:clone_selected_role, "Clone the selected role into a draft role profile.")
+  end
+
+  defp workbench_suggestion(:save_role_profile, artifact) do
+    suggestion(:save_role_profile, "Save #{artifact.title}.")
+  end
+
+  defp workbench_suggestion(:map_to_framework, artifact) do
+    suggestion(:map_to_framework, "Map #{artifact.title} to the linked skill framework.")
+  end
+
+  defp workbench_suggestion(:review_gaps, artifact) do
+    suggestion(:review_gaps, "Review gaps for #{artifact.title}.")
+  end
+
+  defp workbench_suggestion(:resolve_conflicts, _artifact) do
+    suggestion(:resolve_conflicts, "Help me resolve the remaining combine conflicts.")
+  end
+
+  defp workbench_suggestion(:create_merged_library, _artifact) do
+    suggestion(:create_merged_library, "Create the merged library from the resolved preview.")
+  end
+
+  defp workbench_suggestion(:resolve_duplicates, _artifact) do
+    suggestion(:resolve_duplicates, "Help me resolve the duplicate skill candidates.")
+  end
+
+  defp workbench_suggestion(:apply_cleanup, _artifact) do
+    suggestion(:apply_cleanup, "Apply the duplicate cleanup decisions to the source framework.")
+  end
+
+  defp workbench_suggestion(:save_cleaned_framework, _artifact) do
+    suggestion(:save_cleaned_framework, "Save the cleaned framework after deduplication.")
+  end
+
+  defp workbench_suggestion(:review_findings, artifact) do
+    suggestion(:review_findings, "Review the open findings in #{artifact.title}.")
+  end
+
+  defp workbench_suggestion(:apply_recommendations, artifact) do
+    suggestion(
+      :apply_recommendations,
+      "Apply the accepted recommendations from #{artifact.title}."
+    )
+  end
+
+  defp workbench_suggestion(_action, _artifact), do: nil
+
+  defp suggestion(action, content) do
+    %{label: RhoWeb.WorkbenchPresenter.action_label(action), content: content}
   end
 
   defp dispatch_to_workspace(socket, ws_mod, message) do
@@ -5037,21 +5221,6 @@ defmodule RhoWeb.AppLive do
 
   defp refresh_conversation_event?(_kind) do
     false
-  end
-
-  defp close_overlay(socket) do
-    if overlay_sid = socket.assigns[:overlay_session_id] do
-      Rho.Events.unsubscribe(overlay_sid)
-    end
-
-    org = socket.assigns.current_organization
-    libraries = RhoFrameworks.Library.list_libraries(org.id)
-
-    socket
-    |> assign(:chat_overlay_open, false)
-    |> assign(:overlay_session_id, nil)
-    |> assign(:libraries, libraries)
-    |> assign(:library_groups, group_libraries(libraries))
   end
 
   defp filter_library_groups(groups, query) when is_binary(query) do

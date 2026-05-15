@@ -132,6 +132,13 @@ defmodule RhoFrameworks.Tools.RoleTools do
                 table_name: "role_profile",
                 schema_key: :role_profile,
                 mode_label: "Role Profile — #{rp.name}",
+                metadata:
+                  role_profile_metadata(rp.name, :role_profile_edit,
+                    role_profile_id: rp.id,
+                    source_label: "Loaded saved role profile",
+                    persisted?: true,
+                    dirty?: false
+                  ),
                 rows: [],
                 skip_write?: true
               }
@@ -213,6 +220,11 @@ defmodule RhoFrameworks.Tools.RoleTools do
               table_name: "role_profile",
               schema_key: :role_profile,
               mode_label: label,
+              metadata:
+                role_profile_metadata(args[:name] || "New Role", :role_profile_edit,
+                  title: label,
+                  dirty?: true
+                ),
               rows: []
             }
           ]
@@ -246,6 +258,13 @@ defmodule RhoFrameworks.Tools.RoleTools do
                 table_name: "role_profile",
                 schema_key: :role_profile,
                 mode_label: "New Role Profile (cloned)",
+                metadata:
+                  role_profile_metadata("Cloned Role", :role_profile_edit,
+                    title: "Cloned Role Requirements",
+                    source_role_profile_ids: ids,
+                    source_label: "Cloned from #{length(ids)} role(s)",
+                    dirty?: true
+                  ),
                 rows: [],
                 skip_write?: true
               }
@@ -347,6 +366,7 @@ defmodule RhoFrameworks.Tools.RoleTools do
               table_name: tbl,
               schema_key: :role_candidates,
               mode_label: "Candidate Roles",
+              metadata: role_candidates_metadata(tbl, per_query, total, args_from_groups(groups)),
               rows: [],
               skip_write?: true
             }
@@ -560,4 +580,44 @@ defmodule RhoFrameworks.Tools.RoleTools do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp role_profile_metadata(name, workflow, opts) do
+    title = Keyword.get(opts, :title) || "#{name} Role Requirements"
+
+    %{
+      workflow: workflow,
+      artifact_kind: :role_profile,
+      title: title,
+      role_name: name,
+      output_table: "role_profile",
+      dirty?: Keyword.get(opts, :dirty?, true),
+      persisted?: Keyword.get(opts, :persisted?, false)
+    }
+    |> maybe_put(:role_profile_id, Keyword.get(opts, :role_profile_id))
+    |> maybe_put(:source_label, Keyword.get(opts, :source_label))
+    |> maybe_put(:source_role_profile_ids, Keyword.get(opts, :source_role_profile_ids))
+  end
+
+  defp role_candidates_metadata(table_name, per_query, total, queries) do
+    %{
+      workflow: :role_search,
+      artifact_kind: :role_candidates,
+      title: "Candidate Roles",
+      output_table: table_name,
+      source_role_names: queries,
+      source_label: Enum.join(queries, ", "),
+      candidate_count: total,
+      query_count: length(per_query),
+      ui_intent: %{
+        surface: :role_candidate_picker,
+        artifact_table: table_name,
+        allowed_actions: [:seed_framework_from_selected, :clone_selected_role],
+        props: %{queries: queries}
+      }
+    }
+  end
+
+  defp args_from_groups(groups) do
+    Enum.map(groups, fn {query, _roles} -> query end)
+  end
 end

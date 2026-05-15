@@ -37,11 +37,11 @@ defmodule RhoFrameworks.Lenses do
         %{
           id: Ecto.UUID.generate(),
           axis_id: axis_id,
-          key: attrs[:key] || attrs["key"],
-          name: attrs[:name] || attrs["name"],
-          weight: attrs[:weight] || attrs["weight"],
-          description: attrs[:description] || attrs["description"],
-          inverse: attrs[:inverse] || attrs["inverse"] || false,
+          key: Rho.MapAccess.get(attrs, :key),
+          name: Rho.MapAccess.get(attrs, :name),
+          weight: Rho.MapAccess.get(attrs, :weight),
+          description: Rho.MapAccess.get(attrs, :description),
+          inverse: Rho.MapAccess.get(attrs, :inverse) || false,
           inserted_at: now,
           updated_at: now
         }

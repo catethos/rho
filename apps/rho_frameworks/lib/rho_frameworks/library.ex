@@ -590,7 +590,7 @@ defmodule RhoFrameworks.Library do
   end
 
   defp dedupe_rows_by_slug(rows) do
-    rows |> Enum.reduce(%{}, fn row, acc -> Map.put(acc, row.slug, row) end) |> Map.values()
+    rows |> Map.new(fn row -> {row.slug, row} end) |> Map.values()
   end
 
   defp skill_on_conflict_query do
@@ -1900,13 +1900,9 @@ WHERE s1.library_id = $1
 
     jaro_rows
     |> unordered_pairs()
-    |> Enum.flat_map(fn {a, b} ->
-      if (is_nil(a.embedding) or is_nil(b.embedding)) and
-           String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold do
-        [{a, b}]
-      else
-        []
-      end
+    |> Enum.filter(fn {a, b} ->
+      (is_nil(a.embedding) or is_nil(b.embedding)) and
+        String.jaro_distance(String.downcase(a.name), String.downcase(b.name)) >= threshold
     end)
   end
 
@@ -2243,17 +2239,17 @@ WHERE s1.library_id = $1
 
   defp merge_proficiency_levels(source, target) do
     source_levels =
-      Map.new(source.proficiency_levels || [], fn l -> {l["level"] || l[:level], l} end)
+      Map.new(source.proficiency_levels || [], fn l -> {Rho.MapAccess.get(l, :level), l} end)
 
     target_levels =
-      Map.new(target.proficiency_levels || [], fn l -> {l["level"] || l[:level], l} end)
+      Map.new(target.proficiency_levels || [], fn l -> {Rho.MapAccess.get(l, :level), l} end)
 
     merged = Map.merge(source_levels, target_levels)
     gaps = map_size(merged) - map_size(target_levels)
 
     if gaps > 0 do
       sorted =
-        Enum.map(Enum.sort_by(merged, fn {_k, l} -> l["level"] || l[:level] end), fn {_, v} ->
+        Enum.map(Enum.sort_by(merged, fn {_k, l} -> Rho.MapAccess.get(l, :level) end), fn {_, v} ->
           v
         end)
 

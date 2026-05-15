@@ -59,8 +59,8 @@ defmodule RhoFrameworks.UseCases.SuggestSkills do
 
   @impl true
   def run(input, %Scope{} = scope) do
-    n = clamp_n(input[:n] || input["n"] || @default_n)
-    table = input[:table] || input["table"] || @library_default
+    n = clamp_n(Rho.MapAccess.get(input, :n) || @default_n)
+    table = Rho.MapAccess.get(input, :table) || @library_default
     suggest_scope = %{scope | source: :agent, reason: "user requested suggest_skills"}
 
     existing_text = format_existing(scope, table)

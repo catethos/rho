@@ -222,6 +222,58 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
     end
   end
 
+  describe "library page chat entry" do
+    test "renders Open in Chat as a main chat route with library_id" do
+      org = org()
+      library_id = Ecto.UUID.generate()
+
+      assigns = %{
+        __changed__: %{},
+        active_page: :library_show,
+        current_organization: org,
+        current_user: nil,
+        library: %{
+          id: library_id,
+          name: "CEO Skill Framework",
+          description: "Reusable skill taxonomy",
+          version: nil,
+          is_default: false,
+          immutable: true,
+          derived_from_id: nil
+        },
+        fork_pending?: false,
+        show_fork_modal: false,
+        fork_name: "",
+        show_diff: false,
+        diff_result: nil,
+        research_notes: [],
+        status_filter: nil,
+        skill_search_query: "",
+        skill_search_active?: false,
+        search_grouped: [],
+        filtered_skill_count: 0,
+        total_skill_count: 0,
+        grouped_index: [],
+        grouped: %{},
+        all_skills_loaded?: true,
+        highlight_skill: nil,
+        open_categories: MapSet.new(),
+        open_clusters: MapSet.new(),
+        cluster_skills: %{}
+      }
+
+      html =
+        assigns
+        |> RhoWeb.AppLive.render()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "/orgs/#{org.slug}/chat?library_id=#{library_id}"
+      refute html =~ "ChatOverlayComponent"
+      refute html =~ "?chat=1"
+    end
+  end
+
   describe "handle_info :smart_entry_result — Phase 10d starting_point" do
     test "valid starting_point lands in the query string" do
       socket = build_socket(%{current_organization: org()})

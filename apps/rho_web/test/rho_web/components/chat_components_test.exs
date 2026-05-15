@@ -1,6 +1,8 @@
 defmodule RhoWeb.ChatComponentsTest do
   use ExUnit.Case, async: true
 
+  import Phoenix.LiveViewTest
+
   alias RhoWeb.ChatComponents
 
   test "normalize_messages converts persisted typed structured tool text to a tool row" do
@@ -72,5 +74,56 @@ defmodule RhoWeb.ChatComponentsTest do
 
     assert [%{id: "2", type: :tool_call, output: "Extracted 12 skill(s)."}] =
              ChatComponents.normalize_messages(messages)
+  end
+
+  test "chat_feed summarizes tool calls outside debug mode" do
+    html =
+      render_component(&ChatComponents.chat_feed/1,
+        messages: [
+          %{
+            id: "1",
+            role: :assistant,
+            type: :tool_call,
+            name: "extract_role_from_jd",
+            args: %{"upload_id" => "upl_123"},
+            status: :ok,
+            output: "Extracted 12 skill(s)."
+          }
+        ],
+        session_id: "s1",
+        inflight: %{},
+        active_agent_id: "agent-1"
+      )
+
+    assert html =~ "tool-call-compact"
+    assert html =~ "extract_role_from_jd"
+    assert html =~ "Extracted 12 skill"
+    refute html =~ "upl_123"
+    refute html =~ "tool-call-detail"
+  end
+
+  test "chat_feed restores raw tool detail in debug mode" do
+    html =
+      render_component(&ChatComponents.chat_feed/1,
+        messages: [
+          %{
+            id: "1",
+            role: :assistant,
+            type: :tool_call,
+            name: "extract_role_from_jd",
+            args: %{"upload_id" => "upl_123"},
+            status: :ok,
+            output: "Extracted 12 skill(s)."
+          }
+        ],
+        session_id: "s1",
+        inflight: %{},
+        active_agent_id: "agent-1",
+        debug_mode: true
+      )
+
+    assert html =~ "tool-call-debug"
+    assert html =~ "tool-call-detail"
+    assert html =~ "upl_123"
   end
 end

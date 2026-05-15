@@ -972,10 +972,10 @@ defmodule RhoFrameworks.LibraryTest do
       # Level 2 should keep target's description (target wins)
       level_2 =
         Enum.find(merged.proficiency_levels, fn l ->
-          (l["level"] || l[:level]) == 2
+          Rho.MapAccess.get(l, :level) == 2
         end)
 
-      desc = level_2["level_description"] || level_2[:level_description]
+      desc = Rho.MapAccess.get(level_2, :level_description)
       assert desc == "Target mid"
     end
   end

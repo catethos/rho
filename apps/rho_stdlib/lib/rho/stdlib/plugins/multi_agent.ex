@@ -101,9 +101,9 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
 
   @impl Rho.Plugin
   def handle_signal(%{type: "rho.task.requested", data: data}, _opts, _ctx) do
-    task = data[:task] || data["task"]
-    task_id = data[:task_id] || data["task_id"]
-    max_steps = data[:max_steps] || data["max_steps"] || @default_max_steps
+    task = Rho.MapAccess.get(data, :task)
+    task_id = Rho.MapAccess.get(data, :task_id)
+    max_steps = Rho.MapAccess.get(data, :max_steps) || @default_max_steps
 
     if task do
       {:start_turn, task,
@@ -118,8 +118,8 @@ defmodule Rho.Stdlib.Plugins.MultiAgent do
   end
 
   def handle_signal(%{type: "rho.message.sent", data: data}, _opts, _ctx) do
-    message = data[:message] || data["message"]
-    from = data[:from] || data["from"]
+    message = Rho.MapAccess.get(data, :message)
+    from = Rho.MapAccess.get(data, :from)
 
     if message do
       {:start_turn, format_incoming_message(message, from), []}

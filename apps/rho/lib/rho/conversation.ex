@@ -221,8 +221,6 @@ defmodule Rho.Conversation do
       |> Index.write_conversation()
 
       :ok
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 

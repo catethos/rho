@@ -10,6 +10,9 @@ defmodule RhoWeb.DataTableComponentTest do
 
   import Phoenix.LiveViewTest
 
+  alias Rho.Stdlib.DataTable.Schema, as: StorageSchema
+  alias Rho.Stdlib.DataTable.Schema.Column, as: StorageColumn
+  alias Rho.Stdlib.DataTable.WorkbenchContext
   alias RhoWeb.DataTableComponent
   alias RhoWeb.DataTable.Schemas
 
@@ -90,6 +93,70 @@ defmodule RhoWeb.DataTableComponentTest do
       assert html =~ "dt-tab-active"
     end
 
+    test "renders semantic artifact tab badges from workbench context" do
+      library_schema = %StorageSchema{
+        name: "library",
+        columns: [
+          %StorageColumn{name: :category, type: :string},
+          %StorageColumn{name: :skill_name, type: :string}
+        ],
+        key_fields: [:skill_name]
+      }
+
+      candidates_schema = %StorageSchema{
+        name: "role_candidates",
+        columns: [
+          %StorageColumn{name: :query, type: :string},
+          %StorageColumn{name: :role_name, type: :string}
+        ],
+        key_fields: [:query, :role_name]
+      }
+
+      candidate_rows = [
+        %{id: "r1", query: "Risk Analyst", role_name: "Risk Analyst"},
+        %{id: "r2", query: "Risk Analyst", role_name: "Compliance Analyst"}
+      ]
+
+      tables = [
+        %{name: "library:CEO", schema: library_schema, row_count: 2, version: 1},
+        %{name: "role_candidates", schema: candidates_schema, row_count: 2, version: 1}
+      ]
+
+      workbench_context =
+        WorkbenchContext.build(%{
+          tables: tables,
+          table_order: ["library:CEO", "role_candidates"],
+          active_table: "role_candidates",
+          active_snapshot: %{rows: candidate_rows},
+          selections: %{"role_candidates" => MapSet.new(["r1"])}
+        })
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: candidate_rows,
+          schema: Schemas.role_candidates(),
+          workbench_context: workbench_context,
+          tables: tables,
+          table_order: ["library:CEO", "role_candidates"],
+          active_table: "role_candidates",
+          view_key: :role_candidates,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          selected_ids: MapSet.new(["r1"]),
+          class: ""
+        )
+
+      assert html =~ "CEO Skill Framework"
+      assert html =~ "2 skills"
+      assert html =~ "Candidate Roles"
+      assert html =~ "1 selected"
+    end
+
     test "hides tab strip when only one table" do
       html =
         render_component(DataTableComponent,
@@ -113,6 +180,264 @@ defmodule RhoWeb.DataTableComponentTest do
   end
 
   describe "rows rendering" do
+    test "renders active artifact title and metrics from workbench context" do
+      rows = [
+        %{
+          id: "r1",
+          category: "Business",
+          cluster: "Growth",
+          skill_name: "Fundraising",
+          skill_description: "Raises capital",
+          proficiency_levels: []
+        },
+        %{
+          id: "r2",
+          category: "Business",
+          cluster: "Strategy",
+          skill_name: "Market Positioning",
+          skill_description: "Finds market space",
+          proficiency_levels: [%{level: 1}]
+        }
+      ]
+
+      storage_schema = %StorageSchema{
+        name: "library",
+        columns: [
+          %StorageColumn{name: :category, type: :string},
+          %StorageColumn{name: :cluster, type: :string},
+          %StorageColumn{name: :skill_name, type: :string}
+        ],
+        children_key: :proficiency_levels,
+        key_fields: [:skill_name]
+      }
+
+      workbench_context =
+        WorkbenchContext.build(%{
+          tables: [%{name: "library:CEO", schema: storage_schema, row_count: 2, version: 1}],
+          table_order: ["library:CEO"],
+          active_table: "library:CEO",
+          active_snapshot: %{rows: rows},
+          metadata: %{source_label: "CEO Job Description.pdf", linked_role_table: "role_profile"}
+        })
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.skill_library(),
+          workbench_context: workbench_context,
+          tables: [%{name: "library:CEO", row_count: 2, version: 1, schema: storage_schema}],
+          table_order: ["library:CEO"],
+          active_table: "library:CEO",
+          mode_label: "Skill Library",
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: ""
+        )
+
+      assert html =~ "CEO Skill Framework"
+      assert html =~ "Reusable skill taxonomy"
+      assert html =~ "CEO Job Description.pdf"
+      assert html =~ "2 skills"
+      assert html =~ "1 need level"
+      refute html =~ "Save draft"
+      refute html =~ "Generate levels"
+      assert html =~ "Linked artifacts"
+      assert html =~ "role requirements"
+    end
+
+    test "renders role candidates as a picker surface" do
+      rows = [
+        %{
+          id: "r1",
+          query: "Risk Analyst",
+          rank: 1,
+          role_id: "role-1",
+          role_name: "Risk Analyst",
+          role_family: "Risk",
+          seniority_label: "Senior",
+          skill_count: 18
+        },
+        %{
+          id: "r2",
+          query: "Risk Analyst",
+          rank: 2,
+          role_id: "role-2",
+          role_name: "Compliance Analyst",
+          role_family: "Compliance",
+          seniority_label: "Mid",
+          skill_count: 14
+        }
+      ]
+
+      storage_schema = %StorageSchema{
+        name: "role_candidates",
+        columns: [
+          %StorageColumn{name: :query, type: :string},
+          %StorageColumn{name: :role_name, type: :string}
+        ],
+        key_fields: [:query, :role_id]
+      }
+
+      workbench_context =
+        WorkbenchContext.build(%{
+          tables: [%{name: "role_candidates", schema: storage_schema, row_count: 2, version: 1}],
+          table_order: ["role_candidates"],
+          active_table: "role_candidates",
+          active_snapshot: %{rows: rows},
+          selections: %{"role_candidates" => MapSet.new(["r1"])}
+        })
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.role_candidates(),
+          workbench_context: workbench_context,
+          tables: [%{name: "role_candidates", row_count: 2, version: 1, schema: storage_schema}],
+          table_order: ["role_candidates"],
+          active_table: "role_candidates",
+          view_key: :role_candidates,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          selected_ids: MapSet.new(["r1"]),
+          class: ""
+        )
+
+      assert html =~ "Picker"
+      assert html =~ "Choose source roles"
+      assert html =~ "2 candidates"
+      assert html =~ "1 selected"
+      assert html =~ "Seed Framework"
+    end
+
+    test "renders combine preview as a conflict decision queue" do
+      rows = [
+        %{id: "c1", skill_a_name: "Hiring", skill_b_name: "Talent Acquisition", resolution: ""},
+        %{
+          id: "c2",
+          skill_a_name: "Onboarding",
+          skill_b_name: "Employee Onboarding",
+          resolution: "merge_a"
+        }
+      ]
+
+      storage_schema = %StorageSchema{
+        name: "combine_preview",
+        columns: [
+          %StorageColumn{name: :skill_a_name, type: :string},
+          %StorageColumn{name: :skill_b_name, type: :string},
+          %StorageColumn{name: :resolution, type: :string}
+        ],
+        key_fields: [:skill_a_name, :skill_b_name]
+      }
+
+      workbench_context =
+        WorkbenchContext.build(%{
+          tables: [%{name: "combine_preview", schema: storage_schema, row_count: 2, version: 1}],
+          table_order: ["combine_preview"],
+          active_table: "combine_preview",
+          active_snapshot: %{rows: rows},
+          metadata: %{ui_intent: %{surface: :conflict_review}}
+        })
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.combine_conflicts(),
+          workbench_context: workbench_context,
+          tables: [%{name: "combine_preview", row_count: 2, version: 1, schema: storage_schema}],
+          table_order: ["combine_preview"],
+          active_table: "combine_preview",
+          view_key: :combine_conflicts,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: ""
+        )
+
+      assert html =~ "Decision queue"
+      assert html =~ "Resolve combine conflicts"
+      assert html =~ "1 unresolved"
+      assert html =~ "Needs decisions"
+    end
+
+    test "renders analysis result as a gap review surface" do
+      rows = [
+        %{
+          id: "g1",
+          skill_name: "AI Governance",
+          recommendation: "Add governance skill",
+          severity: "high",
+          status: "open"
+        },
+        %{
+          id: "g2",
+          skill_name: "Data Literacy",
+          recommendation: "Raise required level",
+          severity: "medium",
+          status: "accepted"
+        }
+      ]
+
+      storage_schema = %StorageSchema{
+        name: "gap_analysis",
+        columns: [
+          %StorageColumn{name: :skill_name, type: :string},
+          %StorageColumn{name: :recommendation, type: :string},
+          %StorageColumn{name: :severity, type: :string},
+          %StorageColumn{name: :status, type: :string}
+        ],
+        key_fields: [:skill_name, :recommendation]
+      }
+
+      workbench_context =
+        WorkbenchContext.build(%{
+          tables: [%{name: "gap_analysis", schema: storage_schema, row_count: 2, version: 1}],
+          table_order: ["gap_analysis"],
+          active_table: "gap_analysis",
+          active_snapshot: %{rows: rows},
+          metadata: %{artifact_kind: :analysis_result, ui_intent: %{surface: :gap_review}}
+        })
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.generic(),
+          workbench_context: workbench_context,
+          tables: [%{name: "gap_analysis", row_count: 2, version: 1, schema: storage_schema}],
+          table_order: ["gap_analysis"],
+          active_table: "gap_analysis",
+          view_key: :generic,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          class: ""
+        )
+
+      assert html =~ "Gap Review"
+      assert html =~ "Recommendations"
+      assert html =~ "2 findings"
+      assert html =~ "1 high priority"
+      assert html =~ "Needs review"
+      refute html =~ "Review findings"
+    end
+
     test "renders skill library rows with grouping" do
       rows = [
         %{

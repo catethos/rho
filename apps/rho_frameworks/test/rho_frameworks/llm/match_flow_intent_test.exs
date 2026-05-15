@@ -33,10 +33,7 @@ defmodule RhoFrameworks.LLM.MatchFlowIntentTest do
   end
 
   describe "compiled .baml" do
-    @baml_path Path.expand(
-                 "../../../priv/baml_src/functions/match_flow_intent.baml",
-                 __DIR__
-               )
+    @baml_path Application.app_dir(:rho_frameworks, "priv/baml_src/functions/match_flow_intent.baml")
 
     setup do
       assert File.exists?(@baml_path),

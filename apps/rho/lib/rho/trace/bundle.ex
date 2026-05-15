@@ -123,8 +123,8 @@ defmodule Rho.Trace.Bundle do
       ""
       | Enum.with_index(context, 1)
         |> Enum.map(fn {msg, idx} ->
-          role = Map.get(msg, :role) || Map.get(msg, "role") || "unknown"
-          content = Map.get(msg, :content) || Map.get(msg, "content") || ""
+          role = Rho.MapAccess.get(msg, :role) || "unknown"
+          content = Rho.MapAccess.get(msg, :content) || ""
           "## #{idx}. #{role}\n\n#{render_content(content)}\n"
         end)
     ]

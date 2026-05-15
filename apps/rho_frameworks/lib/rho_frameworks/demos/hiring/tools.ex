@@ -22,8 +22,8 @@ defmodule RhoFrameworks.Demos.Hiring.Tools do
           callback: fn _args -> :ok end
         ),
       execute: fn args ->
-        rounded = args["round"] || args[:round]
-        raw_scores = args["scores"] || args[:scores]
+        rounded = Rho.MapAccess.get(args, :round)
+        raw_scores = Rho.MapAccess.get(args, :scores)
 
         case Jason.decode(raw_scores) do
           {:ok, scores} when is_list(scores) ->

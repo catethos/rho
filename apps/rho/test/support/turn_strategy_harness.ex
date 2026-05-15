@@ -101,7 +101,7 @@ defmodule Rho.Test.TurnStrategyHarness do
     do: {{:tool, name}, 0}
 
   defp classify({:continue, %{tool_calls: [call | _]}}) when is_map(call) do
-    name = Map.get(call, :name) || Map.get(call, "name") || "unknown"
+    name = Rho.MapAccess.get(call, :name) || "unknown"
     {{:tool, name}, 0}
   end
 

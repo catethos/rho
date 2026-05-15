@@ -61,14 +61,14 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
 
       assert %Rho.PromptSection{
                key: :data_table_index,
-               heading: "Active data tables",
+               heading: "Workbench context",
                kind: :reference
              } = section
 
-      assert section.body =~ "- main (0 rows)"
-      assert section.body =~ "- library (0 rows)"
+      assert section.body =~ "- main [generic_table]"
+      assert section.body =~ "- library [skill_library]"
       # No table line carries the active marker.
-      refute section.body =~ "rows) ← currently open"
+      refute section.body =~ "[skill_library] currently open"
     end
 
     test "marks the active table when set", %{session_id: sid} do
@@ -79,8 +79,8 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
       [section] = Plugin.prompt_sections([], %{session_id: sid})
       lines = String.split(section.body, "\n")
 
-      assert Enum.any?(lines, &(&1 == "- library (0 rows) ← currently open in panel"))
-      assert Enum.any?(lines, &(&1 == "- main (0 rows)"))
+      assert Enum.any?(lines, &(&1 == "- library [skill_library] currently open"))
+      assert Enum.any?(lines, &(&1 == "- main [generic_table]"))
     end
 
     test "row_count reflects current rows", %{session_id: sid} do
@@ -94,7 +94,7 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
 
       [section] = Plugin.prompt_sections([], %{session_id: sid})
 
-      assert section.body =~ "- library (2 rows)"
+      assert section.body =~ "summary: 2 skills"
     end
 
     test "shows the column names for the active table", %{session_id: sid} do
@@ -134,9 +134,10 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
 
       [section] = Plugin.prompt_sections([], %{session_id: sid})
 
-      assert section.body =~ "Selected (2):"
-      assert section.body =~ "skill_name=\"Python\""
-      assert section.body =~ "skill_name=\"Elixir\""
+      assert section.body =~ "selected: 2"
+      assert section.body =~ "Selected rows in library:"
+      assert section.body =~ "Python"
+      assert section.body =~ "Elixir"
     end
 
     test "non-active table selections collapse to count only", %{session_id: sid} do
@@ -150,8 +151,9 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
 
       [section] = Plugin.prompt_sections([], %{session_id: sid})
 
-      assert section.body =~ "Selected (1)"
-      refute section.body =~ "skill_name=\"Python\""
+      assert section.body =~ "selected: 1"
+      refute section.body =~ "Selected rows in library:"
+      refute section.body =~ "Python"
     end
 
     test "truncates past the 10-row preview cap", %{session_id: sid} do
@@ -166,8 +168,8 @@ defmodule Rho.Stdlib.Plugins.DataTableTest do
 
       [section] = Plugin.prompt_sections([], %{session_id: sid})
 
-      assert section.body =~ "Selected (12):"
-      assert section.body =~ "… + 2 more selected"
+      assert section.body =~ "selected: 12"
+      assert section.body =~ "... + 2 more selected"
     end
   end
 

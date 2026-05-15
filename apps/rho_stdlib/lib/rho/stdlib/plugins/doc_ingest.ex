@@ -39,7 +39,7 @@ defmodule Rho.Stdlib.Plugins.DocIngest do
           callback: fn _args -> :ok end
         ),
       execute: fn args, _ctx ->
-        path = args[:file_path] || args["file_path"]
+        path = Rho.MapAccess.get(args, :file_path)
 
         if is_nil(path) or path == "" do
           {:error, "file_path is required"}

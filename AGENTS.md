@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Rho is an Elixir-based AI agent framework structured as an **umbrella** with five apps. Agents are configured with plugins (tools, prompt sections, bindings), transformers (in-flight mutation + policy), tapes (append-only event history), skills, sandbox support, and signal-based multi-agent coordination.
+Rho is an Elixir-based AI agent framework structured as an **umbrella** with seven apps. Agents are configured with plugins (tools, prompt sections, bindings), transformers (in-flight mutation + policy), tapes (append-only event history), skills, sandbox support, Python-backed tools, embeddings, and signal-based multi-agent coordination.
 
 ## Umbrella Structure
 
@@ -12,6 +12,8 @@ rho/
 │   ├── rho/              # Core agent runtime kernel (ZERO Phoenix/Ecto deps), mix tasks, .rho.exs loader
 │   ├── rho_stdlib/        # Built-in tools & plugins
 │   ├── rho_baml/          # BAML-driven structured-output helpers
+│   ├── rho_python/        # Python runtime service used by stdlib Python tools/py-agents
+│   ├── rho_embeddings/    # Embedding service and backends
 │   ├── rho_web/           # Phoenix endpoint, LiveViews
 │   └── rho_frameworks/    # Ecto/Postgres (pgvector) skill-assessment domain
 ├── config/
@@ -30,7 +32,7 @@ rho/
 
 ### `apps/rho/` — Core Runtime Kernel
 
-No Phoenix or Ecto deps. Deps: `req_llm`, `jido_signal`, `jason`, `nimble_options`, `dotenvy`.
+No Phoenix or Ecto deps. Deps include `req_llm`, `jason`, `nimble_options`, `phoenix_pubsub`, `dotenvy`, and in-umbrella `rho_baml`.
 
 Key modules:
 - `Rho.Session` — programmatic session API (single entry point for mix tasks, web, tests)
@@ -54,10 +56,11 @@ Key modules:
 - `Rho.Trace.Projection` — derived chat/context/debug/cost/failure views over tape entries.
 - `Rho.Trace.Analyzer` — deterministic trace checks for agent debugging.
 - `Rho.Trace.Bundle` — writes portable debug bundles for coding-agent investigation.
-- `Rho.Agent.*` — Worker, Registry, Primary, Supervisor, EventLog
+- `Rho.Agent.*` — Worker, Registry, Primary, Supervisor, EventLog, LiteTracker
 - `Rho.Events` / `Rho.Events.Event` — PubSub-based event bus (session + lifecycle topics)
+- `Rho.SessionOwners` — tracks session ownership for agent/session lifecycle coordination
 - `Rho.Config` — core config (tape_module, agent_config, etc.)
-- `Mix.Tasks.Rho.{Run,Trace,Debug,Smoke,Verify}` — mix tasks (run an agent, inspect traces, create debug bundles, smoke-test, verify config)
+- `Mix.Tasks.Rho.{Run,Trace,Debug,Smoke,Verify,RegenBaml,Credence}` — mix tasks (run an agent, inspect traces, create debug bundles, smoke-test, verify config, regenerate BAML, run policy checks)
 
 ### Conversation and Trace Invariants
 
@@ -69,30 +72,31 @@ Key modules:
 
 ### `apps/rho_stdlib/` — Built-in Tools & Plugins
 
-Deps: `rho` (in_umbrella), `floki`, `erlang_python`, `xlsxir`, `live_render`, `yaml_elixir`.
+Deps include `rho` and `rho_python` (in_umbrella), `floki`, `erlang_python`, `xlsxir`, `live_render`, `nimble_csv`, and `yaml_elixir`.
 
 Module namespaces:
 - `Rho.Stdlib` — plugin module map and `resolve_plugin/1`
-- `Rho.Stdlib.Tools.*` — Bash, FsRead/FsWrite/FsEdit (in fs.ex), WebFetch, Python, Sandbox, PathUtils, Finish, EndTurn, Anchor/SearchHistory/RecallContext/ClearMemory (in tape_tools.ex)
-- `Rho.Stdlib.Plugins.*` — MultiAgent, StepBudget, LiveRender, PyAgent, Spreadsheet, DocIngest, Tape, Control, DataTable
-- `Rho.Stdlib.DataTable` — client API for the per-session data table server (synchronous row ops, named tables). Callers pass `table: "name"` in opts; default is `"main"`. Entry points: `ensure_started/1`, `ensure_table/4`, `add_rows/3`, `get_rows/2`, `update_cells/3`, `replace_all/3`, `delete_rows/3`, `delete_by_filter/3`, `query_rows/2`, `get_table_snapshot/2`, `list_tables/1`, `summarize_table/2`, `set_active_table/2`, `get_active_table/1`, `set_selection/3`, `get_selection/2`, `clear_selection/2`.
+- `Rho.Stdlib.Tools.*` — Bash, FsRead/FsWrite/FsEdit (in fs.ex), WebFetch, WebSearch, Python, Sandbox, PathUtils, Finish, EndTurn, Anchor/SearchHistory/RecallContext/ClearMemory (in tape_tools.ex)
+- `Rho.Stdlib.Plugins.*` — MultiAgent, StepBudget, LiveRender, PyAgent, DataTable, Uploads, DocIngest (deprecated for new upload workflows), Tape, DebugTape, Control
+- `Rho.Stdlib.DataTable` — client API for the per-session data table server (synchronous row ops, named tables). Callers pass `table: "name"` in opts; default is `"main"`. Entry points include: `ensure_started/1`, `ensure_table/4`, `create_table/4`, `drop_table/2`, `get_schema/2`, `add_rows/3`, `get_rows/2`, `update_cells/3`, `replace_all/3`, `delete_rows/3`, `delete_by_filter/3`, `query_rows/2`, `get_session_snapshot/1`, `get_table_snapshot/2`, `list_tables/1`, `summarize_table/2`, `set_active_table/2`, `get_active_table/1`, `set_selection/3`, `get_selection/2`, `clear_selection/2`.
 - `Rho.Stdlib.DataTable.Server` — per-session `GenServer` that owns table state and publishes coarse invalidation events via `Rho.Events`. Uses `restart: :temporary` — a crashed server stays down with `{:error, :not_running}` returned to callers rather than silently restarting empty. Also tracks an `active_table` (user-visible focus) and per-table row `selections` (user's explicit checkbox picks, auto-pruned on row mutation) for `prompt_sections/2`.
 - `Rho.Stdlib.DataTable.Schema` / `Rho.Stdlib.DataTable.Schema.Column` / `Rho.Stdlib.DataTable.Table` — pure data structs
 - `Rho.Stdlib.DataTable.SessionJanitor` — listens for `rho.agent.stopped` and stops the matching server
 - `Rho.Stdlib.DataTable.ActiveViewListener` — bridges LiveView-emitted `:view_focus` and `:row_selection` events into `DataTable.set_active_table/2` and `DataTable.set_selection/3` so the DataTable plugin's `prompt_sections/2` knows which table the user is looking at and which rows the user has selected.
+- `Rho.Stdlib.Uploads.*` — per-session upload registry/supervision and observers for CSV, Excel, PDF, prose, and image files
 - `Rho.Stdlib.Skill` / `Rho.Stdlib.Skill.Plugin` / `Rho.Stdlib.Skill.Loader`
 
 #### Named tables
 
-A single session can have multiple named data tables side-by-side. `"main"` is created eagerly with a permissive (dynamic) schema and accepts arbitrary LLM-generated fields. Domain tools declare strict schemas and opt in to named tables by calling `Rho.Stdlib.DataTable.ensure_table(session_id, "library", library_schema())` before writing rows. Example pattern (see `RhoFrameworks.Tools.LibraryTools.load_library`):
+A single session can have multiple named data tables side-by-side. `"main"` is created eagerly with a permissive (dynamic) schema and accepts arbitrary LLM-generated fields. Domain tools declare strict schemas and opt in to named tables by calling `Rho.Stdlib.DataTable.ensure_table(session_id, table_name, schema)` before writing rows. Framework libraries commonly use names like `"library:<name>"`; import/dedup previews use their own artifact names. Example pattern (see `RhoFrameworks.Tools.LibraryTools.load_library` and `RhoFrameworks.Library.Editor.table_name/1`):
 
 ```elixir
-:ok = DataTable.ensure_table(ctx.session_id, "library", DataTableSchemas.library_schema())
-# return %Rho.Effect.Table{table_name: "library", schema_key: :skill_library, rows: rows}
-# — EffectDispatcher writes rows to the "library" table and auto-switches the LV tab.
+:ok = DataTable.ensure_table(ctx.session_id, table_name, DataTableSchemas.library_schema())
+# return %Rho.Effect.Table{table_name: table_name, schema_key: :skill_library, rows: rows}
+# — EffectDispatcher writes rows to the named table and auto-switches the LV tab.
 ```
 
-Agent-facing plugin tools (`get_table`, `add_rows`, `update_cells`, …) take an optional `table:` param that defaults to `"main"`. Agents that load a named table must pass `table:` on subsequent ops — there is no auto-tracking of "active" table server-side. The `:spreadsheet` agent's system prompt documents the per-path convention (`table: "library"` after `load_library`, `table: "role_profile"` after `load_role_profile` / `clone_role_skills` / `start_role_profile_draft`).
+Agent-facing plugin tools (`get_table`, `add_rows`, `update_cells`, …) take an optional `table:` param that defaults to `"main"`. Agents that load a named table must pass `table:` on subsequent ops — there is no auto-tracking of "active" table server-side. The `:spreadsheet` agent's system prompt documents the per-path convention and should be treated as the source of truth for current workflow-specific table names.
 
 ### `apps/rho_baml/` — BAML Structured-Output Library
 
@@ -103,7 +107,7 @@ Deps: `baml_elixir ~> 1.0.0-pre.27`, `zoi ~> 0.17`. No `in_umbrella` deps.
 Key modules:
 - `RhoBaml` — top-level helpers; `baml_path/1` resolves an OTP app's `priv/baml_src` via `:code.priv_dir/1`
 - `RhoBaml.SchemaCompiler` — Zoi schema → BAML class string conversion. Handles primitives (`string`, `int`, `float`, `bool`), `array`, optional fields (`type?`), `@description("...")`, and nested struct/map types (emitted as separate classes). Also builds full `function ... -> Class` bodies via `build_function_baml/6`.
-- `RhoBaml.Function` — `use` hook for static LLM function modules. A `__before_compile__` macro reads `@schema` (Zoi) and `@prompt`, writes `<consumer_app>/priv/baml_src/functions/<name>.baml` at compile time, and defines `call/2` + `stream/3` that delegate to `BamlElixir.Client.call/3` / `.sync_stream/4`. Supports `:llm_client` and `:collectors` overrides per call. Used by `RhoFrameworks.LLM.{RankRoles, ScoreLens, SemanticDuplicates}`.
+- `RhoBaml.Function` — `use` hook for static LLM function modules. A `__before_compile__` macro reads `@schema` (Zoi) and `@prompt`, writes `<consumer_app>/priv/baml_src/functions/<name>.baml` at compile time, and defines `call/2` + `stream/3` that delegate to `BamlElixir.Client.call/3` / `.sync_stream/4`. Supports `:llm_client` and `:collectors` overrides per call. Used by `RhoFrameworks.LLM.*` modules such as rank/score/dedup flows, JD extraction, skeleton generation, gap identification, flow intent matching, and proficiency generation.
 - `RhoBaml.SchemaWriter` — runtime tool_defs → `.baml` file generation for `Rho.TurnStrategy.TypedStructured`. Emits a **discriminated union** of per-tool action classes (`RespondAction`, `ThinkAction`, plus one `<ToolName>Action` per visible tool). Each variant declares a literal `tool "<name>"` discriminant, only its own params (required-vs-optional preserved), and `thinking string?`. The `AgentTurn` function returns the union, so the LLM emits only the picked variant's fields — no `null` padding. `write!/3` accepts a `:model` option in `"provider:model_id"` format and generates a matching dynamic `client.baml` from a built-in provider map (openrouter, anthropic, openai, fireworks_ai, groq, google).
 
 #### App ownership of BAML schemas
@@ -119,23 +123,33 @@ Adding a new static LLM function = add a module to a consumer app, not to `rho_b
 
 ### `apps/rho_web/` — Phoenix Web Application
 
-Deps: `rho`, `rho_stdlib`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_live_view`, `bandit`.
+Deps include `rho`, `rho_stdlib`, `rho_frameworks` (in_umbrella), `phoenix`, `phoenix_live_view`, `bandit`, `hammer`, `elixlsx`, and `remote_ip`.
 
 - `RhoWeb.*` — endpoint, router, LiveViews, components
 - `RhoWeb.Application` — starts PubSub, Endpoint
 
 ### `apps/rho_frameworks/` — Skill Assessment Domain
 
-Deps: `rho`, `rho_stdlib` (in_umbrella), `ecto_sql`, `postgrex`, `pgvector`, `phoenix_ecto`, `bcrypt_elixir`.
+Deps include `rho`, `rho_stdlib`, `rho_baml`, `rho_embeddings` (in_umbrella), `ecto_sql`, `postgrex`, `pgvector`, `phoenix_ecto`, `bcrypt_elixir`, `jason`, and `nimble_csv`.
 
 - `RhoFrameworks.Repo` — Ecto Postgres repo (pgvector enabled)
-- `RhoFrameworks.Accounts` / `.Accounts.User` / `.Accounts.UserToken`
-- `RhoFrameworks.Frameworks` / `.Frameworks.Framework` / `.Frameworks.Skill`
+- `RhoFrameworks.Accounts` / `.Accounts.User` / `.Accounts.UserToken` / `.Accounts.Organization` / `.Accounts.Membership`
+- `RhoFrameworks.Frameworks` / `.Frameworks.Library` / `.Frameworks.Skill` / role, lens, score, and research-note schemas
 - `RhoFrameworks.Plugin` — tool plugin for framework persistence
 - `RhoFrameworks.DataTableSchemas` — declared `Rho.Stdlib.DataTable.Schema` values for the `"library"` and `"role_profile"` named tables. Domain tools pass these to `DataTable.ensure_table/4`.
-- `RhoFrameworks.Tools.LibraryTools` / `.Tools.RoleTools` — `Rho.Tool` DSL modules. Library/role tools load into their respective named tables and return `:not_running`/empty errors actionably. (Note: `save_library` was deleted in the swappable-decision-policy refactor — see `RhoFrameworks.Tools.WorkflowTools` below.)
-- `RhoFrameworks.Tools.WorkflowTools` — `Rho.Tool` wrappers around `RhoFrameworks.UseCases.*`. Adds chat-side tools `load_similar_roles`, `generate_framework_skeletons` (async — spawns the SkeletonGenerator worker), `generate_proficiency` (async fan-out — one writer per category), `save_framework`. These are the same UseCases the wizard's `RhoFrameworks.FlowRunner` invokes for `RhoFrameworks.Flows.CreateFramework`. `add_proficiency_levels` (in `SharedTools`) matches by `skill_name` to update existing skeleton rows with proficiency data after fan-out.
+- `RhoFrameworks.Tools.LibraryTools` / `.Tools.RoleTools` / `.Tools.SharedTools` / `.Tools.LensTools` — `Rho.Tool` DSL modules. Library/role tools load into their respective named tables and return `:not_running`/empty errors actionably. `save_library` was removed; use `save_framework` in `RhoFrameworks.Tools.WorkflowTools`.
+- `RhoFrameworks.Tools.WorkflowTools` — `Rho.Tool` wrappers around `RhoFrameworks.UseCases.*`. Adds chat-side tools including `load_similar_roles`, `generate_framework_skeletons`, `generate_proficiency`, `save_framework`, and workflow helpers. These are the same UseCases the wizard's `RhoFrameworks.FlowRunner` invokes for `RhoFrameworks.Flows.CreateFramework` / `EditFramework` / `FinalizeSkeleton`.
+- `RhoFrameworks.Flow` / `.FlowRunner` / `.Flows.*` / `.Flow.Policies.*` — deterministic/hybrid flow orchestration for framework creation, editing, and finalization.
+- `RhoFrameworks.UseCases.*` — domain use cases for import, merge, diff, conflict resolution, research, gap analysis, extraction, suggestion, and persistence.
 - `RhoFrameworks.Demos.Hiring.*`
+
+### `apps/rho_python/` — Python Runtime Service
+
+Owns `RhoPython.Server`, Python dependency declaration, py-agent configuration, and readiness checks used by stdlib Python tools. `rho_stdlib` depends on this app rather than owning the runtime directly.
+
+### `apps/rho_embeddings/` — Embedding Service
+
+Owns `RhoEmbeddings.Server` and embedding backends (`OpenAI`, `Fake`). `rho_frameworks` depends on this for skill/role embedding and dedup workflows.
 
 ## Plugin & Transformer Architecture
 
@@ -181,14 +195,17 @@ The final system prompt = agent `system_prompt` + all plugin `prompt_sections` +
 %Rho.Context{
   tape_name:      String.t() | nil,
   tape_module:    module(),
-  workspace:      String.t(),
-  agent_name:     atom(),
+  workspace:      term(),
+  agent_name:     term(),
   depth:          non_neg_integer(),
-  subagent:       boolean(),
   agent_id:       String.t() | nil,
   session_id:     String.t() | nil,
+  conversation_id: String.t() | nil,
+  thread_id:      String.t() | nil,
+  turn_id:        String.t() | nil,
   prompt_format:  :markdown | :xml | nil,
-  user_id:        String.t() | nil
+  user_id:        String.t() | nil,
+  organization_id: String.t() | nil
 }
 ```
 
@@ -207,6 +224,7 @@ The final system prompt = agent `system_prompt` + all plugin `prompt_sections` +
 - `Rho.Agent.Registry` — ETS-backed discovery
 - `Rho.Agent.Primary` — session namespace helper
 - `Rho.Agent.Supervisor` — DynamicSupervisor for all agents
+- `Rho.Agent.LiteTracker` — ETS-backed tracker for short-lived lightweight workers spawned by agent/tool flows
 - `Rho.Events` / `Rho.Events.Event` — PubSub-based event bus
 
 ## Config System
@@ -229,24 +247,34 @@ Custom `ReqLLM` providers live in `apps/rho/lib/req_llm/providers/` and are regi
 ```
 # apps/rho (Rho.Application)
 Rho.Supervisor (one_for_one)
+├── {Phoenix.PubSub, name: Rho.PubSub}
 ├── Registry (Rho.AgentRegistry)
 ├── Task.Supervisor (Rho.TaskSupervisor)
 ├── Rho.PluginRegistry
 ├── Rho.TransformerRegistry
-├── {Phoenix.PubSub, name: Rho.PubSub}
+├── Rho.SessionOwners
 ├── Rho.LLM.Admission
 ├── [Tape children]
 ├── Rho.Agent.Supervisor
 ├── Registry (Rho.EventLogRegistry)
 └── DynamicSupervisor (EventLog.Supervisor)
 
-# apps/rho_stdlib (Rho.Stdlib.Application) — also registers built-in plugins/transformers and inits Python
+# apps/rho_stdlib (Rho.Stdlib.Application) — also registers configured plugins/transformers and initializes Python integrations when needed
 ├── Registry (Rho.PythonRegistry)
-├── DynamicSupervisor (Python.Supervisor)
+├── DynamicSupervisor (Rho.Stdlib.Tools.Python.Supervisor)
 ├── Registry (Rho.Stdlib.DataTable.Registry)
 ├── DynamicSupervisor (Rho.Stdlib.DataTable.Supervisor)
 ├── Rho.Stdlib.DataTable.SessionJanitor
-└── Rho.Stdlib.DataTable.ActiveViewListener
+├── Rho.Stdlib.DataTable.ActiveViewListener
+├── Registry (Rho.Stdlib.Uploads.Registry)
+├── Rho.Stdlib.Uploads.Supervisor
+└── Rho.Stdlib.Uploads.SessionJanitor
+
+# apps/rho_python (RhoPython.Application)
+└── RhoPython.Server
+
+# apps/rho_embeddings (RhoEmbeddings.Application)
+└── RhoEmbeddings.Server
 
 # apps/rho_web (RhoWeb.Application)
 ├── Phoenix.PubSub
@@ -262,6 +290,23 @@ Rho.Supervisor (one_for_one)
 mix test                                      # full suite
 mix test --app rho                            # core only
 mix test --app rho_stdlib                     # stdlib only
+mix test --app rho_frameworks                 # framework domain only
+mix test --app rho_web                        # Phoenix/web only
+```
+
+## Post-Change Quality Gates
+
+After code changes, run both lint gates before considering the work complete:
+
+```bash
+mix rho.slop.strict --format oneline
+mix rho.credence
+```
+
+For broader changes, prefer the umbrella quality alias:
+
+```bash
+mix rho.quality
 ```
 
 ## Plugin Module Map (atom shorthands)
@@ -273,6 +318,7 @@ mix test --app rho_stdlib                     # stdlib only
 | `:fs_write` | `Rho.Stdlib.Tools.FsWrite` |
 | `:fs_edit` | `Rho.Stdlib.Tools.FsEdit` |
 | `:web_fetch` | `Rho.Stdlib.Tools.WebFetch` |
+| `:web_search` | `Rho.Stdlib.Tools.WebSearch` |
 | `:python` | `Rho.Stdlib.Tools.Python` |
 | `:skills` | `Rho.Stdlib.Skill.Plugin` |
 | `:multi_agent` | `Rho.Stdlib.Plugins.MultiAgent` |
@@ -283,6 +329,7 @@ mix test --app rho_stdlib                     # stdlib only
 | `:data_table` | `Rho.Stdlib.Plugins.DataTable` (thin wrapper over `Rho.Stdlib.DataTable` client API — see §Named tables) |
 | `:doc_ingest` | `Rho.Stdlib.Plugins.DocIngest` |
 | `:tape` / `:journal` | `Rho.Stdlib.Plugins.Tape` |
+| `:uploads` | `Rho.Stdlib.Plugins.Uploads` |
 | `:debug_tape` | `Rho.Stdlib.Plugins.DebugTape` |
 | `:control` | `Rho.Stdlib.Plugins.Control` |
 

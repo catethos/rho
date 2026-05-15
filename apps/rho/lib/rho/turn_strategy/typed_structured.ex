@@ -71,7 +71,7 @@ defmodule Rho.TurnStrategy.TypedStructured do
         {:parse_error, reason, Jason.encode!(parsed)}
 
       {:parse_error, _reason} ->
-        message = parsed[:message] || parsed["message"] || inspect(parsed)
+        message = Rho.MapAccess.get(parsed, :message) || inspect(parsed)
         {:respond, String.trim(to_string(message))}
     end
   end

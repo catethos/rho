@@ -588,12 +588,12 @@ defmodule RhoWeb.Projections.SessionState do
   end
 
   defp reduce_usage(state, data) do
-    usage = data[:usage] || %{}
-    input = usage[:input_tokens] || Map.get(usage, "input_tokens", 0)
-    output = usage[:output_tokens] || Map.get(usage, "output_tokens", 0)
-    cost = usage[:total_cost] || Map.get(usage, "total_cost", 0.0)
-    cached = usage[:cached_tokens] || Map.get(usage, "cached_tokens", 0)
-    reasoning = usage[:reasoning_tokens] || Map.get(usage, "reasoning_tokens", 0)
+    usage = Rho.MapAccess.get(data, :usage, %{})
+    input = Rho.MapAccess.get(usage, :input_tokens, 0)
+    output = Rho.MapAccess.get(usage, :output_tokens, 0)
+    cost = Rho.MapAccess.get(usage, :total_cost, 0.0)
+    cached = Rho.MapAccess.get(usage, :cached_tokens, 0)
+    reasoning = Rho.MapAccess.get(usage, :reasoning_tokens, 0)
 
     state =
       state

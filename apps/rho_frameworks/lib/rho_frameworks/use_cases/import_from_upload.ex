@@ -82,8 +82,8 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
   defp check_strategy(_obs, _input), do: {:error, :unsupported_observation_kind}
 
   defp explicit_sheet_override?(input) do
-    sheet = Map.get(input, :sheet) || Map.get(input, "sheet")
-    name = Map.get(input, :library_name) || Map.get(input, "library_name")
+    sheet = Rho.MapAccess.get(input, :sheet)
+    name = Rho.MapAccess.get(input, :library_name)
     is_binary(sheet) and sheet != "" and is_binary(name) and name != ""
   end
 
@@ -99,7 +99,7 @@ defmodule RhoFrameworks.UseCases.ImportFromUpload do
   end
 
   defp pick_sheet(obs, input) do
-    explicit = Map.get(input, :sheet) || Map.get(input, "sheet")
+    explicit = Rho.MapAccess.get(input, :sheet)
 
     if is_binary(explicit) and explicit != "" do
       explicit

@@ -32,7 +32,7 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
     library_id = resolve_library_id(input, scope)
 
     opts =
-      case Map.get(input, :table_name) || Map.get(input, "table_name") do
+      case Rho.MapAccess.get(input, :table_name) do
         nil -> []
         "" -> []
         table -> [table: table]
@@ -153,7 +153,7 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
   end
 
   defp resolve_library_id(input, %Scope{} = scope) do
-    case Map.get(input, :library_id) || Map.get(input, "library_id") do
+    case Rho.MapAccess.get(input, :library_id) do
       id when is_binary(id) and id != "" -> id
       _ -> lookup_or_create_by_name(input, scope)
     end
@@ -186,12 +186,12 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
   end
 
   defp framework_name(input, scope) do
-    explicit = Map.get(input, :name) || Map.get(input, "name")
+    explicit = Rho.MapAccess.get(input, :name)
 
     if not blank?(explicit) do
       explicit
     else
-      case Map.get(input, :table_name) || Map.get(input, "table_name") do
+      case Rho.MapAccess.get(input, :table_name) do
         "library:" <> name when name != "" -> name
         _ -> meta_field(scope, :name)
       end
@@ -199,7 +199,7 @@ defmodule RhoFrameworks.UseCases.SaveFramework do
   end
 
   defp framework_description(input, scope) do
-    explicit = Map.get(input, :description) || Map.get(input, "description")
+    explicit = Rho.MapAccess.get(input, :description)
 
     if blank?(explicit) do
       meta_field(scope, :description)

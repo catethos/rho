@@ -19,10 +19,7 @@ defmodule Rho.ToolArgs do
   """
   @spec cast(map(), keyword()) :: map()
   def cast(args, parameter_schema) when is_list(parameter_schema) do
-    declared_keys =
-      Enum.reduce(parameter_schema, %{}, fn {atom_key, _opts}, acc ->
-        Map.put(acc, Atom.to_string(atom_key), atom_key)
-      end)
+    declared_keys = Map.new(parameter_schema, fn {atom_key, _opts} -> {Atom.to_string(atom_key), atom_key} end)
 
     result =
       Enum.reduce(args, %{}, fn {key, value}, acc ->

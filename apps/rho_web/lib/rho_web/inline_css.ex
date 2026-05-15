@@ -1149,6 +1149,32 @@ defmodule RhoWeb.InlineCSS do
     .tool-call {
       margin: 0.35rem 0;
     }
+    .tool-call-compact {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      width: fit-content;
+      max-width: 100%;
+      padding: 0.35rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-shelf);
+      color: var(--text-secondary);
+      font-size: 0.78rem;
+    }
+    .tool-compact-label {
+      color: var(--text-muted);
+      font-size: 0.72rem;
+    }
+    .tool-output-preview {
+      flex-basis: 100%;
+      max-width: 34rem;
+      color: var(--text-muted);
+      font-size: 0.74rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
     .tool-call-summary {
       display: flex;
       align-items: center;
@@ -2144,22 +2170,144 @@ defmodule RhoWeb.InlineCSS do
     }
     .dt-panel.hidden { display: none; }
 
-    .dt-toolbar {
+    .dt-toolbar,
+    .dt-artifact-header {
       display: flex;
       align-items: center;
       gap: 14px;
-      padding: 0 20px;
+      padding: 14px 20px;
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border);
-      height: 52px;
+      min-height: 86px;
       flex-shrink: 0;
     }
 
+    .dt-artifact-main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .dt-artifact-kicker {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--accent, #e07a2f);
+      letter-spacing: 0;
+    }
+
     .dt-title {
-      font-size: 0.9375rem;
-      font-weight: 600;
+      margin: 0;
+      font-size: 1.125rem;
+      line-height: 1.15;
+      font-weight: 700;
       color: var(--text-primary);
-      letter-spacing: -0.01em;
+      letter-spacing: 0;
+    }
+
+    .dt-artifact-subtitle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .dt-artifact-source {
+      color: var(--text-secondary);
+    }
+
+    .dt-artifact-source::before {
+      content: "Source:";
+      color: var(--text-muted);
+      margin-right: 4px;
+    }
+
+    .dt-metric-strip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .dt-metric-pill {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-family: 'Fragment Mono', monospace;
+      padding: 3px 8px;
+      background: var(--bg-deep);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    .dt-surface-notice {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg-shelf) 78%, var(--bg-surface));
+      flex-shrink: 0;
+    }
+    .dt-surface-copy {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 3px;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .dt-surface-copy strong {
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .dt-surface-label {
+      color: var(--accent, #e07a2f);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    .dt-surface-count {
+      display: grid;
+      place-items: center;
+      min-width: 74px;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-surface);
+    }
+    .dt-surface-count strong {
+      color: var(--text-primary);
+      font-family: 'Fragment Mono', monospace;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .dt-surface-count span,
+    .dt-surface-state {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .dt-surface-state {
+      flex: 0 0 auto;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-surface);
+    }
+    .dt-surface-state.is-ready {
+      color: var(--green);
+      border-color: color-mix(in srgb, var(--green) 50%, var(--border));
+    }
+    .dt-surface-state.needs-work {
+      color: var(--accent, #e07a2f);
+      border-color: color-mix(in srgb, var(--accent, #e07a2f) 45%, var(--border));
     }
 
     .dt-row-count-legacy,
@@ -2181,6 +2329,7 @@ defmodule RhoWeb.InlineCSS do
       background: var(--teal-dim);
       border-radius: 10px;
     }
+    .dt-metric-strip .dt-cost { margin-left: 0; }
 
     /* === Data Table Tab Strip === */
     .dt-tab-strip {
@@ -3215,6 +3364,30 @@ defmodule RhoWeb.InlineCSS do
 
     .dt-chat-panel .chat-input-area {
       border-top: 1px solid var(--border);
+    }
+
+    .workbench-suggestion-strip {
+      display: flex;
+      gap: 0.4rem;
+      padding: 0.55rem 0.75rem 0;
+      overflow-x: auto;
+    }
+    .workbench-suggestion-chip {
+      flex: 0 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-shelf);
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 0.74rem;
+      font-weight: 600;
+      padding: 0.32rem 0.62rem;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .workbench-suggestion-chip:hover {
+      color: var(--text-primary);
+      border-color: var(--teal);
+      background: color-mix(in srgb, var(--teal) 10%, var(--bg-surface));
     }
 
     /* Streaming indicator on toolbar */

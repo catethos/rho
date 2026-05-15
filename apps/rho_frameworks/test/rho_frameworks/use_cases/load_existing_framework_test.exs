@@ -83,7 +83,7 @@ defmodule RhoFrameworks.UseCases.LoadExistingFrameworkTest do
 
       names =
         rows
-        |> Enum.map(fn r -> r[:skill_name] || r["skill_name"] end)
+        |> Enum.map(fn r -> Rho.MapAccess.get(r, :skill_name) end)
         |> MapSet.new()
 
       assert MapSet.equal?(names, MapSet.new(["API Design", "Database Modeling"]))

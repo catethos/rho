@@ -509,7 +509,7 @@ defmodule RhoWeb.FlowLive do
 
     current =
       Enum.find(socket.assigns.research_rows, fn r ->
-        to_string(r[:id] || r["id"]) == row_id
+        to_string(Rho.MapAccess.get(r, :id)) == row_id
       end)
 
     next_pinned = not pinned_row?(current)
@@ -784,7 +784,7 @@ defmodule RhoWeb.FlowLive do
   defp pinned_row?(nil), do: false
 
   defp pinned_row?(row) when is_map(row) do
-    case Map.get(row, :pinned) || Map.get(row, "pinned") do
+    case Rho.MapAccess.get(row, :pinned) do
       true -> true
       "true" -> true
       _ -> false
@@ -1173,10 +1173,10 @@ defmodule RhoWeb.FlowLive do
   end
 
   defp handle_step_chat_clarify(socket, data) do
-    agent_id = data[:agent_id] || data["agent_id"]
+    agent_id = Rho.MapAccess.get(data, :agent_id)
 
     if is_binary(agent_id) and agent_id == socket.assigns[:step_chat_agent_id] do
-      assign(socket, :step_chat_pending_question, data[:question] || data["question"])
+      assign(socket, :step_chat_pending_question, Rho.MapAccess.get(data, :question))
     else
       socket
     end
@@ -1225,8 +1225,8 @@ defmodule RhoWeb.FlowLive do
 
   defp handle_worker_completed(socket, data) do
     agent_id =
-      data[:worker_agent_id] || data["worker_agent_id"] ||
-        data[:agent_id] || data["agent_id"]
+      Rho.MapAccess.get(data, :worker_agent_id) ||
+        Rho.MapAccess.get(data, :agent_id)
 
     research_id = socket.assigns[:research_agent_id]
     step_chat_id = socket.assigns[:step_chat_agent_id]
@@ -1437,7 +1437,7 @@ defmodule RhoWeb.FlowLive do
   defp initial_selected_ids(_node, _runner, _matches), do: []
 
   defp item_id(item) do
-    to_string(item[:id] || item["id"] || :erlang.phash2(item))
+    to_string(Rho.MapAccess.get(item, :id) || :erlang.phash2(item))
   end
 
   # -------------------------------------------------------------------
@@ -1450,7 +1450,7 @@ defmodule RhoWeb.FlowLive do
         name
 
       _ ->
-        case Map.get(intake, :name) || Map.get(intake, "name") do
+        case Rho.MapAccess.get(intake, :name) do
           name when is_binary(name) and name != "" ->
             RhoFrameworks.Library.Editor.table_name(name)
 
