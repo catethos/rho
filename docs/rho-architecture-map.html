@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rho Architecture Map</title>
+  <style>
+    :root {
+      --paper: #f7f3e8;
+      --ink: #1d1b16;
+      --muted: #625d51;
+      --line: #d3c7ad;
+      --oxide: #b24b2f;
+      --moss: #4b7a58;
+      --brass: #c18a2b;
+      --teal: #28757b;
+      --berry: #9b3f5f;
+      --wash: #fffaf0;
+      --shadow: 0 18px 50px rgba(43, 34, 19, 0.16);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(90deg, rgba(29, 27, 22, 0.04) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(29, 27, 22, 0.035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 36px 36px;
+      color: var(--ink);
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    }
+
+    button, input {
+      font: inherit;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 26px 22px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.88);
+      backdrop-filter: blur(12px);
+    }
+
+    main {
+      min-width: 0;
+      padding: 30px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--oxide);
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(38px, 6vw, 78px);
+      line-height: 0.9;
+      letter-spacing: 0;
+      max-width: 980px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 26px;
+      line-height: 1;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      line-height: 1.15;
+    }
+
+    p {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .intro {
+      max-width: 980px;
+      margin: 18px 0 24px;
+      font-size: 18px;
+    }
+
+    .controls {
+      display: grid;
+      gap: 12px;
+      margin-top: 26px;
+    }
+
+    .search {
+      width: 100%;
+      padding: 12px 13px;
+      border: 1px solid var(--line);
+      background: var(--wash);
+      color: var(--ink);
+      outline: none;
+      border-radius: 6px;
+    }
+
+    .search:focus {
+      border-color: var(--oxide);
+      box-shadow: 0 0 0 3px rgba(178, 75, 47, 0.16);
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: var(--wash);
+      color: var(--ink);
+      padding: 8px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .chip:hover { transform: translateY(-1px); }
+    .chip.active {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+    }
+
+    .legend {
+      display: grid;
+      gap: 8px;
+      margin-top: 28px;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      font-size: 13px;
+    }
+
+    .legend span {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--c);
+    }
+
+    .stage {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 22px;
+      align-items: start;
+      margin-top: 26px;
+    }
+
+    .map-wrap, .detail, .flow-panel, .notes {
+      background: rgba(255, 250, 240, 0.9);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      border-radius: 8px;
+    }
+
+    .map-wrap {
+      position: relative;
+      min-height: 640px;
+      overflow: hidden;
+    }
+
+    svg.edges {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .node-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 1fr));
+      gap: 18px;
+      padding: 28px;
+      z-index: 1;
+    }
+
+    .app-node {
+      min-height: 158px;
+      border: 2px solid var(--ink);
+      background: color-mix(in srgb, var(--c) 12%, var(--wash));
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: transform 170ms ease, box-shadow 170ms ease, opacity 170ms ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .app-node::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 7px;
+      background: var(--c);
+    }
+
+    .app-node:hover, .app-node.active {
+      transform: translateY(-4px);
+      box-shadow: 10px 12px 0 rgba(29, 27, 22, 0.14);
+    }
+
+    .app-node.dimmed {
+      opacity: 0.28;
+      filter: grayscale(0.5);
+    }
+
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      border: 1px solid rgba(29, 27, 22, 0.16);
+      background: rgba(255, 255, 255, 0.36);
+      padding: 4px 7px;
+      border-radius: 999px;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      font-size: 11px;
+      color: var(--ink);
+    }
+
+    .detail {
+      padding: 20px;
+      position: sticky;
+      top: 30px;
+    }
+
+    .detail-list {
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 9px;
+      margin: 12px 0 0;
+    }
+
+    .detail-list li {
+      border-top: 1px dashed var(--line);
+      padding-top: 9px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      background: rgba(29, 27, 22, 0.07);
+      border: 1px solid rgba(29, 27, 22, 0.08);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: var(--ink);
+    }
+
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .flow-panel, .notes {
+      padding: 20px;
+      margin-top: 24px;
+    }
+
+    .flow-card {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.34);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 138px;
+    }
+
+    .flow-card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .flow-card p {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .notes-grid {
+      columns: 2 320px;
+      column-gap: 24px;
+    }
+
+    .note {
+      break-inside: avoid;
+      border-top: 1px solid var(--line);
+      padding: 12px 0;
+    }
+
+    .note b {
+      color: var(--ink);
+    }
+
+    .edge-line {
+      stroke: rgba(29, 27, 22, 0.34);
+      stroke-width: 2.2;
+      marker-end: url(#arrow);
+      transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
+    }
+
+    .edge-line.dimmed { opacity: 0.12; }
+    .edge-line.hot {
+      stroke: var(--oxide);
+      stroke-width: 3.4;
+      opacity: 1;
+    }
+
+    @media (max-width: 1050px) {
+      .shell { grid-template-columns: 1fr; }
+      aside {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .stage { grid-template-columns: 1fr; }
+      .detail { position: relative; top: auto; }
+      .node-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+      main { padding: 22px; }
+    }
+
+    @media (max-width: 640px) {
+      .node-grid, .flow-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 42px; }
+      aside, main { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <p class="eyebrow">Rho umbrella atlas</p>
+      <h2>Explore by app, dependency, or runtime path.</h2>
+      <p>This standalone map captures the module boundaries and handoff points Codex found while reading the repository.</p>
+      <div class="controls">
+        <input class="search" id="search" type="search" placeholder="Search modules, behaviours, flows">
+        <div class="filters" id="filters"></div>
+      </div>
+      <div class="legend">
+        <span><i class="dot" style="--c: var(--oxide)"></i>Runtime kernel</span>
+        <span><i class="dot" style="--c: var(--moss)"></i>Tools and data surfaces</span>
+        <span><i class="dot" style="--c: var(--brass)"></i>Domain and persistence</span>
+        <span><i class="dot" style="--c: var(--teal)"></i>Edge/UI</span>
+        <span><i class="dot" style="--c: var(--berry)"></i>LLM support services</span>
+      </div>
+    </aside>
+
+    <main>
+      <p class="eyebrow">Generated 2026-05-15</p>
+      <h1>Rho is a tape-backed agent runtime with a LiveView edge and a skill-framework domain.</h1>
+      <p class="intro">The map below reads left-to-right as dependency pressure and top-to-bottom as runtime surface area: kernel first, support services around it, domain logic above the edge, and LiveView as the outer shell.</p>
+
+      <section class="stage">
+        <div class="map-wrap" id="map">
+          <svg class="edges" id="edges" aria-hidden="true">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L0,6 L8,3 z" fill="rgba(29,27,22,.45)"></path>
+              </marker>
+            </defs>
+          </svg>
+          <div class="node-grid" id="nodes"></div>
+        </div>
+        <aside class="detail" id="detail"></aside>
+      </section>
+
+      <section class="flow-panel">
+        <p class="eyebrow">Runtime handoffs</p>
+        <h2>How a turn moves through the system</h2>
+        <div class="flow-grid" id="flows"></div>
+      </section>
+
+      <section class="notes">
+        <p class="eyebrow">Reference notes</p>
+        <h2>Things to remember before changing code</h2>
+        <div class="notes-grid" id="notes"></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const apps = [
+      {
+        id: "rho",
+        name: "rho",
+        color: "var(--oxide)",
+        kind: "runtime",
+        modules: 66,
+        tests: 40,
+        role: "Core runtime kernel: sessions, agents, runner loop, plugin and transformer registries, tool execution, tapes, trace projections, conversation metadata, events.",
+        deps: ["rho_baml"],
+        clusters: ["Session", "Agent", "Runner", "ToolExecutor", "PluginRegistry", "TransformerRegistry", "Tape", "Trace", "Events"],
+        details: [
+          "`Rho.Session` is the public entry point for web, CLI, and tests.",
+          "`Rho.Runner` owns the outer loop; `Rho.TurnStrategy.*` owns the inner LLM turn.",
+          "`Rho.ToolExecutor` is the shared tool dispatch and transformer boundary.",
+          "Conversations and threads are metadata over tape entries."
+        ]
+      },
+      {
+        id: "rho_stdlib",
+        name: "rho_stdlib",
+        color: "var(--moss)",
+        kind: "tools",
+        modules: 51,
+        tests: 24,
+        role: "Built-in tools, plugins, data tables, uploads, skills, and effect dispatching.",
+        deps: ["rho", "rho_python"],
+        clusters: ["Tools", "Plugins", "DataTable", "Uploads", "Skill", "EffectDispatcher"],
+        details: [
+          "`Rho.Stdlib` maps plugin shorthand atoms to modules.",
+          "`Rho.Stdlib.DataTable.Server` owns per-session named table state.",
+          "`Rho.Stdlib.EffectDispatcher` bridges tool effects into data table writes and session events.",
+          "`StepBudget` is both a plugin and transformer."
+        ]
+      },
+      {
+        id: "rho_baml",
+        name: "rho_baml",
+        color: "var(--berry)",
+        kind: "llm",
+        modules: 4,
+        tests: 2,
+        role: "BAML/Zoi schema generation for structured-output helpers and typed agent actions.",
+        deps: [],
+        clusters: ["SchemaCompiler", "SchemaWriter", "Function"],
+        details: [
+          "`SchemaWriter` emits discriminated unions for `TypedStructured` turns.",
+          "`Function` generates static consumer-app BAML functions at compile time.",
+          "The app owns helper code, not the consumer app `.baml` files."
+        ]
+      },
+      {
+        id: "rho_python",
+        name: "rho_python",
+        color: "var(--berry)",
+        kind: "service",
+        modules: 3,
+        tests: 1,
+        role: "Python runtime service used by stdlib Python tools and embedding support.",
+        deps: [],
+        clusters: ["RhoPython.Server", "Application"],
+        details: [
+          "`RhoPython.Server` tracks declared deps, py-agent config, and initialization.",
+          "Stdlib depends on this app instead of owning Python runtime state."
+        ]
+      },
+      {
+        id: "rho_embeddings",
+        name: "rho_embeddings",
+        color: "var(--berry)",
+        kind: "service",
+        modules: 5,
+        tests: 1,
+        role: "Embedding service and backend abstraction.",
+        deps: ["rho_python"],
+        clusters: ["Server", "Backend", "OpenAI", "Fake"],
+        details: [
+          "`RhoEmbeddings.Server` exposes readiness, model name, and embed-many.",
+          "`Backend.OpenAI` and `Backend.Fake` implement `RhoEmbeddings.Backend`.",
+          "Framework search and dedup workflows consume this service."
+        ]
+      },
+      {
+        id: "rho_frameworks",
+        name: "rho_frameworks",
+        color: "var(--brass)",
+        kind: "domain",
+        modules: 98,
+        tests: 39,
+        role: "Skill assessment domain: org/accounts, libraries, roles, lenses, flows, use cases, persistence, and domain tools.",
+        deps: ["rho", "rho_stdlib", "rho_baml", "rho_embeddings"],
+        clusters: ["Accounts", "Frameworks", "Library", "Roles", "Lenses", "UseCases", "Flows", "Tools", "LLM"],
+        details: [
+          "`RhoFrameworks.Plugin` aggregates library, role, lens, shared, and workflow tools.",
+          "`UseCases.*` are shared by chat tools and deterministic/hybrid flow UI.",
+          "`FlowRunner` runs flow nodes and delegates next-edge choice to a policy.",
+          "Domain table writes use explicit named tables such as `library:<name>`."
+        ]
+      },
+      {
+        id: "rho_web",
+        name: "rho_web",
+        color: "var(--teal)",
+        kind: "edge",
+        modules: 70,
+        tests: 19,
+        role: "Phoenix/LiveView edge: sessions, workspaces, projections, pages, components, auth, and workbench actions.",
+        deps: ["rho", "rho_stdlib", "rho_frameworks"],
+        clusters: ["AppLive", "SessionCore", "SignalRouter", "SessionEffects", "Workspace", "Projection", "Components", "Auth"],
+        details: [
+          "`RhoWeb.AppLive` is the org-scoped root LiveView and preserves session state across live navigation.",
+          "`SessionCore` ensures sessions, conversations, active threads, subscriptions, and hydration.",
+          "`SessionEffects` is the impure side-effect boundary for pure session reducers.",
+          "Workspace surfaces are pluggable through `RhoWeb.Workspace` and projection modules."
+        ]
+      }
+    ];
+
+    const flows = [
+      ["1. Session API", "`Rho.Session.start/1` builds or accepts a `RunSpec`, then delegates lifecycle to `Rho.Agent.Primary`."],
+      ["2. Worker boot", "`Rho.Agent.Worker` resolves tape memory, sandbox, context, plugins, capabilities, and durable IDs."],
+      ["3. Runner loop", "`Rho.Runner` records input, builds prompt material, calls the strategy, enforces step budget, and writes tape entries."],
+      ["4. Inner turn", "`Direct` streams via `ReqLLM`; `TypedStructured` writes BAML action unions and parses one selected action."],
+      ["5. Tool dispatch", "`Rho.ToolExecutor` applies transformer stages, prepares args, runs tools, normalizes results, and emits events."],
+      ["6. Effects", "`Rho.ToolResponse.effects` reach `Rho.Stdlib.EffectDispatcher`, which updates data tables or opens workspaces."],
+      ["7. UI projection", "`Rho.Events` and tapes feed `RhoWeb.SessionState` and workspace projections for chat, table, and lens views."],
+      ["8. Domain flows", "`RhoFrameworks.FlowRunner` and chat workflow tools share `UseCases.*`, keeping UI and agent routes aligned."]
+    ];
+
+    const notes = [
+      ["Prompt budget", "Plugin prompt sections should not restate tool schemas. Put workflow rules in agent system prompts or one targeted prompt section."],
+      ["Tape invariant", "Tape entries are source of truth. UI snapshots are caches; debug context must use the same projection path as the runner."],
+      ["Named tables", "The data table active table is UI context only. Tools must pass `table:` explicitly after loading named tables."],
+      ["Domain path", "For framework generation/editing, change `UseCases.*` first, then expose through tools or flow nodes."],
+      ["Extension points", "New tools usually use `Rho.Tool`; cross-cutting policy should be a `Rho.Transformer` at a named stage."],
+      ["Web boundary", "Keep reducers/projections pure; side effects belong in `SessionEffects` or explicit dispatcher modules."],
+      ["BAML ownership", "`rho_baml` owns generators. Consumer apps own their generated or hand-written `priv/baml_src` trees."],
+      ["Quality gates", "After code changes run `mix rho.slop.strict --format oneline` and `mix rho.credence`; broaden to `mix rho.quality` for boundary changes."]
+    ];
+
+    const filterNames = ["all", "runtime", "tools", "domain", "edge", "llm", "service"];
+    let activeFilter = "all";
+    let selected = "rho";
+    let query = "";
+
+    const nodesEl = document.getElementById("nodes");
+    const detailEl = document.getElementById("detail");
+    const filtersEl = document.getElementById("filters");
+    const searchEl = document.getElementById("search");
+    const edgesEl = document.getElementById("edges");
+
+    function renderFilters() {
+      filtersEl.innerHTML = filterNames.map(name => `<button class="chip ${name === activeFilter ? "active" : ""}" data-filter="${name}">${name}</button>`).join("");
+      filtersEl.querySelectorAll("button").forEach(button => {
+        button.addEventListener("click", () => {
+          activeFilter = button.dataset.filter;
+          render();
+        });
+      });
+    }
+
+    function matches(app) {
+      const haystack = [app.name, app.kind, app.role, ...app.clusters, ...app.details].join(" ").toLowerCase();
+      const filterOk = activeFilter === "all" || app.kind === activeFilter || (activeFilter === "llm" && app.kind === "service");
+      const queryOk = !query || haystack.includes(query.toLowerCase());
+      return filterOk && queryOk;
+    }
+
+    function renderNodes() {
+      nodesEl.innerHTML = apps.map(app => {
+        const dimmed = matches(app) ? "" : "dimmed";
+        const active = selected === app.id ? "active" : "";
+        return `
+          <article class="app-node ${active} ${dimmed}" style="--c:${app.color}" data-id="${app.id}">
+            <h3>${app.name}</h3>
+            <p>${app.role}</p>
+            <div class="meta"><span>${app.modules} modules</span><span>${app.tests} tests</span></div>
+            <div class="pill-row">${app.clusters.slice(0, 5).map(c => `<span class="pill">${c}</span>`).join("")}</div>
+          </article>
+        `;
+      }).join("");
+      nodesEl.querySelectorAll(".app-node").forEach(node => {
+        node.addEventListener("click", () => {
+          selected = node.dataset.id;
+          render();
+        });
+      });
+    }
+
+    function renderDetail() {
+      const app = apps.find(a => a.id === selected) || apps[0];
+      const incoming = apps.filter(a => a.deps.includes(app.id)).map(a => a.name);
+      detailEl.innerHTML = `
+        <p class="eyebrow">${app.kind}</p>
+        <h2>${app.name}</h2>
+        <p>${app.role}</p>
+        <div class="pill-row">${app.clusters.map(c => `<span class="pill">${c}</span>`).join("")}</div>
+        <ul class="detail-list">
+          <li><b>Depends on:</b> ${app.deps.length ? app.deps.map(d => `<code>${d}</code>`).join(" ") : "external packages only"}</li>
+          <li><b>Used by:</b> ${incoming.length ? incoming.map(d => `<code>${d}</code>`).join(" ") : "support/root layer"}</li>
+          ${app.details.map(item => `<li>${item}</li>`).join("")}
+        </ul>
+      `;
+    }
+
+    function renderFlows() {
+      document.getElementById("flows").innerHTML = flows.map(([title, text]) => `
+        <div class="flow-card"><strong>${title}</strong><p>${text}</p></div>
+      `).join("");
+    }
+
+    function renderNotes() {
+      document.getElementById("notes").innerHTML = notes.map(([title, text]) => `
+        <div class="note"><b>${title}</b><p>${text}</p></div>
+      `).join("");
+    }
+
+    function drawEdges() {
+      const mapBox = document.getElementById("map").getBoundingClientRect();
+      edgesEl.querySelectorAll("line").forEach(line => line.remove());
+      apps.forEach(app => {
+        const from = document.querySelector(`[data-id="${app.id}"]`);
+        if (!from) return;
+        const fromBox = from.getBoundingClientRect();
+        app.deps.forEach(dep => {
+          const to = document.querySelector(`[data-id="${dep}"]`);
+          if (!to) return;
+          const toBox = to.getBoundingClientRect();
+          const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+          line.setAttribute("x1", fromBox.left + fromBox.width / 2 - mapBox.left);
+          line.setAttribute("y1", fromBox.top + fromBox.height / 2 - mapBox.top);
+          line.setAttribute("x2", toBox.left + toBox.width / 2 - mapBox.left);
+          line.setAttribute("y2", toBox.top + toBox.height / 2 - mapBox.top);
+          line.setAttribute("class", `edge-line ${selected === app.id || selected === dep ? "hot" : "dimmed"}`);
+          edgesEl.appendChild(line);
+        });
+      });
+    }
+
+    function render() {
+      renderFilters();
+      renderNodes();
+      renderDetail();
+      requestAnimationFrame(drawEdges);
+    }
+
+    searchEl.addEventListener("input", event => {
+      query = event.target.value;
+      render();
+    });
+    window.addEventListener("resize", () => requestAnimationFrame(drawEdges));
+
+    render();
+    renderFlows();
+    renderNotes();
+  </script>
+</body>
+</html>
