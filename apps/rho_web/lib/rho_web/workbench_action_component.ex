@@ -7,11 +7,21 @@ defmodule RhoWeb.WorkbenchActionComponent do
 
   attr(:actions, :list, required: true)
   attr(:target, :any, default: nil)
+  attr(:agent_name, :any, default: nil)
+  attr(:libraries, :list, default: [])
+  attr(:chat_mode, :atom, default: nil)
+  attr(:return_available?, :boolean, default: false)
 
   def workbench_home(assigns) do
-    primary = Enum.find(assigns.actions, &(&1.id == :create_framework))
-    secondary = Enum.reject(assigns.actions, &(&1.id == :create_framework))
-    assigns = assign(assigns, primary_action: primary, secondary_actions: secondary)
+    library_action_ids = [:create_framework, :extract_jd, :import_library]
+
+    assigns =
+      assigns
+      |> assign(:library_actions, Enum.filter(assigns.actions, &(&1.id in library_action_ids)))
+      |> assign(:assistant_state, assistant_state(assigns.agent_name))
+      |> assign(:library_count, length(assigns.libraries || []))
+      |> assign(:skill_count, total_skill_count(assigns.libraries || []))
+      |> assign(:library_list, assigns.libraries || [])
 
     ~H"""
     <section class="workbench-home" aria-label="Workbench home">
@@ -21,50 +31,166 @@ defmodule RhoWeb.WorkbenchActionComponent do
             <p class="workbench-home-kicker">Workbench</p>
             <h2>Start a skills project from what you already have.</h2>
             <p class="workbench-home-lede">
-              Create a skill framework from a brief, turn a job description into role requirements, import a spreadsheet, or open existing work.
+              Open a saved library, or start a new one from a brief, job description, or spreadsheet import.
             </p>
-          </div>
-
-          <button
-            :if={@primary_action}
-            type="button"
-            class="workbench-primary-action"
-            phx-click="workbench_action_open"
-            phx-target={@target}
-            phx-value-action={@primary_action.id}
-          >
-            <span class="workbench-action-eyebrow">Start here</span>
-            <span class="workbench-primary-label"><%= @primary_action.label %></span>
-            <span class="workbench-primary-summary"><%= @primary_action.summary %></span>
-          </button>
-        </div>
-
-        <div class="workbench-home-body">
-          <div class="workbench-action-grid">
+            <div class="workbench-utility-row">
+              <div class="workbench-agent-state">
+                <span class={"workbench-state-dot #{state_class(@assistant_state)}"}></span>
+                <span><%= assistant_state_copy(@assistant_state, @agent_name) %></span>
+              </div>
+              <button
+                type="button"
+                class="workbench-chat-toggle"
+                phx-click="toggle_chat"
+                title={chat_action_title(@chat_mode)}
+              >
+                <%= chat_action_label(@chat_mode) %>
+              </button>
+            </div>
             <button
-              :for={action <- @secondary_actions}
+              :if={@return_available?}
               type="button"
-              class="workbench-action-card"
-              phx-click="workbench_action_open"
+              class="workbench-return-btn"
+              phx-click="hide_workbench_home"
               phx-target={@target}
-              phx-value-action={action.id}
             >
-              <span class="workbench-action-index"><%= action_index(action.id) %></span>
-              <span class="workbench-action-label"><%= action.label %></span>
-              <span class="workbench-action-summary"><%= action.summary %></span>
+              Back to current work
             </button>
           </div>
+
         </div>
+
+        <div class="workbench-status-panel" aria-label="Organization status">
+          <div class="workbench-status-header">
+            <div class="workbench-status-title">
+              <p class="workbench-home-kicker">Library browser</p>
+              <div class="workbench-title-row">
+                <h3><%= status_title(@library_count) %></h3>
+                <details id="workbench-library-create-menu" class="workbench-library-create-menu" phx-hook="CloseDetailsOnOutsideClick">
+                  <summary title="Create a library" aria-label="Create a library">+</summary>
+                  <div class="workbench-library-create-popover" role="menu">
+                    <button
+                      :for={action <- @library_actions}
+                      type="button"
+                      class={[
+                        "workbench-library-source-btn",
+                        if(action_available?(action, @assistant_state), do: "", else: "is-disabled")
+                      ]}
+                      phx-click="workbench_action_open"
+                      phx-target={@target}
+                      phx-value-action={action.id}
+                      disabled={!action_available?(action, @assistant_state)}
+                      title={action_title(action, @assistant_state)}
+                      role="menuitem"
+                    >
+                      <span><%= library_action_label(action.id) %></span>
+                    </button>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="workbench-status-metrics">
+              <span><strong><%= @library_count %></strong> libraries</span>
+              <span><strong><%= @skill_count %></strong> skills</span>
+            </div>
+          </div>
+
+          <div :if={@library_list != []} class="workbench-library-list">
+            <button
+              :for={library <- @library_list}
+              type="button"
+              class="workbench-library-row"
+              phx-click="workbench_library_open"
+              phx-target={@target}
+              phx-value-library-id={library_id(library)}
+            >
+              <span class="workbench-library-main">
+                <span class="workbench-library-name"><%= library.name %></span>
+                <span class="workbench-library-meta"><%= library_meta(library) %></span>
+              </span>
+              <span class="workbench-library-open">Open</span>
+            </button>
+          </div>
+
+          <p :if={@library_list == []} class="workbench-empty-note">
+            No saved libraries yet. Create or import the first framework with the Spreadsheet assistant.
+          </p>
+        </div>
+
       </div>
     </section>
     """
   end
 
-  defp action_index(:extract_jd), do: "01"
-  defp action_index(:import_library), do: "02"
-  defp action_index(:load_library), do: "03"
-  defp action_index(:find_roles), do: "04"
-  defp action_index(_), do: "--"
+  defp library_action_label(:create_framework), do: "Create from brief"
+  defp library_action_label(:extract_jd), do: "Create from JD"
+  defp library_action_label(:import_library), do: "Import spreadsheet"
+  defp library_action_label(_), do: "Start"
+
+  defp assistant_state(agent_name) when agent_name in [:spreadsheet, "spreadsheet"],
+    do: :spreadsheet
+
+  defp assistant_state(nil), do: :empty
+  defp assistant_state(_), do: :other
+
+  defp state_class(:spreadsheet), do: "is-ready"
+  defp state_class(:empty), do: "is-open"
+  defp state_class(:other), do: "is-limited"
+
+  defp assistant_state_copy(:spreadsheet, _agent_name) do
+    "Spreadsheet assistant is active. Agent-assisted workflows are ready."
+  end
+
+  defp assistant_state_copy(:empty, _agent_name) do
+    "No assistant is active yet. Agent-assisted workflows will start Spreadsheet."
+  end
+
+  defp assistant_state_copy(:other, agent_name) do
+    "Current assistant: #{display_agent_name(agent_name)}. Agent-assisted workflows need Spreadsheet."
+  end
+
+  defp action_available?(%{execution: :direct}, _assistant_state), do: true
+  defp action_available?(_action, :other), do: false
+  defp action_available?(_action, _assistant_state), do: true
+
+  defp action_title(action, assistant_state) do
+    if action_available?(action, assistant_state) do
+      action.summary
+    else
+      "Switch to the Spreadsheet assistant to use this workflow."
+    end
+  end
+
+  defp display_agent_name(nil), do: "none selected"
+
+  defp display_agent_name(agent_name) do
+    agent_name
+    |> to_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp total_skill_count(libraries) do
+    Enum.reduce(libraries, 0, fn library, acc -> acc + (Map.get(library, :skill_count) || 0) end)
+  end
+
+  defp status_title(0), do: "Blank slate"
+  defp status_title(1), do: "1 framework on hand"
+  defp status_title(count), do: "#{count} frameworks on hand"
+
+  defp library_meta(library) do
+    version = if library.version, do: "v#{library.version}", else: "draft"
+    immutable = if library.immutable, do: ", immutable", else: ""
+    "#{library.skill_count} skills, #{version}#{immutable}"
+  end
+
+  defp library_id(library), do: Map.get(library, :id)
+
+  defp chat_action_label(:expanded), do: "Hide Assistant Chat"
+  defp chat_action_label(_), do: "Open Assistant Chat"
+
+  defp chat_action_title(:expanded), do: "Hide the assistant chat panel."
+  defp chat_action_title(_), do: "Show the assistant chat panel."
 
   attr(:action, :map, default: nil)
   attr(:form, :map, default: %{})

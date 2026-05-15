@@ -2,21 +2,9 @@ defmodule RhoWeb.DataTableComponent do
   @moduledoc """
   LiveComponent for an interactive, schema-driven data table.
 
-  Pure renderer that takes an ordered row list from a server snapshot
-  plus a `RhoWeb.DataTable.Schema` to configure columns, grouping,
-  title, and empty state. All row state is owned by
-  `Rho.Stdlib.DataTable.Server`; this component reads rows via assigns
-  and writes cell edits back through the client API synchronously. The
-  parent LiveView is responsible for refetching snapshots on
-  invalidation events and pushing them back into this component via
-  `ws_state_update`.
-
-  ## Tab strip
-
-  If `tables` / `table_order` are passed, a tab strip is rendered
-  above the table so the user can switch the active named table.
-  Clicking a tab sends `{:data_table_switch_tab, name}` to the parent
-  LiveView.
+  Row state is owned by `Rho.Stdlib.DataTable.Server`; this component
+  renders snapshots, edits cells, switches named table tabs, and can
+  temporarily resurface the Workbench action hub over active artifacts.
   """
   use Phoenix.LiveComponent
 
@@ -53,6 +41,10 @@ defmodule RhoWeb.DataTableComponent do
       |> assign_new(:optimistic_edits, fn -> %{} end)
       |> assign_new(:metadata, fn -> %{} end)
       |> assign_new(:workbench_context, fn -> nil end)
+      |> assign_new(:agent_name, fn -> nil end)
+      |> assign_new(:libraries, fn -> [] end)
+      |> assign_new(:chat_mode, fn -> nil end)
+      |> assign_new(:show_workbench_home?, fn -> false end)
       |> assign_new(:sort_by, fn -> nil end)
       |> assign_new(:sort_dir, fn -> :asc end)
       |> assign_new(:confirm_delete, fn -> nil end)
@@ -262,12 +254,33 @@ defmodule RhoWeb.DataTableComponent do
 
   @impl true
   def handle_event("select_tab", %{"table" => name}, socket) do
+    send(self(), {:workbench_home_open, false})
     send(self(), {:data_table_switch_tab, name})
+    {:noreply, socket}
+  end
+
+  def handle_event("close_tab", %{"table" => name}, socket) do
+    send(self(), {:data_table_close_tab, name})
+    {:noreply, socket}
+  end
+
+  def handle_event("show_workbench_home", _params, socket) do
+    send(self(), {:workbench_home_open, true})
+    {:noreply, socket}
+  end
+
+  def handle_event("hide_workbench_home", _params, socket) do
+    send(self(), {:workbench_home_open, false})
     {:noreply, socket}
   end
 
   def handle_event("workbench_action_open", %{"action" => action_id}, socket) do
     send(self(), {:workbench_action_open, action_id})
+    {:noreply, socket}
+  end
+
+  def handle_event("workbench_library_open", %{"library-id" => library_id}, socket) do
+    send(self(), {:workbench_library_open, library_id})
     {:noreply, socket}
   end
 
@@ -910,7 +923,8 @@ defmodule RhoWeb.DataTableComponent do
     <div class={["dt-panel", @class]}>
       <% active_artifact = Artifacts.active_artifact(@workbench_context) %>
       <% display_table_order = Tabs.display_order(@table_order, @tables) %>
-      <% home? = Artifacts.workbench_home?(@workbench_context, @table_order, @active_table, @rows) %>
+      <% natural_home? = Artifacts.workbench_home?(@workbench_context, @table_order, @active_table, @rows) %>
+      <% home? = natural_home? || @show_workbench_home? %>
       <%= if @error do %>
         <div class="dt-error-banner">
           <strong>Data table unavailable:</strong> <%= inspect(@error) %>
@@ -921,6 +935,10 @@ defmodule RhoWeb.DataTableComponent do
       <%= if home? do %>
         <WorkbenchActionComponent.workbench_home
           actions={WorkbenchActions.home_actions()}
+          agent_name={@agent_name}
+          libraries={@libraries}
+          chat_mode={@chat_mode}
+          return_available?={!natural_home?}
           target={@myself}
         />
       <% else %>
@@ -929,17 +947,30 @@ defmodule RhoWeb.DataTableComponent do
           <%= for name <- display_table_order do %>
             <% count = Tabs.row_count(@tables, name) %>
             <% artifact = Artifacts.artifact_for_table(@workbench_context, name) %>
-            <button
-              type="button"
-              phx-click="select_tab"
-              phx-target={@myself}
-              phx-value-table={name}
-              class={"dt-tab" <> if(name == @active_table, do: " dt-tab-active", else: "")}
-              title={name}
-            >
-              <%= Artifacts.tab_label(artifact, name) %>
-              <span class="dt-tab-count"><%= Artifacts.tab_meta(artifact, count) %></span>
-            </button>
+            <span class={"dt-tab-shell" <> if(name == @active_table, do: " dt-tab-active", else: "")}>
+              <button
+                type="button"
+                phx-click="select_tab"
+                phx-target={@myself}
+                phx-value-table={name}
+                class="dt-tab"
+                title={name}
+              >
+                <span class="dt-tab-label"><%= Artifacts.tab_label(artifact, name) %></span>
+                <span class="dt-tab-count"><%= Artifacts.tab_meta(artifact, count) %></span>
+              </button>
+              <button
+                :if={name != "main"}
+                type="button"
+                class="dt-tab-close"
+                phx-click="close_tab"
+                phx-target={@myself}
+                phx-value-table={name}
+                title={"Close " <> Artifacts.tab_label(artifact, name)}
+              >
+                &times;
+              </button>
+            </span>
           <% end %>
         </div>
       <% end %>
@@ -997,6 +1028,15 @@ defmodule RhoWeb.DataTableComponent do
           >&times;</button>
         </span>
         <div class="dt-toolbar-actions">
+          <button
+            type="button"
+            class="dt-action-btn dt-actions-hub-btn"
+            phx-click="show_workbench_home"
+            phx-target={@myself}
+            title="Show Workbench actions"
+          >
+            Actions
+          </button>
           <button
             :if={Artifacts.candidates_view?(@view_key, @active_table)}
             type="button"

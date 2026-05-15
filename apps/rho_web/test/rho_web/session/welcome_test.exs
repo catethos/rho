@@ -33,7 +33,7 @@ defmodule RhoWeb.Session.WelcomeTest do
     }
   end
 
-  test "renders spreadsheet welcome for a primary agent selected as spreadsheet" do
+  test "does not render a hard-coded spreadsheet welcome" do
     agent_id = "welcome_test_session/primary"
 
     socket =
@@ -49,12 +49,8 @@ defmodule RhoWeb.Session.WelcomeTest do
     socket = Welcome.maybe_render(socket)
 
     assert [
-             %{type: :anchor},
-             %{role: :assistant, type: :welcome, content: content, animation_key: animation_key}
+             %{id: "tape-1", role: :system, type: :anchor, content: "Session started."}
            ] = socket.assigns.agent_messages[agent_id]
-
-    assert content =~ "framework"
-    assert animation_key == "welcome:welcome_test_session:welcome_test_session/primary"
   end
 
   test "does not render spreadsheet welcome for the general agent" do
@@ -71,7 +67,7 @@ defmodule RhoWeb.Session.WelcomeTest do
     assert socket.assigns.agent_messages[agent_id] == []
   end
 
-  test "re-renders spreadsheet welcome when an empty chat is reopened" do
+  test "does not re-render a hard-coded welcome when an empty chat is reopened" do
     agent_id = "welcome_test_session/primary"
 
     socket =
@@ -87,11 +83,7 @@ defmodule RhoWeb.Session.WelcomeTest do
     socket = Welcome.render_for_active_agent(socket)
 
     assert [
-             %{type: :anchor},
-             %{role: :assistant, type: :welcome, content: content, animation_key: animation_key}
+             %{id: "tape-1", role: :system, type: :anchor, content: "Session started."}
            ] = socket.assigns.agent_messages[agent_id]
-
-    assert content =~ "framework"
-    assert animation_key == "welcome:welcome_test_session:welcome_test_session/primary"
   end
 end

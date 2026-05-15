@@ -76,6 +76,31 @@ defmodule RhoWeb.InlineJS do
         }
       },
 
+      CloseDetailsOnOutsideClick: {
+        mounted() {
+          var self = this;
+
+          this._closeOnOutsideClick = function(e) {
+            if (self.el.open && !self.el.contains(e.target)) {
+              self.el.open = false;
+            }
+          };
+
+          this._closeOnEscape = function(e) {
+            if (e.key === "Escape" && self.el.open) {
+              self.el.open = false;
+            }
+          };
+
+          document.addEventListener("click", this._closeOnOutsideClick);
+          document.addEventListener("keydown", this._closeOnEscape);
+        },
+        destroyed() {
+          document.removeEventListener("click", this._closeOnOutsideClick);
+          document.removeEventListener("keydown", this._closeOnEscape);
+        }
+      },
+
       ChatReorder: {
         mounted() {
           var self = this;

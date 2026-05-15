@@ -10,6 +10,7 @@ defmodule RhoWeb.AppLive.WorkspaceChromeComponents do
   attr(:active, :atom, default: nil)
   attr(:available, :map, default: %{})
   attr(:shell, :map, required: true)
+  attr(:workbench_home_open?, :boolean, default: false)
   attr(:pending, :boolean, default: false)
 
   def workspace_tab_bar(assigns) do
@@ -44,6 +45,14 @@ defmodule RhoWeb.AppLive.WorkspaceChromeComponents do
       </div>
 
       <div class="workspace-tab-actions">
+        <button
+          class={"workspace-tab-action-hub #{if @workbench_home_open?, do: "active", else: ""}"}
+          phx-click="open_workbench_home"
+          title="Show Workbench actions"
+        >
+          Actions
+        </button>
+
         <button
           class={"workspace-tab-toggle-chat #{if @chat_expanded, do: "active", else: ""}"}
           phx-click="toggle_chat"

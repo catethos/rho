@@ -82,6 +82,8 @@ defmodule RhoWeb.AppLive do
       |> assign(:workbench_action_error, nil)
       |> assign(:workbench_action_busy?, false)
       |> assign(:workbench_action_libraries, [])
+      |> assign(:workbench_home_libraries, [])
+      |> assign(:workbench_home_open?, false)
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 5,
@@ -272,6 +274,10 @@ defmodule RhoWeb.AppLive do
     shared_ws_assigns = %{
       session_id: assigns.session_id,
       agents: assigns.agents,
+      active_agent_name: agent_name(active_agent),
+      workbench_libraries: workbench_libraries(assigns),
+      chat_mode: chat_mode,
+      workbench_home_open?: assigns.workbench_home_open?,
       streaming: any_agent_busy?(assigns.agents),
       total_cost: assigns.total_cost
     }
@@ -298,6 +304,7 @@ defmodule RhoWeb.AppLive do
         active={@active_workspace_id}
         available={@available_workspaces}
         shell={@shell}
+        workbench_home_open?={@workbench_home_open?}
         pending={any_agent_busy?(@agents)}
       />
 
@@ -531,6 +538,10 @@ defmodule RhoWeb.AppLive do
     WorkspaceEvents.handle_event("add_workspace", %{"workspace" => ws}, socket)
   end
 
+  def handle_event("open_workbench_home", _params, socket) do
+    WorkspaceEvents.handle_event("open_workbench_home", %{}, socket)
+  end
+
   def handle_event("close_workspace", %{"workspace" => ws}, socket) do
     WorkspaceEvents.handle_event("close_workspace", %{"workspace" => ws}, socket)
   end
@@ -756,6 +767,14 @@ defmodule RhoWeb.AppLive do
     WorkbenchEvents.handle_info({:workbench_action_open, action_id}, socket)
   end
 
+  def handle_info({:workbench_library_open, library_id}, socket) do
+    WorkbenchEvents.handle_info({:workbench_library_open, library_id}, socket)
+  end
+
+  def handle_info({:workbench_home_open, open?}, socket) do
+    {:noreply, assign(socket, :workbench_home_open?, open?)}
+  end
+
   def handle_info({:lens_detail_request, _} = msg, socket) do
     dispatch_to_workspace(socket, RhoWeb.Workspaces.LensDashboard, msg)
   end
@@ -785,7 +804,13 @@ defmodule RhoWeb.AppLive do
   end
 
   def handle_info({:data_table_switch_tab, name}, socket) do
-    DataTableEvents.handle_info({:data_table_switch_tab, name}, socket)
+    socket
+    |> assign(:workbench_home_open?, false)
+    |> then(&DataTableEvents.handle_info({:data_table_switch_tab, name}, &1))
+  end
+
+  def handle_info({:data_table_close_tab, name}, socket) do
+    DataTableEvents.handle_info({:data_table_close_tab, name}, socket)
   end
 
   def handle_info({:data_table_toggle_row, table, id}, socket) do
@@ -905,6 +930,21 @@ defmodule RhoWeb.AppLive do
 
   defp any_agent_busy?(agents) do
     Enum.any?(agents, fn {_id, agent} -> agent[:status] == :busy end)
+  end
+
+  defp agent_name(nil), do: nil
+  defp agent_name(%{agent_name: name}), do: name
+  defp agent_name(%{role: role}), do: role
+  defp agent_name(_), do: nil
+
+  defp workbench_libraries(assigns) do
+    case assigns[:libraries] do
+      libraries when is_list(libraries) ->
+        libraries
+
+      _ ->
+        assigns[:workbench_home_libraries] || []
+    end
   end
 
   def normalize_agent_role(role) when is_binary(role) do
@@ -1321,7 +1361,7 @@ defmodule RhoWeb.AppLive do
   end
 
   def session_ensure_opts(:data_table) do
-    [agent_name: :data_table, id_prefix: "sheet"]
+    [agent_name: :spreadsheet, id_prefix: "sheet"]
   end
 
   def session_ensure_opts(:chatroom) do

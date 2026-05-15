@@ -8,37 +8,80 @@ defmodule RhoWeb.InlineCSS.DataTable do
       display: flex;
       gap: 2px;
       padding: 0 20px;
+      min-height: 44px;
       border-bottom: 1px solid var(--border);
       background: var(--bg-deep);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .dt-tab-shell {
+      flex: 0 0 auto;
+      min-width: 0;
+      max-width: min(360px, 32vw);
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      border-bottom: 2px solid transparent;
     }
     .dt-tab {
-      padding: 6px 14px 5px;
+      min-width: 0;
+      min-height: 42px;
+      padding: 0 8px 0 14px;
       font-size: 12px;
       font-weight: 500;
       color: var(--text-muted);
       background: transparent;
       border: none;
-      border-bottom: 2px solid transparent;
       cursor: pointer;
-      transition: color 0.15s, border-color 0.15s;
+      transition: color 0.15s;
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      white-space: nowrap;
     }
-    .dt-tab:hover {
+    .dt-tab:hover,
+    .dt-tab-close:hover {
       color: var(--text);
     }
     .dt-tab-active {
-      color: var(--text);
       border-bottom-color: var(--accent, #e07a2f);
     }
+    .dt-tab-active .dt-tab {
+      color: var(--text);
+    }
+    .dt-tab-close {
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 7px;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      transition: background 0.15s, color 0.15s;
+    }
+    .dt-tab-close:hover {
+      background: color-mix(in srgb, var(--accent, #e07a2f) 12%, transparent);
+    }
     .dt-tab-count {
+      flex: 0 0 auto;
       font-size: 11px;
       color: var(--text-muted);
       background: var(--bg-hover);
       padding: 1px 6px;
       border-radius: 8px;
       font-weight: 400;
+    }
+    .dt-tab-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .dt-tab-active .dt-tab-count {
       background: color-mix(in srgb, var(--accent, #e07a2f) 15%, transparent);

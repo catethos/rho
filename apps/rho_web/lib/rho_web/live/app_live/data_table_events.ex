@@ -38,6 +38,36 @@ defmodule RhoWeb.AppLive.DataTableEvents do
     {:noreply, SignalRouter.write_ws_state(socket, :data_table, new_state)}
   end
 
+  def handle_info({:data_table_close_tab, name}, socket) when is_binary(name) do
+    sid = socket.assigns[:session_id]
+
+    if is_nil(sid) or name == "main" do
+      {:noreply, socket}
+    else
+      state = read_state(socket)
+
+      case Rho.Stdlib.DataTable.drop_table(sid, name) do
+        :ok ->
+          socket = refresh_tables(socket)
+
+          if state.active_table == name do
+            send(
+              self(),
+              {:data_table_switch_tab, pick_fallback_active_table(read_state(socket))}
+            )
+          end
+
+          {:noreply, socket}
+
+        {:error, :not_found} ->
+          {:noreply, refresh_tables(socket)}
+
+        {:error, reason} ->
+          {:noreply, SignalRouter.write_ws_state(socket, :data_table, %{state | error: reason})}
+      end
+    end
+  end
+
   def handle_info({:data_table_toggle_row, table, id}, socket) do
     state = read_state(socket)
     current = Map.get(state.selections, table, MapSet.new())

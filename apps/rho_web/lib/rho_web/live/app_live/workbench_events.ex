@@ -81,6 +81,10 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
     end
   end
 
+  def handle_info({:workbench_library_open, library_id}, socket) do
+    run_action(socket, %{id: :load_library}, %{"library_id" => library_id})
+  end
+
   def run_action(socket, %{id: id}, form)
       when id in [:create_framework, :extract_jd, :import_library] do
     prompt = WorkbenchActionRunner.build_prompt(id, form)
@@ -94,6 +98,7 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
     socket =
       socket
       |> assign(:workbench_action_busy?, true)
+      |> assign(:workbench_home_open?, false)
       |> DataTableEvents.load_library_into_data_table(form["library_id"])
       |> close_action()
 

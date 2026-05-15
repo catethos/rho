@@ -192,6 +192,14 @@ defmodule RhoWeb.AppLive.PageLoader do
   def apply_page(socket, :chat, params) do
     library_id = params["library_id"]
 
+    socket =
+      if connected?(socket) do
+        org = socket.assigns.current_organization
+        assign(socket, :workbench_home_libraries, RhoFrameworks.Library.list_libraries(org.id))
+      else
+        assign(socket, :workbench_home_libraries, [])
+      end
+
     if connected?(socket) && library_id do
       RhoWeb.AppLive.DataTableEvents.load_library_into_data_table(socket, library_id)
     else

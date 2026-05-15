@@ -16,6 +16,41 @@ defmodule RhoWeb.AppLiveChatShellComponentsTest do
     assert html =~ ~s(phx-value-role="default")
   end
 
+  test "chat shell always exposes Workbench actions" do
+    uploads = %{
+      files: Phoenix.LiveView.UploadConfig.build(:files, "files", accept: :any),
+      avatar: Phoenix.LiveView.UploadConfig.build(:avatar, "avatar", accept: :any)
+    }
+
+    html =
+      render_component(&ChatShellComponents.chat_side_panel/1, %{
+        chat_mode: :expanded,
+        messages: [],
+        session_id: "s1",
+        inflight: %{},
+        active_agent_id: "s1/primary",
+        pending: false,
+        agents: %{},
+        agent_tab_order: [],
+        chat_status: :idle,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_cost: 0.0,
+        total_cached_tokens: 0,
+        total_reasoning_tokens: 0,
+        step_input_tokens: 0,
+        step_output_tokens: 0,
+        uploads: uploads,
+        active_agent: %{agent_name: :spreadsheet},
+        conversations: [],
+        chat_rail_collapsed: true,
+        files_parsing: %{}
+      })
+
+    assert html =~ "Actions"
+    assert html =~ ~s(phx-click="open_workbench_home")
+  end
+
   test "workbench_suggestions keeps the first three actionable artifact actions" do
     context = %WorkbenchContext{
       active_artifact: %ArtifactSummary{

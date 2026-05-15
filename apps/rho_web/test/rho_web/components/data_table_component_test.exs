@@ -32,18 +32,161 @@ defmodule RhoWeb.DataTableComponentTest do
           streaming: false,
           total_cost: 0.0,
           session_id: "s1",
+          agent_name: :spreadsheet,
           class: ""
         )
 
       assert html =~ "Workbench"
       assert html =~ "Start a skills project from what you already have."
+      assert html =~ "Library browser"
+      assert html =~ "Spreadsheet assistant is active"
       refute html =~ "Ready for first artifact"
       refute html =~ "Use chat when language helps"
-      assert html =~ "Create Framework"
-      assert html =~ "Extract JD"
-      assert html =~ "Import Library"
-      assert html =~ "Load Library"
-      assert html =~ "Find Roles"
+      assert html =~ ~s(phx-value-action="create_framework")
+      assert html =~ "Open Assistant Chat"
+      assert html =~ ~s(phx-value-action="extract_jd")
+      assert html =~ ~s(phx-value-action="import_library")
+      assert html =~ "Library browser"
+      refute html =~ "Open an existing saved framework."
+      refute html =~ "Find Roles"
+      refute html =~ "dt-table-wrap"
+    end
+
+    test "marks agent-assisted Workbench actions as unavailable for other agents" do
+      libraries = [
+        %{name: "Operations Skills", skill_count: 7, version: nil, immutable: false},
+        %{name: "Leadership", skill_count: 5, version: "2026.1", immutable: true}
+      ]
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: [],
+          schema: Schemas.skill_library(),
+          tables: [],
+          table_order: [],
+          active_table: "main",
+          mode_label: nil,
+          error: nil,
+          version: nil,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          agent_name: :researcher,
+          libraries: libraries,
+          class: ""
+        )
+
+      assert html =~ "Current assistant:"
+      assert html =~ "Researcher"
+      assert html =~ "<strong>2</strong> libraries"
+      assert html =~ "<strong>12</strong> skills"
+      assert html =~ "Operations Skills"
+      assert html =~ "Switch to the Spreadsheet assistant to use this workflow."
+      assert html =~ "workbench-chat-toggle"
+      assert html =~ "Create from brief"
+    end
+
+    test "allows agent-assisted Workbench actions before an assistant is active" do
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: [],
+          schema: Schemas.skill_library(),
+          tables: [],
+          table_order: [],
+          active_table: "main",
+          mode_label: nil,
+          error: nil,
+          version: nil,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          agent_name: nil,
+          class: ""
+        )
+
+      assert html =~ "No assistant is active yet"
+      assert html =~ "Create from brief"
+      refute html =~ "workbench-primary-action is-disabled"
+      refute html =~ "phx-value-action=\"create_framework\" disabled"
+    end
+
+    test "renders every saved library on the Workbench home" do
+      libraries =
+        for index <- 1..10 do
+          %{
+            id: "lib-#{index}",
+            name: "Library #{index}",
+            skill_count: index,
+            version: nil,
+            immutable: false
+          }
+        end
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: [],
+          schema: Schemas.skill_library(),
+          tables: [],
+          table_order: [],
+          active_table: "main",
+          mode_label: nil,
+          error: nil,
+          version: nil,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          agent_name: :spreadsheet,
+          libraries: libraries,
+          class: ""
+        )
+
+      assert html =~ "Library 1"
+      assert html =~ "Library 9"
+      assert html =~ "Library 10"
+      assert html =~ "<strong>10</strong> libraries"
+      assert html =~ ~s(phx-click="workbench_library_open")
+      assert html =~ ~s(phx-value-library-id="lib-10")
+      assert html =~ ~s(phx-value-action="create_framework")
+      assert html =~ ~s(phx-value-action="extract_jd")
+      assert html =~ ~s(phx-value-action="import_library")
+      assert html =~ ~s(phx-hook="CloseDetailsOnOutsideClick")
+      assert html =~ "workbench-library-open"
+      refute html =~ ~s(phx-value-action="load_library")
+    end
+
+    test "can resurface Workbench home over an active artifact" do
+      row = %{
+        id: "s1",
+        skill_name: "Stakeholder Mapping",
+        category: "Discovery",
+        cluster: "Research"
+      }
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: [row],
+          schema: Schemas.skill_library(),
+          tables: [%{name: "library:Core", row_count: 1, version: 1, schema: nil}],
+          table_order: ["library:Core"],
+          active_table: "library:Core",
+          mode_label: "Skill Library",
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          agent_name: :spreadsheet,
+          show_workbench_home?: true,
+          class: ""
+        )
+
+      assert html =~ "Start a skills project from what you already have."
+      assert html =~ "Back to current work"
+      assert html =~ ~s(phx-click="hide_workbench_home")
       refute html =~ "dt-table-wrap"
     end
   end
@@ -100,6 +243,9 @@ defmodule RhoWeb.DataTableComponentTest do
       assert html =~ "Scratch Table"
       assert html =~ "library"
       assert html =~ "dt-tab-active"
+      assert html =~ ~s(phx-click="close_tab")
+      assert html =~ ~s(phx-value-table="library")
+      refute html =~ ~s(title="Close Scratch Table")
     end
 
     test "hides empty default main tab when workflow artifacts exist" do

@@ -177,6 +177,10 @@ defmodule RhoWeb.InlineCSS.Base do
       transition: all 0.15s;
     }
     .header-action-btn:hover { background: var(--bg-hover); border-color: var(--border-active); }
+    .header-actions-btn {
+      border-color: color-mix(in srgb, var(--accent, #e07a2f) 48%, var(--border));
+      color: var(--text-primary);
+    }
 
     .btn-stop {
       padding: 0.35rem 0.85rem;
@@ -791,6 +795,7 @@ defmodule RhoWeb.InlineCSS.Base do
       align-items: center;
       gap: 0.25rem;
     }
+    .workspace-tab-action-hub,
     .workspace-tab-toggle-chat {
       padding: 0.35rem 0.75rem;
       border: 1px solid var(--border);
@@ -801,7 +806,9 @@ defmodule RhoWeb.InlineCSS.Base do
       color: var(--text-secondary);
       transition: color 0.15s, border-color 0.15s;
     }
+    .workspace-tab-action-hub:hover,
     .workspace-tab-toggle-chat:hover { color: var(--text-primary); border-color: var(--text-muted); }
+    .workspace-tab-action-hub.active,
     .workspace-tab-toggle-chat.active {
       color: var(--text-primary);
       border-color: var(--teal);

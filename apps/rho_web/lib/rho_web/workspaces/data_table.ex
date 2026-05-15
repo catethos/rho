@@ -73,6 +73,10 @@ defmodule RhoWeb.Workspaces.DataTable do
       streaming: shared.streaming,
       total_cost: shared.total_cost,
       session_id: shared.session_id,
+      agent_name: Map.get(shared, :active_agent_name),
+      libraries: Map.get(shared, :workbench_libraries, []),
+      chat_mode: Map.get(shared, :chat_mode),
+      show_workbench_home?: Map.get(shared, :workbench_home_open?, false),
       selected_ids: selected_ids
     }
   end

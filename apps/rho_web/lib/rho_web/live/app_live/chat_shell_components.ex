@@ -241,6 +241,9 @@ defmodule RhoWeb.AppLive.ChatShellComponents do
       <button class={"header-action-btn #{if @debug_mode, do: "debug-active"}"} phx-click="toggle_debug" title="Toggle debug mode">
         Debug
       </button>
+      <button class="header-action-btn header-actions-btn" phx-click="open_workbench_home" title="Show Workbench actions">
+        Actions
+      </button>
       <button :if={@session_id != ""} class="btn-stop" phx-click="stop_session" title="Stop session">
         Stop
       </button>

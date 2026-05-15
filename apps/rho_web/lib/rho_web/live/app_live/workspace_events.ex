@@ -100,6 +100,33 @@ defmodule RhoWeb.AppLive.WorkspaceEvents do
     end
   end
 
+  def handle_event("open_workbench_home", _params, socket) do
+    key = :data_table
+
+    case WorkspaceRegistry.get(key) do
+      nil ->
+        {:noreply, socket}
+
+      ws_mod ->
+        added? = !map_key?(socket.assigns.workspaces, key)
+
+        socket =
+          socket
+          |> ensure_workspace(key, ws_mod)
+          |> assign(:active_workspace_id, key)
+          |> assign(:workbench_home_open?, true)
+
+        socket =
+          if added? do
+            AppLive.maybe_hydrate_workspace(socket, key, ws_mod)
+          else
+            socket
+          end
+
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("close_workspace", %{"workspace" => ws}, socket) do
     key = safe_to_existing_atom(ws)
 
@@ -119,6 +146,7 @@ defmodule RhoWeb.AppLive.WorkspaceEvents do
         |> assign(:workspaces, new_workspaces)
         |> assign(:ws_states, new_ws_states)
         |> assign(:active_workspace_id, active)
+        |> assign(:workbench_home_open?, false)
         |> assign(:shell, Shell.remove_workspace(socket.assigns.shell, key))
 
       {:noreply, socket}
@@ -251,6 +279,29 @@ defmodule RhoWeb.AppLive.WorkspaceEvents do
 
   def apply_open_workspace_event(socket, _) do
     socket
+  end
+
+  defp ensure_workspace(socket, key, ws_mod) do
+    shell = socket.assigns.shell |> Shell.add_workspace(key) |> Shell.show_chat()
+
+    workspaces =
+      if map_key?(socket.assigns.workspaces, key) do
+        socket.assigns.workspaces
+      else
+        Map.put(socket.assigns.workspaces, key, ws_mod)
+      end
+
+    ws_states =
+      if map_key?(socket.assigns.ws_states, key) do
+        socket.assigns.ws_states
+      else
+        Map.put(socket.assigns.ws_states, key, ws_mod.projection().init())
+      end
+
+    socket
+    |> assign(:shell, shell)
+    |> assign(:workspaces, workspaces)
+    |> assign(:ws_states, ws_states)
   end
 
   defp safe_to_existing_atom(str) when is_binary(str) do
