@@ -65,7 +65,11 @@ defmodule RhoFrameworks.LLM.GenerateSkeleton do
   list of skills grouped by category and cluster.
 
   Rules:
-  - Aim for the requested skill count (give or take a few).
+  - This is the legacy quick-generation path. When no taxonomy is supplied,
+    infer a compact category/cluster map first, then emit skills under that
+    inferred map.
+  - Treat the requested skill count as guidance, not a reason to weaken the
+    framework structure.
   - Pick a small set of categories and reuse them — do not create one
     category per skill.
   - Each skill name is 2–4 words; the description is one sentence.

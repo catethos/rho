@@ -662,17 +662,17 @@ defmodule RhoFrameworks.FlowRunnerTest do
       assert input.domain == "SE"
     end
 
-    test "similar_roles is an :auto fork between :pick_template and :choose_starting_point" do
+    test "similar_roles is an :auto fork between role transform and :choose_starting_point" do
       similar = Enum.find(CreateFramework.steps(), &(&1.id == :similar_roles))
 
       assert similar.routing == :auto
       assert is_list(similar.next)
 
       ids = Enum.map(similar.next, & &1.to)
-      assert :pick_template in ids
+      assert :role_transform in ids
       assert :choose_starting_point in ids
 
-      assert Enum.find(similar.next, &(&1.guard == :good_matches)).to == :pick_template
+      assert Enum.find(similar.next, &(&1.guard == :good_matches)).to == :role_transform
 
       assert Enum.find(similar.next, &(&1.guard == :no_similar_roles)).to ==
                :choose_starting_point
@@ -680,18 +680,7 @@ defmodule RhoFrameworks.FlowRunnerTest do
       assert Enum.all?(similar.next, &is_binary(&1.label))
     end
 
-    test ":pick_template is a manual action with use_case PickTemplate, single-edge to :save" do
-      pick = Enum.find(CreateFramework.steps(), &(&1.id == :pick_template))
-
-      assert pick.type == :action
-      assert pick.routing == :fixed
-      assert pick.use_case == RhoFrameworks.UseCases.PickTemplate
-      assert pick.next == :save
-      assert pick.config[:manual] == true
-      assert is_binary(pick.config[:message])
-    end
-
-    test "Deterministic walks the template path when the user selected a similar role", %{
+    test "Deterministic walks similar-role selections into transform choice", %{
       scope: scope
     } do
       state =
@@ -705,10 +694,51 @@ defmodule RhoFrameworks.FlowRunnerTest do
 
       similar = FlowRunner.current_node(state)
 
-      assert {:ok, :pick_template, _} =
+      assert {:ok, :role_transform, _} =
                FlowRunner.choose_next(CreateFramework, similar, state, Deterministic)
 
       _ = scope
+    end
+
+    test "role_transform routes inspire to taxonomy and clone to exact-skill review", %{
+      scope: scope
+    } do
+      inspire =
+        FlowRunner.init(CreateFramework, intake: %{role_transform: "inspire"})
+        |> FlowRunner.advance(:role_transform)
+
+      inspire_node = FlowRunner.current_node(inspire)
+
+      assert {:ok, :taxonomy_preferences, _} =
+               FlowRunner.choose_next(CreateFramework, inspire_node, inspire, Deterministic)
+
+      clone =
+        FlowRunner.init(CreateFramework, intake: %{role_transform: "clone"})
+        |> FlowRunner.advance(:role_transform)
+
+      clone_node = FlowRunner.current_node(clone)
+
+      assert {:ok, :pick_template, _} =
+               FlowRunner.choose_next(CreateFramework, clone_node, clone, Deterministic)
+
+      _ = scope
+    end
+
+    test "build_input(:pick_template, ...) extracts ids from selected matches", %{scope: scope} do
+      state =
+        FlowRunner.init(CreateFramework, intake: %{name: "Eng", description: "d"})
+        |> FlowRunner.put_summary(:similar_roles, %{
+          matches: [],
+          selected: [%{id: "r1", name: "Backend"}, %{id: "r2", name: "Platform"}],
+          skip_reason: nil
+        })
+
+      pick = Enum.find(CreateFramework.steps(), &(&1.id == :pick_template))
+      input = FlowRunner.build_input(pick, state, scope)
+
+      assert input.template_role_ids == ["r1", "r2"]
+      assert input.intake.name == "Eng"
+      assert input.intake.description == "d"
     end
 
     test "Deterministic bounces back to :choose_starting_point when no role was selected", %{
@@ -812,7 +842,9 @@ defmodule RhoFrameworks.FlowRunnerTest do
       _ = scope
     end
 
-    test "build_input(:pick_template, ...) extracts ids from selected matches", %{scope: scope} do
+    test "build_input(:generate_taxonomy, ...) passes selected similar roles as seeds", %{
+      scope: scope
+    } do
       state =
         FlowRunner.init(CreateFramework, intake: %{name: "Eng", description: "d"})
         |> FlowRunner.put_summary(:similar_roles, %{
@@ -821,23 +853,40 @@ defmodule RhoFrameworks.FlowRunnerTest do
           skip_reason: nil
         })
 
-      pick = Enum.find(CreateFramework.steps(), &(&1.id == :pick_template))
-      input = FlowRunner.build_input(pick, state, scope)
+      generate_taxonomy = Enum.find(CreateFramework.steps(), &(&1.id == :generate_taxonomy))
+      input = FlowRunner.build_input(generate_taxonomy, state, scope)
 
-      assert input.template_role_ids == ["r1", "r2"]
-      assert input.intake.name == "Eng"
-      assert input.intake.description == "d"
+      assert input.generation_style == "from_roles"
+      assert input.seeds =~ "Backend"
+      assert input.seeds =~ "Platform"
     end
 
-    test "build_input(:save, ...) prefers :pick_template summary over :generate", %{scope: scope} do
+    test "build_input(:save, ...) prefers :generate_skills summary over :generate", %{
+      scope: scope
+    } do
       state =
         FlowRunner.init(CreateFramework, intake: %{name: "Eng"})
-        |> FlowRunner.put_summary(:pick_template, %{
-          library_id: "lib-from-template",
+        |> FlowRunner.put_summary(:generate_skills, %{
+          library_id: "lib-from-taxonomy",
           table_name: "library:Eng"
         })
         |> FlowRunner.put_summary(:generate, %{
           library_id: "lib-from-generate",
+          table_name: "library:Eng"
+        })
+
+      save = Enum.find(CreateFramework.steps(), &(&1.id == :save))
+      input = FlowRunner.build_input(save, state, scope)
+
+      assert input.library_id == "lib-from-taxonomy"
+      assert input.table_name == "library:Eng"
+    end
+
+    test "build_input(:save, ...) can save cloned role skills", %{scope: scope} do
+      state =
+        FlowRunner.init(CreateFramework, intake: %{name: "Eng"})
+        |> FlowRunner.put_summary(:pick_template, %{
+          library_id: "lib-from-template",
           table_name: "library:Eng"
         })
 

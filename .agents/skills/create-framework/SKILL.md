@@ -1,272 +1,48 @@
 ---
 name: create-framework
-description: Workflow for creating a NEW skill framework — from scratch with intake, seeded by similar role profiles, inspired by an existing library, or composed by unioning skills from named roles in a library
-uses: [manage_role, analyze_role, load_similar_roles, generate_framework_skeletons, generate_proficiency, save_framework, seed_framework_from_roles, browse_library, manage_library]
+description: Route create-framework requests into the chat-hosted flow; provide fallback context for edge cases outside an active flow.
+uses: [manage_role, analyze_role, load_similar_roles, generate_framework_taxonomy, generate_skills_for_taxonomy, generate_proficiency, save_framework, seed_framework_from_roles, browse_library, manage_library]
 ---
 
-## Create Skill Framework Workflow
+# Create Framework
 
-This skill builds a NEW framework from nothing or with inspiration. For
-LOADING and customizing an existing template (sfia_v8, etc.), use
-`import-framework`. For editing an already-saved library, use
-`manage-frameworks`.
+Create-framework is primarily owned by the chat-hosted `create-framework` flow.
+When the user asks to create, build, or make a skill framework, prefer starting
+or continuing that flow instead of running a tool playbook from this skill.
 
-## Phase 1 — Pick the path FIRST
+The flow owns:
 
-Before any intake interrogation, classify the user's intent into one of three
-paths from their first message. The path determines whether intake comes
-first or comes after the user has seen candidate options.
+- starting point selection: similar role, scratch, extend existing, or merge
+- deterministic node routing
+- taxonomy and skill review gates
+- Workbench table focus
+- save timing
 
-- **Path A — From scratch** (no existing inspiration). Signals: user names
-  a role/domain but not any inspiration source ("build a framework for
-  Risk Analyst", "create a PM framework").
-- **Path B — Seeded by similar role profiles**. Signals: user wants the
-  LLM to *generate* a framework using picked role profiles as inspiration
-  ("build a Risk Analyst framework, use similar roles as inspiration").
-  The picks are seed text; the LLM expands on them.
-- **Path C — Inspired by an existing library**. Signals: user names a
-  specific library as REFERENCE only ("based on SFIA", "like our Backend
-  Engineering framework but for PMs", "inspired by AICB").
-- **Path D — Compose from named roles in a library**. Signals: user
-  names ≥1 specific roles AND a specific library to draw from, and wants
-  the *exact* skills those roles use ("combine Risk Analyst and Compliance
-  Officer from ESCO", "build a framework from these two ESCO occupations").
-  Direct clone — no LLM generation.
+Use this skill only as fallback guidance when no active flow is available and
+the request cannot be routed by the web shell.
 
-Multi-framework variant (user names multiple roles like "Risk Analyst,
-Data Scientist, Data Engineer"): each role becomes its OWN library.
-Process them sequentially — one role at a time, start to finish — not
-in parallel.
+## Fallback Rules
 
-1. **Detect existing first** — call `manage_library(action: "list")`. If
-   any requested role already exists as a saved library, ask: "<X>
-   already exists — extend it, create alongside as a new framework, or
-   skip it?"
-2. **Process one role at a time.** For each role: run the chosen path
-   (A/B/C) end-to-end (search → pick → view → overlap → skeleton →
-   proficiency → save). Announce progress between roles ("Saved Risk
-   Analyst draft. Moving to Data Scientist...") so the user sees the
-   sequence.
-3. **Do NOT bundle all roles into a single `generate_framework_skeletons`
-   call.** That produces one cross-cutting library, not three. The
-   `target_roles` param is for ONE library targeted at multiple roles
-   (e.g. "Senior Risk Analyst, Lead Risk Analyst" — variants of one
-   role), not for separate frameworks.
+- Do not fake flow progress as user-authored chat messages.
+- Do not let the LLM choose global workflow branches when a flow card is active.
+- If a Workbench table already exists, use the table name the user is reviewing.
+- `taxonomy:<name>` is the taxonomy review table.
+- `library:<name>` is the generated skill draft table.
+- `save_framework` is the persistence boundary; do not create an empty library
+  first.
+- Proficiency generation requires explicit user approval after skill review.
 
-The typed_structured strategy is one-action-per-turn, so sequential
-processing is the only option anyway.
+## Tool Fallback
 
-## Phase 2 — Path-specific intake
+If you must operate outside the flow, keep the sequence narrow:
 
-The intake depth depends on the path. NEVER make the user answer five
-intake questions before they've seen any tool output — that's a wall of
-interrogation.
+1. Ask only for missing essentials: name, description, domain or target roles.
+2. Generate taxonomy with `generate_framework_taxonomy`.
+3. Stop and ask the user to review the taxonomy table.
+4. After approval, call `generate_skills_for_taxonomy`.
+5. After skill review, ask before `generate_proficiency`.
+6. Save only when the user explicitly asks to save.
 
-### For Path A (from scratch)
-
-Path A has no inspiration to anchor the framework, so intake IS
-mandatory before any tool call. Ask only what you can't reasonably
-infer:
-
-- **Industry / domain** — e.g. fintech, healthcare, government
-- **Role(s)** — single or multi-role
-- **Purpose** — hiring, L&D, performance review, career pathing
-- **Proficiency levels** — default 5 (Dreyfus); user can override
-- **Must-have competencies** — anything guaranteed
-- **Existing frameworks to align with** — names of libraries, if any
-
-End with a 2–3 line summary and wait for the user to confirm. If the
-user volunteered most of this in their first message, skip what you
-have and confirm only the inferred values.
-
-### For Path B (seeded by role profiles)
-
-Do NOT interrogate the user before calling `load_similar_roles`. The
-picked roles ARE the framework's anchor — let the user pick first, then
-clarify only what's missing.
-
-**Critical: one action per turn.** The typed_structured strategy emits
-ONE action per turn. Do NOT respond first and then call the tool — pick
-the tool action directly. If you emit a `respond` action with the tool
-call as a follow-up, the tool call is silently dropped and the agent
-stalls. The user will see the tool call in the chat UI as progress;
-your verbal confirmation comes naturally in the next turn after the
-tool result returns.
-
-1. **Call `load_similar_roles` directly** as the first action — pass
-   the role name as `name` and `target_roles`. Use `domain` if the user
-   gave one. Skip any other intake fields. NO `respond` action first.
-2. **Continue at Path B step 1 (User picks)** below.
-
-After the user picks roles and you've shown them the overlap analysis,
-ask any minimal clarifications that aren't inferable from the picks:
-purpose (only if it changes scope — hiring vs career pathing), seniority
-range (only if picks span multiple levels). Skip the rest.
-
-### For Path C (inspired by an existing library)
-
-Same principle as Path B — let the user see the reference first.
-
-**Critical: one action per turn.** Same rule as Path B — do NOT respond
-first and then call the tool. Pick the tool action directly.
-
-1. **Call `browse_library` directly** as the first action — see Path C
-   step 1 below. NO `respond` action first.
-2. Ask any minimal clarifications AFTER you've shown the user the
-   reference patterns and they've agreed with your approach.
-
-### For Path D (compose from named roles in a library)
-
-No intake interrogation. The user has already named the roles and the
-library — that's all you need to start. The first action is to resolve
-the library UUID, then run the per-role searches. Pick `manage_library`
-or `analyze_role` directly as the first action, not a `respond` ask.
-
-**Critical: one action per turn.** The typed_structured strategy emits
-ONE action per turn. `respond` ENDS the turn — emit a `respond` to
-acknowledge ("Let me search for those roles first") and the turn closes
-before the next tool fires; the user sees a stalled chat. To narrate,
-use `think` (which does NOT end the turn) and follow with the tool on
-the next turn. To skip narration entirely, just emit the tool action
-directly — the user will see the tool call render in the chat.
-
-## Phase 3 — Execute the path
-
-The step-by-step for each path. For Path B and C, you've already
-called `load_similar_roles` / `browse_library` in Phase 2 — pick up
-where Phase 2 left off.
-
-### Path A — From scratch
-
-1. **Generate skeleton** — `generate_framework_skeletons(name, description, [domain], [target_roles], [skill_count])`. Skeleton rows stream into the `library:<name>` workspace table.
-2. **Present for approval** — once streaming completes, summarize the categories/clusters/skills (≤ 3 sentences). Ask: "Ready to generate proficiency levels?"
-3. **Generate proficiency** — ONLY after explicit approval, call `generate_proficiency(table_name: "library:<name>", levels: <intake-N>)`. This blocks ~30–60s and returns a single summary. Do not call `await_all`.
-4. **Save** — offer `save_framework(table: "library:<name>")` to persist. This creates a new DB library record (or updates an existing draft of the same name). It is always a draft — to lock it as a published version, the user explicitly asks to publish (see `manage-frameworks` skill).
-
-### Path B — Seeded by similar role profiles
-
-Phase 2 already called `load_similar_roles` and the user has the
-candidate list with UUIDs. Continue from there:
-
-1. **User picks** — present the candidates from Phase 2's tool result and ask which to use as seed (1 or more). The tool output includes the UUID for each — keep those handy.
-2. **View each pick's skills** — for each picked role profile, call `manage_role(action: "view", role_profile_id: "<uuid>")` using the UUID from the load_similar_roles output. NEVER pass the role's NAME as `role_profile_id` — names fail UUID validation. The view tool reads but does NOT load anything into the workspace.
-3. **Reason about overlap in chat** — read the skill lists from step 2, identify which skills appear in multiple picks (shared) and which are unique to each. Present to the user as plain text:
-   ```
-   Both have: Risk Modeling, Credit Analysis, Regulatory Compliance (3 shared)
-   Risk Analyst only: Stress Testing, Capital Adequacy
-   Credit Risk only: Collateral Valuation, Loan Origination
-   ```
-   Ask: "Keep all 7? Drop any?"
-4. **Ask any minimal clarifications** — if not already known, ask only what's needed to scope the framework: purpose (hiring vs L&D vs career pathing), seniority range. Do NOT re-ask things the picks already answer.
-5. **User curates** — collect the user's final pick list and clarification answers.
-6. **Generate skeleton with seed** — `generate_framework_skeletons(name, description, target_roles, similar_role_skills: <formatted block listing the curated picks>)`. The `similar_role_skills` field accepts a free-text seed context; pass the list of skill names + brief descriptions for each pick.
-7. Continue with steps 2–4 of Path A (review → generate proficiency → save).
-
-NEVER load the picked role profiles into a workspace table. NEVER save
-them as separate libraries. The agent reads them in chat and curates;
-nothing is persisted until step 7's save.
-
-### Path C — Inspired by an existing library
-
-Phase 2 already gave a brief confirmation. Continue from there:
-
-1. **Browse the reference** — `browse_library(library_name: "<name>")` to read its skills/categories/clusters. Do NOT call `load_library` — that would load the whole thing into the workspace, which is `import-framework`'s flow, not this one.
-2. **Extract patterns** — read the response and note: category structure, naming conventions, cluster style, level model. Summarize for the user: "SFIA uses 6 categories, 7-level proficiency, focuses on Skills + Knowledge. I'll adapt the structure to a 5-level Dreyfus model for your PM context."
-3. **Ask any minimal clarifications** — only what's needed to scope (purpose, seniority). Skip what the reference patterns already imply.
-4. **Confirm approach** — wait for user approval.
-5. **Generate skeleton with seed** — `generate_framework_skeletons(name, description, similar_role_skills: <formatted block summarizing the reference patterns and any specific skill names you want carried over>)`.
-6. Continue with steps 2–4 of Path A (review → generate proficiency → save).
-
-### Path D — Compose from named roles in a library
-
-When the user names specific role(s) AND a specific library to draw from
-("combine Risk Analyst and Compliance Officer from ESCO into one
-framework"), bypass LLM generation and use the literal-clone path. The
-result is a new library populated with the deduplicated union of those
-roles' skills, with full descriptions and proficiency_levels carried
-over verbatim.
-
-1. **Resolve the library UUID** — call `manage_library(action: "list")`
-   if you don't already have it. The user named a library by name (e.g.
-   "ESCO"); the library_id parameter on the next step requires its UUID.
-2. **Find all roles in ONE call** — call
-   `analyze_role(action: "find_similar", queries_json: "[\"<role-1>\", \"<role-2>\", ...]", library_id: "<library-uuid>")`.
-   The `queries_json` param accepts a JSON array of role names and runs
-   one library-scoped search per name. **Results are written to the
-   `role_candidates` data-table tab, NOT enumerated in chat.** The tool
-   response carries only the per-query counts. The user reviews the
-   full candidate list (grouped by query) in the UI and checks the rows
-   they want to use. ALWAYS prefer one multi-query call over multiple
-   single-query calls — one tool call eliminates the inter-call stall
-   window where the agent might narrate via `respond` and accidentally
-   end the turn.
-3. **Wait for the user's selection.** Tell them how many candidates
-   landed per query and ask them to check the rows they want in the
-   `role_candidates` tab, then click the **"✓ Done — Seed Framework"**
-   button on the table toolbar (or reply with "seed" in chat). The
-   button click synthesizes a user message that brings you back into
-   the loop, so you do not need to keep polling. Do NOT enumerate
-   candidates in chat — the table is the source of truth and the
-   picker UI. If the user names roles directly without checking ("use
-   the Risk Analyst one"), you can pre-fill via explicit UUIDs in step
-   4 instead of waiting. After a successful seed the `role_candidates`
-   tab is dropped automatically, so the workspace stops showing a
-   stale picker.
-4. **Seed the new framework** — call
-   `seed_framework_from_roles(name: "<framework-name>",
-   from_selected_candidates: "true", description: "<optional>")`. The
-   tool reads the user's checked rows from the `role_candidates` table
-   and unions those roles' skills with **exact-id dedup**: when the
-   same skill is referenced by multiple picked roles, it lands once.
-   The response lists the actual skills that overlapped (or "all
-   distinct" if none did). No semantic dedup runs here — for a curated
-   source like ESCO, every distinct ESCO skill is intentionally
-   distinct, so cosine/heuristic detection adds noise rather than
-   signal.
-
-   Alternative: pass `role_profile_ids_json: "[\"<A>\", \"<B>\"]"`
-   directly when the user has named specific UUIDs, e.g. they said "use
-   #1 from each query without checking the boxes."
-5. **Confirm and offer next steps.** Relay the merge count to the user.
-   Then offer two follow-ups depending on what they want:
-   - **Save now** — call `save_framework(table: "library:<name>")` to
-     persist any further edits. (The seed tool already persisted the
-     unioned skills, so this is a no-op when the user hasn't edited.)
-   - **Semantic review** — only if the user wants it, call
-     `dedup_library(library_id: "<id>")` to open a duplicate-review
-     tab with cosine-similarity candidates and a cluster summary. They
-     edit `resolution` cells in the table; `save_framework` then
-     applies the picks and persists. Don't volunteer this for
-     ESCO-sourced libraries — it's almost always noise there.
-
-Path D vs Path B in one line: Path D copies the actual skills literally;
-Path B uses LLM generation seeded by the picks (more skills, possibly
-restructured, but creative output). Use D when the user says "exactly
-these roles' skills" or "combine"; use B when they say "based on" or
-"inspired by" with intent to expand.
-
-## Rules
-
-- 8–12 skills per framework, 3–6 MECE categories, 1–3 clusters each.
-- Skill descriptions: 1 sentence defining the competency boundary.
-- NEVER call `generate_proficiency` without presenting the full skeleton and receiving explicit approval.
-- After `generate_proficiency` returns, offer `save_framework`. Do NOT verify with data-table tools — the user sees the table.
-
-## Anti-patterns (do NOT do these)
-
-- ❌ For Path A only: skipping intake. Calling `generate_framework_skeletons` from cold (no inspiration) without first gathering domain/role/purpose produces generic output. For Path B and C, intake is deferred — call the tool first.
-- ❌ For Path B: interrogating the user with five intake questions before calling `load_similar_roles`. The user said "build for X using ESCO" — that's enough. Run the search, let them pick, ask any missing scope questions AFTER the picks.
-- ❌ For Path B: passing a role NAME (e.g. `"financial risk manager"`) as `role_profile_id` to `manage_role(view)`. The tool requires a UUID. Use the UUID from the `load_similar_roles` output (formatted as `- <name> (<UUID>) — ...`).
-- ❌ Emitting a `respond` action with verbal confirmation when you intend to call a tool next. The typed_structured strategy emits ONE action per turn — your tool call gets silently dropped. Just emit the tool action directly; the verbal acknowledgement comes naturally in the next turn after the tool result.
-- ❌ `load_library` after `generate_framework_skeletons` — the skeleton rows are already in the `library:<name>` table. `load_library` reads from the DB, where the library does not exist yet, and will fail with "Library not found".
-- ❌ `load_library` for Path B or C — role profiles and reference libraries are read via `manage_role(view)` / `browse_library`, NOT loaded into the workspace.
-- ❌ `manage_library(action: "create")` before `save_framework` — `save_framework` looks up or creates the library by name automatically. Pre-creating produces an empty DB record and a duplicate-name conflict on save.
-- ❌ Calling `generate_framework_skeletons` more than once for the same framework — re-running appends to the existing table; re-do only if the user explicitly asks to regenerate.
-- ❌ `await_all` after `generate_proficiency` — the chat-side `generate_proficiency` already blocks until every category writer completes. Calling `await_all` afterward sends an empty `agent_ids` list and errors.
-- ❌ Using `query_table` / `describe_table` to "verify" what was just generated — the user sees the table directly. Trust the tool's row-count response.
-- ❌ For Path B: saving each picked role profile as its own library before comparing. Role profiles are READ via `manage_role(view)` and curated in chat; the comparison is the agent's reasoning, not a tool call.
-- ❌ Misrouting Path D as Path B. When the user names ≥1 specific roles AND a specific library to draw from ("combine A and B from ESCO", "Risk Analyst and Compliance Officer in ESCO"), use Path D (`analyze_role` with `library_id` then `seed_framework_from_roles`). Path B's `load_similar_roles` is org-wide (no library scope) and ends in LLM generation, not a literal skill clone — wrong tool for this intent.
-- ❌ For Path D: omitting `library_id` on `analyze_role(find_similar)`. Without it the search is org-wide and may return roles with skills from other libraries, polluting the union. Always pass `library_id: "<uuid>"` when the user named a library.
-- ❌ For Path D: passing role NAMES to `seed_framework_from_roles`. The tool requires UUIDs (in `role_profile_ids_json`) — or use `from_selected_candidates: "true"` to read the user's checkbox picks from the `role_candidates` table.
-- ❌ For Path D: calling `analyze_role(find_similar)` once per role name in sequence (`query: "Risk Analyst"` then `query: "Compliance Officer"`). That introduces a turn boundary between each call where the agent often narrates via `respond` and accidentally ends the turn. Use `queries_json: "[\"Risk Analyst\", \"Compliance Officer\"]"` to do all the searches in one call.
-- ❌ For Path D: enumerating the role candidates in chat after `analyze_role(find_similar)`. The candidates already landed in the `role_candidates` data-table tab where the user can sort, scan, and check rows. Listing them in chat is redundant and (when there are 10+ matches per query) overwhelming. Just announce the counts ("5 matches for Risk Analyst, 3 for Compliance Officer — pick the rows you want") and wait.
+For exact role-profile cloning, resolve the source roles first and use
+`seed_framework_from_roles`; do not regenerate skills when the user asked for a
+literal copy.

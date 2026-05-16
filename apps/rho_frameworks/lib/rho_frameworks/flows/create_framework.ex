@@ -7,12 +7,15 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   intake form so the user only sees the fields that path actually uses:
 
     * **Start from scratch** (`scratch_intent` / `scratch`)
-      → `:intake_scratch` (name, description, domain, target_roles,
-      skill_count, levels) → `:research → :generate → :review → :confirm
-      → :proficiency → :save`. Full LLM-driven path.
+      → `:intake_scratch` (name, description, domain, target_roles)
+      → `:taxonomy_preferences → :research → :generate_taxonomy
+      → :review_taxonomy → :generate_skills → :review → :confirm
+      → :choose_levels → :proficiency → :save`. Full taxonomy-first path.
     * **From a similar role** (`from_template_intent`)
-      → `:intake_template` (name, description) → `:similar_roles → :pick_template
-      → :save`. If no candidates exist (or the user picks none), the
+      → `:intake_template` (name, description) → `:similar_roles`
+      → `:role_transform`. The user then chooses whether selected roles are
+      seed context for taxonomy-first generation or exact skills to clone for
+      surgical editing. If no candidates exist (or the user picks none), the
       flow bounces back to `:choose_starting_point`.
     * **Extend an existing framework** (`extend_existing_intent`)
       → `:intake_extend` (name, description) → `:pick_existing_library
@@ -50,7 +53,9 @@ defmodule RhoFrameworks.Flows.CreateFramework do
 
   alias RhoFrameworks.UseCases.{
     DiffFrameworks,
+    GenerateFrameworkTaxonomy,
     GenerateFrameworkSkeletons,
+    GenerateSkillsForTaxonomy,
     IdentifyFrameworkGaps,
     ListExistingLibraries,
     LoadExistingFramework,
@@ -129,7 +134,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         id: :intake_scratch,
         label: "Define Framework",
         type: :form,
-        next: :research,
+        next: :taxonomy_preferences,
         routing: :fixed,
         config: %{
           fields: [
@@ -146,21 +151,87 @@ defmodule RhoFrameworks.Flows.CreateFramework do
               label: "Target Roles",
               type: :tags,
               placeholder: "e.g. Backend Engineer, Tech Lead"
+            }
+          ]
+        }
+      },
+      %{
+        id: :taxonomy_preferences,
+        label: "Design Structure",
+        type: :form,
+        next: :research,
+        routing: :fixed,
+        config: %{
+          fields: [
+            %{
+              name: :taxonomy_size,
+              label: "Structure Size",
+              type: :select,
+              default: "balanced",
+              description:
+                "Controls how much taxonomy the generator creates before writing skills.",
+              options: [
+                {"Compact", "compact"},
+                {"Balanced", "balanced"},
+                {"Comprehensive", "comprehensive"},
+                {"Custom", "custom"}
+              ],
+              option_descriptions: %{
+                "compact" => "Fewer categories and clusters for a quick draft.",
+                "balanced" => "A practical middle ground for most role frameworks.",
+                "comprehensive" => "More coverage and granularity for broad domains.",
+                "custom" => "Reserve room for a more specific structure later."
+              }
             },
             %{
-              name: :skill_count,
-              label: "Skill Count",
-              type: :range,
-              min: 8,
-              max: 20,
-              default: 12
+              name: :transferability,
+              label: "Focus",
+              type: :select,
+              default: "mixed",
+              description:
+                "Decides whether skills should be reusable across roles or tailored to this role.",
+              options: [
+                {"Balanced mix", "mixed"},
+                {"Reusable across roles", "transferable"},
+                {"Specific to this role/industry", "role_specific"}
+              ],
+              option_descriptions: %{
+                "mixed" => "Combines portable core skills with role-specific skills.",
+                "transferable" => "Favours skills that apply across related roles.",
+                "role_specific" => "Favours skills tied closely to this job or sector."
+              }
+            },
+            %{
+              name: :specificity,
+              label: "Style",
+              type: :select,
+              default: "general",
+              description:
+                "Sets how much industry or organization context appears in names and descriptions.",
+              options: [
+                {"General", "general"},
+                {"Industry-specific", "industry_specific"},
+                {"Organization-specific", "organization_specific"}
+              ],
+              option_descriptions: %{
+                "general" => "Uses broad language that is easy to reuse.",
+                "industry_specific" => "Adds terminology from the target industry.",
+                "organization_specific" => "Leaves space for company-specific language."
+              }
             },
             %{
               name: :levels,
               label: "Proficiency Levels",
               type: :select,
               default: "5",
-              options: [{"3 levels", "3"}, {"4 levels", "4"}, {"5 levels", "5"}]
+              description:
+                "Sets how many maturity levels each skill receives for assessment and progression.",
+              options: [{"3 levels", "3"}, {"4 levels", "4"}, {"5 levels", "5"}],
+              option_descriptions: %{
+                "3" => "Simple beginner, working, advanced progression.",
+                "4" => "Adds more separation for development planning.",
+                "5" => "Most detailed; best for assessment rubrics."
+              }
             }
           ]
         }
@@ -209,7 +280,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         label: "Research the Domain",
         type: :action,
         use_case: ResearchDomain,
-        next: :generate,
+        next: :generate_taxonomy,
         routing: :agent_loop,
         config: %{
           findings_table: ResearchDomain.table_name()
@@ -222,9 +293,9 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         use_case: LoadSimilarRoles,
         next: [
           %{
-            to: :pick_template,
+            to: :role_transform,
             guard: :good_matches,
-            label: "Use a similar role as a template"
+            label: "Choose how to use selected roles"
           },
           %{
             to: :choose_starting_point,
@@ -239,17 +310,54 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         }
       },
       %{
-        id: :pick_template,
-        label: "Use as Template",
-        type: :action,
-        use_case: PickTemplate,
-        next: :save,
+        id: :role_transform,
+        label: "Use Selected Roles",
+        type: :form,
+        next: [
+          %{
+            to: :pick_template,
+            guard: :role_transform_clone,
+            label: "Clone exact skills"
+          },
+          %{
+            to: :taxonomy_preferences,
+            guard: :role_transform_inspire,
+            label: "Use as inspiration"
+          }
+        ],
         routing: :fixed,
         config: %{
-          manual: true,
-          message:
-            "Use the selected role(s) as a template? Their skills will be copied into your new framework."
+          fields: [
+            %{
+              name: :role_transform,
+              label: "How should the selected roles shape this framework?",
+              type: :select,
+              required: true,
+              default: "inspire",
+              options: [
+                {"Use as inspiration", "inspire"},
+                {"Clone exact skills for editing", "clone"}
+              ]
+            }
+          ]
         }
+      },
+      %{
+        id: :pick_template,
+        label: "Clone Skills",
+        type: :action,
+        use_case: PickTemplate,
+        next: :review_clone,
+        routing: :fixed,
+        config: %{}
+      },
+      %{
+        id: :review_clone,
+        label: "Review Cloned Skills",
+        type: :table_review,
+        next: :save,
+        routing: :fixed,
+        config: %{}
       },
       %{
         id: :pick_existing_library,
@@ -345,6 +453,32 @@ defmodule RhoFrameworks.Flows.CreateFramework do
         config: %{}
       },
       %{
+        id: :generate_taxonomy,
+        label: "Generate Taxonomy",
+        type: :action,
+        use_case: GenerateFrameworkTaxonomy,
+        next: :review_taxonomy,
+        routing: :fixed,
+        config: %{}
+      },
+      %{
+        id: :review_taxonomy,
+        label: "Review Taxonomy",
+        type: :table_review,
+        next: :generate_skills,
+        routing: :fixed,
+        config: %{table_summary_key: :generate_taxonomy, table_field: :taxonomy_table_name}
+      },
+      %{
+        id: :generate_skills,
+        label: "Generate Skills",
+        type: :action,
+        use_case: GenerateSkillsForTaxonomy,
+        next: :review,
+        routing: :fixed,
+        config: %{}
+      },
+      %{
         id: :generate,
         label: "Generate Skills",
         type: :action,
@@ -381,6 +515,45 @@ defmodule RhoFrameworks.Flows.CreateFramework do
       description: get(intake, :description) || "",
       domain: get(intake, :domain) || "",
       target_roles: get(intake, :target_roles) || ""
+    }
+  end
+
+  def build_input(:generate_taxonomy, %{intake: intake, summaries: summaries}, %Scope{} = scope) do
+    seed_context = role_seed_context(summaries)
+
+    %{
+      name: get(intake, :name) || "",
+      description: get(intake, :description) || "",
+      domain: get(intake, :domain) || "",
+      target_roles: get(intake, :target_roles) || "",
+      taxonomy_size: get(intake, :taxonomy_size) || "balanced",
+      specificity: get(intake, :specificity) || "general",
+      transferability: get(intake, :transferability) || "mixed",
+      generation_style: if(seed_context, do: "from_roles", else: "from_brief"),
+      seeds: seed_context,
+      research: load_pinned_research(scope)
+    }
+  end
+
+  def build_input(:generate_skills, %{intake: intake, summaries: summaries}, %Scope{} = scope) do
+    taxonomy_summary = Map.get(summaries, :generate_taxonomy, %{})
+
+    %{
+      name: get(intake, :name) || "",
+      description: get(intake, :description) || "",
+      target_roles: get(intake, :target_roles) || "",
+      taxonomy_table_name:
+        Map.get(taxonomy_summary, :taxonomy_table_name) ||
+          RhoFrameworks.Taxonomy.table_name(get(intake, :name) || ""),
+      table_name: RhoFrameworks.Taxonomy.library_table_name(get(intake, :name) || ""),
+      taxonomy_size: get(intake, :taxonomy_size) || "balanced",
+      specificity: get(intake, :specificity) || "general",
+      transferability: get(intake, :transferability) || "mixed",
+      skills_per_cluster:
+        get_in(taxonomy_summary, [:preferences, :skills_per_cluster]) ||
+          Rho.MapAccess.get(taxonomy_summary, :skills_per_cluster),
+      seeds: role_seed_context(summaries),
+      research: load_pinned_research(scope)
     }
   end
 
@@ -485,8 +658,9 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   the loaded source library's modal proficiency-level count, when
   reachable. Only kicks in for paths that have a source library (extend);
   scratch already has the user's choice in `intake.levels` from
-  `intake_scratch`. Template/merge paths bypass `:proficiency` entirely
-  via direct `:save` edges, so they never reach `:choose_levels`.
+  `intake_scratch`. Similar-role generation now reaches this step after
+  taxonomy/skill review; merge paths still bypass `:proficiency` via direct
+  `:save` edges, so they never reach `:choose_levels`.
   """
   def populate_intake(:choose_levels, %{intake: intake, summaries: summaries}, %Scope{} = scope) do
     cond do
@@ -500,6 +674,7 @@ defmodule RhoFrameworks.Flows.CreateFramework do
       true ->
         table_name =
           get_in(summaries, [:load_existing_library, :table_name]) ||
+            get_in(summaries, [:generate_skills, :table_name]) ||
             get_in(summaries, [:generate, :table_name])
 
         case table_name && modal_level_count(scope.session_id, table_name) do
@@ -559,6 +734,13 @@ defmodule RhoFrameworks.Flows.CreateFramework do
     end)
   end
 
+  defp role_seed_context(summaries) when is_map(summaries) do
+    summaries
+    |> Map.get(:similar_roles, %{})
+    |> Map.get(:selected, [])
+    |> format_seed_skills()
+  end
+
   defp load_pinned_research(%Scope{session_id: nil}), do: nil
 
   defp load_pinned_research(%Scope{session_id: session_id}) do
@@ -588,10 +770,16 @@ defmodule RhoFrameworks.Flows.CreateFramework do
   defp format_research_row(row) do
     fact = Rho.MapAccess.get(row, :fact) || ""
     source = Rho.MapAccess.get(row, :source) || ""
+    source_title = Rho.MapAccess.get(row, :source_title)
     tag = Rho.MapAccess.get(row, :tag)
     tag_part = if tag in [nil, ""], do: "", else: " [#{tag}]"
-    "- #{fact}#{tag_part} (source: #{source})"
+    source_part = source_label(source_title, source)
+    "- #{fact}#{tag_part} (source: #{source_part})"
   end
+
+  defp source_label(title, source) when title in [nil, ""], do: source
+  defp source_label(title, source) when source in [nil, ""], do: title
+  defp source_label(title, source), do: "#{title} - #{source}"
 
   defp extend_existing_active?(load_existing, gaps_summary) do
     is_binary(Map.get(load_existing, :table_name)) and Map.has_key?(gaps_summary, :gaps)

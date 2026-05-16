@@ -1,7 +1,7 @@
 defmodule RhoFrameworks.DataTableSchemas do
   @moduledoc """
   Declared `Rho.Stdlib.DataTable.Schema` values for frameworks-domain
-  tables (`library`, `role_profile`).
+  tables (`library`, `taxonomy`, `role_profile`).
 
   These mirror the shape of the SQLite persistence layer (see
   `RhoFrameworks.Frameworks.Skill` for the `{:array, :map}` embedded
@@ -47,6 +47,41 @@ defmodule RhoFrameworks.DataTableSchemas do
       ],
       child_key_fields: [:level],
       key_fields: [:skill_name]
+    }
+  end
+
+  @doc "Schema for taxonomy draft tables (`\"taxonomy:<name>\"`): one row per category/cluster."
+  def taxonomy_schema do
+    %Schema{
+      name: "taxonomy",
+      mode: :strict,
+      columns: [
+        %Column{name: :category, type: :string, required?: true, doc: "Top-level grouping"},
+        %Column{name: :category_description, type: :string, required?: false},
+        %Column{
+          name: :cluster,
+          type: :string,
+          required?: true,
+          doc: "Sub-grouping within category"
+        },
+        %Column{name: :cluster_description, type: :string, required?: false},
+        %Column{
+          name: :target_skill_count,
+          type: :integer,
+          required?: false,
+          doc: "Target number of skills to generate under this cluster"
+        },
+        %Column{name: :specificity, type: :string, required?: false},
+        %Column{name: :transferability, type: :string, required?: false},
+        %Column{name: :rationale, type: :string, required?: false},
+        %Column{
+          name: :_source,
+          type: :string,
+          required?: false,
+          doc: "Provenance: user/flow/agent"
+        }
+      ],
+      key_fields: [:category, :cluster]
     }
   end
 
@@ -250,7 +285,25 @@ defmodule RhoFrameworks.DataTableSchemas do
           required?: true,
           doc: "URL/identifier of the finding's origin, or 'user' for manual notes"
         },
+        %Column{
+          name: :source_title,
+          type: :string,
+          required?: false,
+          doc: "Readable source title returned by the research provider"
+        },
         %Column{name: :fact, type: :string, required?: true, doc: "The finding itself"},
+        %Column{
+          name: :published_date,
+          type: :string,
+          required?: false,
+          doc: "Publication date from the research provider, when available"
+        },
+        %Column{
+          name: :relevance,
+          type: :float,
+          required?: false,
+          doc: "Provider relevance score, when available"
+        },
         %Column{
           name: :tag,
           type: :string,

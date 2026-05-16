@@ -23,19 +23,25 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
   alias RhoFrameworks.Scope
 
   alias RhoFrameworks.UseCases.{
+    GenerateFrameworkTaxonomy,
     GenerateFrameworkSkeletons,
+    GenerateSkillsForTaxonomy,
     GenerateProficiency,
     ExtractFromJD,
     ImportFromUpload,
     LoadSimilarRoles,
     PickTemplate,
+    ResearchDomain,
     SaveFramework
   }
 
   @use_case_tool_names %{
     LoadSimilarRoles => "load_similar_roles",
+    GenerateFrameworkTaxonomy => "generate_framework_taxonomy",
     GenerateFrameworkSkeletons => "generate_framework_skeletons",
+    GenerateSkillsForTaxonomy => "generate_skills_for_taxonomy",
     GenerateProficiency => "generate_proficiency",
+    ResearchDomain => "research_domain",
     SaveFramework => "save_framework",
     ImportFromUpload => "import_library_from_upload",
     ExtractFromJD => "extract_role_from_jd"
@@ -43,7 +49,7 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
 
   @doc """
   Returns the chat-side tool def for a UseCase module, or `nil` if the
-  UseCase has no chat surface (e.g. `PickTemplate`, `ResearchDomain`).
+  UseCase has no chat surface (e.g. `PickTemplate`).
 
   Used by the wizard's `<.step_chat />` component to constrain the
   per-step agent's tool list to *just* the current node's UseCase plus
@@ -98,6 +104,108 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
 
         {:ok, %{matches: matches}} ->
           {:ok, format_matches(matches)}
+      end
+    end)
+  end
+
+  # ── research_domain ────────────────────────────────────────────────────
+
+  tool :research_domain,
+       "Research a domain for framework creation. Calls Exa and saves bounded summaries to research_notes." do
+    param(:name, :string, required: true, doc: "Framework name")
+    param(:description, :string)
+    param(:domain, :string)
+    param(:target_roles, :string, doc: "Comma-separated role list")
+
+    run(fn args, ctx ->
+      case ResearchDomain.Insert.run(args, ctx.session_id, :agent) do
+        {:ok, %{inserted: inserted, seen: seen, failed_queries: 0}} ->
+          {:ok, "Saved #{inserted} research notes from #{seen} Exa results."}
+
+        {:ok, %{inserted: inserted, seen: seen, failed_queries: failed}} ->
+          {:ok,
+           "Saved #{inserted} research notes from #{seen} Exa results; #{failed} queries failed."}
+
+        {:error, reason} ->
+          {:error, "research_domain failed: #{inspect(reason)}"}
+      end
+    end)
+  end
+
+  # ── generate_framework_taxonomy ────────────────────────────────────────
+
+  tool :generate_framework_taxonomy,
+       "Generate a category/cluster taxonomy draft for a new framework. " <>
+         "Rows stream into the session's taxonomy:<name> table for review before skills are generated. " <>
+         "After this tool, respond and wait for the user to approve or edit the taxonomy." do
+    param(:name, :string, required: true, doc: "Framework name")
+    param(:description, :string, required: true)
+    param(:domain, :string)
+    param(:target_roles, :string)
+    param(:research, :string, doc: "Optional formatted research bullet list")
+    param(:seeds, :string, doc: "Optional seed context block")
+    param(:taxonomy_size, :string, doc: "compact/balanced/comprehensive/custom")
+    param(:category_count, :integer, doc: "Custom category count")
+    param(:clusters_per_category, :string, doc: "Custom cluster count or range")
+    param(:skills_per_cluster, :string, doc: "Custom skill count or range")
+    param(:strict_counts, :boolean, doc: "Whether custom counts are exact")
+    param(:specificity, :string, doc: "general/industry_specific/organization_specific")
+    param(:transferability, :string, doc: "transferable/role_specific/mixed")
+    param(:generation_style, :string, doc: "from_brief/from_jd/from_import/from_roles")
+
+    run(fn args, ctx ->
+      scope = Scope.from_context(ctx)
+      maybe_open_taxonomy_tab(ctx, args[:name])
+
+      input =
+        args
+        |> Map.take([
+          :name,
+          :description,
+          :domain,
+          :target_roles,
+          :research,
+          :seeds,
+          :taxonomy_size,
+          :category_count,
+          :clusters_per_category,
+          :skills_per_cluster,
+          :strict_counts,
+          :specificity,
+          :transferability,
+          :generation_style
+        ])
+        |> Map.put(:agent_id, ctx.agent_id)
+
+      case GenerateFrameworkTaxonomy.run(input, scope) do
+        {:ok, %{taxonomy_table_name: tbl, cluster_count: clusters, category_count: categories}} ->
+          %Rho.ToolResponse{
+            text:
+              "Generated taxonomy into '#{tbl}' (#{categories} categories, #{clusters} clusters). Ask the user to review or edit it before generating skills.",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: tbl,
+                schema_key: :taxonomy,
+                mode_label: "Taxonomy — #{args[:name]}",
+                metadata:
+                  taxonomy_metadata(args[:name], tbl, :create_framework,
+                    source_label: args[:description]
+                  ),
+                rows: [],
+                skip_write?: true
+              }
+            ]
+          }
+
+        {:error, :missing_name} ->
+          {:error, "name is required."}
+
+        {:error, :missing_description} ->
+          {:error, "description is required."}
+
+        {:error, reason} ->
+          {:error, "generate_framework_taxonomy failed: #{inspect(reason)}"}
       end
     end)
   end
@@ -171,6 +279,83 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     end)
   end
 
+  # ── generate_skills_for_taxonomy ───────────────────────────────────────
+
+  tool :generate_skills_for_taxonomy,
+       "Generate framework skills under an approved taxonomy table. " <>
+         "Call only after the user has reviewed/approved the taxonomy table. " <>
+         "Do not call in the same turn as generate_framework_taxonomy unless the user explicitly skipped review. " <>
+         "Writes skills into library:<name> and rejects outputs outside the approved taxonomy." do
+    param(:name, :string, required: true, doc: "Framework name")
+    param(:description, :string, required: true)
+    param(:target_roles, :string)
+    param(:taxonomy_table_name, :string, doc: "Taxonomy table name (default taxonomy:<name>)")
+    param(:table_name, :string, doc: "Library table name (default library:<name>)")
+    param(:research, :string, doc: "Optional formatted research bullet list")
+    param(:seeds, :string, doc: "Optional seed context block")
+    param(:skills_per_cluster, :string, doc: "Skill count or range")
+    param(:strict_counts, :boolean, doc: "Whether counts are exact")
+
+    run(fn args, ctx ->
+      scope = Scope.from_context(ctx)
+      maybe_open_library_tab(ctx, args[:name])
+
+      input =
+        args
+        |> Map.take([
+          :name,
+          :description,
+          :target_roles,
+          :taxonomy_table_name,
+          :table_name,
+          :research,
+          :seeds,
+          :skills_per_cluster,
+          :strict_counts
+        ])
+        |> Map.put(:agent_id, ctx.agent_id)
+
+      case GenerateSkillsForTaxonomy.run(input, scope) do
+        {:ok, %{added: added, table_name: tbl, rejected_count: rejected_count}} ->
+          suffix =
+            if rejected_count > 0,
+              do: " Rejected #{rejected_count} skill(s) outside the approved taxonomy.",
+              else: ""
+
+          %Rho.ToolResponse{
+            text: "Generated #{length(added)} skill(s) into '#{tbl}'.#{suffix}",
+            effects: [
+              %Rho.Effect.OpenWorkspace{key: :data_table},
+              %Rho.Effect.Table{
+                table_name: tbl,
+                schema_key: :skill_library,
+                mode_label: "Skill Library — #{args[:name]}",
+                metadata:
+                  library_metadata(args[:name], tbl, :create_framework,
+                    generated?: true,
+                    source_label: args[:description]
+                  ),
+                rows: [],
+                skip_write?: true
+              }
+            ]
+          }
+
+        {:error, :missing_name} ->
+          {:error, "name is required."}
+
+        {:error, :missing_description} ->
+          {:error, "description is required."}
+
+        {:error, :empty_taxonomy} ->
+          {:error, "No taxonomy rows found. Generate or review taxonomy first."}
+
+        {:error, reason} ->
+          {:error, "generate_skills_for_taxonomy failed: #{inspect(reason)}"}
+      end
+    end)
+  end
+
   defp maybe_open_library_tab(_ctx, nil), do: :ok
   defp maybe_open_library_tab(_ctx, ""), do: :ok
 
@@ -194,6 +379,40 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
               library_metadata(name, table_name, :create_framework,
                 generated?: true,
                 source_label: "Generating framework skeleton"
+              ),
+            rows: [],
+            skip_write?: true
+          }
+        ],
+        %{session_id: session_id, agent_id: agent_id}
+      )
+    end
+
+    :ok
+  end
+
+  defp maybe_open_taxonomy_tab(_ctx, nil), do: :ok
+  defp maybe_open_taxonomy_tab(_ctx, ""), do: :ok
+
+  defp maybe_open_taxonomy_tab(ctx, name) when is_binary(name) do
+    session_id = ctx.session_id
+    agent_id = ctx.agent_id
+
+    if is_binary(session_id) do
+      table_name = RhoFrameworks.Taxonomy.table_name(name)
+      _ = DataTable.ensure_started(session_id)
+      _ = DataTable.ensure_table(session_id, table_name, DataTableSchemas.taxonomy_schema())
+
+      EffectDispatcher.dispatch_all(
+        [
+          %Rho.Effect.OpenWorkspace{key: :data_table},
+          %Rho.Effect.Table{
+            table_name: table_name,
+            schema_key: :taxonomy,
+            mode_label: "Taxonomy — #{name}",
+            metadata:
+              taxonomy_metadata(name, table_name, :create_framework,
+                source_label: "Generating framework taxonomy"
               ),
             rows: [],
             skip_write?: true
@@ -812,6 +1031,18 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
     |> maybe_put(:imported?, Keyword.get(opts, :imported?))
   end
 
+  defp taxonomy_metadata(name, table_name, workflow, opts) do
+    %{
+      workflow: workflow,
+      artifact_kind: :framework_taxonomy,
+      title: "#{name} Taxonomy",
+      library_name: name,
+      output_table: table_name,
+      dirty?: Keyword.get(opts, :dirty?, true)
+    }
+    |> maybe_put(:source_label, Keyword.get(opts, :source_label))
+  end
+
   defp role_profile_metadata(name, table_name, workflow, opts) do
     %{
       workflow: workflow,
@@ -866,7 +1097,9 @@ defmodule RhoFrameworks.Tools.WorkflowTools do
         id = Rho.MapAccess.get(r, :id)
         family = Rho.MapAccess.get(r, :role_family) || "?"
         count = Rho.MapAccess.get(r, :skill_count) || 0
-        "- #{name} (#{id}) — #{family}, #{count} skills"
+        libraries = Rho.MapAccess.get(r, :source_library_names)
+        library_note = if libraries in [nil, ""], do: "", else: ", libraries: #{libraries}"
+        "- #{name} (#{id}) — #{family}, #{count} skills#{library_note}"
       end)
 
     "Found #{length(matches)} similar role(s). Pass the UUID in parens to manage_role(action: \"view\", role_profile_id: ...) to read each role's skills.\n" <>

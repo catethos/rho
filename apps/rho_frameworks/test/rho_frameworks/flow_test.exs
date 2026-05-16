@@ -11,19 +11,22 @@ defmodule RhoFrameworks.FlowTest do
 
       steps = CreateFramework.steps()
       assert is_list(steps)
-      assert length(steps) == 21
+      assert length(steps) == 27
 
       ids = Enum.map(steps, & &1.id)
 
       assert ids == [
                :choose_starting_point,
                :intake_scratch,
+               :taxonomy_preferences,
                :intake_template,
                :intake_extend,
                :intake_merge,
                :research,
                :similar_roles,
+               :role_transform,
                :pick_template,
+               :review_clone,
                :pick_existing_library,
                :load_existing_library,
                :identify_gaps,
@@ -31,6 +34,9 @@ defmodule RhoFrameworks.FlowTest do
                :diff_frameworks,
                :resolve_conflicts,
                :merge_frameworks,
+               :generate_taxonomy,
+               :review_taxonomy,
+               :generate_skills,
                :generate,
                :review,
                :confirm,
@@ -88,14 +94,27 @@ defmodule RhoFrameworks.FlowTest do
       assert scratch_edge.to == :intake_scratch
 
       # Per-path intake nodes funnel into their path-specific work steps.
-      assert next_map[:intake_scratch] == :research
+      assert next_map[:intake_scratch] == :taxonomy_preferences
+      assert next_map[:taxonomy_preferences] == :research
       assert next_map[:intake_template] == :similar_roles
       assert next_map[:intake_extend] == :pick_existing_library
       assert next_map[:intake_merge] == :pick_two_libraries
 
-      assert next_map[:research] == :generate
-      assert next_map[:pick_template] == :save
+      assert next_map[:research] == :generate_taxonomy
+      assert next_map[:generate_taxonomy] == :review_taxonomy
+      assert next_map[:review_taxonomy] == :generate_skills
+      assert next_map[:generate_skills] == :review
       assert next_map[:generate] == :review
+      assert is_list(next_map[:role_transform])
+
+      assert Enum.find(next_map[:role_transform], &(&1.guard == :role_transform_clone)).to ==
+               :pick_template
+
+      assert Enum.find(next_map[:role_transform], &(&1.guard == :role_transform_inspire)).to ==
+               :taxonomy_preferences
+
+      assert next_map[:pick_template] == :review_clone
+      assert next_map[:review_clone] == :save
       assert next_map[:review] == :confirm
       # :confirm now routes to :choose_levels (the new shared form step
       # in FinalizeSkeleton's tail) before proficiency. Always asks the
@@ -108,7 +127,7 @@ defmodule RhoFrameworks.FlowTest do
       assert is_list(next_map[:similar_roles])
 
       good_edge = Enum.find(next_map[:similar_roles], &(&1.guard == :good_matches))
-      assert good_edge.to == :pick_template
+      assert good_edge.to == :role_transform
 
       bounce_edge = Enum.find(next_map[:similar_roles], &(&1.guard == :no_similar_roles))
       assert bounce_edge.to == :choose_starting_point
@@ -124,20 +143,27 @@ defmodule RhoFrameworks.FlowTest do
                RhoFrameworks.UseCases.ResearchDomain.table_name()
     end
 
-    test "intake_scratch step has all 6 form fields; non-scratch intakes only ask name + description" do
+    test "scratch intake asks identity fields and taxonomy_preferences owns structure fields" do
       steps = CreateFramework.steps()
 
       scratch = Enum.find(steps, &(&1.id == :intake_scratch))
       assert scratch.type == :form
-      assert length(scratch.config.fields) == 6
+      assert length(scratch.config.fields) == 4
 
       scratch_field_names = Enum.map(scratch.config.fields, & &1.name)
       assert :name in scratch_field_names
       assert :description in scratch_field_names
       assert :domain in scratch_field_names
       assert :target_roles in scratch_field_names
-      assert :skill_count in scratch_field_names
-      assert :levels in scratch_field_names
+      refute :skill_count in scratch_field_names
+      refute :levels in scratch_field_names
+
+      prefs = Enum.find(steps, &(&1.id == :taxonomy_preferences))
+      pref_field_names = Enum.map(prefs.config.fields, & &1.name)
+      assert :taxonomy_size in pref_field_names
+      assert :transferability in pref_field_names
+      assert :specificity in pref_field_names
+      assert :levels in pref_field_names
 
       for id <- [:intake_template, :intake_extend, :intake_merge] do
         step = Enum.find(steps, &(&1.id == id))

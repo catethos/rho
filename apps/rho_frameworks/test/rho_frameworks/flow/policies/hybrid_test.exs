@@ -127,13 +127,13 @@ defmodule RhoFrameworks.Flow.Policies.HybridTest do
         })
 
       edges = [
-        edge(:pick_template, guard: :good_matches, label: "use template"),
+        edge(:taxonomy_preferences, guard: :good_matches, label: "use selected as inspiration"),
         edge(:generate, guard: :no_matches, label: "from scratch")
       ]
 
       n = node(:fork, :fixed, edges)
 
-      assert {:ok, :pick_template, %{reason: nil, confidence: nil}} =
+      assert {:ok, :taxonomy_preferences, %{reason: nil, confidence: nil}} =
                Hybrid.choose_next(StubFlow, n, good, edges, router_mod: StubRouterFails)
     end
   end

@@ -265,6 +265,18 @@ defmodule RhoFrameworks.FlowRunner do
 
   def guard?(:from_template_intent, _state), do: false
 
+  def guard?(:role_transform_inspire, %{intake: intake}) when is_map(intake) do
+    get_intake(intake, :role_transform) in [nil, "", "inspire"]
+  end
+
+  def guard?(:role_transform_inspire, _state), do: true
+
+  def guard?(:role_transform_clone, %{intake: intake}) when is_map(intake) do
+    get_intake(intake, :role_transform) == "clone"
+  end
+
+  def guard?(:role_transform_clone, _state), do: false
+
   def guard?(:scratch_intent, %{intake: intake}) when is_map(intake) do
     get_intake(intake, :starting_point) == "scratch"
   end

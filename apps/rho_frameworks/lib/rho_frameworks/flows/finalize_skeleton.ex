@@ -107,7 +107,8 @@ defmodule RhoFrameworks.Flows.FinalizeSkeleton do
 
   def build_input(:proficiency, %{intake: intake, summaries: summaries}, %Scope{}) do
     table_name =
-      get_in(summaries, [:generate, :table_name]) ||
+      get_in(summaries, [:generate_skills, :table_name]) ||
+        get_in(summaries, [:generate, :table_name]) ||
         get_in(summaries, [:load_existing_library, :table_name]) ||
         get_in(summaries, [:pick_template, :table_name]) ||
         get_in(summaries, [:merge_frameworks, :table_name]) ||
@@ -125,12 +126,14 @@ defmodule RhoFrameworks.Flows.FinalizeSkeleton do
   def build_input(:save, %{intake: intake, summaries: summaries}, %Scope{} = scope) do
     template_summary = Map.get(summaries, :pick_template, %{})
     generate_summary = Map.get(summaries, :generate, %{})
+    generate_skills_summary = Map.get(summaries, :generate_skills, %{})
     load_existing = Map.get(summaries, :load_existing_library, %{})
     merge_summary = Map.get(summaries, :merge_frameworks, %{})
 
     table_name =
       Map.get(merge_summary, :table_name) ||
         Map.get(template_summary, :table_name) ||
+        Map.get(generate_skills_summary, :table_name) ||
         Map.get(generate_summary, :table_name) ||
         Map.get(load_existing, :table_name) ||
         derive_table_name(intake)
@@ -138,6 +141,7 @@ defmodule RhoFrameworks.Flows.FinalizeSkeleton do
     library_id =
       Map.get(merge_summary, :library_id) ||
         Map.get(template_summary, :library_id) ||
+        Map.get(generate_skills_summary, :library_id) ||
         Map.get(generate_summary, :library_id) ||
         lookup_library_id(scope.organization_id, get(intake, :name))
 

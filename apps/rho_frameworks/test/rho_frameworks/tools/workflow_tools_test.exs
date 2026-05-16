@@ -39,13 +39,15 @@ defmodule RhoFrameworks.Tools.WorkflowToolsTest do
       assert %{tool: %{name: "generate_proficiency"}} =
                WorkflowTools.tool_for_use_case(GenerateProficiency)
 
+      assert %{tool: %{name: "research_domain"}} =
+               WorkflowTools.tool_for_use_case(ResearchDomain)
+
       assert %{tool: %{name: "save_framework"}} =
                WorkflowTools.tool_for_use_case(SaveFramework)
     end
 
     test "returns nil for UseCases with no chat surface" do
       assert WorkflowTools.tool_for_use_case(PickTemplate) == nil
-      assert WorkflowTools.tool_for_use_case(ResearchDomain) == nil
     end
   end
 

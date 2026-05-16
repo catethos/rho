@@ -97,6 +97,11 @@
     or set up just-generated skeletons. The table is already populated;
     `save_framework` creates the library record (as a draft) on save.
 
+    Framework creation sequencing belongs in the preloaded
+    `create-framework` skill. Follow that skill as the source of truth for
+    source-mode routing, taxonomy review, skill review, proficiency approval,
+    and save timing.
+
     Library tables: `library:<name>` (exact name from tool response). Role profile: `role_profile`.
     After data-loading tools: ≤ 3 sentences. Never enumerate rows in answer or thinking.
 
