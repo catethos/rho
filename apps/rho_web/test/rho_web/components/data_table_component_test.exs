@@ -14,6 +14,8 @@ defmodule RhoWeb.DataTableComponentTest do
   alias Rho.Stdlib.DataTable.Schema.Column, as: StorageColumn
   alias Rho.Stdlib.DataTable.WorkbenchContext
   alias RhoWeb.DataTableComponent
+  alias RhoWeb.DataTableArtifactHeaderComponent
+  alias RhoWeb.DataTableDialogsComponent
   alias RhoWeb.DataTable.Schemas
   alias RhoWeb.WorkbenchDisplay
 
@@ -705,6 +707,88 @@ defmodule RhoWeb.DataTableComponentTest do
       assert html =~ "2 rows"
     end
 
+    test "renders flat research notes without the synthetic All group header" do
+      rows = [
+        %{
+          id: "n1",
+          fact: "Hiring teams increasingly expect AI governance experience.",
+          source_title: "Example Research",
+          source: "https://example.com/research",
+          published_date: "2026-01-10",
+          tag: nil,
+          relevance: 0.91,
+          pinned: true
+        }
+      ]
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.research_notes(),
+          tables: [%{name: "research_notes", row_count: 1, version: 1, schema: nil}],
+          table_order: ["research_notes"],
+          active_table: "research_notes",
+          view_key: :research_notes,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          selected_ids: MapSet.new(),
+          class: ""
+        )
+
+      assert html =~ "Research Notes"
+      assert html =~ "Hiring teams increasingly expect AI governance experience."
+      refute html =~ "dt-group-header"
+      refute html =~ ">All<"
+    end
+
+    test "formats research note prose into reader-friendly blocks" do
+      rows = [
+        %{
+          id: "n1",
+          fact:
+            "Summary: CFO competency models benchmark finance leadership skills. Competencies are organized into three pillars: - Foundation Skills: Governance and control. - Implementation Skills: Strategic business partnering. - Impact Skills: Leadership and commercial mindset.",
+          source_title: "Example Research",
+          source: "https://example.com/research",
+          published_date: "2026-01-10",
+          tag: "framework",
+          relevance: 0.91,
+          pinned: true
+        }
+      ]
+
+      html =
+        render_component(DataTableComponent,
+          id: "dt1",
+          rows: rows,
+          schema: Schemas.research_notes(),
+          tables: [%{name: "research_notes", row_count: 1, version: 1, schema: nil}],
+          table_order: ["research_notes"],
+          active_table: "research_notes",
+          view_key: :research_notes,
+          mode_label: nil,
+          error: nil,
+          version: 1,
+          streaming: false,
+          total_cost: 0.0,
+          session_id: "s1",
+          selected_ids: MapSet.new(),
+          class: ""
+        )
+
+      assert html =~ "dt-research-block-label"
+      assert html =~ "Summary"
+      assert html =~ "dt-research-section-title"
+      assert html =~ "Competencies are organized into three pillars"
+      assert html =~ "dt-research-fact-list"
+      assert html =~ "Foundation Skills"
+      assert html =~ "Strategic business partnering"
+    end
+
     test "renders mode label when present" do
       html =
         render_component(DataTableComponent,
@@ -728,6 +812,54 @@ defmodule RhoWeb.DataTableComponentTest do
   end
 
   describe "Suggest button gating" do
+    test "save role dialog includes editable group" do
+      html =
+        %{
+          action_dialog: {:save_role, "Programming Role", "Engineering"},
+          myself: "dt1",
+          role_groups: ["Digital, Data and IT Operations", "Engineering"]
+        }
+        |> DataTableDialogsComponent.dialogs()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "Role Name"
+      assert html =~ "Programming Role"
+      assert html =~ "Role Group"
+      assert html =~ "Engineering"
+      assert html =~ ~s(name="role_family")
+      assert html =~ ~s(list="save-role-group-options")
+      assert html =~ ~s(<datalist id="save-role-group-options">)
+      assert html =~ ~s(value="Digital, Data and IT Operations")
+      assert html =~ ~s(class="dt-dialog" phx-click="noop")
+      assert html =~ ~s(phx-disable-with="Saving...")
+    end
+
+    test "saving flash renders indeterminate progress" do
+      html =
+        %{
+          active_artifact: nil,
+          active_table: "role_profile",
+          export_menu_open: false,
+          flash_message: "Saving role and updating search index...",
+          mode_label: nil,
+          myself: "dt1",
+          rows: [],
+          schema: Schemas.role_profile(),
+          streaming: false,
+          total_cost: 0.0,
+          view_key: :role_profile
+        }
+        |> DataTableArtifactHeaderComponent.header()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "Saving role and updating search index..."
+      assert html =~ "dt-flash-progress"
+      assert html =~ "dt-progress-track"
+      assert html =~ "dt-progress-bar"
+    end
+
     test "renders Suggest button on a library view" do
       html =
         render_component(DataTableComponent,
@@ -749,6 +881,10 @@ defmodule RhoWeb.DataTableComponentTest do
 
       assert html =~ "dt-suggest-btn"
       assert html =~ "Suggest"
+      assert html =~ "dt-create-role-btn"
+      assert html =~ "Create Role"
+      assert html =~ "dt-save-btn"
+      assert html =~ "Save"
     end
 
     test "expand_groups hint expands the matching category and cluster" do
@@ -847,7 +983,7 @@ defmodule RhoWeb.DataTableComponentTest do
       assert html =~ "Languages"
     end
 
-    test "hides Suggest button on a role_profile view" do
+    test "renders Save but hides Suggest and Create Role on a role_profile view" do
       html =
         render_component(DataTableComponent,
           id: "dt1",
@@ -866,7 +1002,10 @@ defmodule RhoWeb.DataTableComponentTest do
           class: ""
         )
 
+      assert html =~ "dt-save-btn"
+      assert html =~ "Save"
       refute html =~ "dt-suggest-btn"
+      refute html =~ "dt-create-role-btn"
     end
   end
 end

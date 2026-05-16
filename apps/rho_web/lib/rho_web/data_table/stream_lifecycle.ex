@@ -37,6 +37,7 @@ defmodule RhoWeb.DataTable.StreamLifecycle do
 
   def seed_visible_streams(socket, grouped, schema, collapsed, expand_hint, rows_changed?) do
     panel_mode = Map.get(schema, :children_display, :rows) == :panel
+    flat_table? = Map.get(schema, :group_by, []) == []
     streamed = socket.assigns[:_streamed_groups] || %{}
     page_size = socket.assigns[:stream_page_size] || Streams.default_page_size()
     sort_key = {socket.assigns.sort_by, socket.assigns.sort_dir}
@@ -46,6 +47,20 @@ defmodule RhoWeb.DataTable.StreamLifecycle do
     walk_leaf_groups(grouped, socket, fn group_id, rows, acc ->
       cond do
         group_streamed?(streamed, group_id) and rows_changed? ->
+          {next_socket, _meta} =
+            Streams.seed_group_stream(
+              acc,
+              group_id,
+              rows,
+              panel_mode,
+              collapsed,
+              page_size,
+              sort_key
+            )
+
+          next_socket
+
+        flat_table? and not collapsed?(collapsed, group_id) ->
           {next_socket, _meta} =
             Streams.seed_group_stream(
               acc,

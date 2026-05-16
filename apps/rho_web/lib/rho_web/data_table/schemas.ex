@@ -48,6 +48,12 @@ defmodule RhoWeb.DataTable.Schemas do
   def resolve(view_key, _table_name) when view_key in [:role_candidates, "role_candidates"],
     do: role_candidates()
 
+  def resolve(view_key, _table_name) when view_key in [:taxonomy, "taxonomy"],
+    do: taxonomy()
+
+  def resolve(view_key, _table_name) when view_key in [:research_notes, "research_notes"],
+    do: research_notes()
+
   def resolve(nil, table_name) when is_binary(table_name) do
     by_table_name(table_name)
   end
@@ -59,11 +65,13 @@ defmodule RhoWeb.DataTable.Schemas do
   def resolve(_view_key, _table_name), do: generic()
 
   defp by_table_name("library:" <> _), do: skill_library()
+  defp by_table_name("taxonomy:" <> _), do: taxonomy()
   defp by_table_name("library"), do: skill_library()
   defp by_table_name("role_profile"), do: role_profile()
   defp by_table_name("combine_preview"), do: combine_conflicts()
   defp by_table_name("dedup_preview"), do: dedup_preview()
   defp by_table_name("role_candidates"), do: role_candidates()
+  defp by_table_name("research_notes"), do: research_notes()
   defp by_table_name(_), do: generic()
 
   @doc "Skill library editing: structured skills with nested proficiency levels."
@@ -276,6 +284,79 @@ defmodule RhoWeb.DataTable.Schemas do
           editable: false,
           css_class: "dt-col-family"
         }
+      ]
+    }
+  end
+
+  @doc "Taxonomy draft review: one row per category/cluster before skill generation."
+  def taxonomy do
+    %Schema{
+      title: "Framework Taxonomy",
+      empty_message: "No taxonomy yet",
+      group_by: [:category],
+      show_id: false,
+      columns: [
+        %Column{key: :category, label: "Category", css_class: "dt-col-cat"},
+        %Column{
+          key: :category_description,
+          label: "Category Description",
+          type: :textarea,
+          css_class: "dt-col-desc"
+        },
+        %Column{key: :cluster, label: "Cluster", css_class: "dt-col-cluster"},
+        %Column{
+          key: :cluster_description,
+          label: "Cluster Description",
+          type: :textarea,
+          css_class: "dt-col-desc"
+        },
+        %Column{
+          key: :target_skill_count,
+          label: "Target Skills",
+          type: :number,
+          css_class: "dt-col-reqlvl"
+        },
+        %Column{
+          key: :transferability,
+          label: "Focus",
+          css_class: "dt-col-family"
+        },
+        %Column{
+          key: :rationale,
+          label: "Rationale",
+          type: :textarea,
+          css_class: "dt-col-desc"
+        }
+      ]
+    }
+  end
+
+  @doc "Research findings collected during framework generation."
+  def research_notes do
+    %Schema{
+      title: "Research Notes",
+      empty_message: "No research notes yet",
+      group_by: [],
+      show_id: false,
+      row_layout: :research_notes,
+      columns: [
+        %Column{
+          key: :fact,
+          label: "Finding",
+          type: :textarea,
+          css_class: "dt-col-research-finding"
+        },
+        %Column{key: :source_title, label: "Source", css_class: "dt-col-research-source"},
+        %Column{key: :source, label: "URL", css_class: "dt-col-research-url"},
+        %Column{key: :published_date, label: "Published", css_class: "dt-col-research-date"},
+        %Column{key: :tag, label: "Tag", css_class: "dt-col-research-tag"},
+        %Column{
+          key: :relevance,
+          label: "Score",
+          type: :number,
+          css_class: "dt-col-research-score"
+        },
+        %Column{key: :pinned, label: "Pinned", css_class: "dt-col-research-pinned"}
       ]
     }
   end

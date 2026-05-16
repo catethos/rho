@@ -47,6 +47,7 @@ defmodule RhoWeb.DataTableComponent do
       |> assign_new(:workbench_context, fn -> nil end)
       |> assign_new(:agent_name, fn -> nil end)
       |> assign_new(:libraries, fn -> [] end)
+      |> assign_new(:role_groups, fn -> [] end)
       |> assign_new(:chat_mode, fn -> nil end)
       |> assign_new(:workbench_display, fn -> nil end)
       |> assign_new(:sort_by, fn -> nil end)
@@ -81,16 +82,22 @@ defmodule RhoWeb.DataTableComponent do
     sorted_rows = Rows.sort(effective_rows, socket.assigns.sort_by, socket.assigns.sort_dir)
     grouped = Rows.group(sorted_rows, schema.group_by)
 
-    # On first render (or first render with data), collapse all groups.
+    # On first render (or first render with data), collapse real groups.
+    # Flat schemas still use an internal "All" stream bucket, but there is
+    # no user-facing group to collapse.
     collapsed =
-      case socket.assigns.collapsed do
-        :all_collapsed ->
-          ids = Rows.collect_group_ids(grouped)
-          # If no groups yet, stay sentinel so we catch the first real data
-          if MapSet.size(ids) == 0, do: :all_collapsed, else: ids
+      if schema.group_by == [] do
+        MapSet.new()
+      else
+        case socket.assigns.collapsed do
+          :all_collapsed ->
+            ids = Rows.collect_group_ids(grouped)
+            # If no groups yet, stay sentinel so we catch the first real data
+            if MapSet.size(ids) == 0, do: :all_collapsed, else: ids
 
-        other ->
-          other
+          other ->
+            other
+        end
       end
 
     {collapsed, socket} =
@@ -192,7 +199,11 @@ defmodule RhoWeb.DataTableComponent do
         selected_count={MapSet.size(@selected_ids)}
       />
 
-      <DataTableDialogsComponent.dialogs action_dialog={@action_dialog} myself={@myself} />
+      <DataTableDialogsComponent.dialogs
+        action_dialog={@action_dialog}
+        myself={@myself}
+        role_groups={@role_groups}
+      />
 
       <DataTableGridComponent.grid
         collapsed={@collapsed}

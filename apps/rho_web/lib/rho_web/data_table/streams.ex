@@ -194,6 +194,7 @@ defmodule RhoWeb.DataTable.Streams do
       cond do
         cat && clu -> group_id_for(cat, clu)
         cat -> group_id_for(cat)
+        flat_schema?(socket) -> group_id_for("All")
         true -> nil
       end
 
@@ -202,6 +203,13 @@ defmodule RhoWeb.DataTable.Streams do
     case group_id && Map.get(mapping, group_id) do
       nil -> :none
       stream_name -> {:ok, stream_name}
+    end
+  end
+
+  defp flat_schema?(socket) do
+    case socket.assigns[:schema] do
+      %{group_by: []} -> true
+      _ -> false
     end
   end
 

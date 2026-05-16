@@ -29,7 +29,28 @@ defmodule RhoWeb.DataTableGridComponent do
       <%= if @grouped == [] do %>
         <div class="dt-empty"><%= @schema.empty_message %></div>
       <% else %>
-        <%= for {group_label, children} <- @grouped do %>
+        <%= if @schema.group_by == [] do %>
+          <% {group_label, {:rows, _rows}} = List.first(@grouped) %>
+          <% group_id = "grp-" <> slug(group_label) %>
+          <% stream_atom = Map.get(@group_to_stream, group_id) %>
+          <.data_table_rows
+            stream={stream_atom && Map.get(@streams, stream_atom)}
+            group_id={group_id}
+            more_pages?={more_pages?(@streamed_groups, group_id)}
+            schema={@schema}
+            editing={@editing}
+            myself={@myself}
+            collapsed={@collapsed}
+            metadata={@metadata}
+            sort_by={@sort_by}
+            sort_dir={@sort_dir}
+            confirm_delete={@confirm_delete}
+            selected_ids={@selected_ids}
+            select_all_state={@select_all_state}
+          />
+          <RowComponents.add_row_in_group myself={@myself} group_by={[]} group_label={nil} sub_label={nil} />
+        <% else %>
+          <%= for {group_label, children} <- @grouped do %>
           <% group_id = "grp-" <> slug(group_label) %>
           <% group_by = @schema.group_by %>
           <% l1_field = List.first(group_by) %>
@@ -110,6 +131,7 @@ defmodule RhoWeb.DataTableGridComponent do
               <% end %>
             </div>
           </div>
+          <% end %>
         <% end %>
       <% end %>
     </div>
@@ -125,6 +147,7 @@ defmodule RhoWeb.DataTableGridComponent do
     children_key = assigns.schema.children_key
     show_id = Map.get(assigns.schema, :show_id, true)
     panel_mode = Map.get(assigns.schema, :children_display, :rows) == :panel
+    research_notes? = Map.get(assigns.schema, :row_layout, :table) == :research_notes
 
     assigns =
       assign(assigns,
@@ -134,13 +157,45 @@ defmodule RhoWeb.DataTableGridComponent do
         children_key: children_key,
         show_id: show_id,
         panel_mode: panel_mode,
+        research_notes?: research_notes?,
         panel_colspan: length(visible_columns) + 5
       )
 
     ~H"""
-    <table class="dt-table">
+    <table class={["dt-table", @research_notes? && "dt-table-research"]}>
       <thead>
-        <tr>
+        <tr :if={@research_notes?}>
+          <th class="dt-th dt-th-select">
+            <input
+              type="checkbox"
+              class="dt-row-checkbox dt-row-checkbox-header"
+              phx-click="toggle_all_selection"
+              phx-target={@myself}
+              checked={@select_all_state == :all}
+              data-indeterminate={@select_all_state == :some && "true"}
+              aria-label="Select all visible rows"
+            />
+          </th>
+          <th class="dt-th dt-th-source" title="Provenance"></th>
+          <th class={"dt-th dt-th-research-note" <> if(@sort_by == :fact, do: " dt-th-sorted", else: "")}
+              phx-click="sort_column" phx-target={@myself} phx-value-field={:fact}
+              style="cursor: pointer; user-select: none;">
+            Finding
+            <span :if={@sort_by == :fact} class="dt-sort-indicator">
+              <%= if @sort_dir == :asc, do: Phoenix.HTML.raw("&#9650;"), else: Phoenix.HTML.raw("&#9660;") %>
+            </span>
+          </th>
+          <th class={"dt-th dt-th-research-meta" <> if(@sort_by == :source_title, do: " dt-th-sorted", else: "")}
+              phx-click="sort_column" phx-target={@myself} phx-value-field={:source_title}
+              style="cursor: pointer; user-select: none;">
+            Source
+            <span :if={@sort_by == :source_title} class="dt-sort-indicator">
+              <%= if @sort_dir == :asc, do: Phoenix.HTML.raw("&#9650;"), else: Phoenix.HTML.raw("&#9660;") %>
+            </span>
+          </th>
+          <th class="dt-th dt-th-actions"></th>
+        </tr>
+        <tr :if={!@research_notes?}>
           <th class="dt-th dt-th-select">
             <input
               type="checkbox"
@@ -191,6 +246,16 @@ defmodule RhoWeb.DataTableGridComponent do
                 panel_colspan={@panel_colspan}
               />
             <% _ -> %>
+              <%= if @research_notes? do %>
+                <RowComponents.research_note_row
+                  dom_id={dom_id}
+                  row={row}
+                  editing={@editing}
+                  myself={@myself}
+                  confirm_delete={@confirm_delete}
+                  selected_ids={@selected_ids}
+                />
+              <% else %>
               <RowComponents.parent_row
                 dom_id={dom_id}
                 row={row}
@@ -208,6 +273,7 @@ defmodule RhoWeb.DataTableGridComponent do
                 confirm_delete={@confirm_delete}
                 selected_ids={@selected_ids}
               />
+              <% end %>
           <% end %>
         <% end %>
       </tbody>

@@ -61,8 +61,10 @@ defmodule RhoWeb.DataTable.StreamsTest do
       assigns: %{
         _group_to_stream: %{
           "grp-domain-cluster" => :_dt_rows_0,
-          "grp-domain" => :_dt_rows_1
-        }
+          "grp-domain" => :_dt_rows_1,
+          "grp-all" => :_dt_rows_2
+        },
+        schema: %{group_by: []}
       }
     }
 
@@ -70,6 +72,10 @@ defmodule RhoWeb.DataTable.StreamsTest do
              {:ok, :_dt_rows_0}
 
     assert Streams.stream_for_row(socket, %{category: "Domain"}) == {:ok, :_dt_rows_1}
+
+    assert Streams.stream_for_row(socket, %{fact: "Ungrouped research note"}) ==
+             {:ok, :_dt_rows_2}
+
     assert Streams.stream_for_row(socket, %{category: "Other"}) == :none
   end
 

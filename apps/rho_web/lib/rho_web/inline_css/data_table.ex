@@ -311,6 +311,254 @@ defmodule RhoWeb.InlineCSS.DataTable do
       background: var(--teal-dim);
     }
 
+    /* === Research Notes === */
+    .dt-table-research {
+      border-collapse: separate;
+      border-spacing: 0 8px;
+      table-layout: fixed;
+    }
+    .dt-table-research .dt-th {
+      border-bottom: 0;
+      background: transparent;
+      padding-top: 0;
+    }
+    .dt-th-research-note { width: 62%; }
+    .dt-th-research-meta { width: 30%; }
+    .dt-table-research .dt-row,
+    .dt-table-research .dt-row:nth-child(odd),
+    .dt-table-research .dt-row:nth-child(even) {
+      background: transparent;
+    }
+    .dt-table-research .dt-row:hover {
+      background: transparent;
+    }
+    .dt-research-row .dt-td {
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .dt-research-row .dt-td:first-child {
+      border-left: 3px solid transparent;
+      border-radius: 8px 0 0 8px;
+    }
+    .dt-research-row .dt-td:last-child {
+      border-right: 1px solid var(--border);
+      border-radius: 0 8px 8px 0;
+    }
+    .dt-research-row:hover .dt-td {
+      background: color-mix(in srgb, var(--teal) 5%, var(--bg-surface));
+      border-color: color-mix(in srgb, var(--teal) 22%, var(--border));
+    }
+    .dt-research-row-pinned .dt-td:first-child,
+    .dt-research-row-pinned:hover .dt-td:first-child {
+      border-left-color: var(--accent, #e07a2f);
+    }
+    .dt-research-note-cell {
+      padding: 14px 18px;
+    }
+    .dt-research-note-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 18px;
+      margin-bottom: 5px;
+    }
+    .dt-research-pin-badge,
+    .dt-research-chip {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 20px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      background: var(--bg-shelf);
+      font-size: 10px;
+      line-height: 1.2;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dt-research-pin-badge {
+      border-color: color-mix(in srgb, var(--accent, #e07a2f) 44%, var(--border));
+      background: color-mix(in srgb, var(--accent, #e07a2f) 12%, var(--bg-surface));
+      color: var(--accent, #e07a2f);
+    }
+    .dt-research-edit {
+      margin-left: auto;
+      padding: 2px 7px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    .dt-research-row:hover .dt-research-edit,
+    .dt-research-edit:focus-visible {
+      opacity: 1;
+    }
+    .dt-research-edit:hover {
+      color: var(--text-primary);
+      border-color: var(--border);
+    }
+    .dt-research-fact {
+      max-width: 78ch;
+      max-height: 18rem;
+      margin: 0;
+      padding-right: 12px;
+      color: var(--text-primary);
+      font-size: 13.5px;
+      line-height: 1.62;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      overflow-wrap: anywhere;
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--accent, #e07a2f) 48%, var(--border)) transparent;
+    }
+    .dt-research-fact::-webkit-scrollbar {
+      width: 8px;
+    }
+    .dt-research-fact::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent, #e07a2f) 42%, var(--border));
+    }
+    .dt-research-fact::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .dt-research-paragraph {
+      margin: 0;
+    }
+    .dt-research-paragraph + .dt-research-section,
+    .dt-research-section + .dt-research-fact-list,
+    .dt-research-paragraph + .dt-research-fact-list {
+      margin-top: 10px;
+    }
+    .dt-research-block-label {
+      display: inline-flex;
+      align-items: center;
+      margin-right: 8px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--teal) 9%, var(--bg-shelf));
+      color: var(--teal);
+      font-size: 10px;
+      line-height: 1.4;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      vertical-align: 1px;
+    }
+    .dt-research-section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      font-weight: 700;
+      line-height: 1.35;
+      text-transform: uppercase;
+      letter-spacing: 0.055em;
+    }
+    .dt-research-section-title::before {
+      content: '';
+      width: 18px;
+      height: 1px;
+      background: color-mix(in srgb, var(--accent, #e07a2f) 58%, var(--border));
+      flex: 0 0 auto;
+    }
+    .dt-research-fact-list {
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .dt-research-fact-list li {
+      display: grid;
+      grid-template-columns: minmax(8rem, 0.34fr) 1fr;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--bg-shelf) 58%, transparent);
+      color: var(--text-secondary);
+      line-height: 1.48;
+    }
+    .dt-research-bullet-title {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+    .dt-research-meta-cell {
+      width: 22rem;
+      padding: 14px 16px;
+    }
+    .dt-research-source-title {
+      color: var(--text-primary);
+      font-weight: 600;
+      font-size: 12.5px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .dt-research-source-title span {
+      cursor: pointer;
+    }
+    .dt-research-url {
+      margin-top: 4px;
+      font-size: 11.5px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .dt-research-url a,
+    .dt-research-url span {
+      color: var(--teal);
+      text-decoration: none;
+    }
+    .dt-research-url a:hover {
+      text-decoration: underline;
+    }
+    .dt-research-url-edit {
+      margin-left: 6px;
+      padding: 1px 5px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    .dt-research-row:hover .dt-research-url-edit,
+    .dt-research-url-edit:focus-visible {
+      opacity: 1;
+    }
+    .dt-research-url-edit:hover {
+      color: var(--text-primary);
+      border-color: var(--border);
+    }
+    .dt-research-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 10px;
+    }
+    .dt-research-score {
+      color: var(--teal);
+      border-color: color-mix(in srgb, var(--teal) 34%, var(--border));
+    }
+    .dt-research-input {
+      min-height: 96px;
+    }
+
     /* Streaming animation */
     @keyframes dt-flash {
       0% { background: var(--teal-glow-strong); }
@@ -530,10 +778,14 @@ defmodule RhoWeb.InlineCSS.DataTable do
 
     /* === Toolbar Actions === */
     .dt-toolbar-actions {
+      flex: 1 1 100%;
       display: flex;
       align-items: center;
       gap: 6px;
-      margin-left: auto;
+      margin-left: 0;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+      max-width: 100%;
     }
 
     .dt-action-btn {
@@ -546,6 +798,7 @@ defmodule RhoWeb.InlineCSS.DataTable do
       color: var(--text-secondary);
       cursor: pointer;
       transition: all 0.12s ease;
+      white-space: nowrap;
     }
     .dt-action-btn:hover {
       background: var(--bg-hover);
@@ -631,10 +884,35 @@ defmodule RhoWeb.InlineCSS.DataTable do
       max-width: 60ch;
       animation: dt-flash-fade 12s ease-out forwards;
     }
+    .dt-flash-progress {
+      min-width: min(330px, 46vw);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      row-gap: 7px;
+      align-items: center;
+      border-radius: 12px;
+    }
     .dt-flash-text {
       white-space: nowrap;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .dt-progress-track {
+      grid-column: 1 / -1;
+      position: relative;
+      height: 3px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--orange, #db6d28) 18%, var(--bg-deep));
+    }
+    .dt-progress-bar {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 45%;
+      border-radius: inherit;
+      background: var(--orange, #db6d28);
+      animation: dt-progress-slide 1.1s ease-in-out infinite;
     }
     .dt-flash-close {
       background: none;
@@ -654,6 +932,11 @@ defmodule RhoWeb.InlineCSS.DataTable do
       6% { opacity: 1; transform: translateY(0); }
       90% { opacity: 1; transform: translateY(0); }
       100% { opacity: 0; transform: translateY(0); }
+    }
+    @keyframes dt-progress-slide {
+      0% { transform: translateX(-110%); }
+      50% { transform: translateX(60%); }
+      100% { transform: translateX(230%); }
     }
 
     /* === Action Dialogs === */
@@ -752,15 +1035,7 @@ defmodule RhoWeb.InlineCSS.DataTable do
 
     /* === Add Row Buttons === */
     .dt-add-row-btn {
-      padding: 4px 12px;
-      font-size: 11px;
-      font-weight: 500;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      background: var(--bg-surface);
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: all 0.12s ease;
+      white-space: nowrap;
     }
     .dt-add-row-btn:hover {
       background: var(--teal-dim);

@@ -14,9 +14,10 @@ defmodule RhoWeb.DataTableTabsComponent do
 
   def tabs(assigns) do
     ~H"""
-    <%= if length(Tabs.display_order(@table_order, @tables)) > 1 do %>
+    <% display_order = Tabs.display_order(@table_order, @tables, @active_table) %>
+    <%= if length(display_order) > 1 do %>
       <div class="dt-tab-strip">
-        <%= for name <- Tabs.display_order(@table_order, @tables) do %>
+        <%= for name <- display_order do %>
           <% count = Tabs.row_count(@tables, name) %>
           <% artifact = Artifacts.artifact_for_table(@workbench_context, name) %>
           <span class={"dt-tab-shell" <> if(name == @active_table, do: " dt-tab-active", else: "")}>
