@@ -73,6 +73,37 @@ defmodule RhoWeb.AppLiveChatShellComponentsTest do
     assert publish_content == "Publish Future Library when it is ready."
   end
 
+  test "workbench_suggestions skip mechanic create-role action but preserve linked save" do
+    create_context = %WorkbenchContext{
+      active_artifact: %ArtifactSummary{
+        table_name: "library:core",
+        title: "Core Skill Framework",
+        linked: %{library_id: "lib-123"},
+        actions: [:create_role_profile, :suggest_skills]
+      }
+    }
+
+    refute Enum.any?(
+             ChatShellComponents.workbench_suggestions(create_context),
+             &(&1.label == "Create role")
+           )
+
+    save_context = %WorkbenchContext{
+      active_artifact: %ArtifactSummary{
+        table_name: "role_profile",
+        title: "Backend Engineer Role Requirements",
+        linked: %{library_id: "lib-123", role_name: "Backend Engineer"},
+        actions: [:save_role_profile]
+      }
+    }
+
+    assert [%{label: "Save role profile", content: save_content}] =
+             ChatShellComponents.workbench_suggestions(save_context)
+
+    assert save_content =~ ~s(resolve_library_id: "lib-123")
+    assert save_content =~ ~s(name: "Backend Engineer")
+  end
+
   test "format_tokens and agent_role_label preserve chat chrome labels" do
     assert ChatShellComponents.format_tokens(999) == "999"
     assert ChatShellComponents.format_tokens(12_500) == "12.5K"

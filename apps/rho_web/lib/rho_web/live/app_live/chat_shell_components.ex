@@ -435,6 +435,10 @@ defmodule RhoWeb.AppLive.ChatShellComponents do
     suggestion(:save_draft, "Save #{artifact.title} as a draft.")
   end
 
+  defp workbench_suggestion(:create_role_profile, _artifact) do
+    nil
+  end
+
   defp workbench_suggestion(:publish, artifact) do
     suggestion(:publish, "Publish #{artifact.title} when it is ready.")
   end
@@ -455,7 +459,17 @@ defmodule RhoWeb.AppLive.ChatShellComponents do
   end
 
   defp workbench_suggestion(:save_role_profile, artifact) do
-    suggestion(:save_role_profile, "Save #{artifact.title}.")
+    library_id = artifact.linked[:library_id]
+    role_name = artifact.linked[:role_name] || role_name_from_title(artifact.title)
+
+    content =
+      if is_binary(library_id) and library_id != "" do
+        "Save #{artifact.title} with manage_role(action: \"save\", name: \"#{role_name}\", resolve_library_id: \"#{library_id}\") so it stays linked to the source skill framework."
+      else
+        "Save #{artifact.title}."
+      end
+
+    suggestion(:save_role_profile, content)
   end
 
   defp workbench_suggestion(:map_to_framework, artifact) do
@@ -501,6 +515,12 @@ defmodule RhoWeb.AppLive.ChatShellComponents do
 
   defp suggestion(action, content) do
     %{label: RhoWeb.WorkbenchPresenter.action_label(action), content: content}
+  end
+
+  defp role_name_from_title(title) do
+    title
+    |> to_string()
+    |> String.replace_suffix(" Role Requirements", "")
   end
 
   def format_tokens(n) when n >= 1_000_000 do

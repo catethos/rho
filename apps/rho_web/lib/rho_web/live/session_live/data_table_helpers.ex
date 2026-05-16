@@ -10,6 +10,8 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   alias RhoWeb.Session.Shell
   alias RhoWeb.Workspace.Registry, as: WorkspaceRegistry
 
+  @role_profile_table "role_profile"
+
   @doc """
   Refetch the session-level table list (tab strip) plus the active
   table's rows. Used on mount and on :table_created.
@@ -233,7 +235,15 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
   the first save out of the framework wizard doesn't error out with
   "library not found".
   """
-  def handle_save(socket, table_name, new_name) do
+  def handle_save(socket, table_name, save_params) do
+    if table_name == @role_profile_table do
+      handle_role_profile_save(socket, save_params)
+    else
+      handle_library_save(socket, table_name, save_params)
+    end
+  end
+
+  defp handle_library_save(socket, table_name, new_name) do
     sid = socket.assigns[:session_id]
     org_id = get_in(socket.assigns, [:current_organization, Access.key(:id)])
     user_id = get_in(socket.assigns, [:current_user, Access.key(:id)])
@@ -265,6 +275,126 @@ defmodule RhoWeb.SessionLive.DataTableHelpers do
       _ ->
         send(self(), {:data_table_flash, "Save failed."})
         socket
+    end
+  end
+
+  defp handle_role_profile_save(socket, save_params) do
+    sid = socket.assigns[:session_id]
+    org_id = get_in(socket.assigns, [:current_organization, Access.key(:id)])
+    metadata = read_dt_state(socket).metadata || %{}
+    role_name = effective_role_name(metadata[:role_name], save_name(save_params))
+    role_family = effective_role_family(metadata, save_params)
+
+    with rows when is_list(rows) and rows != [] <-
+           Rho.Stdlib.DataTable.get_rows(sid, table: @role_profile_table),
+         opts <- role_save_opts(metadata),
+         attrs <- %{name: role_name, role_family: role_family},
+         {:ok, %{role_profile: rp, role_skills: count}} <-
+           RhoFrameworks.Roles.save_role_profile(org_id, attrs, rows, opts) do
+      send(self(), {:data_table_flash, "Saved role '#{role_name}' — #{count} skill(s)."})
+
+      socket
+      |> update_role_profile_metadata(metadata, rp, role_family)
+      |> update_role_group_options(role_family)
+    else
+      {:error, :not_running} ->
+        send(self(), {:data_table_flash, "Table server not running."})
+        socket
+
+      [] ->
+        send(self(), {:data_table_flash, "Role profile is empty — nothing to save."})
+        socket
+
+      {:error, step, changeset, _} ->
+        send(self(), {:data_table_flash, "Save role failed at #{step}: #{inspect(changeset)}"})
+        socket
+
+      _ ->
+        send(self(), {:data_table_flash, "Save role failed."})
+        socket
+    end
+  end
+
+  defp effective_role_name(current_name, new_name) do
+    if is_binary(new_name) and String.trim(new_name) != "" do
+      String.trim(new_name)
+    else
+      current_name || "New Role"
+    end
+  end
+
+  defp save_name(%{name: name}), do: name
+  defp save_name(name), do: name
+
+  defp effective_role_family(_metadata, %{role_family: role_family}) do
+    blank_to_nil(role_family)
+  end
+
+  defp effective_role_family(metadata, _save_params) do
+    blank_to_nil(metadata[:role_family])
+  end
+
+  defp role_save_opts(metadata) do
+    []
+    |> maybe_resolve_library_id(metadata[:library_id])
+    |> maybe_role_profile_id(metadata[:role_profile_id])
+  end
+
+  defp maybe_resolve_library_id(opts, library_id)
+       when is_binary(library_id) and library_id != "" do
+    Keyword.put(opts, :resolve_library_id, library_id)
+  end
+
+  defp maybe_resolve_library_id(opts, _library_id), do: opts
+
+  defp maybe_role_profile_id(opts, role_profile_id)
+       when is_binary(role_profile_id) and role_profile_id != "" do
+    Keyword.put(opts, :role_profile_id, role_profile_id)
+  end
+
+  defp maybe_role_profile_id(opts, _role_profile_id), do: opts
+
+  defp update_role_profile_metadata(socket, metadata, role_profile, role_family) do
+    state = ensure_dt_keys(read_dt_state(socket))
+    role_name = role_profile.name
+
+    metadata =
+      metadata
+      |> Map.put(:role_name, role_name)
+      |> Map.put(:role_profile_id, role_profile.id)
+      |> Map.put(:title, role_requirements_title(role_name))
+      |> Map.merge(%{persisted?: true})
+      |> put_optional(:role_family, role_family)
+
+    SignalRouter.write_ws_state(socket, :data_table, %{state | metadata: metadata})
+  end
+
+  defp put_optional(map, key, nil), do: Map.delete(map, key)
+  defp put_optional(map, key, value), do: Map.put(map, key, value)
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(value), do: value
+
+  defp update_role_group_options(socket, nil), do: socket
+
+  defp update_role_group_options(socket, role_family) do
+    current = socket.assigns[:role_group_options] || []
+    assign(socket, :role_group_options, Enum.sort(Enum.uniq([role_family | current])))
+  end
+
+  defp role_requirements_title(role_name) do
+    trimmed = String.trim(role_name)
+
+    cond do
+      String.match?(trimmed, ~r/\brole\s+requirements\z/i) -> trimmed
+      String.match?(trimmed, ~r/\brole\z/i) -> "#{trimmed} Requirements"
+      true -> "#{trimmed} Role Requirements"
     end
   end
 

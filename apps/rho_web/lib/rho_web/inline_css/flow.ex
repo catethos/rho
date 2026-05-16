@@ -234,6 +234,276 @@ defmodule RhoWeb.InlineCSS.Flow do
       box-shadow: var(--shadow-sm);
     }
 
+    /* Chat-native flow surface */
+    .flow-chat-native {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .flow-chat-thread {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .flow-chat-bubble {
+      align-self: flex-end;
+      max-width: 78%;
+      padding: 0.75rem 0.875rem;
+      background: var(--bg-shelf);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .flow-chat-bubble-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .flow-chat-bubble p {
+      margin: 0;
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+    .flow-chat-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.875rem;
+      padding: 1rem;
+      background: var(--bg-shelf);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--teal);
+      border-radius: var(--radius);
+    }
+    .flow-chat-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+    .flow-chat-card h2 {
+      margin: 0.125rem 0 0 0;
+      color: var(--text-primary);
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+    .flow-chat-eyebrow,
+    .flow-chat-kind,
+    .flow-chat-node {
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .flow-chat-node {
+      font-family: var(--font-mono);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .flow-chat-body {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }
+    .flow-chat-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.5rem;
+    }
+    .flow-chat-form {
+      grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(150px, 220px);
+      align-items: end;
+      column-gap: 0.75rem;
+      row-gap: 0.75rem;
+    }
+    .flow-chat-form .flow-textarea {
+      min-height: 3.2rem;
+      height: 3.2rem;
+      resize: vertical;
+    }
+    .flow-chat-form .flow-submit {
+      width: 100%;
+      min-height: 3.2rem;
+      margin-top: 0;
+    }
+    .flow-chat-choice-form {
+      grid-template-columns: minmax(260px, 420px) minmax(150px, 220px);
+      justify-content: start;
+    }
+    .flow-chat-guided-form {
+      grid-template-columns: repeat(2, minmax(260px, 1fr));
+      align-items: start;
+      column-gap: 2rem;
+      row-gap: 1.75rem;
+      max-width: 980px;
+    }
+    .flow-chat-guided-form .flow-submit {
+      grid-column: 1 / -1;
+      justify-self: start;
+      width: min(280px, 100%);
+      margin-top: 0.25rem;
+    }
+    .flow-chat-guided-form .flow-field {
+      gap: 0.55rem;
+    }
+    .flow-chat-field-chip {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      padding: 0.55rem 0.65rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      min-width: 0;
+    }
+    .flow-chat-field-chip span {
+      color: var(--text-muted);
+      font-size: 0.72rem;
+    }
+    .flow-chat-field-chip strong {
+      color: var(--text-primary);
+      font-size: 0.84rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+    .flow-chat-artifact {
+      padding: 0.55rem 0.65rem;
+      background: var(--teal-dim);
+      border: 1px solid var(--teal-glow-strong);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.84rem;
+      font-family: var(--font-mono);
+      overflow-wrap: anywhere;
+    }
+    .flow-chat-empty-state,
+    .flow-chat-selection {
+      display: flex;
+      flex-direction: column;
+      gap: 0.625rem;
+      padding: 0.75rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .flow-chat-empty-title {
+      color: var(--text-primary);
+      font-size: 0.92rem;
+      font-weight: 600;
+    }
+    .flow-chat-empty-state p {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+    .flow-chat-selection-summary {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+    }
+    .flow-chat-selection-summary strong {
+      color: var(--text-primary);
+      font-size: 0.9rem;
+    }
+    .flow-chat-selection-summary span {
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
+    .flow-chat-selection-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.5rem;
+    }
+    .flow-chat-selection-card {
+      display: grid;
+      grid-template-columns: 1rem minmax(0, 1fr);
+      gap: 0.5rem;
+      align-items: flex-start;
+      min-height: 4rem;
+      padding: 0.65rem;
+      background: var(--bg-shelf);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      text-align: left;
+      cursor: pointer;
+    }
+    .flow-chat-selection-card:hover {
+      border-color: var(--teal-glow-strong);
+    }
+    .flow-chat-selection-card-selected {
+      background: var(--teal-dim);
+      border-color: var(--teal-glow-strong);
+    }
+    .flow-chat-selection-check {
+      display: inline-grid;
+      place-items: center;
+      width: 1rem;
+      height: 1rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      color: var(--text-primary);
+      font-size: 0.72rem;
+      line-height: 1;
+    }
+    .flow-chat-selection-card-selected .flow-chat-selection-check {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: var(--bg-base);
+    }
+    .flow-chat-selection-text {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .flow-chat-selection-text strong {
+      overflow-wrap: anywhere;
+      font-size: 0.86rem;
+      font-weight: 600;
+    }
+    .flow-chat-selection-text small {
+      color: var(--text-muted);
+      font-size: 0.74rem;
+      line-height: 1.35;
+    }
+    .flow-chat-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .flow-chat-action {
+      border-radius: var(--radius);
+    }
+    .flow-chat-reply {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.5rem;
+      padding-top: 0.25rem;
+    }
+    .flow-chat-error {
+      margin: 0;
+      padding: 0.5rem 0.65rem;
+      background: var(--red-dim);
+      color: var(--red);
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+    }
+    .flow-chat-artifact-surface {
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+
     /* Form step */
     .flow-form {
       display: flex;
@@ -252,6 +522,58 @@ defmodule RhoWeb.InlineCSS.Flow do
     }
     .flow-required {
       color: var(--red);
+    }
+    .flow-field-help {
+      margin: -0.1rem 0 0;
+      color: var(--text-muted);
+      font-size: 0.76rem;
+      line-height: 1.35;
+    }
+    .flow-selected-hint {
+      display: grid;
+      grid-template-columns: minmax(5.5rem, max-content) 1fr;
+      gap: 0.55rem;
+      margin: 0;
+      padding-left: 0.65rem;
+      border-left: 2px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.74rem;
+      line-height: 1.3;
+    }
+    .flow-selected-hint strong {
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .flow-option-guide {
+      color: var(--text-muted);
+      font-size: 0.74rem;
+    }
+    .flow-option-guide summary {
+      cursor: pointer;
+      width: max-content;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .flow-option-guide[open] summary {
+      margin-bottom: 0.45rem;
+    }
+    .flow-option-hints {
+      display: grid;
+      gap: 0.25rem;
+      margin-top: 0.05rem;
+    }
+    .flow-option-hint {
+      display: grid;
+      grid-template-columns: minmax(5.5rem, max-content) 1fr;
+      gap: 0.45rem;
+      align-items: baseline;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      line-height: 1.25;
+    }
+    .flow-option-hint strong {
+      color: var(--text-secondary);
+      font-weight: 600;
     }
     .flow-input {
       padding: 0.6rem 0.75rem;
@@ -279,6 +601,20 @@ defmodule RhoWeb.InlineCSS.Flow do
     .flow-submit:disabled {
       opacity: 0.45;
       cursor: not-allowed;
+    }
+
+    @media (max-width: 900px) {
+      .flow-chat-form {
+        grid-template-columns: 1fr;
+      }
+      .flow-chat-form .flow-submit {
+        width: auto;
+        justify-self: start;
+      }
+      .flow-chat-guided-form {
+        grid-template-columns: 1fr;
+        row-gap: 1.25rem;
+      }
     }
 
     /* Conflict resolution step */

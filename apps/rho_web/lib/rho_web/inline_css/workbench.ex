@@ -609,8 +609,7 @@ defmodule RhoWeb.InlineCSS.Workbench do
       color: var(--text-secondary);
     }
 
-    .dt-toolbar,
-    .dt-artifact-header {
+    .dt-toolbar {
       display: flex;
       align-items: center;
       gap: 14px;
@@ -621,6 +620,17 @@ defmodule RhoWeb.InlineCSS.Workbench do
       flex-shrink: 0;
     }
 
+    .dt-artifact-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      row-gap: 12px;
+      padding: 16px 20px 14px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
     .dt-actions-hub-btn {
       border-color: color-mix(in srgb, var(--accent, #e07a2f) 54%, var(--border));
       color: var(--text-primary);
@@ -628,6 +638,7 @@ defmodule RhoWeb.InlineCSS.Workbench do
 
     .dt-artifact-main {
       min-width: 0;
+      max-width: min(960px, 100%);
       display: flex;
       flex-direction: column;
       gap: 5px;
@@ -648,6 +659,7 @@ defmodule RhoWeb.InlineCSS.Workbench do
       font-weight: 700;
       color: var(--text-primary);
       letter-spacing: 0;
+      overflow-wrap: normal;
     }
 
     .dt-artifact-subtitle {
@@ -674,6 +686,14 @@ defmodule RhoWeb.InlineCSS.Workbench do
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
+    }
+
+    .dt-artifact-header .dt-toolbar-actions {
+      align-self: start;
+    }
+
+    .dt-artifact-header .dt-flash {
+      justify-self: start;
     }
 
     .dt-metric-pill {

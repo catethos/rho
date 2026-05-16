@@ -291,6 +291,8 @@ defmodule RhoWeb.ChatComponents do
             </div>
           <% :ui -> %>
             <.ui_block message={@message} />
+          <% :flow_card -> %>
+            <.flow_card message={@message} />
           <% :welcome -> %>
             <.welcome_card content={@message.content} msg_id={@message.id} animation_key={@message[:animation_key]} />
           <% :error -> %>
@@ -315,6 +317,270 @@ defmodule RhoWeb.ChatComponents do
     </div>
     """
   end
+
+  attr(:message, :map, required: true)
+
+  def flow_card(%{message: %{flow: flow}} = assigns) when not is_nil(flow) do
+    assigns =
+      assigns
+      |> assign(:flow, flow)
+      |> assign(:status, assigns.message[:flow_status] || :active)
+      |> assign(:disabled?, assigns.message[:flow_status] not in [nil, :active, :error])
+      |> assign(:error, assigns.message[:flow_error])
+
+    ~H"""
+    <div class={"flow-chat-card flow-chat-#{@flow.kind} flow-card-#{@status}"}>
+      <div class="flow-chat-card-head">
+        <div>
+          <span class="flow-chat-eyebrow"><%= flow_kind_label(@flow.kind) %></span>
+          <h2><%= @flow.title %></h2>
+        </div>
+        <span class="flow-chat-node"><%= @flow.node_id %></span>
+      </div>
+
+      <p class="flow-chat-body"><%= @flow.body %></p>
+
+      <form
+        :if={editable_flow_form?(@flow, @disabled?)}
+        phx-submit="flow_card_form"
+        class={flow_form_class(@flow)}
+      >
+        <input type="hidden" name="node-id" value={@flow.node_id} />
+        <div :for={field <- @flow.fields} class="flow-field">
+          <label class="flow-label" for={"flow-#{@message.id}-#{field.name}"}>
+            <%= field.label %>
+            <span :if={field.required} class="flow-required">*</span>
+          </label>
+          <p :if={field[:description]} class="flow-field-help"><%= field.description %></p>
+          <.flow_card_field field={field} message_id={@message.id} />
+          <p :if={selected_option_hint(field)} class="flow-selected-hint">
+            <strong><%= selected_option_label(field) %></strong>
+            <span><%= selected_option_hint(field) %></span>
+          </p>
+          <details :if={select_option_hints?(field)} class="flow-option-guide">
+            <summary>Compare options</summary>
+            <div class="flow-option-hints">
+              <span :for={{label, value} <- field.options} class="flow-option-hint">
+                <strong><%= label %></strong>
+                <span><%= option_description(field, value) %></span>
+              </span>
+            </div>
+          </details>
+        </div>
+        <button type="submit" class="btn-primary flow-submit" disabled={@disabled?}>Continue</button>
+      </form>
+
+      <div :if={readonly_fields?(@flow, @disabled?)} class="flow-chat-fields">
+        <div :for={field <- @flow.fields} class="flow-chat-field-chip">
+          <span><%= field.label %></span>
+          <strong><%= field.value || "Pending" %></strong>
+        </div>
+      </div>
+
+      <.flow_card_artifact artifact={@flow.artifact} flow={@flow} disabled?={@disabled?} />
+
+      <div :if={show_flow_actions?(@flow)} class="flow-chat-actions">
+        <button
+          :for={action <- @flow.actions}
+          type="button"
+          phx-click="flow_card_action"
+          phx-value-action-id={action.id}
+          phx-value-node-id={@flow.node_id}
+          class={flow_action_class(action.variant)}
+          disabled={@disabled?}
+        >
+          <%= action.label %>
+        </button>
+      </div>
+
+      <p :if={@error} class="flow-chat-error"><%= @error %></p>
+    </div>
+    """
+  end
+
+  def flow_card(assigns) do
+    ~H"""
+    <div class="message-error">
+      <span class="error-icon">!</span>
+      <span class="error-text">Flow card unavailable.</span>
+    </div>
+    """
+  end
+
+  attr(:artifact, :map, default: nil)
+  attr(:flow, :map, required: true)
+  attr(:disabled?, :boolean, default: false)
+
+  def flow_card_artifact(%{artifact: %{kind: :selection, item_count: 0}} = assigns) do
+    ~H"""
+    <div class="flow-chat-empty-state">
+      <div class="flow-chat-empty-title">No similar roles found</div>
+      <p>No role profiles matched this framework yet. Choose another starting point to keep moving.</p>
+    </div>
+    """
+  end
+
+  def flow_card_artifact(%{artifact: %{kind: :selection, items: items}} = assigns)
+      when is_list(items) do
+    ~H"""
+    <div class="flow-chat-selection">
+      <div class="flow-chat-selection-summary">
+        <strong><%= selection_summary(@artifact) %></strong>
+        <span><%= selection_hint(@artifact) %></span>
+      </div>
+      <div class="flow-chat-selection-grid">
+        <button
+          :for={item <- @artifact.items}
+          type="button"
+          class={selection_card_class(@artifact, item)}
+          phx-click="flow_card_select_toggle"
+          phx-value-node-id={@flow.node_id}
+          phx-value-item-id={selection_item_id(item)}
+          disabled={@disabled?}
+        >
+          <span class="flow-chat-selection-check"><%= if selection_selected?(@artifact, item), do: "✓", else: "" %></span>
+          <span class="flow-chat-selection-text">
+            <strong><%= selection_item_value(item, @artifact.display_fields[:title] || :name) %></strong>
+            <small><%= selection_item_meta(item, @artifact.display_fields) %></small>
+          </span>
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  def flow_card_artifact(%{artifact: artifact} = assigns) when is_map(artifact) do
+    ~H"""
+    <div class="flow-chat-artifact">
+      <span><%= flow_artifact_label(@artifact) %></span>
+    </div>
+    """
+  end
+
+  def flow_card_artifact(assigns) do
+    ~H"""
+    """
+  end
+
+  attr(:field, :map, required: true)
+  attr(:message_id, :string, required: true)
+
+  def flow_card_field(%{field: %{type: :textarea}} = assigns) do
+    ~H"""
+    <textarea
+      id={"flow-#{@message_id}-#{@field.name}"}
+      name={@field.name}
+      class="flow-input flow-textarea"
+      required={@field.required}
+      rows="2"
+    ><%= @field.value || "" %></textarea>
+    """
+  end
+
+  def flow_card_field(%{field: %{type: :select}} = assigns) do
+    ~H"""
+    <select
+      id={"flow-#{@message_id}-#{@field.name}"}
+      name={@field.name}
+      class="flow-input flow-select"
+      required={@field.required}
+    >
+      <option :if={!@field.required} value="">Choose...</option>
+      <option :for={{label, value} <- @field.options} value={value} selected={to_string(value) == to_string(@field.value || "")}>
+        <%= label %>
+      </option>
+    </select>
+    """
+  end
+
+  def flow_card_field(assigns) do
+    ~H"""
+    <input
+      type="text"
+      id={"flow-#{@message_id}-#{@field.name}"}
+      name={@field.name}
+      class="flow-input"
+      required={@field.required}
+      value={@field.value || ""}
+      autocomplete="off"
+    />
+    """
+  end
+
+  defp editable_flow_form?(flow, disabled?) do
+    flow.fields != [] and (flow.actions == [] or action_backed_select?(flow)) and not disabled?
+  end
+
+  defp readonly_fields?(flow, disabled?) do
+    flow.fields != [] and not editable_flow_form?(flow, disabled?) and
+      not action_backed_select?(flow)
+  end
+
+  defp show_flow_actions?(flow), do: flow.actions != [] and not action_backed_select?(flow)
+
+  defp flow_form_class(flow) do
+    cond do
+      action_backed_select?(flow) ->
+        "flow-chat-fields flow-chat-form flow-chat-choice-form"
+
+      guided_form?(flow) ->
+        "flow-chat-fields flow-chat-form flow-chat-guided-form"
+
+      true ->
+        "flow-chat-fields flow-chat-form"
+    end
+  end
+
+  defp guided_form?(%{fields: fields}) when is_list(fields) do
+    Enum.any?(fields, fn field ->
+      is_binary(field[:description]) or
+        (is_map(field[:option_descriptions]) and field.option_descriptions != %{})
+    end)
+  end
+
+  defp guided_form?(_flow), do: false
+
+  defp action_backed_select?(%{fields: [%{type: :select}], actions: actions})
+       when actions != [] do
+    true
+  end
+
+  defp action_backed_select?(_flow), do: false
+
+  defp select_option_hints?(%{type: :select, options: options, option_descriptions: descriptions})
+       when is_list(options) and is_map(descriptions) do
+    descriptions != %{}
+  end
+
+  defp select_option_hints?(_field), do: false
+
+  defp option_description(%{option_descriptions: descriptions}, value)
+       when is_map(descriptions) do
+    Map.get(descriptions, value) || Map.get(descriptions, to_string(value)) || ""
+  end
+
+  defp option_description(_field, _value), do: ""
+
+  defp selected_option_hint(%{type: :select, value: value} = field) do
+    hint = option_description(field, value)
+    if hint == "", do: nil, else: hint
+  end
+
+  defp selected_option_hint(_field), do: nil
+
+  defp selected_option_label(%{type: :select, options: options, value: value})
+       when is_list(options) do
+    value_string = to_string(value || "")
+
+    case Enum.find(options, fn {_label, option_value} ->
+           to_string(option_value) == value_string
+         end) do
+      {label, _value} -> label
+      nil -> "Selected"
+    end
+  end
+
+  defp selected_option_label(_field), do: "Selected"
 
   attr(:call, :map, required: true)
   attr(:debug_mode, :boolean, default: false)
@@ -509,6 +775,76 @@ defmodule RhoWeb.ChatComponents do
   end
 
   defp valid_spec?(_), do: false
+
+  defp flow_kind_label(:flow_prompt), do: "Flow prompt"
+  defp flow_kind_label(:flow_choice), do: "Choice"
+  defp flow_kind_label(:flow_artifact), do: "Artifact"
+  defp flow_kind_label(:flow_decision), do: "Decision"
+  defp flow_kind_label(:flow_step_completed), do: "Completed"
+  defp flow_kind_label(:flow_error), do: "Needs attention"
+  defp flow_kind_label(kind), do: to_string(kind)
+
+  defp flow_artifact_label(%{kind: :table, table_name: table_name})
+       when is_binary(table_name) and table_name != "" do
+    "Workbench table: #{table_name}"
+  end
+
+  defp flow_artifact_label(%{kind: :selection, item_count: count, selected_count: selected}) do
+    "#{selected}/#{count} selected"
+  end
+
+  defp flow_artifact_label(_artifact), do: "Workflow artifact"
+
+  defp selection_summary(%{item_count: count, selected_count: selected}) do
+    "#{selected} of #{count} role candidates selected"
+  end
+
+  defp selection_hint(%{selected_count: 0}) do
+    "Select one or more candidates, or choose another starting point."
+  end
+
+  defp selection_hint(_artifact), do: "Continue when the selected roles look right."
+
+  defp selection_card_class(artifact, item) do
+    base = "flow-chat-selection-card"
+
+    if selection_selected?(artifact, item) do
+      "#{base} flow-chat-selection-card-selected"
+    else
+      base
+    end
+  end
+
+  defp selection_selected?(%{selected_ids: selected_ids}, item) when is_list(selected_ids) do
+    selection_item_id(item) in selected_ids
+  end
+
+  defp selection_selected?(_artifact, _item), do: false
+
+  defp selection_item_id(item) do
+    to_string(Rho.MapAccess.get(item, :id) || :erlang.phash2(item))
+  end
+
+  defp selection_item_meta(item, display_fields) when is_map(display_fields) do
+    [:subtitle, :detail]
+    |> Enum.map(fn field -> display_fields[field] end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn field -> selection_item_value(item, field) end)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" · ")
+  end
+
+  defp selection_item_meta(_item, _display_fields), do: ""
+
+  defp selection_item_value(item, field) do
+    case Rho.MapAccess.get(item, field) do
+      nil -> ""
+      value -> to_string(value)
+    end
+  end
+
+  defp flow_action_class(:secondary), do: "btn-secondary flow-chat-action"
+  defp flow_action_class(_), do: "btn-primary flow-chat-action"
 
   defp tool_icon(:ok), do: "✓"
   defp tool_icon(:error), do: "✗"

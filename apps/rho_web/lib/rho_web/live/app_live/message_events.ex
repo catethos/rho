@@ -10,6 +10,7 @@ defmodule RhoWeb.AppLive.MessageEvents do
 
   alias Rho.Stdlib.Uploads
   alias RhoWeb.AppLive
+  alias RhoWeb.AppLive.FlowSession
   alias RhoWeb.Session.SessionCore
 
   @inline_total_preview_chars 16000
@@ -138,11 +139,89 @@ defmodule RhoWeb.AppLive.MessageEvents do
     submit_content = build_submit_content(content, image_parts, has_text)
     display_text = build_display_text(content, image_parts, has_text)
 
-    case SessionCore.send_message(socket, display_text, submit_content: submit_content) do
-      {:noreply, socket} ->
-        AppLive.touch_active_conversation(socket)
-        {:noreply, AppLive.refresh_conversations(socket)}
+    cond do
+      FlowSession.active_awaiting_input?(socket) and has_text and image_parts == [] ->
+        {:noreply, FlowSession.handle_reply(socket, display_text)}
+
+      create_framework_request?(display_text, image_parts) ->
+        {:noreply,
+         FlowSession.start(socket, "create-framework", create_framework_intake(display_text),
+           user_message: display_text
+         )}
+
+      true ->
+        case SessionCore.send_message(socket, display_text, submit_content: submit_content) do
+          {:noreply, socket} ->
+            AppLive.touch_active_conversation(socket)
+            {:noreply, AppLive.refresh_conversations(socket)}
+        end
     end
+  end
+
+  @doc false
+  def create_framework_request?(text, []) when is_binary(text) do
+    normalized = normalize_flow_request(text)
+    create_request_verb?(normalized) and framework_request_object?(normalized)
+  end
+
+  def create_framework_request?(_text, _image_parts), do: false
+
+  defp normalize_flow_request(text) do
+    text
+    |> String.downcase()
+    |> String.replace(~r/[^\p{L}\p{N}\s]+/u, " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
+  defp create_request_verb?(normalized) do
+    Enum.any?(["create", "build", "make", "new", "generate", "design"], fn verb ->
+      String.contains?(normalized, verb)
+    end)
+  end
+
+  defp framework_request_object?(normalized) do
+    Enum.any?(
+      [
+        "framework",
+        "skill library",
+        "skills library",
+        "skill matrix",
+        "skills matrix",
+        "competency library",
+        "competency framework",
+        "capability framework"
+      ],
+      fn object -> String.contains?(normalized, object) end
+    )
+  end
+
+  @doc false
+  def create_framework_intake(text) do
+    case Regex.run(~r/\b(?:for|about)\s+(.+)$/i, text) do
+      [_, target] ->
+        target = target |> String.trim() |> String.trim_trailing(".")
+
+        if target == "" do
+          %{}
+        else
+          %{
+            name: titleize_target(target),
+            description: "Skill framework for #{target}.",
+            target_roles: target
+          }
+        end
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp titleize_target(target) do
+    target
+    |> String.replace(~r/[_-]+/, " ")
+    |> String.split()
+    |> Enum.map_join(" ", &String.capitalize/1)
   end
 
   defp arm_parse_tasks(socket, content, image_parts, has_text, file_handles) do

@@ -26,6 +26,7 @@ defmodule RhoWeb.AppLive do
   alias RhoWeb.AppLive.ChatShellComponents
   alias RhoWeb.AppLive.ChatroomEvents
   alias RhoWeb.AppLive.DataTableEvents
+  alias RhoWeb.AppLive.FlowSession
   alias RhoWeb.AppLive.LiveEvents
   alias RhoWeb.AppLive.MessageEvents
   alias RhoWeb.AppLive.PageComponents
@@ -77,6 +78,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:command_palette_open, false)
       |> assign(:chat_rail_collapsed, true)
       |> assign(:chat_context, %{})
+      |> assign(:active_flow, nil)
       |> assign(:fork_pending?, false)
       |> assign(:workbench_action_modal, nil)
       |> assign(:workbench_action_form, %{})
@@ -467,6 +469,18 @@ defmodule RhoWeb.AppLive do
     MessageEvents.handle_event("send_message", %{"content" => content}, socket)
   end
 
+  def handle_event("flow_card_action", params, socket) do
+    {:noreply, FlowSession.handle_action(socket, params)}
+  end
+
+  def handle_event("flow_card_form", params, socket) do
+    {:noreply, FlowSession.handle_form(socket, params)}
+  end
+
+  def handle_event("flow_card_select_toggle", params, socket) do
+    {:noreply, FlowSession.handle_select_toggle(socket, params)}
+  end
+
   def handle_event("send_workbench_suggestion", %{"content" => content}, socket) do
     WorkbenchEvents.handle_event("send_workbench_suggestion", %{"content" => content}, socket)
   end
@@ -750,6 +764,14 @@ defmodule RhoWeb.AppLive do
 
   def handle_info({:smart_entry_result, message, result}, socket) do
     SmartEntry.handle_info({:smart_entry_result, message, result}, socket)
+  end
+
+  def handle_info({:flow_long_step_completed, node_id, summary}, socket) do
+    {:noreply, FlowSession.complete_long_step(socket, node_id, summary)}
+  end
+
+  def handle_info({:flow_long_step_failed, node_id, reason}, socket) do
+    {:noreply, FlowSession.fail_long_step(socket, node_id, reason)}
   end
 
   def handle_info({:command_palette_action, action_id}, socket) do

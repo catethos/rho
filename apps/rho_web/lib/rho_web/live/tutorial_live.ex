@@ -61,11 +61,12 @@ defmodule RhoWeb.TutorialLive do
             <div class="tut-eyebrow">Tutorial</div>
             <h1>Welcome to Rho.</h1>
             <p class="tut-lede">
-              Rho is an AI agent platform you can drive from a chat window or
-              from a guided wizard. It runs LLM-powered agents that hold
-              conversations, call tools, share state through editable tables,
-              and hand work off to one another. This page is a tour for
-              first-time users and developers.
+              Rho is an AI agent platform you drive from a chat window, with
+              structured flow cards for workflows that need fixed review
+              gates. It runs LLM-powered agents that hold conversations, call
+              tools, share state through editable tables, and hand work off to
+              one another. This page is a tour for first-time users and
+              developers.
             </p>
             <div class="tut-callout">
               <strong>If you just want to try it:</strong>
@@ -180,12 +181,10 @@ defmodule RhoWeb.TutorialLive do
                 <div class="tut-page-route">/flows/:flow_id</div>
                 <h3>Flows</h3>
                 <p>
-                  A flow is a wizard — a fixed graph of steps (form, action,
-                  table review, selection) that walks you through a workflow
-                  the chat agent could also drive. The flagship flow is
-                  <strong>create-framework</strong>. Pick <em>Guided</em> mode
-                  for a linear path, <em>Copilot</em> to see the agent's
-                  reasoning, or <em>Open</em> to expose every tool call.
+                  A flow is a fixed graph of steps (form, action, table review,
+                  selection) shown as cards inside chat. The route-backed flow
+                  pages remain useful for fallback and debugging, but the main
+                  user entry point is the Chat page.
                 </p>
               </div>
               <div class="tut-page">
@@ -367,13 +366,13 @@ defmodule RhoWeb.TutorialLive do
 
             <div class="tut-journey">
               <div class="tut-journey-tag">Journey 2</div>
-              <h3>Build a skill framework with a guided flow</h3>
+              <h3>Build a skill framework in chat</h3>
               <ol>
-                <li>From the Libraries page click <em>New framework</em>.</li>
-                <li>The first screen asks you to pick a starting point — scratch, similar role, extend, or merge. Pick one and continue.</li>
-                <li>Fill the intake form for that path: name, description, domain, target roles, skill count, level count.</li>
-                <li>The wizard does background research, generates a skill skeleton, then fills in proficiency descriptions in parallel.</li>
-                <li>You review the generated table, edit inline, and resolve anything the wizard flagged.</li>
+                <li>Open Chat and ask to create a framework, or use the Workbench <em>Create Framework</em> action.</li>
+                <li>The first flow card asks you to pick a starting point — scratch, similar role, extend, or merge. Pick one and continue.</li>
+                <li>Answer the intake prompts for that path: name, description, domain, target roles, skill count, level count.</li>
+                <li>The flow runs background research, generates a skill skeleton, then fills in proficiency descriptions in parallel.</li>
+                <li>You review the generated table, edit inline, and resolve anything the flow flagged.</li>
                 <li>The final step saves the library as a draft. You can publish it as a frozen version whenever you're ready.</li>
               </ol>
             </div>
@@ -424,23 +423,20 @@ defmodule RhoWeb.TutorialLive do
                 <div class="tut-card-kicker">Conversational</div>
                 <h3>From Chat</h3>
                 <p>
-                  Open <code>/chat</code>, switch the active agent to
-                  <code>spreadsheet</code>, and describe the framework you
-                  want. The agent loads the <code>create-framework</code>
-                  skill on demand and drives the workflow turn by turn. Best
-                  when your inputs are messy or you want to iterate.
+                  Open <code>/chat</code> and describe the framework you want.
+                  Rho starts the <code>create-framework</code> flow in the
+                  assistant thread, then uses the Workbench for table review
+                  and editing.
                 </p>
               </div>
               <div class="tut-card">
-                <div class="tut-card-kicker">Guided</div>
-                <h3>From a Wizard</h3>
+                <div class="tut-card-kicker">Structured</div>
+                <h3>From Actions</h3>
                 <p>
-                  Click <em>New framework</em> on the Libraries page (or go
-                  directly to <code>/orgs/&lt;slug&gt;/flows/create-framework</code>).
-                  The wizard walks you through a fixed sequence of forms,
-                  table reviews, and explicit confirmation gates. Best when
-                  you want rails — every input is validated and you can see
-                  exactly where you are.
+                  Click <em>New Library</em> or use a Workbench action to seed
+                  the same chat-hosted flow with initial fields. You still get
+                  fixed steps, explicit review gates, and editable Workbench
+                  artifacts.
                 </p>
               </div>
             </div>
@@ -448,8 +444,7 @@ defmodule RhoWeb.TutorialLive do
             <h3 class="tut-subhead">The four paths</h3>
             <p>
               Whichever entry point you pick, the workflow recognises four
-              starting points. The agent (or the wizard's first form) asks
-              you to choose one.
+              starting points. The active flow card asks you to choose one.
             </p>
             <div class="tut-paths">
               <div class="tut-path">
@@ -571,14 +566,10 @@ defmodule RhoWeb.TutorialLive do
               </p>
             </details>
 
-            <h3 class="tut-subhead">Walking the wizard</h3>
+            <h3 class="tut-subhead">Walking the flow</h3>
             <p>
-              If you'd rather follow rails, open the
-              <strong>Create Skill Framework</strong> wizard from the
-              Libraries page (or go directly to
-              <code>/orgs/&lt;slug&gt;/flows/create-framework</code>).
-              You'll move through these screens in order for the
-              from-scratch path:
+              The chat-hosted <strong>Create Skill Framework</strong> flow
+              moves through these steps for the from-scratch path:
             </p>
             <ul class="tut-list">
               <li>
@@ -594,13 +585,13 @@ defmodule RhoWeb.TutorialLive do
                 Every field is validated before you can continue.
               </li>
               <li>
-                <strong>Research.</strong> The wizard does background
+                <strong>Research.</strong> The flow does background
                 research on your domain and shows the findings as pinned
                 cards. Unpin anything irrelevant or add your own notes,
                 then continue.
               </li>
               <li>
-                <strong>Generate &amp; Review.</strong> The wizard
+                <strong>Generate &amp; Review.</strong> The flow
                 generates the framework skeleton into a data table and
                 hands it back to you. Edit inline, add or remove rows,
                 then approve.
@@ -608,21 +599,18 @@ defmodule RhoWeb.TutorialLive do
               <li>
                 <strong>Confirm &amp; Proficiency.</strong> A confirmation
                 gate (so you don't accidentally trigger the slow step),
-                then the wizard fills in proficiency level descriptions.
+                then the flow fills in proficiency level descriptions.
               </li>
               <li>
                 <strong>Save.</strong> The new draft library is created
-                under your org and the wizard hands you off to its detail
+                under your org and the flow hands you off to its detail
                 page.
               </li>
             </ul>
             <p>
-              The wizard has three modes you can toggle at the top of the
-              page: <strong>Guided</strong> hides reasoning (the cleanest
-              view), <strong>Copilot</strong> shows the agent's thinking on
-              AI-driven steps, and <strong>Open</strong> exposes everything
-              — useful when a step doesn't look right and you want to see
-              what the agent saw.
+              Route-backed flow pages still exist as a fallback/debug host,
+              but the primary experience is the chat-hosted flow: chat owns
+              the decisions and the Workbench owns editable artifacts.
             </p>
 
             <h3 class="tut-subhead">Publishing, versions, and defaults</h3>

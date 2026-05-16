@@ -3,14 +3,16 @@ defmodule RhoWeb.AppLive.SmartEntry do
   Owns the smart natural-language entry flow for `RhoWeb.AppLive`.
 
   The module keeps the LiveView shell thin: submit text to the flow-intent
-  classifier, receive the async result, and either navigate to a matched flow
-  or explain why the entry stayed on the current page.
+  classifier, receive the async result, and either start a chat-hosted flow,
+  navigate to a route-backed flow, or explain why the entry stayed put.
   """
 
   require Logger
 
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [put_flash: 3, push_navigate: 2]
+
+  alias RhoWeb.AppLive.FlowSession
 
   @min_confidence 0.5
   @allowed_starting_points ~w(from_template scratch extend_existing merge)
@@ -40,6 +42,13 @@ defmodule RhoWeb.AppLive.SmartEntry do
     confidence = Map.get(result, :confidence, 0.0)
 
     case RhoFrameworks.Flows.Registry.get(flow_id) do
+      {:ok, _flow_mod} when flow_id == "create-framework" and confidence >= @min_confidence ->
+        org = socket.assigns.current_organization
+
+        socket
+        |> assign(:smart_entry_pending?, false)
+        |> FlowSession.start(flow_id, build_intake(result, org.id))
+
       {:ok, _flow_mod} when confidence >= @min_confidence ->
         org = socket.assigns.current_organization
         query = build_intake_query(result, org.id)
@@ -62,7 +71,7 @@ defmodule RhoWeb.AppLive.SmartEntry do
 
         socket
         |> assign(:smart_entry_pending?, false)
-        |> put_flash(:info, reasoning <> " Try the wizard directly, or rephrase.")
+        |> put_flash(:info, reasoning <> " Try describing the workflow in chat, or rephrase.")
     end
   end
 
@@ -71,7 +80,7 @@ defmodule RhoWeb.AppLive.SmartEntry do
 
     socket
     |> assign(:smart_entry_pending?, false)
-    |> put_flash(:error, "Couldn't process that - try again or use the wizard directly.")
+    |> put_flash(:error, "Couldn't process that - try describing the workflow in chat.")
   end
 
   def dispatch_result(socket, _message, _other) do
@@ -81,16 +90,22 @@ defmodule RhoWeb.AppLive.SmartEntry do
   end
 
   def build_intake_query(result, org_id) do
+    result
+    |> build_intake(org_id)
+    |> Enum.map(fn {key, value} -> {Atom.to_string(key), value} end)
+    |> URI.encode_query()
+  end
+
+  def build_intake(result, org_id) do
     [:name, :description, :domain, :target_roles]
-    |> Enum.reduce([], fn key, acc ->
+    |> Enum.reduce(%{}, fn key, acc ->
       case Map.get(result, key) do
-        v when is_binary(v) and v != "" -> [{Atom.to_string(key), v} | acc]
+        v when is_binary(v) and v != "" -> Map.put(acc, key, v)
         _ -> acc
       end
     end)
-    |> maybe_put_starting_point(result)
-    |> maybe_put_library_ids(result, org_id)
-    |> URI.encode_query()
+    |> maybe_put_starting_point_value(result)
+    |> maybe_put_library_id_values(result, org_id)
   end
 
   def resolve_library_hints(hints, libraries) when is_list(hints) do
@@ -107,14 +122,14 @@ defmodule RhoWeb.AppLive.SmartEntry do
 "
   end
 
-  defp maybe_put_starting_point(pairs, result) do
+  defp maybe_put_starting_point_value(intake, result) do
     case Map.get(result, :starting_point) do
-      sp when sp in @allowed_starting_points -> [{"starting_point", sp} | pairs]
-      _ -> pairs
+      sp when sp in @allowed_starting_points -> Map.put(intake, :starting_point, sp)
+      _ -> intake
     end
   end
 
-  defp maybe_put_library_ids(pairs, result, org_id) do
+  defp maybe_put_library_id_values(intake, result, org_id) do
     hints = Map.get(result, :library_hints, [])
 
     libraries =
@@ -124,12 +139,10 @@ defmodule RhoWeb.AppLive.SmartEntry do
         []
       end
 
-    resolved = resolve_library_hints(hints, libraries)
-
-    case resolved do
-      [id] -> [{"library_id", id} | pairs]
-      [id_a, id_b] -> [{"library_id_a", id_a}, {"library_id_b", id_b} | pairs]
-      _ -> pairs
+    case resolve_library_hints(hints, libraries) do
+      [id] -> Map.put(intake, :library_id, id)
+      [id_a, id_b] -> intake |> Map.put(:library_id_a, id_a) |> Map.put(:library_id_b, id_b)
+      _ -> intake
     end
   end
 

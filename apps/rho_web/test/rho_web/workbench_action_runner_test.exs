@@ -3,22 +3,6 @@ defmodule RhoWeb.WorkbenchActionRunnerTest do
 
   alias RhoWeb.WorkbenchActionRunner
 
-  test "builds a structured create framework prompt" do
-    prompt =
-      WorkbenchActionRunner.build_prompt(:create_framework, %{
-        "name" => "Product Manager",
-        "description" => "Owns product outcomes",
-        "domain" => "Product",
-        "target_roles" => "PM, Senior PM",
-        "skill_count" => "12"
-      })
-
-    assert prompt =~ "Call generate_framework_skeletons with:"
-    assert prompt =~ "- name: Product Manager"
-    assert prompt =~ "- skill_count: 12"
-    assert prompt =~ "keep it open in the Workbench"
-  end
-
   test "builds extract and import prompts around upload ids" do
     extract =
       WorkbenchActionRunner.build_prompt(:extract_jd, %{

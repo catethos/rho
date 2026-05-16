@@ -23,6 +23,7 @@ defmodule RhoWeb.AppLive.WorkbenchDisplayState do
       agents: assigns.agents,
       active_agent_name: Keyword.fetch!(opts, :active_agent_name),
       workbench_libraries: Keyword.fetch!(opts, :workbench_libraries),
+      role_groups: Keyword.get(opts, :role_groups, []),
       chat_mode: Keyword.fetch!(opts, :chat_mode),
       workbench_home_open?: assigns.workbench_home_open?,
       workbench_display: assigns.workbench_display,

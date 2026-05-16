@@ -18,12 +18,6 @@ defmodule RhoWeb.AppLive.PageComponents do
     <.page_shell>
       <.page_header title="Skill Libraries" subtitle="Browse and manage skill catalogs">
         <:actions>
-          <.link
-            navigate={~p"/orgs/#{@current_organization.slug}/flows/create-framework"}
-            class="btn-secondary"
-          >
-            Create with Wizard
-          </.link>
           <.link patch={~p"/orgs/#{@current_organization.slug}/chat"} class="btn-primary">
             + New Library
           </.link>
@@ -33,7 +27,7 @@ defmodule RhoWeb.AppLive.PageComponents do
       <section class="smart-entry" aria-label="Describe what you want to build">
         <h3 class="smart-entry-title">Or describe it in plain English</h3>
         <p class="smart-entry-hint">
-          e.g. <em>"create a framework for backend engineers"</em> — we'll route you to the right wizard with the form pre-filled.
+          e.g. <em>"create a framework for backend engineers"</em> — we'll start the workflow in chat with the right context.
         </p>
         <form phx-submit="smart_entry_submit" class="smart-entry-form">
           <textarea

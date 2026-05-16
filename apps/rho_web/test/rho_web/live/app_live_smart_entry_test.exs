@@ -11,14 +11,26 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
 
   alias RhoFrameworks.Accounts.Organization
   alias RhoFrameworks.{Library, Repo}
+  alias Rho.Stdlib.DataTable
 
   defp build_socket(assigns_override) do
+    sid = "smart_entry_test_#{System.unique_integer([:positive])}"
+    agent_id = Rho.Agent.Primary.agent_id(sid)
+    on_exit(fn -> DataTable.stop(sid) end)
+
     assigns =
       Map.merge(
         %{
           __changed__: %{},
           flash: %{},
-          smart_entry_pending?: true
+          smart_entry_pending?: true,
+          session_id: sid,
+          active_agent_id: agent_id,
+          agent_messages: %{agent_id => []},
+          next_id: 1,
+          active_page: :chat,
+          active_flow: nil,
+          current_user: %{id: Ecto.UUID.generate()}
         },
         assigns_override
       )
@@ -50,6 +62,22 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
     |> Map.merge(%{starting_point: "", library_hints: []})
     |> Map.merge(overrides)
     |> then(&{:ok, &1})
+  end
+
+  defp assert_create_flow_started(socket, expected_intake \\ %{}) do
+    refute socket.redirected
+    assert socket.assigns.smart_entry_pending? == false
+    assert socket.assigns.active_flow.id == "create-framework"
+    assert socket.assigns.active_flow.runner.node_id == :choose_starting_point
+
+    Enum.each(expected_intake, fn {key, value} ->
+      assert socket.assigns.active_flow.runner.intake[key] == value
+    end)
+
+    agent_id = socket.assigns.active_agent_id
+
+    assert [%{type: :flow_card, flow: %{node_id: :choose_starting_point}}] =
+             socket.assigns.agent_messages[agent_id]
   end
 
   describe "handle_info :smart_entry_result — edit-framework routing" do
@@ -106,7 +134,7 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
   end
 
   describe "handle_info :smart_entry_result — high-confidence routing" do
-    test "navigates to the wizard with intake prefilled in the query string" do
+    test "starts a chat-hosted flow with intake prefilled" do
       socket = build_socket(%{current_organization: org()})
 
       result =
@@ -119,16 +147,14 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
       {:noreply, after_socket} =
         RhoWeb.AppLive.handle_info({:smart_entry_result, "build it", result}, socket)
 
-      assert after_socket.assigns.smart_entry_pending? == false
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-
-      assert url =~ "/orgs/acme/flows/create-framework?"
-      assert url =~ "name=Backend+Engineering"
-      assert url =~ "description=Skills+for+backend+engineers"
-      assert url =~ "target_roles=Backend+Engineer%2C+Tech+Lead"
+      assert_create_flow_started(after_socket, %{
+        name: "Backend Engineering",
+        description: "Skills for backend engineers",
+        target_roles: "Backend Engineer, Tech Lead"
+      })
     end
 
-    test "navigates without query string when no intake fields were extracted" do
+    test "starts a chat-hosted flow when no intake fields were extracted" do
       socket = build_socket(%{current_organization: org()})
 
       {:noreply, after_socket} =
@@ -137,8 +163,7 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: "/orgs/acme/flows/create-framework"}} =
-               after_socket.redirected
+      assert_create_flow_started(after_socket)
     end
   end
 
@@ -218,7 +243,7 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
 
       assert after_socket.assigns.smart_entry_pending? == false
       refute after_socket.redirected
-      assert after_socket.assigns.flash["error"] =~ "try again"
+      assert after_socket.assigns.flash["error"] =~ "try describing the workflow in chat"
     end
   end
 
@@ -275,7 +300,7 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
   end
 
   describe "handle_info :smart_entry_result — Phase 10d starting_point" do
-    test "valid starting_point lands in the query string" do
+    test "valid starting_point lands in flow intake" do
       socket = build_socket(%{current_organization: org()})
 
       {:noreply, after_socket} =
@@ -284,8 +309,7 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      assert url =~ "starting_point=scratch"
+      assert_create_flow_started(after_socket, %{starting_point: "scratch"})
     end
 
     test "all four valid starting_point values pass the whitelist" do
@@ -298,12 +322,11 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
             socket
           )
 
-        assert {:live, :redirect, %{to: url}} = after_socket.redirected
-        assert url =~ "starting_point=#{sp}"
+        assert_create_flow_started(after_socket, %{starting_point: sp})
       end
     end
 
-    test "empty starting_point is dropped (no query param)" do
+    test "empty starting_point is dropped" do
       socket = build_socket(%{current_organization: org()})
 
       {:noreply, after_socket} =
@@ -312,8 +335,8 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      refute url =~ "starting_point"
+      assert_create_flow_started(after_socket)
+      refute Map.has_key?(after_socket.assigns.active_flow.runner.intake, :starting_point)
     end
 
     test "garbage starting_point is rejected by the whitelist" do
@@ -325,8 +348,8 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      refute url =~ "starting_point"
+      assert_create_flow_started(after_socket)
+      refute Map.has_key?(after_socket.assigns.active_flow.runner.intake, :starting_point)
     end
   end
 
@@ -344,10 +367,8 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-      assert query["library_id"]
-      assert query["starting_point"] == "extend_existing"
+      assert_create_flow_started(after_socket, %{starting_point: "extend_existing"})
+      assert after_socket.assigns.active_flow.runner.intake[:library_id]
     end
 
     test "case-insensitive substring matching" do
@@ -363,8 +384,10 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      assert url =~ "library_id=#{lib.id}"
+      assert_create_flow_started(after_socket, %{
+        starting_point: "extend_existing",
+        library_id: lib.id
+      })
     end
 
     test "ambiguous hint (multiple matches) is dropped silently" do
@@ -381,11 +404,9 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      refute url =~ "library_id"
-      # but starting_point still flows through
-      assert url =~ "starting_point=extend_existing"
-      # no flash about the ambiguity — silent drop, user picks on wizard
+      assert_create_flow_started(after_socket, %{starting_point: "extend_existing"})
+      refute Map.has_key?(after_socket.assigns.active_flow.runner.intake, :library_id)
+      # no flash about the ambiguity — silent drop, user picks in the flow
       assert after_socket.assigns.flash == %{}
     end
 
@@ -404,8 +425,8 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      refute url =~ "library_id"
+      assert_create_flow_started(after_socket, %{starting_point: "extend_existing"})
+      refute Map.has_key?(after_socket.assigns.active_flow.runner.intake, :library_id)
     end
 
     test "empty library_hints never queries the DB" do
@@ -418,8 +439,8 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      refute url =~ "library_id"
+      assert_create_flow_started(after_socket, %{starting_point: "scratch"})
+      refute Map.has_key?(after_socket.assigns.active_flow.runner.intake, :library_id)
     end
 
     test "two unique hints resolve to library_id_a + library_id_b for merge" do
@@ -436,12 +457,13 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-      assert query["library_id_a"] == lib_a.id
-      assert query["library_id_b"] == lib_b.id
-      assert query["starting_point"] == "merge"
-      refute Map.has_key?(query, "library_id")
+      assert_create_flow_started(after_socket, %{
+        starting_point: "merge",
+        library_id_a: lib_a.id,
+        library_id_b: lib_b.id
+      })
+
+      refute Map.has_key?(after_socket.assigns.active_flow.runner.intake, :library_id)
     end
 
     test "merge with one resolvable + one unresolvable hint drops both" do
@@ -457,15 +479,13 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-      # Only one resolved → falls back to single library_id (extend semantics).
-      # The wizard's :pick_two_libraries pre-pick guard rejects half-pairs,
-      # so the user just picks normally.
-      refute Map.has_key?(query, "library_id_a")
-      refute Map.has_key?(query, "library_id_b")
-      assert query["library_id"]
-      assert query["starting_point"] == "merge"
+      assert_create_flow_started(after_socket, %{starting_point: "merge"})
+      intake = after_socket.assigns.active_flow.runner.intake
+      # Only one resolved -> falls back to single library_id; the picker will
+      # still require the user to choose both libraries.
+      refute Map.has_key?(intake, :library_id_a)
+      refute Map.has_key?(intake, :library_id_b)
+      assert intake[:library_id]
     end
 
     test "merge with two ambiguous hints emits no library ids" do
@@ -484,12 +504,11 @@ defmodule RhoWeb.AppLiveSmartEntryTest do
           socket
         )
 
-      assert {:live, :redirect, %{to: url}} = after_socket.redirected
-      query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-      refute Map.has_key?(query, "library_id")
-      refute Map.has_key?(query, "library_id_a")
-      refute Map.has_key?(query, "library_id_b")
-      assert query["starting_point"] == "merge"
+      assert_create_flow_started(after_socket, %{starting_point: "merge"})
+      intake = after_socket.assigns.active_flow.runner.intake
+      refute Map.has_key?(intake, :library_id)
+      refute Map.has_key?(intake, :library_id_a)
+      refute Map.has_key?(intake, :library_id_b)
     end
   end
 end

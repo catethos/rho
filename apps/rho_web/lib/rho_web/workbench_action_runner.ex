@@ -2,34 +2,12 @@ defmodule RhoWeb.WorkbenchActionRunner do
   @moduledoc """
   Helpers for turning Workbench home actions into prompts or UI metadata.
 
-  AppLive owns socket/session mutation. This module keeps the action text and
-  direct-run metadata testable and shared.
+  AppLive owns socket/session mutation. Create-framework now runs through
+  `RhoWeb.AppLive.FlowSession`; this module keeps the remaining prompt text
+  and direct-run metadata testable and shared.
   """
 
   @role_candidates_table "role_candidates"
-
-  def build_prompt(:create_framework, params) do
-    name = clean(params["name"])
-    description = clean(params["description"])
-    domain = clean(params["domain"])
-    target_roles = clean(params["target_roles"])
-    skill_count = clean(params["skill_count"]) || "12"
-
-    [
-      "Create a new skill framework in the Workbench.",
-      "",
-      "Call generate_framework_skeletons with:",
-      bullet("name", name),
-      bullet("description", description),
-      bullet("domain", domain),
-      bullet("target_roles", target_roles),
-      bullet("skill_count", skill_count),
-      "",
-      "After the skeleton is generated, keep it open in the Workbench and suggest the next step for missing proficiency levels."
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join("\n")
-  end
 
   def build_prompt(:extract_jd, params) do
     [

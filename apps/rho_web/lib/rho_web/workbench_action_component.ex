@@ -230,12 +230,38 @@ defmodule RhoWeb.WorkbenchActionComponent do
               <.text_area name="description" label="Description" value={@form["description"]} rows="3" />
               <.text_input name="domain" label="Domain" value={@form["domain"]} />
               <.text_input name="target_roles" label="Target roles" value={@form["target_roles"]} />
-              <.text_input name="skill_count" label="Skill count" value={@form["skill_count"] || "12"} type="number" min="1" max="80" />
-              <.modal_actions busy?={@busy?} label="Create Framework">
-                <:secondary :if={@org_slug}>
-                  <a class="workbench-secondary-link" href={"/orgs/#{@org_slug}/flows/create-framework"}>Open Guided Flow</a>
-                </:secondary>
-              </.modal_actions>
+              <.select_input
+                name="taxonomy_size"
+                label="Structure size"
+                value={@form["taxonomy_size"] || "balanced"}
+                options={[
+                  {"Compact", "compact"},
+                  {"Balanced", "balanced"},
+                  {"Comprehensive", "comprehensive"},
+                  {"Custom", "custom"}
+                ]}
+              />
+              <.select_input
+                name="transferability"
+                label="Focus"
+                value={@form["transferability"] || "mixed"}
+                options={[
+                  {"Balanced mix", "mixed"},
+                  {"Reusable across roles", "transferable"},
+                  {"Specific to this role/industry", "role_specific"}
+                ]}
+              />
+              <.select_input
+                name="specificity"
+                label="Style"
+                value={@form["specificity"] || "general"}
+                options={[
+                  {"General", "general"},
+                  {"Industry-specific", "industry_specific"},
+                  {"Organization-specific", "organization_specific"}
+                ]}
+              />
+              <.modal_actions busy?={@busy?} label="Create Framework" />
 
             <% :extract_jd -> %>
               <.upload_input uploads={@uploads} />
@@ -334,6 +360,24 @@ defmodule RhoWeb.WorkbenchActionComponent do
     <label class="workbench-field">
       <span><%= @label %></span>
       <textarea name={@name} rows={@rows} required={@required}><%= @value %></textarea>
+    </label>
+    """
+  end
+
+  attr(:name, :string, required: true)
+  attr(:label, :string, required: true)
+  attr(:value, :any, default: nil)
+  attr(:options, :list, required: true)
+
+  defp select_input(assigns) do
+    ~H"""
+    <label class="workbench-field">
+      <span><%= @label %></span>
+      <select name={@name}>
+        <option :for={{label, value} <- @options} value={value} selected={value == @value}>
+          <%= label %>
+        </option>
+      </select>
     </label>
     """
   end

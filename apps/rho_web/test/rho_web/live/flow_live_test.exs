@@ -34,6 +34,11 @@ defmodule RhoWeb.FlowLiveTest do
     %{socket | transport_pid: self()}
   end
 
+  defp stub_long_step_spawn do
+    Application.put_env(:rho_web, :flow_long_step_spawn_fn, fn _fun -> {:ok, self()} end)
+    on_exit(fn -> Application.delete_env(:rho_web, :flow_long_step_spawn_fn) end)
+  end
+
   describe "mount/3" do
     test "mounts with valid flow_id (connected)", %{org: org, user: user} do
       socket =
@@ -46,7 +51,7 @@ defmodule RhoWeb.FlowLiveTest do
       {:ok, socket} = RhoWeb.FlowLive.mount(%{"flow_id" => "create-framework"}, %{}, socket)
 
       assert socket.assigns.flow_module == CreateFramework
-      assert length(socket.assigns.flow_steps) == 21
+      assert length(socket.assigns.flow_steps) == 27
       assert socket.assigns.runner.node_id == :choose_starting_point
       assert socket.assigns.runner.intake == %{}
       assert socket.assigns.completed_steps == []
@@ -177,16 +182,7 @@ defmodule RhoWeb.FlowLiveTest do
       org: org,
       user: user
     } do
-      # Stub ResearchDomain spawn so we don't make an LLM call.
-      parent = self()
-
-      spawn_fn = fn opts ->
-        send(parent, {:research_spawn_called, opts})
-        {:ok, "fixture-research-#{System.unique_integer([:positive])}"}
-      end
-
-      Application.put_env(:rho_frameworks, :research_domain_spawn_fn, spawn_fn)
-      on_exit(fn -> Application.delete_env(:rho_frameworks, :research_domain_spawn_fn) end)
+      stub_long_step_spawn()
 
       socket =
         build_socket(%{
@@ -208,7 +204,7 @@ defmodule RhoWeb.FlowLiveTest do
 
       assert socket.assigns.runner.node_id == :intake_scratch
 
-      # Step 2: :intake_scratch submit → :research auto-runs.
+      # Step 2: :intake_scratch submit → :taxonomy_preferences.
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
@@ -220,12 +216,28 @@ defmodule RhoWeb.FlowLiveTest do
           socket
         )
 
+      assert socket.assigns.runner.node_id == :taxonomy_preferences
+
+      # Step 3: taxonomy preferences submit → :research auto-runs.
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "taxonomy_preferences",
+            "taxonomy_size" => "balanced",
+            "transferability" => "mixed",
+            "specificity" => "general",
+            "levels" => "5"
+          },
+          socket
+        )
+
       assert socket.assigns.runner.node_id == :research
       assert :choose_starting_point in socket.assigns.completed_steps
       assert :intake_scratch in socket.assigns.completed_steps
-      assert socket.assigns.research_agent_id != nil
+      assert :taxonomy_preferences in socket.assigns.completed_steps
+      assert socket.assigns.research_agent_id == nil
       assert socket.assigns.step_status == :running
-      assert_received {:research_spawn_called, _opts}
 
       DataTable.stop(sid)
     end
@@ -234,11 +246,7 @@ defmodule RhoWeb.FlowLiveTest do
       org: org,
       user: user
     } do
-      Application.put_env(:rho_frameworks, :research_domain_spawn_fn, fn _opts ->
-        {:ok, "fixture-research-stuck"}
-      end)
-
-      on_exit(fn -> Application.delete_env(:rho_frameworks, :research_domain_spawn_fn) end)
+      stub_long_step_spawn()
 
       socket =
         build_socket(%{
@@ -253,8 +261,15 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
+          %{"step_id" => "choose_starting_point", "starting_point" => "scratch"},
+          socket
+        )
+
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
           %{
-            "step_id" => "intake",
+            "step_id" => "intake_scratch",
             "name" => "Mystery Framework",
             "description" => "About something unfamiliar"
           },
@@ -264,7 +279,13 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "choose_starting_point", "starting_point" => "scratch"},
+          %{
+            "step_id" => "taxonomy_preferences",
+            "taxonomy_size" => "balanced",
+            "transferability" => "mixed",
+            "specificity" => "general",
+            "levels" => "5"
+          },
           socket
         )
 
@@ -274,7 +295,7 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} = RhoWeb.FlowLive.handle_event("research_continue", %{}, socket)
 
       # Flow has advanced past :research without waiting for task_completed.
-      assert socket.assigns.runner.node_id == :generate
+      assert socket.assigns.runner.node_id == :generate_taxonomy
       assert :research in socket.assigns.completed_steps
       assert socket.assigns.research_agent_id == nil
 
@@ -285,15 +306,11 @@ defmodule RhoWeb.FlowLiveTest do
       DataTable.stop(sid)
     end
 
-    test "task_completed for research worker leaves the wizard waiting for user input", %{
+    test "long-step completion for research leaves the wizard waiting for user input", %{
       org: org,
       user: user
     } do
-      Application.put_env(:rho_frameworks, :research_domain_spawn_fn, fn _opts ->
-        {:ok, "fixture-research-natural"}
-      end)
-
-      on_exit(fn -> Application.delete_env(:rho_frameworks, :research_domain_spawn_fn) end)
+      stub_long_step_spawn()
 
       socket =
         build_socket(%{
@@ -308,37 +325,46 @@ defmodule RhoWeb.FlowLiveTest do
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "intake", "name" => "Mystery", "description" => "About"},
+          %{"step_id" => "choose_starting_point", "starting_point" => "scratch"},
           socket
         )
 
       {:noreply, socket} =
         RhoWeb.FlowLive.handle_event(
           "submit_form",
-          %{"step_id" => "choose_starting_point", "starting_point" => "scratch"},
+          %{"step_id" => "intake_scratch", "name" => "Mystery", "description" => "About"},
+          socket
+        )
+
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_event(
+          "submit_form",
+          %{
+            "step_id" => "taxonomy_preferences",
+            "taxonomy_size" => "balanced",
+            "transferability" => "mixed",
+            "specificity" => "general",
+            "levels" => "5"
+          },
           socket
         )
 
       assert socket.assigns.runner.node_id == :research
       assert socket.assigns.step_status == :running
-      research_id = socket.assigns.research_agent_id
 
-      # Worker finishes naturally — the runner should NOT auto-advance.
-      task_completed =
-        Rho.Events.event(:task_completed, sid, research_id, %{
-          worker_agent_id: research_id,
-          status: :ok
-        })
+      summary = %{table_name: "research_notes", inserted: 2, seen: 3}
 
-      {:noreply, socket} = RhoWeb.FlowLive.handle_info(task_completed, socket)
+      {:noreply, socket} =
+        RhoWeb.FlowLive.handle_info({:long_step_completed, :research, summary}, socket)
 
       assert socket.assigns.runner.node_id == :research
       assert socket.assigns.step_status == :awaiting_user
       assert socket.assigns.research_agent_id == nil
+      assert socket.assigns.runner.summaries[:research].inserted == 2
 
       # User clicks Continue → flow advances.
       {:noreply, socket} = RhoWeb.FlowLive.handle_event("research_continue", %{}, socket)
-      assert socket.assigns.runner.node_id == :generate
+      assert socket.assigns.runner.node_id == :generate_taxonomy
       assert :research in socket.assigns.completed_steps
 
       DataTable.stop(sid)
@@ -1097,11 +1123,13 @@ defmodule RhoWeb.FlowLiveTest do
             description: "Skills for backend engineers",
             domain: "Software",
             target_roles: "Backend Engineer",
-            skill_count: "12",
+            taxonomy_size: "balanced",
+            transferability: "mixed",
+            specificity: "general",
             levels: "5"
           },
           summaries: %{
-            generate: %{table_name: "library:Backend Engineering", library_id: "lib-1"}
+            generate_skills: %{table_name: "library:Backend Engineering", library_id: "lib-1"}
           }
         )
 
@@ -1149,10 +1177,16 @@ defmodule RhoWeb.FlowLiveTest do
       # System prompt embeds the wizard's intake + table name so the
       # chat agent doesn't have to clarify what framework it's on.
       sys = opts[:system_prompt]
+      assert sys =~ "Current step: save"
+      assert sys =~ "Allowed tools:"
+      assert sys =~ "save_framework"
+      assert sys =~ "clarify"
       assert sys =~ "Backend Engineering"
       assert sys =~ "Skills for backend engineers"
       assert sys =~ "library:Backend Engineering"
-      assert sys =~ "Skill count: 12"
+      assert sys =~ "Structure size: balanced"
+      assert sys =~ "Focus: mixed"
+      assert sys =~ "Style: general"
       assert sys =~ "Proficiency levels: 5"
 
       DataTable.stop(sid)

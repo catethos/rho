@@ -22,6 +22,7 @@ defmodule RhoWeb.WorkbenchPresenter do
   @action_labels %{
     save_draft: "Save draft",
     generate_levels: "Generate levels",
+    create_role_profile: "Create role",
     suggest_skills: "Suggest skills",
     publish: "Publish",
     export: "Export",

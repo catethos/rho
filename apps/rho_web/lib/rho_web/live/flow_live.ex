@@ -16,12 +16,19 @@ defmodule RhoWeb.FlowLive do
   alias RhoFrameworks.{AgentJobs, DataTableSchemas, FlowRunner, Scope}
   alias RhoFrameworks.Flow.Policies.{Deterministic, Hybrid}
   alias RhoFrameworks.Flows.Registry, as: FlowRegistry
-  alias RhoFrameworks.Tools.WorkflowTools
-  alias RhoFrameworks.UseCases.{GenerateFrameworkSkeletons, ResearchDomain}
+  alias RhoWeb.FlowChat.{Driver, ReplyParser, StepAgent}
+
+  alias RhoFrameworks.UseCases.{
+    GenerateFrameworkSkeletons,
+    GenerateFrameworkTaxonomy,
+    GenerateSkillsForTaxonomy,
+    ResearchDomain
+  }
+
   alias RhoWeb.Components.{ResearchPanel, RoutingChip, StepChat}
   alias RhoWeb.FlowComponents
 
-  @valid_modes [:guided, :copilot, :open]
+  @valid_modes [:guided, :chat_native, :copilot, :open]
 
   import FlowComponents
 
@@ -84,6 +91,13 @@ defmodule RhoWeb.FlowLive do
     "domain" => :domain,
     "target_roles" => :target_roles,
     "skill_count" => :skill_count,
+    "taxonomy_size" => :taxonomy_size,
+    "specificity" => :specificity,
+    "transferability" => :transferability,
+    "category_count" => :category_count,
+    "clusters_per_category" => :clusters_per_category,
+    "skills_per_cluster" => :skills_per_cluster,
+    "strict_counts" => :strict_counts,
     "levels" => :levels,
     "starting_point" => :starting_point,
     "library_id" => :library_id,
@@ -122,6 +136,8 @@ defmodule RhoWeb.FlowLive do
     |> assign(:page_title, flow_mod.label())
     |> assign(:streaming_text, "")
     |> assign(:tool_events, [])
+    |> assign(:flow_chat_events, [])
+    |> assign(:flow_chat_error, nil)
     |> assign(:select_items, [])
     |> assign(:selected_ids, [])
     |> assign(:research_rows, [])
@@ -196,14 +212,12 @@ defmodule RhoWeb.FlowLive do
   # node already owns the agent loop.
   defp maybe_render_step_chat(assigns) do
     step = current_step_def(assigns)
-    use_case = step && Map.get(step, :use_case)
-    routing = step && Map.get(step, :routing)
 
-    if use_case && routing != :agent_loop && WorkflowTools.tool_for_use_case(use_case) do
+    if StepAgent.available?(step) do
       assigns =
         assigns
         |> assign(:chat_node, step)
-        |> assign(:chat_disabled?, step_chat_disabled?(step, assigns.step_status))
+        |> assign(:chat_disabled?, StepAgent.disabled?(step, assigns.step_status))
 
       ~H"""
       <StepChat.step_chat
@@ -219,13 +233,6 @@ defmodule RhoWeb.FlowLive do
       ~H""
     end
   end
-
-  # Disable submission while a step is mid-flight on nodes whose UseCase
-  # writes into a shared table — fan-out and generation. Avoids two
-  # BAML calls clobbering the same table.
-  defp step_chat_disabled?(%{type: :fan_out}, :running), do: true
-  defp step_chat_disabled?(%{id: :generate}, :running), do: true
-  defp step_chat_disabled?(_step, _status), do: false
 
   defp render_current_step(assigns) do
     step = current_step_def(assigns)
@@ -250,8 +257,37 @@ defmodule RhoWeb.FlowLive do
       </div>
       """
     else
-      render_step(assign(assigns, :step_def, step))
+      assigns = assign(assigns, :step_def, step)
+
+      if assigns.mode == :chat_native do
+        render_chat_native_step(assigns)
+      else
+        render_step(assigns)
+      end
     end
+  end
+
+  defp render_chat_native_step(assigns) do
+    message = current_flow_chat_message(assigns)
+
+    assigns =
+      assigns
+      |> assign(:flow_chat_message, message)
+      |> assign(:show_step_surface, Driver.show_step_surface?(assigns.step_def, message))
+
+    ~H"""
+    <div class="flow-chat-native">
+      <.flow_chat_messages
+        events={@flow_chat_events}
+        current_message={@flow_chat_message}
+        error={@flow_chat_error}
+      />
+
+      <div :if={@show_step_surface} class="flow-chat-artifact-surface">
+        <%= render_step(assigns) %>
+      </div>
+    </div>
+    """
   end
 
   # Pulls a summary line for the current `:action` step, when one exists.
@@ -278,10 +314,48 @@ defmodule RhoWeb.FlowLive do
 
         {headline, detail}
 
+      {:identify_gaps, %{} = s} ->
+        gaps =
+          case Rho.MapAccess.get(s, :gaps) do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        count = length(gaps)
+
+        headline =
+          if count > 0,
+            do: "Identified #{count} candidate #{pluralise(count, "skill", "skills")} to add",
+            else: "No clear skill gaps found"
+
+        detail =
+          case gaps do
+            list when is_list(list) and list != [] -> Enum.map_join(list, "; ", &gap_summary/1)
+            _ -> nil
+          end
+
+        {headline, detail}
+
       _ ->
         {nil, nil}
     end
   end
+
+  defp gap_summary(gap) when is_map(gap) do
+    name = Rho.MapAccess.get(gap, :skill_name) || "Untitled skill"
+    category = Rho.MapAccess.get(gap, :category)
+    rationale = Rho.MapAccess.get(gap, :rationale)
+
+    name
+    |> append_if_present(category, fn value -> " (#{value})" end)
+    |> append_if_present(rationale, fn value -> " — #{value}" end)
+  end
+
+  defp gap_summary(_gap), do: "Untitled skill"
+
+  defp append_if_present(text, nil, _fun), do: text
+  defp append_if_present(text, "", _fun), do: text
+  defp append_if_present(text, value, fun), do: text <> fun.(value)
 
   defp final_save_summary(assigns) do
     case assigns.runner.summaries[:save] do
@@ -380,7 +454,7 @@ defmodule RhoWeb.FlowLive do
             dt_snapshot={@dt_snapshot}
             dt_schema={@dt_schema}
             session_id={@session_id}
-            table_name={flow_table_name(@runner)}
+            table_name={review_table_name(@step_def, @runner)}
           />
           """
         end
@@ -603,13 +677,53 @@ defmodule RhoWeb.FlowLive do
     {:noreply, socket}
   end
 
+  def handle_event("flow_chat_action", %{"action-id" => action_id}, socket)
+      when is_binary(action_id) do
+    message = current_flow_chat_message(socket.assigns)
+
+    case ReplyParser.parse_action(message, action_id) do
+      {:ok, result} ->
+        {:noreply, Driver.apply_result(socket, message, result, flow_chat_ops())}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, :flow_chat_error, "That action is no longer available.")}
+    end
+  end
+
+  def handle_event("flow_chat_action", _params, socket), do: {:noreply, socket}
+
+  def handle_event("flow_chat_reply", %{"message" => msg}, socket)
+      when is_binary(msg) and msg != "" do
+    message = current_flow_chat_message(socket.assigns)
+
+    case ReplyParser.parse_reply(message, msg) do
+      {:ok, result} ->
+        {:noreply,
+         Driver.apply_result(socket, message, Map.put(result, :reply, msg), flow_chat_ops())}
+
+      {:error, _reason} ->
+        {:noreply,
+         assign(
+           socket,
+           :flow_chat_error,
+           "I could not map that to this step. Use one of the actions or be more specific."
+         )}
+    end
+  end
+
+  def handle_event("flow_chat_reply", _params, socket), do: {:noreply, socket}
+
   def handle_event("routing_chip_toggle", _params, socket) do
     {:noreply, assign(socket, :chip_expanded?, not socket.assigns.chip_expanded?)}
   end
 
   def handle_event("step_chat_submit", %{"message" => msg}, socket)
       when is_binary(msg) and msg != "" do
-    {:noreply, spawn_step_chat(socket, msg)}
+    {:noreply,
+     StepAgent.spawn(socket, msg,
+       step: current_step_def(socket.assigns),
+       table_name: flow_table_name(socket.assigns.runner)
+     )}
   end
 
   def handle_event("step_chat_submit", _params, socket), do: {:noreply, socket}
@@ -666,16 +780,16 @@ defmodule RhoWeb.FlowLive do
     end
   end
 
-  def handle_info({:generate_completed, summary}, socket) do
-    if generate_running?(socket) do
-      {:noreply, complete_generate_step(socket, summary)}
+  def handle_info({:long_step_completed, node_id, summary}, socket) do
+    if long_step_running?(socket, node_id) do
+      {:noreply, complete_long_step(socket, node_id, summary)}
     else
       {:noreply, socket}
     end
   end
 
-  def handle_info({:generate_failed, reason}, socket) do
-    if generate_running?(socket) do
+  def handle_info({:long_step_failed, node_id, reason}, socket) do
+    if long_step_running?(socket, node_id) do
       {:noreply,
        socket
        |> assign(:step_status, :failed)
@@ -683,6 +797,14 @@ defmodule RhoWeb.FlowLive do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info({:generate_completed, summary}, socket) do
+    handle_info({:long_step_completed, :generate, summary}, socket)
+  end
+
+  def handle_info({:generate_failed, reason}, socket) do
+    handle_info({:long_step_failed, :generate, reason}, socket)
   end
 
   def handle_info(_msg, socket) do
@@ -791,13 +913,25 @@ defmodule RhoWeb.FlowLive do
     end
   end
 
-  # -------------------------------------------------------------------
-  # Step machine
-  # -------------------------------------------------------------------
-
   defp current_node_id(%{node_id: id}), do: id
 
   defp current_step_def(assigns), do: FlowRunner.current_node(assigns.runner)
+
+  defp current_flow_chat_message(assigns) when is_map(assigns) do
+    Driver.current_message(assigns, flow_chat_ops())
+  end
+
+  defp flow_chat_ops do
+    %{
+      advance_step: &advance_step/1,
+      maybe_auto_run: &maybe_auto_run/1,
+      reset_select_state: &reset_select_state/1,
+      run_action: &run_action/1,
+      refresh_data_table: &refresh_data_table/2,
+      review_table_name: &review_table_name/2,
+      item_id: &item_id/1
+    }
+  end
 
   defp advance_step(socket) do
     runner = socket.assigns.runner
@@ -865,8 +999,9 @@ defmodule RhoWeb.FlowLive do
   run the Hybrid policy — the difference is theater visibility, not
   edge selection.
   """
-  @spec policy_for_mode(:guided | :copilot | :open) :: module()
+  @spec policy_for_mode(:guided | :chat_native | :copilot | :open) :: module()
   def policy_for_mode(:guided), do: Deterministic
+  def policy_for_mode(:chat_native), do: Deterministic
   def policy_for_mode(_), do: Hybrid
 
   @doc """
@@ -956,7 +1091,7 @@ defmodule RhoWeb.FlowLive do
             if step.config[:conflict_mode] == true do
               refresh_data_table(socket, RhoFrameworks.Workbench.combine_preview_table())
             else
-              refresh_data_table(socket)
+              refresh_data_table(socket, review_table_name(step, socket.assigns.runner))
             end
 
           :select ->
@@ -977,8 +1112,8 @@ defmodule RhoWeb.FlowLive do
     node = FlowRunner.current_node(runner)
     scope = socket.assigns.scope
 
-    if Map.get(node, :use_case) == GenerateFrameworkSkeletons do
-      spawn_generate_skeletons(socket, node, runner, scope)
+    if long_running_use_case?(Map.get(node, :use_case)) do
+      spawn_long_step(socket, node, runner, scope)
     else
       run_action_via_runner(socket, node, runner, scope)
     end
@@ -1036,23 +1171,36 @@ defmodule RhoWeb.FlowLive do
     end
   end
 
-  # Phase 6 — generate-skeletons spawns the BAML UseCase under
-  # `Rho.TaskSupervisor`. The UseCase emits `:data_table` events through
-  # `Workbench.add_skill` which the existing `handle_data_table_event`
-  # picks up to stream rows in. Completion arrives as `:generate_completed`.
-  defp spawn_generate_skeletons(socket, node, runner, scope) do
+  defp long_running_use_case?(use_case) do
+    use_case in [
+      GenerateFrameworkSkeletons,
+      GenerateFrameworkTaxonomy,
+      GenerateSkillsForTaxonomy,
+      ResearchDomain
+    ]
+  end
+
+  # Long generation steps spawn BAML use cases under `Rho.TaskSupervisor`.
+  # Their table writes emit `:data_table` events; completion is sent back
+  # directly to the LiveView process.
+  defp spawn_long_step(socket, node, runner, scope) do
     flow_mod = runner.flow_mod
     input = flow_mod.build_input(node.id, runner, scope)
     lv_pid = self()
+    node_id = node.id
+    use_case = Map.fetch!(node, :use_case)
 
-    Task.Supervisor.start_child(Rho.TaskSupervisor, fn ->
-      case GenerateFrameworkSkeletons.run(input, scope) do
+    long_step_spawn_fn().(fn ->
+      case use_case.run(input, scope) do
         {:ok, summary} ->
-          send(lv_pid, {:generate_completed, summary})
+          send(lv_pid, {:long_step_completed, node_id, summary})
 
         {:error, reason} ->
-          Logger.warning(fn -> "[FlowLive] generate_skeletons failed: #{inspect(reason)}" end)
-          send(lv_pid, {:generate_failed, reason})
+          Logger.warning(fn ->
+            "[FlowLive] #{inspect(use_case)} failed: #{inspect(reason)}"
+          end)
+
+          send(lv_pid, {:long_step_failed, node_id, reason})
       end
     end)
 
@@ -1063,113 +1211,10 @@ defmodule RhoWeb.FlowLive do
     |> assign(:tool_events, [])
   end
 
-  # -------------------------------------------------------------------
-  # Step chat (Phase 8 — §3.4)
-  # -------------------------------------------------------------------
-
-  defp spawn_step_chat(socket, message) do
-    step = current_step_def(socket.assigns)
-    use_case = step && Map.get(step, :use_case)
-    use_case_tool = use_case && WorkflowTools.tool_for_use_case(use_case)
-    scope = socket.assigns.scope
-    runner = socket.assigns.runner
-
-    cond do
-      is_nil(use_case_tool) ->
-        socket
-
-      step_chat_disabled?(step, socket.assigns.step_status) ->
-        socket
-
-      is_nil(scope) or is_nil(scope.session_id) ->
-        socket
-
-      true ->
-        config = Rho.AgentConfig.agent(:default)
-
-        spawn_args = [
-          task: message,
-          parent_agent_id: scope.session_id,
-          tools: [use_case_tool, WorkflowTools.clarify_tool()],
-          model: config.model,
-          system_prompt: step_chat_system_prompt(step, runner),
-          max_steps: 5,
-          turn_strategy: Rho.TurnStrategy.Direct,
-          provider: config.provider || %{},
-          agent_name: :step_chat,
-          session_id: scope.session_id,
-          organization_id: scope.organization_id
-        ]
-
-        case step_chat_spawn_fn().(spawn_args) do
-          {:ok, agent_id} when is_binary(agent_id) ->
-            socket
-            |> assign(:step_chat_agent_id, agent_id)
-            |> assign(:step_chat_pending_question, nil)
-            |> assign(:streaming_text, "")
-            |> assign(:tool_events, [])
-
-          _ ->
-            socket
-        end
-    end
-  end
-
-  defp step_chat_system_prompt(step, runner) do
-    """
-    You are a per-step assistant inside a wizard. The user is on step "#{step.label}".
-
-    #{wizard_context_block(runner)}
-
-    You have exactly two tools: the step's use-case tool, and `clarify`.
-
-    - The wizard already knows the values listed above. Do not ask for them
-      via `clarify`; pass them through to the use-case tool as-is.
-    - If the user's request is clear, call the use-case tool with the right
-      arguments and stop. Do not chain calls.
-    - If the request is genuinely ambiguous and no reasonable assumption
-      resolves it, call `clarify` with a single short question. Calling
-      `clarify` ends your turn — wait for the user to answer in a new turn.
-    - Never run more than one tool per turn.
-    """
-  end
-
-  # Snapshots the wizard's current intake + resolved table name into a
-  # context block. Without this, the chat agent has no idea which
-  # framework / table it's working on and ends up asking via `clarify`
-  # for things the wizard already knows.
-  defp wizard_context_block(runner) do
-    intake = runner.intake || %{}
-    table_name = flow_table_name(runner)
-
-    fields = [
-      {"Framework name", get(intake, :name)},
-      {"Description", get(intake, :description)},
-      {"Domain", get(intake, :domain)},
-      {"Target roles", get(intake, :target_roles)},
-      {"Skill count", get(intake, :skill_count)},
-      {"Proficiency levels", get(intake, :levels)},
-      {"Library table", if(table_name == "", do: nil, else: table_name)}
-    ]
-
-    rendered =
-      fields
-      |> Enum.reject(fn {_k, v} -> v in [nil, ""] end)
-      |> Enum.map_join("\n", fn {k, v} -> "- #{k}: #{v}" end)
-
-    if rendered == "" do
-      "Current context: (none yet — the user hasn't filled in the intake form)"
-    else
-      "Current context (use these as-is — do not ask the user for them):\n" <> rendered
-    end
-  end
-
-  defp get(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
-  end
-
-  defp step_chat_spawn_fn do
-    Application.get_env(:rho_web, :step_chat_spawn_fn, &AgentJobs.start/1)
+  defp long_step_spawn_fn do
+    Application.get_env(:rho_web, :flow_long_step_spawn_fn, fn fun ->
+      Task.Supervisor.start_child(Rho.TaskSupervisor, fun)
+    end)
   end
 
   defp handle_step_chat_clarify(socket, data) do
@@ -1187,10 +1232,6 @@ defmodule RhoWeb.FlowLive do
     |> assign(:step_chat_agent_id, nil)
     |> refresh_data_table()
   end
-
-  # -------------------------------------------------------------------
-  # Table refresh
-  # -------------------------------------------------------------------
 
   defp maybe_refresh_table_from_summary(socket, %{table_name: name}) when is_binary(name) do
     refresh_data_table(socket, name)
@@ -1300,23 +1341,48 @@ defmodule RhoWeb.FlowLive do
     |> maybe_auto_run()
   end
 
-  defp complete_generate_step(socket, %{table_name: table_name} = summary) do
-    runner_summary = %{
-      table_name: table_name,
-      library_id: Map.get(summary, :library_id),
-      library_name: Map.get(summary, :library_name)
-    }
+  defp complete_long_step(socket, :research, %{table_name: table_name} = summary) do
+    runner_summary =
+      summary
+      |> Map.take([:table_name, :inserted, :seen, :failed_queries])
+      |> Map.put_new(:table_name, table_name)
 
     socket
-    |> update(:runner, &FlowRunner.put_summary(&1, :generate, runner_summary))
+    |> update(:runner, &FlowRunner.put_summary(&1, :research, runner_summary))
+    |> assign(:step_status, :awaiting_user)
+    |> assign(:step_error, nil)
+    |> assign(:research_agent_id, nil)
+    |> refresh_data_table(table_name)
+    |> refresh_research()
+  end
+
+  defp complete_long_step(socket, node_id, %{table_name: table_name} = summary) do
+    runner_summary =
+      summary
+      |> Map.take([
+        :table_name,
+        :taxonomy_table_name,
+        :library_id,
+        :library_name,
+        :category_count,
+        :cluster_count,
+        :preferences,
+        :rejected_count,
+        :inserted,
+        :seen
+      ])
+      |> Map.put_new(:table_name, table_name)
+
+    socket
+    |> update(:runner, &FlowRunner.put_summary(&1, node_id, runner_summary))
     |> assign(:step_status, :completed)
     |> assign(:step_error, nil)
     |> refresh_data_table(table_name)
   end
 
-  defp generate_running?(socket) do
+  defp long_step_running?(socket, node_id) do
     socket.assigns[:step_status] == :running and
-      current_node_id(socket.assigns.runner) == :generate
+      current_node_id(socket.assigns.runner) == node_id
   end
 
   # -------------------------------------------------------------------
@@ -1445,7 +1511,8 @@ defmodule RhoWeb.FlowLive do
   # -------------------------------------------------------------------
 
   defp flow_table_name(%{summaries: summaries, intake: intake}) do
-    case get_in(summaries, [:generate, :table_name]) do
+    case get_in(summaries, [:generate_skills, :table_name]) ||
+           get_in(summaries, [:generate, :table_name]) do
       name when is_binary(name) and name != "" ->
         name
 
@@ -1459,6 +1526,18 @@ defmodule RhoWeb.FlowLive do
         end
     end
   end
+
+  defp review_table_name(%{config: %{table_summary_key: summary_key} = config}, runner)
+       when is_atom(summary_key) do
+    field = Map.get(config, :table_field, :table_name)
+
+    case get_in(runner.summaries, [summary_key, field]) do
+      name when is_binary(name) and name != "" -> name
+      _ -> flow_table_name(runner)
+    end
+  end
+
+  defp review_table_name(_step, runner), do: flow_table_name(runner)
 
   defp org_path(socket, suffix) do
     slug = socket.assigns.current_organization.slug

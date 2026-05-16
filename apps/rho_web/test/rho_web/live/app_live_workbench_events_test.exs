@@ -1,7 +1,8 @@
 defmodule RhoWeb.AppLiveWorkbenchEventsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Phoenix.LiveView.Socket
+  alias Rho.Stdlib.DataTable
   alias RhoWeb.AppLive.WorkbenchEvents
   alias RhoWeb.WorkbenchActions
 
@@ -57,5 +58,42 @@ defmodule RhoWeb.AppLiveWorkbenchEventsTest do
     assert socket.assigns.workbench_action_error == nil
     assert socket.assigns.workbench_action_busy? == false
     assert socket.assigns.untouched == :kept
+  end
+
+  test "create framework action starts a chat-hosted flow instead of sending a prompt" do
+    sid = "workbench_flow_test_#{System.unique_integer([:positive])}"
+    agent_id = Rho.Agent.Primary.agent_id(sid)
+    on_exit(fn -> DataTable.stop(sid) end)
+
+    socket = %Socket{
+      assigns: %{
+        __changed__: %{},
+        session_id: sid,
+        active_agent_id: agent_id,
+        agent_messages: %{agent_id => []},
+        next_id: 1,
+        active_page: :chat,
+        active_flow: nil,
+        current_organization: %{id: Ecto.UUID.generate(), slug: "acme"},
+        current_user: %{id: Ecto.UUID.generate()},
+        workbench_action_modal: WorkbenchActions.get("create_framework"),
+        workbench_action_form: %{"name" => "Platform Skills"},
+        workbench_action_error: nil,
+        workbench_action_busy?: false
+      }
+    }
+
+    {:noreply, socket} =
+      WorkbenchEvents.run_action(socket, %{id: :create_framework}, %{
+        "name" => "Platform Skills",
+        "description" => "Platform engineering skills",
+        "taxonomy_size" => "compact"
+      })
+
+    assert socket.assigns.active_flow.id == "create-framework"
+    assert socket.assigns.active_flow.runner.intake[:name] == "Platform Skills"
+    assert socket.assigns.active_flow.runner.intake[:starting_point] == "scratch"
+    assert [%{type: :flow_card}] = socket.assigns.agent_messages[agent_id]
+    assert socket.assigns.workbench_action_modal == nil
   end
 end

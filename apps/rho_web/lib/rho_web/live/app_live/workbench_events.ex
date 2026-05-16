@@ -8,6 +8,7 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
 
   alias RhoWeb.AppLive
   alias RhoWeb.AppLive.DataTableEvents
+  alias RhoWeb.AppLive.FlowSession
   alias RhoWeb.Session.SessionCore
   alias RhoWeb.Session.SignalRouter
   alias RhoWeb.WorkbenchDisplay
@@ -86,8 +87,18 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
     run_action(socket, %{id: :load_library}, %{"library_id" => library_id})
   end
 
+  def run_action(socket, %{id: :create_framework}, form) do
+    socket =
+      socket
+      |> assign(:workbench_action_busy?, true)
+      |> FlowSession.start("create-framework", create_framework_intake(form))
+      |> close_action()
+
+    {:noreply, socket}
+  end
+
   def run_action(socket, %{id: id}, form)
-      when id in [:create_framework, :extract_jd, :import_library] do
+      when id in [:extract_jd, :import_library] do
     prompt = WorkbenchActionRunner.build_prompt(id, form)
     send_prompt(socket, prompt)
   end
@@ -171,6 +182,24 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
 
         {:noreply, socket}
     end
+  end
+
+  defp create_framework_intake(form) do
+    form
+    |> Map.take([
+      "name",
+      "description",
+      "domain",
+      "target_roles",
+      "taxonomy_size",
+      "transferability",
+      "specificity",
+      "levels"
+    ])
+    |> Map.new(fn {key, value} -> {String.to_existing_atom(key), blank_to_nil(value)} end)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+    |> Map.put_new(:starting_point, "scratch")
   end
 
   defp run_find_roles(socket, form) do

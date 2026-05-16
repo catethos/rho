@@ -131,6 +131,7 @@ defmodule RhoWeb.FlowComponents do
   defp mode_options do
     [
       {:guided, "Guided", "Wizard rails — no agent reasoning shown"},
+      {:chat_native, "Chat", "Chat-native prompts backed by the flow runner"},
       {:copilot, "Co-pilot", "Agent reasoning visible on auto-routed steps"},
       {:open, "Open", "All agent reasoning + raw traces visible"}
     ]
@@ -643,4 +644,100 @@ defmodule RhoWeb.FlowComponents do
     </div>
     """
   end
+
+  # -------------------------------------------------------------------
+  # Chat-native flow cards
+  # -------------------------------------------------------------------
+
+  attr(:events, :list, default: [])
+  attr(:current_message, :map, required: true)
+  attr(:error, :string, default: nil)
+
+  def flow_chat_messages(assigns) do
+    ~H"""
+    <div class="flow-chat-thread">
+      <div :for={event <- @events} class={"flow-chat-bubble flow-chat-#{event.kind}"}>
+        <div class="flow-chat-bubble-head">
+          <span><%= event.title %></span>
+          <span class="flow-chat-kind"><%= flow_chat_kind_label(event.kind) %></span>
+        </div>
+        <p><%= event.body %></p>
+      </div>
+
+      <div class={"flow-chat-card flow-chat-#{@current_message.kind}"}>
+        <div class="flow-chat-card-head">
+          <div>
+            <span class="flow-chat-eyebrow"><%= flow_chat_kind_label(@current_message.kind) %></span>
+            <h2><%= @current_message.title %></h2>
+          </div>
+          <span class="flow-chat-node"><%= @current_message.node_id %></span>
+        </div>
+
+        <p class="flow-chat-body"><%= @current_message.body %></p>
+
+        <div :if={@current_message.fields != []} class="flow-chat-fields">
+          <div :for={field <- @current_message.fields} class="flow-chat-field-chip">
+            <span><%= field.label %></span>
+            <strong><%= field.value || "Pending" %></strong>
+          </div>
+        </div>
+
+        <div :if={@current_message.artifact} class="flow-chat-artifact">
+          <span><%= flow_chat_artifact_label(@current_message.artifact) %></span>
+        </div>
+
+        <div :if={@current_message.actions != []} class="flow-chat-actions">
+          <button
+            :for={action <- @current_message.actions}
+            type="button"
+            phx-click="flow_chat_action"
+            phx-value-action-id={action.id}
+            class={flow_chat_action_class(action.variant)}
+          >
+            <%= action.label %>
+          </button>
+        </div>
+
+        <form phx-submit="flow_chat_reply" class="flow-chat-reply">
+          <input
+            type="text"
+            name="message"
+            class="flow-input"
+            autocomplete="off"
+            placeholder="Reply to this step..."
+          />
+          <button type="submit" class="btn-primary">Send</button>
+        </form>
+
+        <p :if={@error} class="flow-chat-error"><%= @error %></p>
+      </div>
+    </div>
+    """
+  end
+
+  defp flow_chat_kind_label(:flow_prompt), do: "Flow prompt"
+  defp flow_chat_kind_label(:flow_choice), do: "Choice"
+  defp flow_chat_kind_label(:flow_artifact), do: "Artifact"
+  defp flow_chat_kind_label(:flow_decision), do: "Decision"
+  defp flow_chat_kind_label(:flow_step_completed), do: "Completed"
+  defp flow_chat_kind_label(:flow_error), do: "Needs attention"
+  defp flow_chat_kind_label(kind), do: to_string(kind)
+
+  defp flow_chat_artifact_label(%{kind: :table, table_name: table_name})
+       when is_binary(table_name) and table_name != "" do
+    "Table: #{table_name}"
+  end
+
+  defp flow_chat_artifact_label(%{
+         kind: :selection,
+         item_count: item_count,
+         selected_count: selected
+       }) do
+    "#{selected} of #{item_count} selected"
+  end
+
+  defp flow_chat_artifact_label(_artifact), do: "Workflow artifact"
+
+  defp flow_chat_action_class(:secondary), do: "btn-secondary flow-chat-action"
+  defp flow_chat_action_class(_), do: "btn-primary flow-chat-action"
 end

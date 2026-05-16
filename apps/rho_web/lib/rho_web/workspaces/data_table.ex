@@ -76,6 +76,7 @@ defmodule RhoWeb.Workspaces.DataTable do
       session_id: shared.session_id,
       agent_name: Map.get(shared, :active_agent_name),
       libraries: Map.get(shared, :workbench_libraries, []),
+      role_groups: Map.get(shared, :role_groups, []),
       chat_mode: Map.get(shared, :chat_mode),
       workbench_display:
         Map.get(shared, :workbench_display) || WorkbenchDisplay.from_data_state(state),
