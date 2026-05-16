@@ -86,13 +86,15 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
 
         artifact_summary(table, rows,
           active?: table_name(table) == active_table,
+          active_snapshot: if(table_name(table) == active_table, do: active_snapshot),
           metadata: metadata_for_table(metadata, table_name(table), active_table),
           selected_ids: selected_ids
         )
       end)
 
     active_artifact = Enum.find(artifacts, &(&1.table_name == active_table))
-    workflow = workflow_summary(active_artifact, artifacts, metadata, active_table)
+    active_metadata = metadata_for_table(metadata, active_table, active_table)
+    workflow = workflow_summary(active_artifact, artifacts, active_metadata, active_table)
 
     %__MODULE__{
       active_table: active_table,
@@ -190,10 +192,11 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
   defp artifact_summary(table, rows, opts) do
     metadata = Keyword.fetch!(opts, :metadata)
     selected_ids = Keyword.fetch!(opts, :selected_ids)
+    active_snapshot = Keyword.get(opts, :active_snapshot)
     name = table_name(table)
     schema = table_schema(table)
     kind = infer_kind(name, schema, metadata)
-    row_count = table_row_count(table, rows)
+    row_count = table_row_count(table, rows, active_snapshot)
     metrics = metrics(kind, rows, row_count, selected_ids, metadata)
     state = states(kind, metrics, metadata, row_count)
 
@@ -367,6 +370,7 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
   defp actions(:skill_library, metrics, state, row_count, metadata) do
     [:export]
     |> maybe_action(:save_draft, row_count > 0)
+    |> maybe_action(:create_role_profile, row_count > 0)
     |> maybe_action(:generate_levels, Map.get(metrics, :missing_levels, 0) > 0)
     |> maybe_action(:suggest_skills, row_count > 0)
     |> maybe_action(:publish, :saved in state or truthy?(metadata[:persisted?]))
@@ -453,24 +457,37 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
 
   defp title(:skill_library, name, metadata, _row_count) do
     cond do
-      present?(metadata[:title]) -> metadata[:title]
-      present?(metadata[:library_name]) -> "#{metadata[:library_name]} Skill Framework"
-      starts_with?(name, "library:") -> "#{String.trim_leading(name, "library:")} Skill Framework"
-      true -> "Skill Framework"
+      present?(metadata[:title]) ->
+        metadata[:title]
+
+      present?(metadata[:library_name]) ->
+        skill_framework_title(metadata[:library_name])
+
+      starts_with?(name, "library:") ->
+        skill_framework_title(String.trim_leading(name, "library:"))
+
+      true ->
+        "Skill Framework"
     end
   end
 
   defp title(:role_profile, _name, metadata, _row_count) do
     cond do
       present?(metadata[:title]) -> metadata[:title]
-      present?(metadata[:role_name]) -> "#{metadata[:role_name]} Role Requirements"
+      present?(metadata[:role_name]) -> role_requirements_title(metadata[:role_name])
       true -> "Role Requirements"
     end
   end
 
-  defp title(:role_candidates, _name, metadata, _row_count), do: metadata[:title] || "Candidate Roles"
-  defp title(:combine_preview, _name, metadata, _row_count), do: metadata[:title] || "Combine Libraries"
-  defp title(:dedup_preview, _name, metadata, _row_count), do: metadata[:title] || "Duplicate Review"
+  defp title(:role_candidates, _name, metadata, _row_count),
+    do: metadata[:title] || "Candidate Roles"
+
+  defp title(:combine_preview, _name, metadata, _row_count),
+    do: metadata[:title] || "Combine Libraries"
+
+  defp title(:dedup_preview, _name, metadata, _row_count),
+    do: metadata[:title] || "Duplicate Review"
+
   defp title(:analysis_result, _name, metadata, _row_count), do: metadata[:title] || "Gap Review"
 
   defp title(:generic_table, "main", metadata, row_count) do
@@ -483,6 +500,24 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
 
   defp title(_kind, name, metadata, _row_count),
     do: metadata[:title] || humanize_name(name || "data_table")
+
+  defp skill_framework_title(name) when is_binary(name) do
+    if String.match?(String.trim(name), ~r/\bskill\s+framework\z/i) do
+      name
+    else
+      "#{name} Skill Framework"
+    end
+  end
+
+  defp role_requirements_title(name) when is_binary(name) do
+    trimmed = String.trim(name)
+
+    cond do
+      String.match?(trimmed, ~r/\brole\s+requirements\z/i) -> trimmed
+      String.match?(trimmed, ~r/\brole\z/i) -> "#{trimmed} Requirements"
+      true -> "#{trimmed} Role Requirements"
+    end
+  end
 
   defp subtitle(:skill_library, _name, metadata, _row_count),
     do: metadata[:subtitle] || "Reusable skill taxonomy"
@@ -660,7 +695,20 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
   defp table_schema(%{"schema" => schema}), do: schema
   defp table_schema(_), do: nil
 
-  defp table_row_count(table, rows) do
+  defp table_row_count(table, rows, active_snapshot) when is_map(active_snapshot) do
+    cond do
+      is_integer(get_in_map(active_snapshot, :row_count)) ->
+        get_in_map(active_snapshot, :row_count)
+
+      rows != [] ->
+        length(rows)
+
+      true ->
+        table_row_count(table, rows, nil)
+    end
+  end
+
+  defp table_row_count(table, rows, _active_snapshot) do
     cond do
       is_integer(get_in_map(table, :row_count)) -> get_in_map(table, :row_count)
       rows != [] -> length(rows)
@@ -687,8 +735,31 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
   end
 
   defp metadata_for_table(metadata, table, active_table) do
-    if table == active_table, do: metadata, else: %{}
+    cond do
+      table != active_table ->
+        %{}
+
+      metadata_table = metadata_table(metadata) ->
+        if metadata_table == table, do: metadata, else: %{}
+
+      true ->
+        metadata
+    end
   end
+
+  defp metadata_table(metadata) when is_map(metadata) do
+    Enum.find_value([:output_table, :table_name], fn key ->
+      value = metadata[key]
+      if present?(value), do: to_string(value)
+    end) || metadata_library_table(metadata)
+  end
+
+  defp metadata_table(_), do: nil
+
+  defp metadata_library_table(%{library_name: name}) when is_binary(name) and name != "",
+    do: "library:" <> name
+
+  defp metadata_library_table(_), do: nil
 
   defp normalize_metadata(metadata) when is_map(metadata) do
     Map.new(metadata, fn {key, value} ->
@@ -717,6 +788,10 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContext do
     |> Map.take([
       :linked_library_table,
       :linked_role_table,
+      :library_id,
+      :role_name,
+      :role_family,
+      :role_profile_id,
       :source_upload_id,
       :source_library_ids,
       :source_role_profile_ids,

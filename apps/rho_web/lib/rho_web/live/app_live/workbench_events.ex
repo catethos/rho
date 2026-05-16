@@ -106,6 +106,16 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
     {:noreply, socket}
   end
 
+  def run_action(socket, %{id: :create_role_profile}, form) do
+    case run_create_role_profile(socket, form) do
+      {:ok, socket} ->
+        {:noreply, close_action(socket)}
+
+      {:error, socket, message} ->
+        {:noreply, action_error(socket, form, message)}
+    end
+  end
+
   def run_action(socket, %{id: :find_roles}, form) do
     case run_find_roles(socket, form) do
       {:ok, socket} ->
@@ -223,6 +233,111 @@ defmodule RhoWeb.AppLive.WorkbenchEvents do
           {:error, socket, "Find Roles failed: #{inspect(reason)}"}
       end
     end
+  end
+
+  defp run_create_role_profile(socket, form) do
+    org = socket.assigns[:current_organization]
+    user = socket.assigns[:current_user]
+    library_id = blank_to_nil(form["library_id"])
+    role_name = blank_to_nil(form["role_name"])
+
+    cond do
+      is_nil(org) ->
+        {:error, socket, "Create Role needs an active organization."}
+
+      is_nil(library_id) ->
+        {:error, socket, "Choose a source library."}
+
+      is_nil(role_name) ->
+        {:error, socket, "Role name is required."}
+
+      true ->
+        {sid, socket} = ensure_session(socket)
+        {:ok, _pid} = Rho.Stdlib.DataTable.ensure_started(sid)
+
+        case RhoFrameworks.Library.get_visible_library!(org.id, library_id) do
+          nil ->
+            {:error, socket, "Source library not found."}
+
+          lib ->
+            rows =
+              lib.id
+              |> RhoFrameworks.Library.load_library_rows()
+              |> Enum.map(fn row ->
+                %{
+                  category: Map.get(row, :category),
+                  cluster: Map.get(row, :cluster),
+                  skill_name: Map.get(row, :skill_name),
+                  skill_description: Map.get(row, :skill_description),
+                  required_level: 3,
+                  required: true
+                }
+              end)
+
+            if rows == [] do
+              {:error, socket, "Source library has no skills."}
+            else
+              scope = %RhoFrameworks.Scope{
+                organization_id: org.id,
+                session_id: sid,
+                user_id: user && user.id,
+                source: :user,
+                reason: "workbench create_role_profile action"
+              }
+
+              with :ok <-
+                     Rho.Stdlib.DataTable.ensure_table(
+                       sid,
+                       "role_profile",
+                       RhoFrameworks.DataTableSchemas.role_profile_schema()
+                     ),
+                   {:ok, _} <-
+                     RhoFrameworks.Workbench.replace_rows(scope, rows, table: "role_profile") do
+                linked_library_table = RhoFrameworks.Library.Editor.table_name(lib.name)
+
+                metadata = %{
+                  workflow: :role_profile_edit,
+                  artifact_kind: :role_profile,
+                  title: "#{role_name} Role Requirements",
+                  role_name: role_name,
+                  output_table: "role_profile",
+                  library_id: lib.id,
+                  linked_library_table: linked_library_table,
+                  source_label: "Drafted from #{lib.name}",
+                  dirty?: true,
+                  persisted?: false
+                }
+
+                state =
+                  DataTableEvents.read_state(socket)
+                  |> Map.merge(%{
+                    active_table: "role_profile",
+                    view_key: :role_profile,
+                    mode_label: "Role Profile — #{role_name}",
+                    metadata: metadata,
+                    error: nil
+                  })
+
+                DataTableEvents.publish_view_focus(sid, "role_profile")
+
+                socket =
+                  socket
+                  |> DataTableEvents.open_workspace()
+                  |> SignalRouter.write_ws_state(:data_table, state)
+                  |> DataTableEvents.refresh_session()
+                  |> DataTableEvents.refresh_active("role_profile")
+
+                {:ok, socket}
+              else
+                {:error, reason} ->
+                  {:error, socket, "Create Role failed: #{inspect(reason)}"}
+              end
+            end
+        end
+    end
+  rescue
+    Ecto.NoResultsError ->
+      {:error, socket, "Source library not found."}
   end
 
   defp prepare_form(socket, action_id, form)

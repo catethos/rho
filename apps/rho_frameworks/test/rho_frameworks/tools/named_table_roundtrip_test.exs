@@ -332,6 +332,35 @@ defmodule RhoFrameworks.Tools.NamedTableRoundtripTest do
 
       assert row.skill_name == "Elixir"
     end
+
+    test "from_library creates a linked role_profile draft",
+         %{org_id: org_id, session_id: session_id, ctx: ctx} do
+      lib = seed_library_with_skill(org_id)
+      manage_role = tool(RoleTools, "manage_role")
+
+      assert %Rho.ToolResponse{text: text, effects: effects} =
+               manage_role.(
+                 %{action: "from_library", library_id: lib.id, name: "Backend Engineer"},
+                 ctx
+               )
+
+      assert text =~ "Prepared role profile draft"
+      assert text =~ ~s(resolve_library_id: "#{lib.id}")
+
+      assert [%{skill_name: "Elixir", required_level: 3, required: true}] =
+               DataTable.get_rows(session_id, table: "role_profile")
+
+      assert Enum.any?(effects, fn
+               %Rho.Effect.Table{
+                 table_name: "role_profile",
+                 metadata: %{library_id: library_id, linked_library_table: "library:Engineering"}
+               } ->
+                 library_id == lib.id
+
+               _ ->
+                 false
+             end)
+    end
   end
 
   # --- org_view -----------------------------------------------------

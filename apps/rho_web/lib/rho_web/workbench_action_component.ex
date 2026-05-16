@@ -13,7 +13,7 @@ defmodule RhoWeb.WorkbenchActionComponent do
   attr(:return_available?, :boolean, default: false)
 
   def workbench_home(assigns) do
-    library_action_ids = [:create_framework, :extract_jd, :import_library]
+    library_action_ids = [:create_framework, :extract_jd, :import_library, :create_role_profile]
 
     assigns =
       assigns
@@ -125,6 +125,7 @@ defmodule RhoWeb.WorkbenchActionComponent do
   defp library_action_label(:create_framework), do: "Create from brief"
   defp library_action_label(:extract_jd), do: "Create from JD"
   defp library_action_label(:import_library), do: "Import spreadsheet"
+  defp library_action_label(:create_role_profile), do: "Create role"
   defp library_action_label(_), do: "Start"
 
   defp assistant_state(agent_name) when agent_name in [:spreadsheet, "spreadsheet"],
@@ -266,6 +267,25 @@ defmodule RhoWeb.WorkbenchActionComponent do
                 </label>
               </div>
               <.modal_actions busy?={@busy?} label="Load Library" />
+
+            <% :create_role_profile -> %>
+              <.text_input name="role_name" label="Role name" value={@form["role_name"]} required />
+              <div class="workbench-picker">
+                <label class="workbench-field">
+                  <span>Source library</span>
+                  <select name="library_id" required>
+                    <option value="">Choose a library</option>
+                    <option
+                      :for={library <- @libraries}
+                      value={library.id}
+                      selected={to_string(library.id) == to_string(@form["library_id"] || "")}
+                    >
+                      <%= library_option_label(library) %>
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <.modal_actions busy?={@busy?} label="Create Role" />
 
             <% :find_roles -> %>
               <.text_area name="queries" label="Role names or search queries" value={@form["queries"]} rows="4" required />

@@ -122,6 +122,85 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContextTest do
            ]
   end
 
+  test "skill library titles do not repeat the Skill Framework suffix" do
+    ctx =
+      WorkbenchContext.build(%{
+        tables: [
+          %{
+            name: "library:Risk Analyst Skill Framework",
+            schema: library_schema(),
+            row_count: 2,
+            version: 1
+          }
+        ],
+        table_order: ["library:Risk Analyst Skill Framework"],
+        active_table: "library:Risk Analyst Skill Framework"
+      })
+
+    assert ctx.active_artifact.title == "Risk Analyst Skill Framework"
+  end
+
+  test "active artifact row count prefers fresh snapshot rows over stale table summary" do
+    rows = [
+      %{id: "r1", category: "Business", cluster: "Growth", skill_name: "Fundraising"},
+      %{id: "r2", category: "Business", cluster: "Strategy", skill_name: "Market Positioning"}
+    ]
+
+    ctx =
+      WorkbenchContext.build(%{
+        tables: [%{name: "library:CEO", schema: library_schema(), row_count: 1, version: 1}],
+        table_order: ["library:CEO"],
+        active_table: "library:CEO",
+        active_snapshot: %{rows: rows, row_count: 2}
+      })
+
+    artifact = ctx.active_artifact
+    assert artifact.row_count == 2
+    assert artifact.metrics.skills == 2
+    assert artifact.metrics.categories == 1
+  end
+
+  test "active artifact ignores metadata for a different table" do
+    ctx =
+      WorkbenchContext.build(%{
+        tables: [
+          %{name: "library:Programming", schema: library_schema(), row_count: 16, version: 1},
+          %{
+            name: "library:Senior Backend Engineer",
+            schema: library_schema(),
+            row_count: 9,
+            version: 1
+          }
+        ],
+        table_order: ["library:Programming", "library:Senior Backend Engineer"],
+        active_table: "library:Programming",
+        active_snapshot: %{rows: [], row_count: 16},
+        metadata: %{
+          output_table: "library:Senior Backend Engineer",
+          title: "Senior Backend Engineer Skill Framework",
+          library_name: "Senior Backend Engineer"
+        }
+      })
+
+    assert ctx.active_artifact.title == "Programming Skill Framework"
+    assert ctx.active_artifact.row_count == 16
+  end
+
+  test "active artifact uses matching table metadata" do
+    ctx =
+      WorkbenchContext.build(%{
+        tables: [%{name: "library:Programming", schema: library_schema(), row_count: 16}],
+        active_table: "library:Programming",
+        active_snapshot: %{rows: [], row_count: 16},
+        metadata: %{
+          output_table: "library:Programming",
+          title: "Programming Skill Framework v2"
+        }
+      })
+
+    assert ctx.active_artifact.title == "Programming Skill Framework v2"
+  end
+
   test "distinguishes role profiles from skill libraries" do
     rows = [
       %{
@@ -149,6 +228,17 @@ defmodule Rho.Stdlib.DataTable.WorkbenchContextTest do
     assert ctx.active_artifact.metrics.optional == 1
     assert ctx.active_artifact.metrics.missing_required_levels == 1
     assert ctx.active_artifact.metrics.unverified == 1
+  end
+
+  test "role profile titles do not repeat Role" do
+    ctx =
+      WorkbenchContext.build(%{
+        tables: [%{name: "role_profile", schema: role_schema(), row_count: 2, version: 1}],
+        active_table: "role_profile",
+        metadata: %{role_name: "Programming Role"}
+      })
+
+    assert ctx.active_artifact.title == "Programming Role Requirements"
   end
 
   test "role candidates expose picker metrics and selection action" do

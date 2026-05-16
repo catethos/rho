@@ -13,8 +13,16 @@ defmodule RhoWeb.WorkbenchActions do
       label: "Create Framework",
       summary: "Build a new skill framework from a short brief.",
       mode: :form,
-      fields: [:name, :description, :domain, :target_roles, :skill_count],
-      execution: :agent_prompt
+      fields: [
+        :name,
+        :description,
+        :domain,
+        :target_roles,
+        :taxonomy_size,
+        :transferability,
+        :specificity
+      ],
+      execution: :flow
     },
     %{
       id: :extract_jd,
@@ -38,6 +46,14 @@ defmodule RhoWeb.WorkbenchActions do
       summary: "Open an existing saved framework.",
       mode: :picker,
       fields: [:library_id],
+      execution: :direct
+    },
+    %{
+      id: :create_role_profile,
+      label: "Create Role",
+      summary: "Start role requirements from a saved skill library.",
+      mode: :picker,
+      fields: [:library_id, :role_name],
       execution: :direct
     },
     %{

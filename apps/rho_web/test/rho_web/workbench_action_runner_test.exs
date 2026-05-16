@@ -60,4 +60,18 @@ defmodule RhoWeb.WorkbenchActionRunnerTest do
     assert metadata.artifact_kind == :role_candidates
     assert metadata.ui_intent.surface == :role_candidate_picker
   end
+
+  test "validates create role profile requires a source library and role name" do
+    assert {:error, "Choose a source library."} =
+             WorkbenchActionRunner.validate(:create_role_profile, %{})
+
+    assert {:error, "Role name is required."} =
+             WorkbenchActionRunner.validate(:create_role_profile, %{"library_id" => "lib-1"})
+
+    assert :ok =
+             WorkbenchActionRunner.validate(:create_role_profile, %{
+               "library_id" => "lib-1",
+               "role_name" => "Backend Engineer"
+             })
+  end
 end

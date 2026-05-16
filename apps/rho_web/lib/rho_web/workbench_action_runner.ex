@@ -105,6 +105,19 @@ defmodule RhoWeb.WorkbenchActionRunner do
     end
   end
 
+  def validate(:create_role_profile, params) do
+    cond do
+      is_nil(clean(params["library_id"])) ->
+        {:error, "Choose a source library."}
+
+      is_nil(clean(params["role_name"])) ->
+        {:error, "Role name is required."}
+
+      true ->
+        :ok
+    end
+  end
+
   def role_queries(params) do
     params
     |> Map.get("queries", "")

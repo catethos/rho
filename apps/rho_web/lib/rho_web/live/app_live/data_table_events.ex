@@ -205,6 +205,26 @@ defmodule RhoWeb.AppLive.DataTableEvents do
      )}
   end
 
+  def handle_info({:create_role_profile_from_library, source}, socket) do
+    org = socket.assigns[:current_organization]
+    user = socket.assigns[:current_user]
+    sid = socket.assigns[:session_id]
+
+    if is_nil(org) or is_nil(sid) do
+      send(self(), {:data_table_flash, "Create role unavailable: no active session."})
+      {:noreply, socket}
+    else
+      case prepare_role_profile_from_library(socket, org, user, sid, source || %{}) do
+        {:ok, socket} ->
+          {:noreply, socket}
+
+        {:error, message} ->
+          send(self(), {:data_table_flash, message})
+          {:noreply, socket}
+      end
+    end
+  end
+
   def apply_event(socket, %{event: :table_changed} = data) do
     table_name = data[:table_name]
     state = read_state(socket)
@@ -252,7 +272,9 @@ defmodule RhoWeb.AppLive.DataTableEvents do
       send(self(), {:data_table_switch_tab, data[:table_name]})
     end
 
-    metadata = data[:metadata] || %{}
+    metadata =
+      (data[:metadata] || %{})
+      |> Map.put_new(:output_table, data[:table_name])
 
     new_state = %{
       state
@@ -564,6 +586,114 @@ defmodule RhoWeb.AppLive.DataTableEvents do
     Rho.Events.broadcast(sid, event)
     :ok
   end
+
+  defp prepare_role_profile_from_library(socket, org, user, sid, source) do
+    with {:ok, lib} <- resolve_role_source_library(org.id, source),
+         rows when rows != [] <- role_rows_from_library(lib.id),
+         :ok <-
+           Rho.Stdlib.DataTable.ensure_table(
+             sid,
+             "role_profile",
+             RhoFrameworks.DataTableSchemas.role_profile_schema()
+           ),
+         scope <- %RhoFrameworks.Scope{
+           organization_id: org.id,
+           session_id: sid,
+           user_id: user && user.id,
+           source: :user,
+           reason: "data table create_role_profile action"
+         },
+         {:ok, _} <- RhoFrameworks.Workbench.replace_rows(scope, rows, table: "role_profile") do
+      role_name = source[:role_name] || "#{lib.name} Role"
+      linked_library_table = RhoFrameworks.Library.Editor.table_name(lib.name)
+
+      metadata = %{
+        workflow: :role_profile_edit,
+        artifact_kind: :role_profile,
+        title: "#{role_name} Role Requirements",
+        role_name: role_name,
+        output_table: "role_profile",
+        library_id: lib.id,
+        linked_library_table: linked_library_table,
+        source_label: "Drafted from #{lib.name}",
+        dirty?: true,
+        persisted?: false
+      }
+
+      state =
+        read_state(socket)
+        |> Map.merge(%{
+          active_table: "role_profile",
+          view_key: :role_profile,
+          mode_label: "Role Profile — #{role_name}",
+          metadata: metadata,
+          error: nil
+        })
+
+      publish_view_focus(sid, "role_profile")
+
+      socket =
+        socket
+        |> open_workspace()
+        |> SignalRouter.write_ws_state(:data_table, state)
+        |> refresh_session()
+        |> refresh_active("role_profile")
+
+      {:ok, socket}
+    else
+      {:error, :not_found} ->
+        {:error, "Create role failed: source library not found."}
+
+      {:error, reason} ->
+        {:error, "Create role failed: #{inspect(reason)}"}
+
+      [] ->
+        {:error, "Create role failed: source library has no skills."}
+    end
+  end
+
+  defp resolve_role_source_library(org_id, source) do
+    cond do
+      present?(source[:library_id]) ->
+        {:ok, RhoFrameworks.Library.get_visible_library!(org_id, source[:library_id])}
+
+      present?(source[:library_name]) ->
+        case RhoFrameworks.Library.resolve_library(org_id, source[:library_name]) do
+          nil -> {:error, :not_found}
+          lib -> {:ok, lib}
+        end
+
+      present?(source[:active_table]) ->
+        source[:active_table]
+        |> RhoWeb.DataTable.Artifacts.library_name_from_table()
+        |> case do
+          "" -> {:error, :not_found}
+          name -> resolve_role_source_library(org_id, %{library_name: name})
+        end
+
+      true ->
+        {:error, :not_found}
+    end
+  rescue
+    Ecto.NoResultsError -> {:error, :not_found}
+  end
+
+  defp role_rows_from_library(library_id) do
+    library_id
+    |> RhoFrameworks.Library.load_library_rows()
+    |> Enum.map(fn row ->
+      %{
+        category: Map.get(row, :category),
+        cluster: Map.get(row, :cluster),
+        skill_name: Map.get(row, :skill_name),
+        skill_description: Map.get(row, :skill_description),
+        required_level: 3,
+        required: true
+      }
+    end)
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp format_suggest_flash([]), do: "Suggest returned no skills."
 

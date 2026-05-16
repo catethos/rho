@@ -53,9 +53,12 @@ defmodule RhoWeb.DataTableArtifactHeaderComponent do
       <span
         :if={@flash_message}
         id={"dt-flash-" <> Integer.to_string(:erlang.phash2(@flash_message))}
-        class="dt-flash"
+        class={["dt-flash", progress_flash?(@flash_message) && "dt-flash-progress"]}
       >
         <span class="dt-flash-text"><%= @flash_message %></span>
+        <span :if={progress_flash?(@flash_message)} class="dt-progress-track" aria-hidden="true">
+          <span class="dt-progress-bar"></span>
+        </span>
         <button
           type="button"
           class="dt-flash-close"
@@ -86,12 +89,12 @@ defmodule RhoWeb.DataTableArtifactHeaderComponent do
           ✓ Done — Seed Framework
         </button>
         <button
-          :if={Artifacts.library_view?(@view_key, @active_table)}
+          :if={Artifacts.library_view?(@view_key, @active_table) || role_profile_view?(@active_artifact, @view_key, @active_table)}
           type="button"
           class="dt-action-btn dt-save-btn"
           phx-click="open_save_dialog"
           phx-target={@myself}
-          title="Save to library"
+          title={if(role_profile_view?(@active_artifact, @view_key, @active_table), do: "Save role profile", else: "Save to library")}
         >
           Save
         </button>
@@ -124,6 +127,16 @@ defmodule RhoWeb.DataTableArtifactHeaderComponent do
           title="Ask the model for additional skills"
         >
           Suggest
+        </button>
+        <button
+          :if={Artifacts.library_view?(@view_key, @active_table)}
+          type="button"
+          class="dt-action-btn dt-create-role-btn"
+          phx-click="create_role_profile"
+          phx-target={@myself}
+          title="Create role requirements from this library"
+        >
+          Create Role
         </button>
         <div
           class="dt-export-dropdown"
@@ -159,7 +172,7 @@ defmodule RhoWeb.DataTableArtifactHeaderComponent do
         </div>
         <button
           type="button"
-          class="dt-add-row-btn"
+          class="dt-action-btn dt-add-row-btn"
           phx-click="add_row"
           phx-target={@myself}
           title="Add row"
@@ -170,4 +183,16 @@ defmodule RhoWeb.DataTableArtifactHeaderComponent do
     </div>
     """
   end
+
+  defp role_profile_view?(artifact, view_key, active_table) do
+    view_key in [:role_profile, "role_profile"] or active_table == "role_profile" or
+      (artifact && artifact.kind == :role_profile)
+  end
+
+  defp progress_flash?(message) when is_binary(message) do
+    message = String.downcase(message)
+    String.contains?(message, "saving") or String.contains?(message, "publishing")
+  end
+
+  defp progress_flash?(_message), do: false
 end

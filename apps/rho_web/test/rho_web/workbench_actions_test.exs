@@ -11,6 +11,7 @@ defmodule RhoWeb.WorkbenchActionsTest do
              :extract_jd,
              :import_library,
              :load_library,
+             :create_role_profile,
              :find_roles
            ]
 
@@ -19,11 +20,12 @@ defmodule RhoWeb.WorkbenchActionsTest do
              "Extract JD",
              "Import Library",
              "Load Library",
+             "Create Role",
              "Find Roles"
            ]
 
     assert Enum.all?(actions, &Map.has_key?(&1, :mode))
     assert Enum.all?(actions, &Map.has_key?(&1, :execution))
-    assert WorkbenchActions.get("create_framework").execution == :agent_prompt
+    assert WorkbenchActions.get("create_framework").execution == :flow
   end
 end

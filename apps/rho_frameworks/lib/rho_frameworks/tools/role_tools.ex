@@ -5,6 +5,7 @@ defmodule RhoFrameworks.Tools.RoleTools do
 
   use Rho.Tool
 
+  alias RhoFrameworks.Library
   alias RhoFrameworks.Roles
   alias RhoFrameworks.GapAnalysis
   alias RhoFrameworks.DataTableSchemas
@@ -15,13 +16,15 @@ defmodule RhoFrameworks.Tools.RoleTools do
   # ── manage_role ────────────────────────────────────────────────────────
 
   tool :manage_role,
-       "Role profile CRUD. Actions: list, view, load, save, start_draft, clone." do
+       "Role profile CRUD. Actions: list, view, load, save, start_draft, from_library, clone." do
     param(:action, :string,
       required: true,
-      doc: "list | view | load | save | start_draft | clone"
+      doc: "list | view | load | save | start_draft | from_library | clone"
     )
 
     param(:name, :string)
+    param(:library_id, :string)
+    param(:library_name, :string)
     param(:role_profile_id, :string)
     param(:role_family, :string)
     param(:seniority_level, :integer, doc: "1-5")
@@ -49,11 +52,15 @@ defmodule RhoFrameworks.Tools.RoleTools do
         "start_draft" ->
           do_start_draft(args, ctx)
 
+        "from_library" ->
+          do_from_library(args, ctx)
+
         "clone" ->
           do_clone_role(args, ctx)
 
         other ->
-          {:error, "Unknown action: #{other}. Use: list, view, load, save, start_draft, clone"}
+          {:error,
+           "Unknown action: #{other}. Use: list, view, load, save, start_draft, from_library, clone"}
       end
     end)
   end
@@ -232,6 +239,57 @@ defmodule RhoFrameworks.Tools.RoleTools do
 
       {:error, reason} ->
         {:error, "Failed to prepare table: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_from_library(args, ctx) do
+    with {:ok, lib} <- resolve_source_library(args, ctx),
+         rows when rows != [] <- library_rows_for_role(lib.id),
+         :ok <-
+           DataTable.ensure_table(
+             ctx.session_id,
+             "role_profile",
+             DataTableSchemas.role_profile_schema()
+           ),
+         scope <- Scope.from_context(ctx),
+         {:ok, _} <- Workbench.replace_rows(scope, rows, table: "role_profile") do
+      role_name = args[:name] || "#{lib.name} Role"
+
+      %Rho.ToolResponse{
+        text:
+          "Prepared role profile draft '#{role_name}' from '#{lib.name}' with #{length(rows)} skill(s). Save with manage_role(action: \"save\", name: ..., resolve_library_id: \"#{lib.id}\") to keep it linked to this library.",
+        effects: [
+          %Rho.Effect.OpenWorkspace{key: :data_table},
+          %Rho.Effect.Table{
+            table_name: "role_profile",
+            schema_key: :role_profile,
+            mode_label: "Role Profile — #{role_name}",
+            metadata:
+              role_profile_metadata(role_name, :role_profile_edit,
+                title: "#{role_name} Role Requirements",
+                source_label: "Drafted from #{lib.name}",
+                library_id: lib.id,
+                linked_library_table: library_table_name(lib.name),
+                persisted?: false,
+                dirty?: true
+              ),
+            rows: [],
+            skip_write?: true
+          }
+        ]
+      }
+    else
+      {:error, :library_required} ->
+        {:error, "Provide library_id or library_name to create a role from a skill library."}
+
+      {:error, :not_found} ->
+        {:error, "Skill library not found. Provide a saved library_id or library_name."}
+
+      [] ->
+        {:error, "Skill library has no skills to turn into a role profile."}
+
+      {:error, reason} ->
+        {:error, "Failed to prepare role profile from library: #{inspect(reason)}"}
     end
   end
 
@@ -596,7 +654,47 @@ defmodule RhoFrameworks.Tools.RoleTools do
     |> maybe_put(:role_profile_id, Keyword.get(opts, :role_profile_id))
     |> maybe_put(:source_label, Keyword.get(opts, :source_label))
     |> maybe_put(:source_role_profile_ids, Keyword.get(opts, :source_role_profile_ids))
+    |> maybe_put(:library_id, Keyword.get(opts, :library_id))
+    |> maybe_put(:linked_library_table, Keyword.get(opts, :linked_library_table))
   end
+
+  defp resolve_source_library(args, ctx) do
+    cond do
+      is_binary(args[:library_id]) and args[:library_id] != "" ->
+        case Library.get_visible_library!(ctx.organization_id, args[:library_id]) do
+          nil -> {:error, :not_found}
+          lib -> {:ok, lib}
+        end
+
+      is_binary(args[:library_name]) and args[:library_name] != "" ->
+        case Library.resolve_library(ctx.organization_id, args[:library_name]) do
+          nil -> {:error, :not_found}
+          lib -> {:ok, lib}
+        end
+
+      true ->
+        {:error, :library_required}
+    end
+  rescue
+    Ecto.NoResultsError -> {:error, :not_found}
+  end
+
+  defp library_rows_for_role(library_id) do
+    library_id
+    |> Library.load_library_rows()
+    |> Enum.map(fn row ->
+      %{
+        category: Map.get(row, :category),
+        cluster: Map.get(row, :cluster),
+        skill_name: Map.get(row, :skill_name),
+        skill_description: Map.get(row, :skill_description),
+        required_level: 3,
+        required: true
+      }
+    end)
+  end
+
+  defp library_table_name(name), do: RhoFrameworks.Library.Editor.table_name(name)
 
   defp role_candidates_metadata(table_name, per_query, total, queries) do
     %{

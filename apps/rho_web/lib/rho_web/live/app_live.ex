@@ -84,6 +84,7 @@ defmodule RhoWeb.AppLive do
       |> assign(:workbench_action_busy?, false)
       |> assign(:workbench_action_libraries, [])
       |> assign(:workbench_home_libraries, [])
+      |> assign(:role_group_options, [])
       |> WorkbenchDisplayState.initial_assigns()
       |> allow_upload(:images,
         accept: ~w(.jpg .jpeg .png .gif .webp),
@@ -127,6 +128,7 @@ defmodule RhoWeb.AppLive do
         |> Welcome.maybe_render()
         |> refresh_threads()
         |> refresh_conversations()
+        |> refresh_role_group_options()
         |> DataTableEvents.refresh_session()
       else
         socket
@@ -276,6 +278,7 @@ defmodule RhoWeb.AppLive do
       WorkbenchDisplayState.shared_assigns(assigns,
         active_agent_name: agent_name(active_agent),
         workbench_libraries: workbench_libraries(assigns),
+        role_groups: role_group_options(assigns),
         chat_mode: chat_mode,
         streaming: any_agent_busy?(assigns.agents)
       )
@@ -868,6 +871,10 @@ defmodule RhoWeb.AppLive do
     DataTableEvents.handle_info({:suggest_failed, reason}, socket)
   end
 
+  def handle_info({:create_role_profile_from_library, source}, socket) do
+    DataTableEvents.handle_info({:create_role_profile_from_library, source}, socket)
+  end
+
   def handle_info({:chatroom_mention, target, text}, socket) do
     ChatroomEvents.handle_info({:chatroom_mention, target, text}, socket)
   end
@@ -943,6 +950,45 @@ defmodule RhoWeb.AppLive do
         assigns[:workbench_home_libraries] || []
     end
   end
+
+  defp role_group_options(assigns) do
+    case assigns[:role_group_options] do
+      groups when is_list(groups) and groups != [] ->
+        groups
+
+      _ ->
+        assigns
+        |> Map.get(:profiles, [])
+        |> role_groups_from_profiles()
+    end
+  end
+
+  defp refresh_role_group_options(socket) do
+    assign(
+      socket,
+      :role_group_options,
+      load_role_group_options(socket.assigns[:current_organization])
+    )
+  end
+
+  defp load_role_group_options(%{id: org_id}) when is_binary(org_id) do
+    org_id
+    |> RhoFrameworks.Roles.list_role_profiles(include_public: false)
+    |> role_groups_from_profiles()
+  end
+
+  defp load_role_group_options(_), do: []
+
+  defp role_groups_from_profiles(profiles) when is_list(profiles) do
+    profiles
+    |> Enum.map(&Map.get(&1, :role_family))
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.map(&String.trim/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp role_groups_from_profiles(_), do: []
 
   def normalize_agent_role(role) when is_binary(role) do
     Enum.find(Rho.AgentConfig.agent_names(), :default, &(Atom.to_string(&1) == role))

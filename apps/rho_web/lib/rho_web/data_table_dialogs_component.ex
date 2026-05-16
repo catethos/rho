@@ -5,12 +5,13 @@ defmodule RhoWeb.DataTableDialogsComponent do
 
   attr(:action_dialog, :any, default: nil)
   attr(:myself, :any, required: true)
+  attr(:role_groups, :list, default: [])
 
   def dialogs(assigns) do
     ~H"""
     <%= if @action_dialog do %>
       <div class="dt-dialog-backdrop" phx-click="close_dialog" phx-target={@myself}>
-        <div class="dt-dialog" phx-click-away="close_dialog" phx-target={@myself}>
+        <div class="dt-dialog" phx-click="noop" phx-target={@myself}>
           <%= case @action_dialog do %>
             <% {:save, name} -> %>
               <h3 class="dt-dialog-title">Save Library</h3>
@@ -33,7 +34,56 @@ defmodule RhoWeb.DataTableDialogsComponent do
                   >
                     Cancel
                   </button>
-                  <button type="submit" class="dt-dialog-btn dt-dialog-confirm dt-save-btn">
+                  <button
+                    type="submit"
+                    class="dt-dialog-btn dt-dialog-confirm dt-save-btn"
+                    phx-disable-with="Saving..."
+                  >
+                    Save
+                  </button>
+                </div>
+              </form>
+            <% {:save_role, name, role_family} -> %>
+              <h3 class="dt-dialog-title">Save Role</h3>
+              <form phx-submit="confirm_save" phx-target={@myself}>
+                <label class="dt-dialog-label">Role Name</label>
+                <input
+                  type="text"
+                  name="name"
+                  value={name}
+                  class="dt-dialog-input"
+                  phx-hook="AutoFocus"
+                  id="save-role-dialog-name"
+                />
+                <label class="dt-dialog-label">
+                  Role Group <span class="dt-dialog-hint">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  name="role_family"
+                  value={role_family || ""}
+                  class="dt-dialog-input"
+                  id="save-role-dialog-family"
+                  list="save-role-group-options"
+                  placeholder="e.g. Digital, Data and IT Operations"
+                />
+                <datalist id="save-role-group-options">
+                  <option :for={group <- @role_groups} value={group}></option>
+                </datalist>
+                <div class="dt-dialog-actions">
+                  <button
+                    type="button"
+                    class="dt-dialog-btn dt-dialog-cancel"
+                    phx-click="close_dialog"
+                    phx-target={@myself}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    class="dt-dialog-btn dt-dialog-confirm dt-save-btn"
+                    phx-disable-with="Saving..."
+                  >
                     Save
                   </button>
                 </div>

@@ -28,10 +28,12 @@ defmodule RhoWeb.DataTable.EventHandlers do
     open_publish_dialog
     open_suggest_dialog
     close_dialog
+    noop
     dismiss_flash
     confirm_save
     confirm_publish
     confirm_suggest
+    create_role_profile
     fork_library
     toggle_export_menu
     close_export_menu
