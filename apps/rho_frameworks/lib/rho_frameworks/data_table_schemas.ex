@@ -162,6 +162,12 @@ defmodule RhoFrameworks.DataTableSchemas do
         %Column{name: :seniority_label, type: :string, required?: false},
         %Column{name: :skill_count, type: :integer, required?: false},
         %Column{
+          name: :source_libraries,
+          type: :string,
+          required?: false,
+          doc: "Skill libraries that currently supply this role profile's skills"
+        },
+        %Column{
           name: :_source,
           type: :string,
           required?: false,

@@ -8,6 +8,8 @@ defmodule RhoFrameworks.RolesTest do
   alias RhoEmbeddings.Backend.Fake, as: FakeEmbeddings
 
   setup do
+    FakeEmbeddings.reset()
+
     org_id = Ecto.UUID.generate()
 
     Repo.insert!(%RhoFrameworks.Accounts.Organization{
@@ -24,8 +26,29 @@ defmodule RhoFrameworks.RolesTest do
     %{org_id: org_id, lib: lib}
   end
 
+  defp wait_for_embeddings(deadline_ms \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_wait_for_embeddings(deadline)
+  end
+
+  defp do_wait_for_embeddings(deadline) do
+    cond do
+      RhoEmbeddings.ready?() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("RhoEmbeddings.Server never became ready")
+
+      true ->
+        Process.sleep(20)
+        do_wait_for_embeddings(deadline)
+    end
+  end
+
   describe "save_role_profile/4" do
     test "creates role profile with skills auto-upserted as drafts", %{org_id: org_id, lib: lib} do
+      wait_for_embeddings()
+
       rows = [
         %{category: "Technical", cluster: "Data", skill_name: "SQL", required_level: 4},
         %{category: "Technical", cluster: "Data", skill_name: "Python", required_level: 3}
@@ -41,6 +64,9 @@ defmodule RhoFrameworks.RolesTest do
 
       assert rp.name == "Data Engineer"
       assert count == 2
+      assert rp.embedding != nil
+      assert rp.embedding_text_hash == :crypto.hash(:sha256, "Data Engineer\nSQL, Python")
+      assert rp.embedded_at != nil
 
       # Skills should be draft
       skills = RhoFrameworks.Library.list_skills(lib.id)
@@ -84,6 +110,36 @@ defmodule RhoFrameworks.RolesTest do
 
       assert rp.purpose == nil
       assert rp.accountabilities == nil
+    end
+
+    test "can rename an existing role profile by id", %{org_id: org_id, lib: lib} do
+      wait_for_embeddings()
+
+      rows = [%{category: "Tech", skill_name: "Elixir", required_level: 3}]
+
+      {:ok, %{role_profile: rp}} =
+        RhoFrameworks.Roles.save_role_profile(
+          org_id,
+          %{name: "Backend Developer", role_family: "Engineering"},
+          rows,
+          resolve_library_id: lib.id
+        )
+
+      {:ok, %{role_profile: renamed}} =
+        RhoFrameworks.Roles.save_role_profile(
+          org_id,
+          %{name: "Senior Backend Developer", role_family: "Digital"},
+          rows,
+          resolve_library_id: lib.id,
+          role_profile_id: rp.id
+        )
+
+      assert renamed.id == rp.id
+      assert renamed.name == "Senior Backend Developer"
+      assert renamed.role_family == "Digital"
+      assert renamed.embedding != nil
+      assert renamed.embedding_text_hash != rp.embedding_text_hash
+      refute RhoFrameworks.Roles.get_role_profile_by_name(org_id, "Backend Developer")
     end
   end
 
@@ -547,6 +603,33 @@ defmodule RhoFrameworks.RolesTest do
 
       [match] = RhoFrameworks.Roles.find_similar_roles(org_id, "Analyst")
       assert match.name == "Data Analyst"
+    end
+
+    test "surfaces source library names with role search results", %{org_id: org_id, lib: lib} do
+      Repo.update_all(RoleProfile, set: [embedding: nil])
+
+      {:ok, _} =
+        RhoFrameworks.Roles.save_role_profile(
+          org_id,
+          %{name: "Library Analyst"},
+          [
+            %{
+              category: "Analysis",
+              cluster: "Evidence",
+              skill_name: "Evidence Synthesis",
+              required_level: 4
+            }
+          ],
+          resolve_library_id: lib.id
+        )
+
+      [match] = RhoFrameworks.Roles.find_similar_roles(org_id, "Library Analyst")
+
+      assert match.name == "Library Analyst"
+      assert match.source_library_names == lib.name
+      assert [%{id: library_id, name: library_name}] = match.source_libraries
+      assert library_id == lib.id
+      assert library_name == lib.name
     end
 
     test "ignores roles from other orgs that aren't public", %{org_id: org_id} do

@@ -729,7 +729,8 @@ defmodule RhoFrameworks.Workbench do
             role_name: Map.get(c, :name),
             role_family: Map.get(c, :role_family) || "",
             seniority_label: Map.get(c, :seniority_label) || "",
-            skill_count: Map.get(c, :skill_count) || 0
+            skill_count: Map.get(c, :skill_count) || 0,
+            source_libraries: Map.get(c, :source_library_names) || ""
           }
         end)
       end)

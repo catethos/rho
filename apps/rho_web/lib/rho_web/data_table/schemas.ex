@@ -269,6 +269,12 @@ defmodule RhoWeb.DataTable.Schemas do
           label: "Skills",
           editable: false,
           css_class: "dt-col-skill-count"
+        },
+        %Column{
+          key: :source_libraries,
+          label: "Libraries",
+          editable: false,
+          css_class: "dt-col-family"
         }
       ]
     }

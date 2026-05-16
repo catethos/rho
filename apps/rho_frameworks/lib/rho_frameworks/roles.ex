@@ -3,7 +3,7 @@ defmodule RhoFrameworks.Roles do
   require Logger
   import Ecto.Query
   alias RhoFrameworks.Repo
-  alias RhoFrameworks.Frameworks.{RoleProfile, RoleSkill, Skill}
+  alias RhoFrameworks.Frameworks.{Library, RoleProfile, RoleSkill, Skill}
   alias RhoFrameworks.Library, as: Lib
 
   def list_role_profiles(org_id, opts \\ []) do
@@ -66,6 +66,8 @@ defmodule RhoFrameworks.Roles do
   end
 
   def save_role_profile(org_id, attrs, role_rows, opts \\ []) do
+    role_profile_id = Keyword.get(opts, :role_profile_id)
+
     resolve_library_id =
       Keyword.get_lazy(opts, :resolve_library_id, fn ->
         Lib.get_or_create_default_library(org_id).id
@@ -78,11 +80,22 @@ defmodule RhoFrameworks.Roles do
       resolve_skills_for_role(library, resolve_library_id, role_rows)
     end)
     |> Ecto.Multi.run(:role_profile, fn repo, _ ->
-      rp_attrs = attrs |> Map.put(:organization_id, org_id)
+      case existing_role_profile(repo, org_id, attrs[:name], role_profile_id) do
+        nil ->
+          rp_attrs =
+            attrs
+            |> Map.put(:organization_id, org_id)
+            |> add_role_embedding_attrs(nil, role_rows)
 
-      case repo.get_by(RoleProfile, organization_id: org_id, name: attrs[:name]) do
-        nil -> %RoleProfile{} |> RoleProfile.changeset(rp_attrs) |> repo.insert()
-        existing -> existing |> RoleProfile.changeset(rp_attrs) |> repo.update()
+          %RoleProfile{} |> RoleProfile.changeset(rp_attrs) |> repo.insert()
+
+        existing ->
+          rp_attrs =
+            attrs
+            |> Map.put(:organization_id, org_id)
+            |> add_role_embedding_attrs(existing, role_rows)
+
+          existing |> RoleProfile.changeset(rp_attrs) |> repo.update()
       end
     end)
     |> Ecto.Multi.run(:clear_old_skills, fn repo, %{role_profile: profile} ->
@@ -112,6 +125,15 @@ defmodule RhoFrameworks.Roles do
       {:ok, count}
     end)
     |> Repo.transaction()
+  end
+
+  defp existing_role_profile(repo, org_id, _name, role_profile_id)
+       when is_binary(role_profile_id) and role_profile_id != "" do
+    repo.get_by(RoleProfile, id: role_profile_id, organization_id: org_id)
+  end
+
+  defp existing_role_profile(repo, org_id, name, _role_profile_id) do
+    repo.get_by(RoleProfile, organization_id: org_id, name: name)
   end
 
   defp resolve_skills_for_role(%{immutable: true}, library_id, role_rows) do
@@ -419,6 +441,77 @@ defmodule RhoFrameworks.Roles do
     end
   end
 
+  defp add_role_embedding_attrs(attrs, existing, role_rows) do
+    text = role_embed_text_for(attrs, existing, role_rows)
+    hash = text_hash(text)
+
+    if existing && existing.embedding_text_hash == hash && not is_nil(existing.embedding) do
+      attrs
+    else
+      case rho_embed_one(text) do
+        {:ok, vec} -> put_embedding_fields(attrs, vec, hash)
+        {:error, _} -> attrs
+      end
+    end
+  end
+
+  defp role_embed_text_for(attrs, existing, role_rows) do
+    [
+      attrs[:name] || (existing && existing.name),
+      attrs[:description] || (existing && existing.description),
+      attrs[:purpose] || (existing && existing.purpose),
+      role_skill_names_text(role_rows)
+    ]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.join("\n")
+  end
+
+  defp role_skill_names_text(role_rows) when is_list(role_rows) do
+    role_rows
+    |> Enum.map(&(&1[:skill_name] || &1[:name]))
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.uniq()
+    |> Enum.join(", ")
+  end
+
+  defp role_skill_names_text(_role_rows), do: nil
+
+  defp put_embedding_fields(attrs, vec, hash) do
+    Map.merge(attrs, %{embedding: vec, embedding_text_hash: hash, embedded_at: DateTime.utc_now()})
+  end
+
+  defp text_hash(text) do
+    :crypto.hash(:sha256, text)
+  end
+
+  defp rho_embed_one(text) do
+    case rho_embed_many([text]) do
+      {:ok, [vec]} -> {:ok, vec}
+      other -> other
+    end
+  end
+
+  defp rho_embed_many(texts) do
+    case RhoEmbeddings.embed_many(texts) do
+      {:ok, vecs} ->
+        {:ok, vecs}
+
+      {:error, reason} = err ->
+        Logger.warning(
+          "RhoEmbeddings.embed_many failed (#{inspect(reason)}); saving role profile without embedding"
+        )
+
+        err
+    end
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "RhoEmbeddings.Server unavailable (#{inspect(reason)}); saving role profile without embedding"
+      )
+
+      {:error, :not_running}
+  end
+
   defp embed_and_cache(query) do
     if RhoEmbeddings.ready?() do
       case RhoEmbeddings.embed_many([query]) do
@@ -494,6 +587,7 @@ defmodule RhoFrameworks.Roles do
     |> Repo.all()
     |> Enum.sort_by(fn r -> Map.fetch!(id_index, r.id) end)
     |> Enum.take(limit)
+    |> attach_source_libraries()
   end
 
   defp find_similar_roles_fallback(org_id, query, limit, library_id) do
@@ -519,6 +613,7 @@ defmodule RhoFrameworks.Roles do
     )
     |> maybe_filter_library(library_id)
     |> Repo.all()
+    |> attach_source_libraries()
   end
 
   defp maybe_filter_library(query, nil) do
@@ -536,6 +631,41 @@ defmodule RhoFrameworks.Roles do
       )
 
     from(rp in query, where: rp.id in subquery(profile_ids_in_library))
+  end
+
+  defp attach_source_libraries([]), do: []
+
+  defp attach_source_libraries(results) do
+    role_ids = Enum.map(results, & &1.id)
+
+    libraries_by_role =
+      from(rs in RoleSkill,
+        join: s in Skill,
+        on: s.id == rs.skill_id,
+        join: l in Library,
+        on: l.id == s.library_id,
+        where: rs.role_profile_id in ^role_ids,
+        order_by: [l.name],
+        select: %{
+          role_profile_id: rs.role_profile_id,
+          library_id: l.id,
+          library_name: l.name
+        }
+      )
+      |> Repo.all()
+      |> Enum.uniq_by(&{&1.role_profile_id, &1.library_id})
+      |> Enum.group_by(& &1.role_profile_id, fn row ->
+        %{id: row.library_id, name: row.library_name}
+      end)
+
+    Enum.map(results, fn result ->
+      source_libraries = Map.get(libraries_by_role, result.id, [])
+      source_library_names = Enum.map_join(source_libraries, ", ", & &1.name)
+
+      result
+      |> Map.put(:source_libraries, source_libraries)
+      |> Map.put(:source_library_names, source_library_names)
+    end)
   end
 
   def clone_role_skills(org_id, role_profile_ids) when is_list(role_profile_ids) do
