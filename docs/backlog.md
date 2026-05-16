@@ -12,7 +12,7 @@ half-done in design.
 
 ## Self-promoting deferred tools
 
-**Plan**: [agent-deferred-tool-promotion.md](agent-deferred-tool-promotion.md)
+**Plan**: [backlog-plans/agent-deferred-tool-promotion.md](backlog-plans/agent-deferred-tool-promotion.md)
 
 **One-line summary**: Let the agent itself promote a deferred tool
 into its action union via an `enable_tool` meta-action, instead of
@@ -35,7 +35,7 @@ built without this.
 
 ## Dynamic skill loading — one agent, many shapes
 
-**Plan**: [dynamic-skill-loading.md](dynamic-skill-loading.md)
+**Plan**: [backlog-plans/dynamic-skill-loading.md](backlog-plans/dynamic-skill-loading.md)
 
 **One-line summary**: Collapse `:spreadsheet` / `:coder` /
 `:researcher` / `:data_extractor` into a single default agent that
@@ -64,7 +64,7 @@ matches its current behavior, scale to `:spreadsheet`.
 
 ## Skill description optimization
 
-**Plan**: [skill-description-optimization.md](skill-description-optimization.md)
+**Plan**: [backlog-plans/skill-description-optimization.md](backlog-plans/skill-description-optimization.md)
 
 **One-line summary**: Rewrite the 5 existing `SKILL.md` descriptions
 following the agentskills.io optimization guide, and build
@@ -86,6 +86,91 @@ call for cheap deterministic trigger detection.
 agent picking the right skill from descriptions alone; without
 this, that plan amplifies the existing miss rate rather than
 fixing it.
+
+---
+
+## AI readiness assessment agent
+
+**Plan**: [backlog-plans/ai-readiness-assessment-plan.md](backlog-plans/ai-readiness-assessment-plan.md)
+
+**One-line summary**: Add an assessor agent and plugin that conducts a
+conversational AI-readiness assessment, records observations, and produces a
+scored 3x4 readiness report.
+
+**Bring this back when**:
+
+- AI-readiness assessment becomes a product surface rather than a demo idea.
+- We want a bounded vertical slice that exercises custom tools, session-scoped
+  assessment state, and report generation.
+- There is a clear owner for the scoring rubric and report UX.
+
+---
+
+## Research-as-tool Option A
+
+**Plan**: [backlog-plans/research-as-tool-option-a.md](backlog-plans/research-as-tool-option-a.md)
+
+**One-line summary**: Replace `ResearchDomain`'s worker-agent spawn with a
+bounded Exa-backed task/tool path that writes directly to the `research_notes`
+named table.
+
+**Bring this back when**:
+
+- Research-domain latency, cost, or failure modes from worker agents become a
+  recurring issue.
+- The wizard and chat agent both need the same deterministic research primitive.
+- We want `research_domain` to be callable as a normal workflow tool.
+
+---
+
+## Static asset migration
+
+**Plan**: [future-improvement-velocity-plan.md](future-improvement-velocity-plan.md)
+
+**One-line summary**: Move grouped inline CSS from Elixir modules toward normal
+Phoenix static assets after the current split has been visually verified.
+
+**Bring this back when**:
+
+- CSS review or compile churn becomes a bottleneck again.
+- The grouped `RhoWeb.InlineCSS.*` modules are stable enough to move
+  mechanically.
+- We have a reliable browser/visual smoke path for chat, data table, library,
+  role, settings, and flow views.
+
+---
+
+## Lite-loop tool execution convergence
+
+**Plan**: [future-improvement-velocity-plan.md](future-improvement-velocity-plan.md)
+
+**One-line summary**: Decide whether `Rho.Runner.LiteLoop` should converge with
+`Rho.ToolExecutor` or remain intentionally direct, then document and test the
+choice.
+
+**Bring this back when**:
+
+- A tool-execution bug appears in one runner mode but not the other.
+- New transformer/tool policy work needs identical behavior across normal and
+  lite runs.
+- The direct lite path starts gaining duplicated normalization or timeout logic.
+
+---
+
+## Framework library row and research-note extraction
+
+**Plan**: [future-improvement-velocity-plan.md](future-improvement-velocity-plan.md)
+
+**One-line summary**: Continue the `RhoFrameworks.Library` facade split by
+extracting row conversion/write normalization and research-note archive helpers
+behind stable public APIs.
+
+**Bring this back when**:
+
+- `RhoFrameworks.Library` or `RhoFrameworks.Workbench` changes need row-shape or
+  research-note persistence edits.
+- We touch save/import/dedup workflows and want clearer ownership.
+- Tests around named-table-to-library persistence become hard to localize.
 
 ---
 

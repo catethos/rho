@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Rho.ImportEsco do
   When the connected database hostname matches a known production pattern
   (e.g. Neon main), the task refuses to run without `--yes`. This is a
   belt-and-braces guard on top of the recommended branch-first sequence
-  documented in `docs/esco-import-plan.md`.
+  documented in `docs/archive/implemented/esco-import-plan.md`.
   """
 
   alias RhoFrameworks.Import.Esco

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Elixir 1.19, Phoenix LiveView, Xlsxir (Excel), NimbleCSV (CSV), Phoenix.PubSub, ExUnit. All existing in the umbrella — no new deps.
 
-**Spec:** `docs/superpowers/specs/2026-05-06-file-upload-design.md` (revision r2).
+**Spec:** `docs/archive/implemented/2026-05-06-file-upload-design.md` (revision r2).
 
 ---
 
@@ -613,7 +613,7 @@ defmodule Rho.Stdlib.Uploads do
   `parse_one_off/1` for callers that hold a server-side path and want a
   single observation without participating in a session lifecycle.
 
-  See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.1.
+  See `docs/archive/implemented/2026-05-06-file-upload-design.md` §5.1.
   """
 
   alias Rho.Stdlib.Uploads.{Handle, Server, Supervisor}
@@ -750,7 +750,7 @@ git commit -m "test(uploads): janitor integration + sample fixtures"
 defmodule Rho.Stdlib.Uploads.Observation do
   @moduledoc """
   Uniform summary returned by `Rho.Stdlib.Uploads.Observer.observe/2`.
-  See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.2.
+  See `docs/archive/implemented/2026-05-06-file-upload-design.md` §5.2.
   """
 
   @type kind :: :structured_table | :prose | :image | :unsupported
@@ -1360,7 +1360,7 @@ defmodule Rho.Stdlib.Uploads.Observer do
   Per-extension routing in `parse_path/1` (used by `Uploads.parse_one_off/1`).
   Session-aware routing in `observe/2` (used by `Uploads.Plugin` tools).
 
-  See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.2.
+  See `docs/archive/implemented/2026-05-06-file-upload-design.md` §5.2.
   """
 
   alias Rho.Stdlib.Uploads
@@ -3158,7 +3158,7 @@ git push --set-upstream origin file-upload-impl
 ```bash
 gh pr create --base rho_regina --title "feat: file upload & ingestion (v1 — Excel/CSV)" --body "$(cat <<'EOF'
 ## Summary
-- Three-layer file-upload pipeline (upload → observe → import) per spec docs/superpowers/specs/2026-05-06-file-upload-design.md (r2)
+- Three-layer file-upload pipeline (upload → observe → import) per spec docs/archive/implemented/2026-05-06-file-upload-design.md (r2)
 - Generic `:uploads` plugin in stdlib + domain `import_library_from_upload` tool in WorkflowTools
 - DocIngest refactored to share the unified Observer; format-param bug class eliminated
 - v1 supports `.xlsx` and `.csv` `:single_library` files; rejects `:roles_per_sheet` cleanly with a precise next-step message

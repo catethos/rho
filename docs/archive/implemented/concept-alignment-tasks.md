@@ -164,9 +164,9 @@ Audit first, rename second. Do not guess the minimal set.
 - [x] CLAUDE.md: Config System — document legacy aliases
 - [x] CLAUDE.md: Migration appendix enumerating every legacy alias
 - [x] `.rho.exs` example: update `mounts:` / `reasoner:` comments with new + legacy
-- [x] `docs/schema-aligned-parsing-plan.md`: sync vocabulary (Reasoner → TurnStrategy, MountRegistry → PluginRegistry, mount hook → Transformer stage / Plugin)
-- [x] `docs/reasoner-baml-*.md`: update Reasoner → TurnStrategy
-- [x] `docs/tagged-removal-and-lenient-streaming-plan.md`: update cross-refs
+- [x] `docs/active-plans/schema-aligned-parsing-plan.md`: sync vocabulary (Reasoner → TurnStrategy, MountRegistry → PluginRegistry, mount hook → Transformer stage / Plugin)
+- [x] `docs/archive/superseded/reasoner-baml-*.md`: update Reasoner → TurnStrategy
+- [x] `docs/archive/implemented/tagged-removal-and-lenient-streaming-plan.md`: update cross-refs
 - [x] Every code snippet in README.md and CLAUDE.md compiles against current code
 - [x] Grep discipline verified: no stray old vocabulary outside migration appendix
 - [ ] PR opened, reviewed, merged

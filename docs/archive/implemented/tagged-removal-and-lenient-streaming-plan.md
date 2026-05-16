@@ -4,7 +4,7 @@
 **Context:** Phase 1 live eval found two `:tagged` regressions (skipped
 skeleton phase, +17% tokens). Pivot: delete `:tagged`, keep
 `Rho.Parse.Lenient`, use it to prettify `:structured` streaming output.
-See `docs/reasoner-baml-results.md` for the eval findings.
+See `docs/archive/implemented/reasoner-baml-results.md` for the eval findings.
 
 > **Vocabulary note (post-refactor).** "Reasoner" in this document =
 > `Rho.TurnStrategy` in current code. `:structured` resolves to
@@ -56,12 +56,12 @@ Keep:
 
 Docs to update:
 
-- `docs/reasoner-baml-results.md` — add a "Phase 1 Outcome" section:
+- `docs/archive/implemented/reasoner-baml-results.md` — add a "Phase 1 Outcome" section:
   Tagged didn't survive live eval; pivoting Lenient to streaming UX.
-- `docs/reasoner-baml-plan.md` — supersede or annotate with pivot
+- `docs/archive/superseded/reasoner-baml-plan.md` — supersede or annotate with pivot
   notice at the top.
 - `docs/next-session-prompt.md` — delete (superseded by this file).
-- `docs/reasoner-baml-critique.md` — leave as-is (historical record)
+- `docs/archive/superseded/reasoner-baml-critique.md` — leave as-is (historical record)
   unless stale.
 
 ### Add (streaming UX via `Rho.Parse.Lenient`)
@@ -160,9 +160,9 @@ thinking messages).
 
 ### Step 4 — Docs + cleanup
 
-1. Update `docs/reasoner-baml-results.md` with a Phase 1 outcome
+1. Update `docs/archive/implemented/reasoner-baml-results.md` with a Phase 1 outcome
    section + link to this plan.
-2. Update `docs/reasoner-baml-plan.md` top with pivot notice.
+2. Update `docs/archive/superseded/reasoner-baml-plan.md` top with pivot notice.
 3. Delete `docs/next-session-prompt.md`.
 4. Move this plan to `docs/lenient-streaming-ux.md` once Step 1+2+3
    ship; delete its `Plan` section, retain the design notes.

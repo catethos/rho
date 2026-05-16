@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-10
 **Status:** Planning — not yet started
-**Context:** Discussion rooted in `docs/spreadsheet-agent-handoff.md` and the realization that the current `Rho.Stdlib.Plugins.DataTable` model (LiveView owns rows, tools round-trip via sync pid messages) is inefficient and racy.
+**Context:** Discussion rooted in `docs/archive/implemented/spreadsheet-agent-handoff.md` and the realization that the current `Rho.Stdlib.Plugins.DataTable` model (LiveView owns rows, tools round-trip via sync pid messages) is inefficient and racy.
 
 ## Goals
 
@@ -323,7 +323,7 @@ Each phase is roughly one commit. Phase 2 is the high-risk, high-value one.
 - Tab ordering is stable across re-renders.
 - The frameworks agent (`.rho.exs :spreadsheet`) completes a full library-load → role-derivation → save flow against the new architecture.
 
-## Continuing from `docs/spreadsheet-agent-handoff.md` after this plan
+## Continuing from `docs/archive/implemented/spreadsheet-agent-handoff.md` after this plan
 
 This plan only covers the **architectural substrate** (multi-table server, schemas, LV rewrite) and the three surviving quick-win tools from the initial analysis. It does NOT finish porting the old spreadsheet agent from the handoff doc. Here is the explicit follow-up track to do after Phases 1–5 above are done.
 

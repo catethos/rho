@@ -1,7 +1,7 @@
 # Prism Implementation Order
 
 > Implementation sequence for the Prism workforce intelligence platform.
-> See [skill-library-restructure-plan-v2.md](skill-library-restructure-plan-v2.md) for full design rationale, schema definitions, and code change details.
+> See [skill-library-restructure-plan-v2.md](../../active-plans/skill-library-restructure-plan-v2.md) for full design rationale, schema definitions, and code change details.
 
 ## Task Tracker
 

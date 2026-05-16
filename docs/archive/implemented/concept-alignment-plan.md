@@ -660,8 +660,8 @@ Documentation using old vocabulary actively misleads.
 | `CLAUDE.md` | Mount architecture section, `MountRegistry` table, hook callback list, `AgentLoop` / `Reasoner` split explanation, memory module references, context-map spec |
 | `.rho.exs` example | Comments for `mounts:`, `reasoner:` (show new + legacy aliases) |
 | `docs/*.md` | Cross-references to renamed modules |
-| `docs/schema-aligned-parsing-plan.md` | Uses `Reasoner`, `MountRegistry`, "mount hook" throughout. Sync with new vocabulary: `TurnStrategy`, `PluginRegistry`, "Transformer stage" or "Plugin". SAP emits `:sap_repairs` operational signals on the bus. |
-| `docs/reasoner-baml-*.md`, `docs/tagged-removal-and-lenient-streaming-plan.md` | Update `Reasoner` → `TurnStrategy` cross-references |
+| `docs/active-plans/schema-aligned-parsing-plan.md` | Uses `Reasoner`, `MountRegistry`, "mount hook" throughout. Sync with new vocabulary: `TurnStrategy`, `PluginRegistry`, "Transformer stage" or "Plugin". SAP emits `:sap_repairs` operational signals on the bus. |
+| `docs/archive/superseded/reasoner-baml-*.md`, `docs/archive/implemented/tagged-removal-and-lenient-streaming-plan.md` | Update `Reasoner` → `TurnStrategy` cross-references |
 
 ### README rewrite targets
 

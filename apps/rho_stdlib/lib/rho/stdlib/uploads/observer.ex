@@ -7,7 +7,7 @@ defmodule Rho.Stdlib.Uploads.Observer do
   Per-extension routing in `parse_path/1` (used by `Uploads.parse_one_off/1`).
   Session-aware routing in `observe/2` (used by `Uploads.Plugin` tools).
 
-  See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.2.
+  See `docs/archive/implemented/2026-05-06-file-upload-design.md` §5.2.
 
   ## Concurrency
 

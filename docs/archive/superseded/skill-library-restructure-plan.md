@@ -2,8 +2,8 @@
 
 > **Scope**: Typed library system, role profiles, skill gap analysis, standard framework import, skill merging/dedup, and data migration.
 > **Out of scope** (separate plans):
-> - [Lens System](prism-lens-system-plan.md) — N-dimensional scoring framework (first lens: ARIA AI Readiness)
-> - [Observation Model](prism-observation-model-plan.md) — Individual profiles, observations, and weighted evidence model
+> - [Lens System](../research/prism-lens-system-plan.md) — N-dimensional scoring framework (first lens: ARIA AI Readiness)
+> - [Observation Model](../research/prism-observation-model-plan.md) — Individual profiles, observations, and weighted evidence model
 > **Deferred** (build extension points now, machinery later):
 > - Library type-specific validation dispatch (add when second library type is real)
 > - Psychometric scoring in Elixir (lives in Rust in ds-aether, leave it there)
@@ -11,7 +11,7 @@
 > - Generic matching/scoring framework
 > - Skill splitting (reverse of merge — rare, manual workflow is fine)
 >
-> **Design review**: See [prism-design-review.md](prism-design-review.md) and [prism-design-review-response.md](prism-design-review-response.md) for the discussion that shaped this revision.
+> **Design review**: See [prism-design-review.md](../research/prism-design-review.md) and [prism-design-review-response.md](../research/prism-design-review-response.md) for the discussion that shaped this revision.
 
 ## Goal
 
@@ -1392,7 +1392,7 @@ The data table works with flat rows. Normalization happens at save time.
 
 ## Implementation Order
 
-> **Pre-work completed:** The DataTable abstraction refactored the old "spreadsheet" into a generic, schema-driven data table. See `docs/data-table-abstraction-plan.md`.
+> **Pre-work completed:** The DataTable abstraction refactored the old "spreadsheet" into a generic, schema-driven data table. See `docs/archive/implemented/data-table-abstraction-plan.md`.
 
 ### Step 1: Schema switching in DataTableProjection
 - Add `data_table_schema_change` signal handler to `DataTableProjection`
@@ -1498,7 +1498,7 @@ This plan provides the foundation for several follow-on capabilities:
 - Type-specific validation dispatch: `Prism.LibraryItem.Validator` with clauses per type
 - Scoring dispatch: `Prism.Scoring` module with `do_gap("skill", ...)`, `do_gap("psychometric", ...)` etc.
 - Psychometric scoring logic stays in Rust (ds-aether) — Elixir calls it via API or port
-- See [prism-design-review.md](prism-design-review.md) for the full multi-dimensional vision
+- See [prism-design-review.md](../research/prism-design-review.md) for the full multi-dimensional vision
 
 ### → Full RequirementSets (when multiple library types exist)
 - `RoleSkill` is the first dimension. When additional dimensions arrive (psychometric, qualification), add parallel join tables or a polymorphic `RequirementSet` (type + config + library_id) → `Requirement` (item + threshold)

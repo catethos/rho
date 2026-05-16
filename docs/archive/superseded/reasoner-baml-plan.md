@@ -3,11 +3,11 @@
 ## ⚠ Superseded 2026-04-05 — :tagged reasoner removed
 
 Phase 1 live eval exposed two regressions on `:tagged`
-(see `docs/reasoner-baml-results.md`): it skipped the
+(see `docs/archive/implemented/reasoner-baml-results.md`): it skipped the
 spreadsheet agent's mandatory skeleton phase + user-approval
 gate, and reported +17% output tokens. `:tagged` was removed
 and `Rho.Parse.Lenient` was redirected to streaming UX — see
-`docs/tagged-removal-and-lenient-streaming-plan.md`.
+`docs/archive/implemented/tagged-removal-and-lenient-streaming-plan.md`.
 
 This plan remains as a historical record of the design
 intent and corpus-building work.
@@ -795,7 +795,7 @@ Tasks are ordered. Each has a clear definition-of-done. Check off as completed.
       across add_rows/update_cells/add_proficiency_levels/delete_rows/
       replace_all). Migration note + rationale inline in `.rho.exs`. This
       is our first real-traffic data point — no other agents flipped until
-      exit-criteria results are captured in `docs/reasoner-baml-results.md`.
+      exit-criteria results are captured in `docs/archive/implemented/reasoner-baml-results.md`.
 
 ### Phase 1 — Unit tests for `:tagged` ✅ DONE
 

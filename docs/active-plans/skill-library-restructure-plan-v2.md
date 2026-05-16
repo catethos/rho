@@ -4,8 +4,8 @@
 >
 > **Scope**: Typed library system, role profiles, continuous dedup, standard framework import, skill merging, and data migration.
 > **Out of scope** (separate plans):
-> - [Lens System](prism-lens-system-plan.md) — N-dimensional scoring framework
-> - [Observation Model](prism-observation-model-plan.md) — Individual profiles and weighted evidence model
+> - [Lens System](../archive/research/prism-lens-system-plan.md) — N-dimensional scoring framework
+> - [Observation Model](../archive/research/prism-observation-model-plan.md) — Individual profiles and weighted evidence model
 > **Deferred** (build extension points now, machinery later):
 > - Library type-specific validation dispatch (add when second library type is real)
 > - Psychometric scoring in Elixir (lives in Rust in ds-aether)

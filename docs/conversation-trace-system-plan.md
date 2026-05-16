@@ -1033,7 +1033,7 @@ Add docs reference:
 Apply the same updates as `AGENTS.md`. Keep both files in sync because this
 repo uses both as agent-facing developer context.
 
-### Update `docs/tape-system.md`
+### Update `docs/active-plans/tape-system.md`
 
 Add a section:
 
@@ -1052,7 +1052,7 @@ Clarify:
 - `Rho.Trace.Projection.context/1` delegates to the canonical tape projection.
 - Snapshots are not durable truth.
 
-### Update `docs/conversation-threads-plan.md`
+### Update `docs/archive/superseded/conversation-threads-plan.md`
 
 Add a notice at the top:
 
@@ -1063,7 +1063,7 @@ Add a notice at the top:
 > `Rho.Conversation` in the core app.
 ```
 
-### Update `docs/durable-agent-chat-plan.md`
+### Update `docs/archive/superseded/durable-agent-chat-plan.md`
 
 Add a section that references the conversation index:
 
@@ -1203,9 +1203,9 @@ If formatting only touched targeted files, keep the diff scoped.
 
 - [ ] Update `AGENTS.md`.
 - [ ] Update `CLAUDE.md`.
-- [ ] Update `docs/tape-system.md`.
-- [ ] Mark `docs/conversation-threads-plan.md` superseded.
-- [ ] Update `docs/durable-agent-chat-plan.md`.
+- [ ] Update `docs/active-plans/tape-system.md`.
+- [ ] Mark `docs/archive/superseded/conversation-threads-plan.md` superseded.
+- [ ] Update `docs/archive/superseded/durable-agent-chat-plan.md`.
 - [ ] Update `docs/combined-simplification-plan.md`.
 - [ ] Optionally update `README.md`.
 
@@ -1263,4 +1263,3 @@ The work is complete when:
 7. Old tapes and old sessions still load.
 8. `AGENTS.md` and `CLAUDE.md` describe the new primitives and invariants.
 9. Focused tests and relevant app tests pass.
-

@@ -9,7 +9,7 @@ defmodule Rho.Parse.Lenient do
     to make streaming prefixes parseable.
 
   This is deliberately small (~80 LOC). The upgrade path to a native streaming
-  parser stays open (see `docs/reasoner-baml-plan.md`) but is not built until
+  parser stays open (see `docs/archive/superseded/reasoner-baml-plan.md`) but is not built until
   production metrics demand it.
   """
 

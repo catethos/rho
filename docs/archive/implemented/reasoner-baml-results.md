@@ -6,7 +6,7 @@ comparison found two `:tagged` regressions (workflow-contract regression
 `:tagged` reasoner was subsequently removed; `Rho.Parse.Lenient` was
 redirected to streaming UX (chat tool-args prettification + streaming
 envelope preview). See
-`docs/tagged-removal-and-lenient-streaming-plan.md`.
+`docs/archive/implemented/tagged-removal-and-lenient-streaming-plan.md`.
 
 > **Vocabulary note (post-refactor).** "Reasoner" in this document =
 > `Rho.TurnStrategy` in current code. `:structured` resolves to

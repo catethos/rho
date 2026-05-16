@@ -26,7 +26,7 @@
 
 ## Context
 
-The data table architecture plan in `docs/data-table-architecture-plan.md` was implemented through Phases 1–3 + 5. The per-session GenServer (`Rho.Stdlib.DataTable.Server`) now owns all row state canonically, and `Rho.Stdlib.Plugins.DataTable` tools call into it synchronously. The write-then-read race is gone and the stdlib boundary is clean.
+The data table architecture plan in `docs/archive/implemented/data-table-architecture-plan.md` was implemented through Phases 1–3 + 5. The per-session GenServer (`Rho.Stdlib.DataTable.Server`) now owns all row state canonically, and `Rho.Stdlib.Plugins.DataTable` tools call into it synchronously. The write-then-read race is gone and the stdlib boundary is clean.
 
 **What was deliberately deferred:** the LiveView was NOT rewritten as a pure renderer. Instead, `Rho.Stdlib.Plugins.DataTable` and `Rho.Stdlib.EffectDispatcher` publish a **legacy UI compatibility shim** — after every write to the server they also emit the old-format `data_table_rows_delta`, `data_table_replace_all`, etc. signals that the existing `RhoWeb.Projections.DataTableProjection` consumes. This keeps the UI working but maintains two parallel state paths.
 
@@ -34,7 +34,7 @@ Your job is to remove that shim by making the LiveView a pure renderer that subs
 
 ## What the plan specified
 
-From `docs/data-table-architecture-plan.md` §"LiveView rewrite" and §"Notification scheme":
+From `docs/archive/implemented/data-table-architecture-plan.md` §"LiveView rewrite" and §"Notification scheme":
 
 - Single session-scoped topic: `"rho.session.#{session_id}.events.data_table"`
 - Server publishes coarse invalidation events: `%{event: :table_changed, table_name, version}`, `%{event: :table_created, ...}`, `%{event: :table_removed, ...}` — already implemented
@@ -186,8 +186,8 @@ Should `DataTable.Server` mutations be recorded on the tape for replayability? D
 
 ### Tracks A–H from the spreadsheet agent handoff
 
-See `docs/data-table-architecture-plan.md` §"Continuing from `docs/spreadsheet-agent-handoff.md`". Track A (externalize the prompt into skill files under `.agents/skills/framework-editor/`) is the highest-leverage follow-up and is completely independent of the LV rewrite.
+See `docs/archive/implemented/data-table-architecture-plan.md` §"Continuing from `docs/archive/implemented/spreadsheet-agent-handoff.md`". Track A (externalize the prompt into skill files under `.agents/skills/framework-editor/`) is the highest-leverage follow-up and is completely independent of the LV rewrite.
 
 ---
 
-Start by reading `docs/data-table-architecture-plan.md` for the architectural north star, then the files listed in §1. Expect the rewrite itself to be roughly one focused PR; the projection deletion + test additions will dominate the diff.
+Start by reading `docs/archive/implemented/data-table-architecture-plan.md` for the architectural north star, then the files listed in §1. Expect the rewrite itself to be roughly one focused PR; the projection deletion + test additions will dominate the diff.

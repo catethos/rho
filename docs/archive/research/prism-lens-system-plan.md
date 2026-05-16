@@ -1,6 +1,6 @@
 # Prism — Lens System Plan
 
-> **Status**: Not yet started. Depends on [Skill Library & Role Profile Restructure](skill-library-restructure-plan-v2.md).
+> **Status**: Not yet started. Depends on [Skill Library & Role Profile Restructure](../../active-plans/skill-library-restructure-plan-v2.md).
 > **First concrete lens**: ARIA AI Readiness (2-axis: AI Impact × Adaptability)
 
 ## Goal

@@ -1,6 +1,6 @@
 # Prism — Observation Model Plan
 
-> **Status**: Not yet started. Depends on [Skill Library & Role Profile Restructure](skill-library-restructure-plan-v2.md).
+> **Status**: Not yet started. Depends on [Skill Library & Role Profile Restructure](../../active-plans/skill-library-restructure-plan-v2.md).
 > **Replaces**: The "weighted evidence model" from the original plan. Renamed to **weighted evidence model** — it's a weighted running average with recency decay, not a Bayesian posterior.
 
 ## Goal

@@ -4,7 +4,7 @@ defmodule Rho.Stdlib.Uploads do
   `parse_one_off/1` for callers that hold a server-side path and want a
   single observation without participating in a session lifecycle.
 
-  See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.1.
+  See `docs/archive/implemented/2026-05-06-file-upload-design.md` §5.1.
   """
 
   alias Rho.Stdlib.Uploads.{Handle, Server, Supervisor}

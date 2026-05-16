@@ -1,7 +1,7 @@
 defmodule Rho.Stdlib.Uploads.Observation do
   @moduledoc """
   Uniform summary returned by `Rho.Stdlib.Uploads.Observer.observe/2`.
-  See `docs/superpowers/specs/2026-05-06-file-upload-design.md` §5.2.
+  See `docs/archive/implemented/2026-05-06-file-upload-design.md` §5.2.
   """
 
   @type kind :: :structured_table | :pdf | :prose_text | :docx | :image | :unsupported
